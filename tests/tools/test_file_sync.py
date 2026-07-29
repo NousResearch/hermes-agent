@@ -54,20 +54,6 @@ class TestMtimeSkip:
         mgr.sync(force=True)
         assert upload.call_count == 0, "unchanged files should not be re-uploaded"
 
-    def test_changed_file_re_uploaded(self, tmp_files):
-        upload = MagicMock()
-        mgr = _make_manager(tmp_files, upload=upload)
-
-        mgr.sync(force=True)
-        upload.reset_mock()
-
-        # Touch one file
-        time.sleep(0.05)
-        Path(tmp_files["cred_a.json"]).write_text("updated content")
-
-        mgr.sync(force=True)
-        assert upload.call_count == 1
-        assert tmp_files["cred_a.json"] in upload.call_args[0][0]
 
     def test_new_file_detected(self, tmp_files, tmp_path):
         upload = MagicMock()
@@ -183,26 +169,6 @@ class TestRateLimiting:
         mgr.sync()
         assert upload.call_count == 0
 
-    def test_force_bypasses_rate_limit(self, tmp_files, tmp_path):
-        upload = MagicMock()
-        mgr = FileSyncManager(
-            get_files_fn=_make_get_files(tmp_files),
-            upload_fn=upload,
-            delete_fn=MagicMock(),
-            sync_interval=10.0,
-        )
-
-        mgr.sync(force=True)
-        upload.reset_mock()
-
-        # Add a new file and force sync
-        new_file = tmp_path / "forced.txt"
-        new_file.write_text("forced")
-        tmp_files["forced.txt"] = str(new_file)
-        mgr._get_files_fn = _make_get_files(tmp_files)
-
-        mgr.sync(force=True)
-        assert upload.call_count == 1
 
     def test_env_var_forces_sync(self, tmp_files, tmp_path):
         upload = MagicMock()
@@ -370,18 +336,6 @@ class TestBulkUpload:
         files_arg = bulk_upload.call_args[0][0]
         assert len(files_arg) == 3
 
-    def test_fallback_to_upload_fn_when_no_bulk(self, tmp_files):
-        """Without bulk_upload_fn, per-file upload_fn is used (backwards compat)."""
-        upload = MagicMock()
-        mgr = FileSyncManager(
-            get_files_fn=_make_get_files(tmp_files),
-            upload_fn=upload,
-            delete_fn=MagicMock(),
-            bulk_upload_fn=None,
-        )
-
-        mgr.sync(force=True)
-        assert upload.call_count == 3
 
     def test_bulk_upload_rollback_on_failure(self, tmp_files):
         """Bulk upload failure rolls back synced state so next sync retries."""

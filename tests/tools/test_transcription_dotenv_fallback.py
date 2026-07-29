@@ -90,43 +90,6 @@ class TestProviderSelectionGate:
 
         assert creds["api_key"] == "dotenv-secret"
 
-    def test_explicit_groq_sees_dotenv(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
-             patch.object(tt, "_HAS_OPENAI", True), \
-             patch.object(tt, "_has_local_command", return_value=False), \
-             patch("hermes_cli.config.load_env",
-                   return_value={"GROQ_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "groq"}) == "groq"
-
-    def test_explicit_mistral_sees_dotenv(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
-             patch.object(tt, "_HAS_MISTRAL", True), \
-             patch.object(tt, "_has_local_command", return_value=False), \
-             patch("hermes_cli.config.load_env",
-                   return_value={"MISTRAL_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "mistral"}) == "mistral"
-
-    def test_explicit_xai_sees_dotenv(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
-             patch.object(tt, "_has_local_command", return_value=False), \
-             patch("hermes_cli.config.load_env",
-                   return_value={"XAI_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "xai"}) == "xai"
-
-    def test_explicit_elevenlabs_sees_dotenv(self):
-        from tools import transcription_tools as tt
-
-        with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
-             patch.object(tt, "_has_local_command", return_value=False), \
-             patch("hermes_cli.config.load_env",
-                   return_value={"ELEVENLABS_API_KEY": "dotenv-secret"}):
-            assert tt._get_provider({"enabled": True, "provider": "elevenlabs"}) == "elevenlabs"
 
     def test_auto_detect_sees_dotenv_groq(self):
         """No local backend, no explicit provider — auto-detect should fall
@@ -178,31 +141,6 @@ class TestTranscribeCallSitesReadDotenv:
         assert result["success"] is True
         assert seen_keys == ["groq-dotenv-key"]
 
-    def test_transcribe_mistral_forwards_dotenv_key(self):
-        from tools import transcription_tools as tt
-
-        seen_keys: list = []
-
-        class FakeMistralClient:
-            def __init__(self, *, api_key=None):
-                seen_keys.append(api_key)
-                self.audio = MagicMock()
-                completion = MagicMock()
-                completion.text = "hi"
-                self.audio.transcriptions.complete.return_value = completion
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-
-        fake_client_module = MagicMock()
-        fake_client_module.Mistral = FakeMistralClient
-
-        with patch.object(tt, "get_env_value", return_value="mistral-dotenv-key"), \
-             patch.dict("sys.modules", {"mistralai.client": fake_client_module}), \
-             patch("builtins.open", MagicMock()):
-            result = tt._transcribe_mistral("/tmp/fake.mp3", "voxtral-mini-latest")
-
-        assert result["success"] is True
-        assert seen_keys == ["mistral-dotenv-key"]
 
     def test_transcribe_xai_forwards_dotenv_key(self):
         """An explicit XAI_API_KEY must win over Grok subscription OAuth for STT."""

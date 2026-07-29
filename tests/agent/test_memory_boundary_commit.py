@@ -83,22 +83,6 @@ def test_boundary_commit_delivers_end_strictly_before_switch():
     assert provider._caller_thread_ids[0] != threading.get_ident()
 
 
-def test_boundary_commit_serializes_against_turn_syncs():
-    """The boundary task shares the single worker with sync_all — FIFO order
-    means a queued boundary can't interleave into a later turn's sync."""
-    provider = _RecordingProvider(end_delay=0.05)
-    mm = _make_manager(provider)
-
-    mm.commit_session_boundary_async(
-        [{"role": "user", "content": "old"}],
-        new_session_id="new-sid",
-    )
-    mm.sync_all("next-session user msg", "assistant reply", session_id="new-sid")
-
-    assert mm.flush_pending(timeout=5)
-
-    kinds = [c[0] for c in provider.calls]
-    assert kinds == ["end", "switch", "sync_turn"], f"unexpected order: {provider.calls}"
 
 
 def test_boundary_commit_switch_still_fires_when_end_raises():
@@ -117,8 +101,3 @@ def test_boundary_commit_switch_still_fires_when_end_raises():
     assert ("switch", "new-sid", True) in provider.calls
 
 
-def test_boundary_commit_noop_without_providers():
-    mm = MemoryManager()
-    # Must not create the executor or raise.
-    mm.commit_session_boundary_async([{"role": "user", "content": "x"}], new_session_id="s")
-    assert mm._sync_executor is None

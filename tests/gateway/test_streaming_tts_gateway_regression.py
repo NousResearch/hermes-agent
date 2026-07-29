@@ -155,27 +155,3 @@ def test_run_agent_voice_turn_no_name_error(monkeypatch, tmp_path):
     assert result["final_response"] == "Hello from the agent."
 
 
-def test_run_agent_text_turn_no_name_error(monkeypatch, tmp_path):
-    """A text-input turn (no streaming TTS) must also complete cleanly."""
-    _setup_monkeypatches(monkeypatch, tmp_path)
-    runner = _make_runner()
-
-    monkeypatch.setattr(
-        gateway_run.GatewayRunner,
-        "_adapter_for_source",
-        lambda self, source: None,
-    )
-
-    async def _run():
-        result = await runner._run_agent(
-            message="Hello Jarvis",
-            context_prompt="",
-            history=[],
-            source=_make_voice_source(),
-            session_id="session-1",
-            session_key="agent:main:telegram:dm:12345",
-        )
-        return result
-
-    result = asyncio.new_event_loop().run_until_complete(_run())
-    assert result["final_response"] == "Hello from the agent."

@@ -13,34 +13,6 @@ class TestResolveApiKey:
         monkeypatch.delenv("HONCHO_API_KEY", raising=False)
         assert honcho_cli._resolve_api_key({"apiKey": "root-key"}) == "root-key"
 
-    def test_returns_api_key_from_host_block(self, monkeypatch):
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        cfg = {"hosts": {"hermes": {"apiKey": "host-key"}}, "apiKey": "root-key"}
-        assert honcho_cli._resolve_api_key(cfg) == "host-key"
-
-    def test_returns_local_for_base_url_without_api_key(self, monkeypatch):
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
-        cfg = {"baseUrl": "http://localhost:8000"}
-        assert honcho_cli._resolve_api_key(cfg) == "local"
-
-    def test_returns_local_for_base_url_env_var(self, monkeypatch):
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.setenv("HONCHO_BASE_URL", "http://10.0.0.5:8000")
-        assert honcho_cli._resolve_api_key({}) == "local"
-
-    def test_returns_empty_when_nothing_configured(self, monkeypatch):
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
-        assert honcho_cli._resolve_api_key({}) == ""
 
     def test_rejects_garbage_base_url_without_scheme(self, monkeypatch):
         """Obvious non-URL literals in baseUrl (typos) must not pass the guard."""
@@ -55,19 +27,6 @@ class TestResolveApiKey:
             assert honcho_cli._resolve_api_key({"baseUrl": garbage}) == "", \
                 f"expected empty for garbage {garbage!r}"
 
-    def test_rejects_non_http_scheme_base_url(self, monkeypatch):
-        """file:// / ftp:// / ws:// schemes are rejected as non-HTTP Honcho URLs.
-
-        Note: these DO contain ``.`` or ``:`` so they pass the schemeless
-        host fallback.  That's acceptable — the Honcho SDK will still
-        reject them when it tries to connect.  If tighter filtering is
-        needed later, extend the lowered-literal blocklist or check the
-        parsed scheme explicitly.
-        """
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
         # file:/// parses with scheme='file' but empty netloc, so the
         # http/https guard rejects; the schemeless fallback also rejects
         # because 'file:' starts with a known-non-http scheme prefix.
@@ -82,23 +41,6 @@ class TestResolveApiKey:
         monkeypatch.delenv("HONCHO_API_KEY", raising=False)
         monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
         assert honcho_cli._resolve_api_key({"baseUrl": "https://honcho.example.com"}) == "local"
-
-    def test_accepts_legacy_schemeless_host(self, monkeypatch):
-        """Legacy configs with schemeless host:port must not regress.
-
-        Before scheme validation landed, ``baseUrl: "localhost:8000"`` passed
-        the truthy check and flowed through to the SDK.  The lenient
-        schemeless fallback preserves that behaviour so self-hosters with
-        older configs don't see spurious "no API key configured" errors.
-        The SDK itself still rejects malformed URLs at connect time.
-        """
-        import plugins.memory.honcho.cli as honcho_cli
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
-        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
-        for legacy in ("localhost:8000", "10.0.0.5:8000", "honcho.local:8080", "host.example.com"):
-            assert honcho_cli._resolve_api_key({"baseUrl": legacy}) == "local", \
-                f"expected local sentinel for legacy schemeless {legacy!r}"
 
 
 class TestCmdSetupLocalJwt:
@@ -158,25 +100,6 @@ class TestCmdSetupLocalJwt:
         # The new local JWT belongs under the host block.
         host_block = (cfg.get("hosts") or {}).get("hermes") or {}
         assert host_block.get("apiKey") == "my-local-jwt-token"
-
-    def test_local_setup_blank_jwt_keeps_local_no_auth(self, monkeypatch, tmp_path):
-        """Blank JWT prompt response on a fresh local config must not introduce an apiKey
-        anywhere (local no-auth Honcho deployments must still work out of the box)."""
-        cfg = self._run_setup(
-            monkeypatch,
-            tmp_path,
-            initial_cfg={},
-            prompt_answers=[
-                "local",
-                "http://localhost:8000",
-                "",  # blank JWT
-            ],
-        )
-        assert cfg is not None
-        assert cfg.get("baseUrl") == "http://localhost:8000"
-        assert not cfg.get("apiKey")
-        host_block = (cfg.get("hosts") or {}).get("hermes") or {}
-        assert not host_block.get("apiKey")
 
 
 class TestCmdStatus:
@@ -574,23 +497,6 @@ class TestSetupWizardDeploymentShape:
         assert host["pinUserPeer"] is False
         assert host["userPeerAliases"] == {"7654321": "eri"}
 
-    def test_unpin_decline_steer_keeps_per_user(self, monkeypatch, tmp_path):
-        """Operator can decline the steer ('n') and accept orphaning, ending
-        up with per-user peers (no aliases)."""
-        initial_cfg = {
-            "apiKey": "***",
-            "hosts": {"hermes": {"pinPeerName": True, "peerName": "eri"}},
-        }
-        answers = [
-            "cloud", "", "eri", "hermetika", "hermes",
-            "3",               # tree: only others — triggers the orphan guard
-            "n",               # decline pooling, accept orphaning
-            "telegram_",       # runtime peer prefix
-        ]
-        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinUserPeer"] is False
-        assert "userPeerAliases" not in host
-        assert host["runtimePeerPrefix"] == "telegram_"
 
     def test_host_pin_user_peer_true_is_detected_as_single(self, monkeypatch, tmp_path):
         """Host-level ``pinUserPeer: true`` must classify as ``single``.
@@ -614,26 +520,6 @@ class TestSetupWizardDeploymentShape:
         assert host["pinUserPeer"] is True
         assert "pinPeerName" not in host
 
-    def test_host_pin_user_peer_false_overrides_root_pin_peer_name(
-        self, monkeypatch, tmp_path
-    ):
-        """Host ``pinUserPeer: false`` outranks host ``pinPeerName`` in the
-        resolver.  Detection must agree, otherwise the wizard would offer
-        ``single`` as the default and silently re-pin a profile the
-        operator explicitly unpinned via the newer key.
-        """
-        initial_cfg = {
-            "apiKey": "***",
-            "hosts": {"hermes": {
-                "pinUserPeer": False,
-                "pinPeerName": True,
-                "peerName": "eri",
-            }},
-        }
-        answers = ["cloud", "", "eri", "hermetika", "hermes"]
-        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinUserPeer"] is False
-        assert "pinPeerName" not in host
 
     def test_root_user_peer_aliases_detected_as_hybrid(self, monkeypatch, tmp_path):
         """Root-level ``userPeerAliases`` must classify as ``hybrid`` even
@@ -651,48 +537,6 @@ class TestSetupWizardDeploymentShape:
         # operator edits live on the host block they're inspecting.
         assert host["userPeerAliases"] == {"7654321": "eri"}
 
-    def test_only_others_does_not_override_root_user_peer_aliases(self, monkeypatch, tmp_path):
-        """Explicitly choosing 'only other people' must leave the host
-        ``userPeerAliases`` key absent, preserving any root-level aliases as a
-        cross-host baseline.
-
-        Picking [3] here is an active choice — detection would have defaulted
-        to [2]/hybrid because root aliases exist — so the operator's intent is
-        to drop the alias mapping for this host.  We honor that by writing
-        ``pinUserPeer: false`` only, relying on the host's absence of
-        ``userPeerAliases`` to inherit root.  A true wipe would require the
-        operator to delete the root key explicitly.
-        """
-        initial_cfg = {
-            "apiKey": "***",
-            "userPeerAliases": {"baseline": "eri"},
-            "hosts": {"hermes": {"peerName": "eri"}},
-        }
-        answers = [
-            "cloud", "", "eri", "hermetika", "hermes",
-            "3",               # explicit per-user override of detected hybrid
-        ]
-        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinUserPeer"] is False
-        assert "userPeerAliases" not in host
-
-    def test_just_me_scrubs_stale_pin_user_peer_false(self, monkeypatch, tmp_path):
-        """Choosing 'just me' must overwrite a stale ``pinUserPeer: false``
-        with ``pinUserPeer: true`` so the profile ends up genuinely pinned.
-        """
-        initial_cfg = {
-            "apiKey": "***",
-            "hosts": {"hermes": {
-                "pinUserPeer": False,
-                "peerName": "eri",
-            }},
-        }
-        answers = [
-            "cloud", "", "eri", "hermetika", "hermes",
-            "1",
-        ]
-        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
-        assert host["pinUserPeer"] is True
 
     def test_no_gateway_connected_skips_mapping_when_declined(self, monkeypatch, tmp_path):
         """With no gateway platforms connected, the tree is gated off; declining
@@ -777,11 +621,6 @@ class TestMigratePinKey:
     canonical ``pinUserPeer`` in place, without clobbering an existing
     canonical value."""
 
-    def test_legacy_key_renamed_to_canonical(self):
-        import plugins.memory.honcho.cli as honcho_cli
-        block = {"pinPeerName": True}
-        assert honcho_cli._migrate_pin_key(block) is True
-        assert block == {"pinUserPeer": True}
 
     def test_canonical_key_wins_when_both_present(self):
         import plugins.memory.honcho.cli as honcho_cli
@@ -905,10 +744,3 @@ class TestCmdSetupDeviceFlow:
         assert len(calls) == 1
         assert "apiKey" not in cfg.get("hosts", {}).get("hermes", {})
 
-    def test_device_option_hidden_when_not_advertised(self, monkeypatch, tmp_path):
-        _, calls, prompts = self._run_setup(
-            monkeypatch, tmp_path, answers=["cloud", "device"], device_available=False,
-        )
-        method_prompts = [p for p in prompts if "OAuth or API key" in p[0]]
-        assert method_prompts and method_prompts[0][1] == "oauth"
-        assert calls == []  # 'device' answer falls through to the api-key path

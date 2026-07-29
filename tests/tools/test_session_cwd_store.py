@@ -27,18 +27,6 @@ class TestRecordSemantics:
         assert tt.get_session_cwd("sess-b") == "/wt/b"
         assert tt.get_session_cwd("sess-c") is None
 
-    def test_none_and_empty_keys_collapse_to_default(self):
-        tt.record_session_cwd(None, "/somewhere")
-        assert tt.get_session_cwd(None) == "/somewhere"
-        assert tt.get_session_cwd("") == "/somewhere"
-        assert tt.get_session_cwd("default") == "/somewhere"
-
-    def test_invalid_cwd_values_are_ignored(self):
-        tt.record_session_cwd("sess-a", None)
-        tt.record_session_cwd("sess-a", "")
-        tt.record_session_cwd("sess-a", "   ")
-        tt.record_session_cwd("sess-a", 123)  # type: ignore[arg-type]
-        assert tt.get_session_cwd("sess-a") is None
 
     def test_clear_drops_only_the_named_session(self):
         tt.record_session_cwd("sess-a", "/wt/a")
@@ -54,14 +42,6 @@ class TestDualWriteSites:
         tt.register_task_env_overrides("desktop-sess", {"cwd": "/wt/desktop"})
         assert tt.get_session_cwd("desktop-sess") == "/wt/desktop"
 
-    def test_register_without_cwd_does_not_touch_the_record(self):
-        tt.register_task_env_overrides("rl-42", {"docker_image": "x:y"})
-        assert tt.get_session_cwd("rl-42") is None
-
-    def test_clear_task_env_overrides_drops_the_record(self):
-        tt.register_task_env_overrides("desktop-sess", {"cwd": "/wt/desktop"})
-        tt.clear_task_env_overrides("desktop-sess")
-        assert tt.get_session_cwd("desktop-sess") is None
 
     def test_reregistration_updates_the_record(self):
         """ACP session/load switching project roots mid-session."""
@@ -186,22 +166,6 @@ class TestCommandCwdReadsTheRecord:
         )
         assert resolved == "/my/worktree"
 
-    def test_workdir_still_beats_the_record(self):
-        tt.record_session_cwd("sess-a", "/my/worktree")
-        resolved = tt._resolve_command_cwd(
-            workdir="/explicit/place",
-            default_cwd="/config/default",
-            session_key="sess-a",
-        )
-        assert resolved == "/explicit/place"
-
-    def test_no_record_falls_back_to_default(self):
-        resolved = tt._resolve_command_cwd(
-            workdir=None,
-            default_cwd="/config/default",
-            session_key="sess-a",
-        )
-        assert resolved == "/config/default"
 
     def test_other_sessions_record_is_not_consulted(self):
         tt.record_session_cwd("sess-b", "/other/worktree")

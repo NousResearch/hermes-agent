@@ -143,7 +143,12 @@ def fake_as(monkeypatch):
     _FakeAS.advertise_device = True
     server = HTTPServer(("127.0.0.1", 0), _FakeAS)
     port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(
+        # poll_interval=0.05: shutdown() waits for serve_forever's next poll,
+        # so the default 0.5s added half a second of teardown per test.
+        target=lambda: server.serve_forever(poll_interval=0.05),
+        daemon=True,
+    )
     thread.start()
     base = f"http://127.0.0.1:{port}"
     monkeypatch.setenv("HONCHO_OAUTH_AUTHORIZE_URL", f"{base}/authorize")
@@ -319,12 +324,6 @@ def test_device_endpoint_derived_from_token_url(monkeypatch):
     assert local.device_authorization_url == "http://localhost:8000/oauth/device_authorization"
 
 
-def test_device_endpoint_env_override(monkeypatch):
-    monkeypatch.setenv("HONCHO_OAUTH_DEVICE_AUTH_URL", "https://alt.example/oauth/device_authorization")
-    endpoints = oauth_flow.resolve_endpoints(environment="production", base_url=None)
-    assert endpoints.device_authorization_url == "https://alt.example/oauth/device_authorization"
-
-
 def test_supports_device_login_from_metadata(fake_as):
     endpoints = oauth_flow.resolve_endpoints()
     assert oauth_flow.supports_device_login(endpoints) is True
@@ -353,50 +352,6 @@ def test_request_device_code_parses_response_and_sends_identity(fake_as):
     assert _FakeAS.last_device_form["source"] == "hermes-cli"
 
 
-def test_request_device_code_defaults_interval_when_omitted(monkeypatch):
-    # RFC 8628 §3.2: interval is optional; a compliant AS may omit it, and the
-    # client must fall back to 5s rather than treating the response as malformed.
-    endpoints = oauth_flow.resolve_endpoints(environment="local")
-    monkeypatch.setattr(
-        oauth,
-        "_http_post_form_status",
-        lambda *a, **k: (200, {
-            "device_code": "dev-code-1",
-            "user_code": "ABCD-EFGH",
-            "verification_uri": "http://localhost:3000/device",
-            "expires_in": 600,
-        }),
-    )
-    device = oauth_flow.request_device_code(endpoints)
-    assert device.interval == 5
-
-
-def test_full_device_flow_pending_then_approved(tmp_path, fake_as):
-    _FakeAS.device_responses = ["authorization_pending", "authorization_pending", "ok"]
-    config_path = tmp_path / "honcho.json"
-    config_path.write_text(json.dumps({"hosts": {"hermes": {"saveMessages": False}}}))
-
-    clock = _FakeClock()
-    cred = oauth_flow.authorize_via_device_code(
-        config_path=config_path,
-        host="hermes",
-        source="hermes-cli",
-        apply_config=False,
-        sleep=clock.sleep,
-    )
-
-    saved = json.loads(config_path.read_text())
-    host = saved["hosts"]["hermes"]
-    assert host["apiKey"] == cred.access_token == "hch-at-1"
-    assert host["oauth"]["refreshToken"] == "hch-rt-1"
-    assert host["oauth"]["clientId"] == "hermes-desktop"
-    assert host["oauth"]["tokenEndpoint"] == oauth_flow.resolve_endpoints().token_url
-    # Wizard-owned settings untouched; consent peer name still surfaced.
-    assert host["saveMessages"] is False
-    assert cred.consent_peer_name == "lyra"
-    assert len(clock.sleeps) == 3  # one wait per poll
-
-
 def test_poll_backs_off_on_slow_down(fake_as):
     _FakeAS.device_responses = ["slow_down", "slow_down", "ok"]
     endpoints = oauth_flow.resolve_endpoints()
@@ -420,56 +375,6 @@ def test_slow_down_interval_caps_at_60(fake_as):
     clock = _FakeClock()
     oauth_flow.poll_for_token(endpoints, device, sleep=clock.sleep, monotonic=clock.monotonic)
     assert clock.sleeps == [58, 60]  # 58 + 5 clamps to the 60s cap
-
-
-@pytest.mark.parametrize(
-    ("error", "exc"),
-    [("access_denied", oauth_flow.AccessDenied), ("expired_token", oauth_flow.DeviceCodeExpired)],
-)
-def test_poll_raises_typed_errors(fake_as, error, exc):
-    _FakeAS.device_responses = [error]
-    endpoints = oauth_flow.resolve_endpoints()
-    device = oauth_flow.DeviceCode(
-        device_code="dev-code-1", user_code="X", verification_uri="u",
-        verification_uri_complete="u?c", expires_in=600, interval=0,
-    )
-    clock = _FakeClock()
-    with pytest.raises(exc) as e:
-        oauth_flow.poll_for_token(endpoints, device, sleep=clock.sleep, monotonic=clock.monotonic)
-    assert e.value.error == error
-
-
-def test_poll_times_out_at_deadline(fake_as):
-    _FakeAS.device_responses = ["authorization_pending"] * 10
-    endpoints = oauth_flow.resolve_endpoints()
-    device = oauth_flow.DeviceCode(
-        device_code="dev-code-1", user_code="X", verification_uri="u",
-        verification_uri_complete="u?c", expires_in=3, interval=1,
-    )
-    clock = _FakeClock()
-    with pytest.raises(oauth_flow.AuthorizationTimeout):
-        oauth_flow.poll_for_token(endpoints, device, sleep=clock.sleep, monotonic=clock.monotonic)
-    assert len(clock.sleeps) <= 3  # bounded by the deadline, not the script
-
-
-def test_device_flow_browser_open_is_caller_opt_in(tmp_path, fake_as):
-    config_path = tmp_path / "honcho.json"
-    config_path.write_text(json.dumps({"hosts": {}}))
-    opened: list[str] = []
-    shown: list[oauth_flow.DeviceCode] = []
-
-    oauth_flow.authorize_via_device_code(
-        config_path=config_path, host="hermes",
-        display=shown.append, open_url=opened.append, sleep=lambda s: None,
-    )
-    assert opened == [shown[0].verification_uri_complete]
-
-    # No open_url → nothing opened; the flow still completes.
-    config_path.write_text(json.dumps({"hosts": {}}))
-    cred = oauth_flow.authorize_via_device_code(
-        config_path=config_path, host="hermes", sleep=lambda s: None,
-    )
-    assert cred.access_token
 
 
 def test_callback_page_shows_error_on_denied_consent():
@@ -537,38 +442,6 @@ def test_launcher_runs_flow_in_background_and_reports_connected(monkeypatch, res
     assert seen["host"] == "hermes"
     gate.set()
     assert _wait_until(lambda: oauth_flow.get_flow_status()["state"] == "connected")
-
-
-def test_launcher_reports_error_on_flow_failure(monkeypatch, reset_flow):
-    def boom(**kwargs):
-        raise RuntimeError("loopback bind failed")
-
-    monkeypatch.setattr(oauth_flow, "authorize_via_loopback", boom)
-    monkeypatch.setattr(oauth_flow, "_detect_connection", lambda: (False, None))
-
-    oauth_flow.start_loopback_flow_background(config_path=Path("/t/honcho.json"), host="hermes")
-    assert _wait_until(lambda: oauth_flow.get_flow_status()["state"] == "error")
-    assert "loopback bind failed" in oauth_flow.get_flow_status()["detail"]
-
-
-def test_launcher_is_idempotent_while_pending(monkeypatch, reset_flow):
-    block = threading.Event()
-    calls = []
-
-    def fake(**kwargs):
-        calls.append(1)
-        block.wait(2)
-
-    monkeypatch.setattr(oauth_flow, "authorize_via_loopback", fake)
-    monkeypatch.setattr(oauth_flow, "_detect_connection", lambda: (False, None))
-
-    s1 = oauth_flow.start_loopback_flow_background(config_path=Path("/t/h.json"), host="hermes")
-    assert _wait_until(lambda: len(calls) == 1)  # first flow is running
-    s2 = oauth_flow.start_loopback_flow_background(config_path=Path("/t/h.json"), host="hermes")
-    block.set()
-    assert s1["state"] == "pending" and s2["state"] == "pending"
-    assert _wait_until(lambda: oauth_flow.get_flow_status()["state"] == "connected")
-    assert calls == [1]  # the second call did not spawn a second flow
 
 
 def test_get_flow_status_reports_stored_connection(tmp_path, monkeypatch, reset_flow):

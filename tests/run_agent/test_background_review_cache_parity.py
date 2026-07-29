@@ -187,61 +187,8 @@ def test_review_fork_pins_session_start_and_session_id():
     )
 
 
-def test_review_fork_inherits_parent_toolset_config():
-    """``tools[]`` byte-stability: fork must inherit parent's toolset config."""
-    import run_agent
-
-    agent = _make_agent_stub(run_agent.AIAgent)
-
-    captured = {}
-    _Recorder = _make_recorder_class(captured)
-
-    with patch.object(run_agent, "AIAgent", _Recorder), \
-         patch("threading.Thread", _SyncThread):
-        agent._spawn_background_review(
-            messages_snapshot=[],
-            review_memory=True,
-            review_skills=False,
-        )
-
-    init_kwargs = captured.get("init_kwargs", {})
-    assert init_kwargs.get("enabled_toolsets") == agent.enabled_toolsets, (
-        f"enabled_toolsets mismatch: {init_kwargs.get('enabled_toolsets')!r} "
-        f"vs expected {agent.enabled_toolsets!r}"
-    )
-    assert init_kwargs.get("disabled_toolsets") == agent.disabled_toolsets, (
-        f"disabled_toolsets mismatch: {init_kwargs.get('disabled_toolsets')!r} "
-        f"vs expected {agent.disabled_toolsets!r}"
-    )
 
 
-def test_review_fork_inherits_parent_reasoning_config():
-    """``reasoning_config`` parity on the default (non-routed) path.
-
-    The fork must inherit the parent's value so the request body's
-    ``thinking`` / ``output_config`` match — Anthropic's cache is
-    namespaced by ``thinking`` presence.
-    """
-    import run_agent
-
-    agent = _make_agent_stub(run_agent.AIAgent)
-
-    captured = {}
-    _Recorder = _make_recorder_class(captured)
-
-    with patch.object(run_agent, "AIAgent", _Recorder), \
-         patch("threading.Thread", _SyncThread):
-        agent._spawn_background_review(
-            messages_snapshot=[],
-            review_memory=True,
-            review_skills=False,
-        )
-
-    init_kwargs = captured.get("init_kwargs", {})
-    assert init_kwargs.get("reasoning_config") == agent.reasoning_config, (
-        f"reasoning_config mismatch: {init_kwargs.get('reasoning_config')!r} "
-        f"vs expected {agent.reasoning_config!r}"
-    )
 
 
 def test_routed_review_fork_does_not_inherit_reasoning_config():

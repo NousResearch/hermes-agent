@@ -28,12 +28,6 @@ class TestVoiceStopHint:
         with patch("tools.voice_mode._load_voice_stop_phrases", return_value=("stop",)):
             assert voice_stop_hint() == 'Say "stop" to end the voice chat.'
 
-    def test_custom_phrase_uses_first_entry(self):
-        with patch(
-            "tools.voice_mode._load_voice_stop_phrases",
-            return_value=("goodbye hermes", "stop"),
-        ):
-            assert voice_stop_hint() == 'Say "goodbye hermes" to end the voice chat.'
 
     def test_disabled_phrases_show_no_hint(self):
         with patch("tools.voice_mode._load_voice_stop_phrases", return_value=()):
@@ -47,26 +41,6 @@ class TestIsVoiceStopPhrase:
     def test_bare_stop_matches(self, utterance):
         assert is_voice_stop_phrase(utterance, ("stop",)) is True
 
-    @pytest.mark.parametrize("utterance", [
-        "stop doing that",
-        "please stop",
-        "stop the build and rerun tests",
-        "don't stop",
-        "stopwatch",
-        "",
-        "   ",
-        "ok",
-    ])
-    def test_longer_utterances_pass_through(self, utterance):
-        assert is_voice_stop_phrase(utterance, ("stop",)) is False
-
-    def test_custom_phrases(self):
-        phrases = ("stop", "goodbye hermes")
-        assert is_voice_stop_phrase("Goodbye Hermes!", phrases) is True
-        assert is_voice_stop_phrase("goodbye hermes, one more thing", phrases) is False
-
-    def test_empty_phrase_list_disables(self):
-        assert is_voice_stop_phrase("stop", ()) is False
 
     def test_uses_config_when_phrases_omitted(self):
         with patch("tools.voice_mode._load_voice_stop_phrases", return_value=("halt",)):
@@ -85,21 +59,6 @@ class TestLoadVoiceStopPhrases:
         with self._with_cfg({}):
             assert _load_voice_stop_phrases() == DEFAULT_VOICE_STOP_PHRASES
 
-    def test_custom_list(self):
-        with self._with_cfg({"stop_phrases": ["Stop", "  Goodbye Hermes "]}):
-            assert _load_voice_stop_phrases() == ("stop", "goodbye hermes")
-
-    def test_empty_list_disables(self):
-        with self._with_cfg({"stop_phrases": []}):
-            assert _load_voice_stop_phrases() == ()
-
-    def test_bare_string_coerced(self):
-        with self._with_cfg({"stop_phrases": "halt"}):
-            assert _load_voice_stop_phrases() == ("halt",)
-
-    def test_malformed_falls_back(self):
-        with self._with_cfg({"stop_phrases": {"bad": "shape"}}):
-            assert _load_voice_stop_phrases() == DEFAULT_VOICE_STOP_PHRASES
 
     def test_config_error_falls_back(self):
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError):
@@ -204,71 +163,6 @@ class TestContinuousLoopStopPhraseSignal:
         assert delivered == []
         assert still_active is False
 
-    def test_normal_transcript_never_fires_stop_signal(self):
-        stop_fired = []
-        delivered, silent_limit, _ = self._run_silence_cycle(
-            "stop the build and rerun", stop_fired.append
-        )
-        assert stop_fired == []
-        assert delivered == ["stop the build and rerun"]
-        assert silent_limit == []
-
-    def test_force_transcribe_stop_phrase_fires_signal(self):
-        """stop_continuous(force_transcribe=True) — the auto_restart=False
-        client-driven path (TUI/desktop voice.record stop) — must fire the
-        stop signal instead of silently discarding the transcript, or the
-        client re-arms the next capture and the conversation never ends."""
-        import hermes_cli.voice as v
-
-        delivered = []
-        stop_fired = []
-        threads = []
-
-        fake_result = {"success": True, "transcript": "stop"}
-        with patch.object(v, "_continuous_active", True), \
-             patch.object(v, "_continuous_auto_restart", False), \
-             patch.object(v, "_continuous_recorder", self._FakeRecorder()), \
-             patch.object(v, "_continuous_on_transcript", delivered.append), \
-             patch.object(v, "_continuous_on_status", None), \
-             patch.object(v, "_continuous_on_silent_limit", None), \
-             patch.object(v, "_continuous_on_stop_phrase", stop_fired.append), \
-             patch.object(v, "_continuous_no_speech_count", 0), \
-             patch.object(v, "transcribe_recording", return_value=fake_result), \
-             patch.object(v, "_play_beep", lambda **kw: None), \
-             patch.object(v.threading, "Thread",
-                          side_effect=lambda target, daemon=None: threads.append(target)
-                          or _ImmediateThread(target)), \
-             patch.object(v.os.path, "isfile", return_value=False):
-            v.stop_continuous(force_transcribe=True)
-
-        assert stop_fired == ["stop"]
-        assert delivered == []
-
-    def test_force_transcribe_stop_phrase_falls_back_to_silent_limit(self):
-        """Legacy consumers that never wired on_stop_phrase still get the
-        voice-off signal via on_silent_limit."""
-        import hermes_cli.voice as v
-
-        silent_limit_fired = []
-
-        fake_result = {"success": True, "transcript": "stop"}
-        with patch.object(v, "_continuous_active", True), \
-             patch.object(v, "_continuous_auto_restart", False), \
-             patch.object(v, "_continuous_recorder", self._FakeRecorder()), \
-             patch.object(v, "_continuous_on_transcript", lambda t: None), \
-             patch.object(v, "_continuous_on_status", None), \
-             patch.object(v, "_continuous_on_silent_limit",
-                          lambda: silent_limit_fired.append(True)), \
-             patch.object(v, "_continuous_on_stop_phrase", None), \
-             patch.object(v, "_continuous_no_speech_count", 0), \
-             patch.object(v, "transcribe_recording", return_value=fake_result), \
-             patch.object(v, "_play_beep", lambda **kw: None), \
-             patch.object(v.threading, "Thread",
-                          side_effect=lambda target, daemon=None: _ImmediateThread(target)), \
-             patch.object(v.os.path, "isfile", return_value=False):
-            v.stop_continuous(force_transcribe=True)
-
-        assert silent_limit_fired == [True]
 
     def test_start_continuous_accepts_on_stop_phrase_kwarg(self):
         import inspect

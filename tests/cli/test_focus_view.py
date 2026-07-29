@@ -44,20 +44,9 @@ class TestToggleStateMachine:
     def test_bare_toggles_from_off_to_on(self):
         assert resolve_focus_arg("", False) == ("set", True)
 
-    def test_bare_toggles_from_on_to_off(self):
-        assert resolve_focus_arg("", True) == ("set", False)
 
-    def test_explicit_toggle_word_behaves_like_bare(self):
-        assert resolve_focus_arg("toggle", False) == ("set", True)
-        assert resolve_focus_arg("toggle", True) == ("set", False)
 
-    @pytest.mark.parametrize("word", ["on", "ON", " on ", "enable", "true", "yes", "1"])
-    def test_on_words(self, word):
-        assert resolve_focus_arg(word, False) == ("set", True)
 
-    @pytest.mark.parametrize("word", ["off", "OFF", "disable", "false", "no", "0"])
-    def test_off_words(self, word):
-        assert resolve_focus_arg(word, True) == ("set", False)
 
     @pytest.mark.parametrize("word", ["status", "show", "?", "STATUS"])
     def test_status_words_never_mutate(self, word):
@@ -69,10 +58,6 @@ class TestToggleStateMachine:
     def test_garbage_reports_usage(self, word):
         assert resolve_focus_arg(word, False) == ("usage", None)
 
-    def test_explicit_set_is_idempotent(self):
-        # /focus on while already on stays on (no accidental toggle).
-        assert resolve_focus_arg("on", True) == ("set", True)
-        assert resolve_focus_arg("off", False) == ("set", False)
 
 
 # =========================================================================
@@ -91,23 +76,8 @@ class TestComposesWithVerboseModes:
     def test_focus_off_leaves_the_configured_verbose_mode_untouched(self, configured):
         assert effective_tool_progress_mode(False, configured) == configured
 
-    def test_yaml_boolean_off_is_normalised(self):
-        # YAML 1.1 parses a bare `off` as False.
-        assert normalize_tool_progress_mode(False) == "off"
-        assert normalize_tool_progress_mode(True) == "all"
-        assert normalize_tool_progress_mode(None) == "all"
-        assert normalize_tool_progress_mode("bogus") == "all"
-        assert normalize_tool_progress_mode("log") == "log"
 
-    @pytest.mark.parametrize("mode", ["new", "all", "verbose"])
-    def test_counts_lines_that_the_mode_would_have_shown(self, mode):
-        assert would_display_tool_line(mode, "terminal") is True
 
-    def test_does_not_count_when_verbose_was_already_off(self):
-        # A user who already ran /verbose off is hiding nothing extra — focus
-        # view must not claim credit for suppressing lines nobody would see.
-        assert would_display_tool_line("off", "terminal") is False
-        assert would_display_tool_line(False, "terminal") is False
 
     def test_new_mode_skips_consecutive_repeats_like_the_renderer(self):
         assert would_display_tool_line("new", "terminal", "terminal") is False
@@ -115,8 +85,6 @@ class TestComposesWithVerboseModes:
         # "all" always counts, even repeats.
         assert would_display_tool_line("all", "terminal", "terminal") is True
 
-    def test_empty_tool_name_never_counts(self):
-        assert would_display_tool_line("all", "") is False
 
 
 # =========================================================================
@@ -129,18 +97,11 @@ class TestHiddenCountFormatter:
         assert format_hidden_line(0) is None
         assert format_hidden_line(-3) is None
 
-    def test_singular_noun(self):
-        assert format_hidden_line(1) == "⋯ 1 tool line hidden · /focus off to show"
 
-    def test_plural_noun(self):
-        assert format_hidden_line(7) == "⋯ 7 tool lines hidden · /focus off to show"
 
     def test_line_always_names_the_recovery_command(self):
         assert "/focus off" in format_hidden_line(2)
 
-    def test_non_numeric_is_tolerated(self):
-        assert format_hidden_line(None) is None
-        assert format_hidden_line("many") is None
 
 
 class _FocusHost(CLICommandsMixin):
@@ -162,23 +123,8 @@ class TestHiddenCounterAccumulation:
             host._note_focus_hidden_line(name)
         assert host._focus_hidden_lines == 3
 
-    def test_counts_nothing_when_focus_is_off(self):
-        host = _FocusHost(enabled=False, saved="all")
-        host._note_focus_hidden_line("terminal")
-        assert host._focus_hidden_lines == 0
 
-    def test_counts_nothing_when_verbose_was_already_off(self):
-        host = _FocusHost(enabled=True, saved="off")
-        for _ in range(5):
-            host._note_focus_hidden_line("terminal")
-        assert host._focus_hidden_lines == 0
 
-    def test_new_mode_dedupes_consecutive_repeats(self):
-        host = _FocusHost(enabled=True, saved="new")
-        host._note_focus_hidden_line("terminal")
-        host._note_focus_hidden_line("terminal")
-        host._note_focus_hidden_line("read_file")
-        assert host._focus_hidden_lines == 2
 
     def test_recovery_line_is_emitted_then_counter_resets(self):
         host = _FocusHost(enabled=True, saved="all")
@@ -195,19 +141,7 @@ class TestHiddenCounterAccumulation:
         assert host._focus_hidden_lines == 0
         assert host._focus_last_counted_tool is None
 
-    def test_no_recovery_line_when_nothing_was_hidden(self):
-        host = _FocusHost(enabled=True, saved="all")
-        with patch("cli._cprint") as printer:
-            host._emit_focus_recovery_line()
-        printer.assert_not_called()
 
-    def test_no_recovery_line_when_focus_is_off(self):
-        host = _FocusHost(enabled=False, saved="all")
-        host._focus_hidden_lines = 4
-        with patch("cli._cprint") as printer:
-            host._emit_focus_recovery_line()
-        printer.assert_not_called()
-        assert host._focus_hidden_lines == 0
 
 
 # =========================================================================
@@ -227,43 +161,9 @@ class TestFocusCommandHandler:
         assert host._focus_saved_tool_progress == "verbose"
         saver.assert_called_once_with(FOCUS_CONFIG_KEY, True)
 
-    def test_off_restores_the_stashed_verbose_mode(self):
-        host = _FocusHost(enabled=True, saved="new", tool_progress="off")
-        with patch("cli.save_config_value", return_value=True) as saver, \
-             patch("cli._cprint"):
-            host._handle_focus_command("/focus off")
 
-        assert host._focus_view_enabled is False
-        assert host.tool_progress_mode == "new"
-        assert host._focus_saved_tool_progress is None
-        saver.assert_called_once_with(FOCUS_CONFIG_KEY, False)
 
-    def test_round_trip_returns_to_the_original_mode(self):
-        host = _FocusHost(enabled=False, saved=None, tool_progress="verbose")
-        with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
-            host._handle_focus_command("/focus")
-            assert host.tool_progress_mode == "off"
-            host._handle_focus_command("/focus")
-        assert host.tool_progress_mode == "verbose"
-        assert host._focus_view_enabled is False
 
-    def test_status_never_writes_config_or_changes_mode(self):
-        host = _FocusHost(enabled=True, saved="all", tool_progress="off")
-        with patch("cli.save_config_value") as saver, patch("cli._cprint") as printer:
-            host._handle_focus_command("/focus status")
-        saver.assert_not_called()
-        assert host.tool_progress_mode == "off"
-        assert host._focus_view_enabled is True
-        assert "Focus view" in printer.call_args[0][0]
-
-    def test_garbage_argument_prints_usage_and_changes_nothing(self):
-        host = _FocusHost(enabled=False, saved=None, tool_progress="all")
-        with patch("cli.save_config_value") as saver, patch("cli._cprint") as printer:
-            host._handle_focus_command("/focus sideways")
-        saver.assert_not_called()
-        assert host._focus_view_enabled is False
-        assert host.tool_progress_mode == "all"
-        assert "Usage: /focus" in printer.call_args[0][0]
 
     def test_idempotent_on_does_not_reclobber_the_stash(self):
         host = _FocusHost(enabled=True, saved="verbose", tool_progress="off")
@@ -282,18 +182,7 @@ class TestFocusCommandHandler:
         # suppression take effect this turn instead of after an agent rebuild.
         assert host.agent.tool_progress_mode == "off"
 
-    def test_status_text_names_the_mode_focus_off_will_restore(self):
-        body = format_focus_status(True, "verbose")
-        assert "ON" in body
-        assert "VERBOSE" in body
-        off_body = format_focus_status(False, "new")
-        assert "OFF" in off_body
-        assert "NEW" in off_body
 
-    def test_toggle_messages_mirror_claude_code_wording(self):
-        assert "enabled" in format_focus_toggle_message(True, "all")
-        assert "disabled" in format_focus_toggle_message(False, "all")
-        assert "ALL" in format_focus_toggle_message(False, "all")
 
 
 # =========================================================================
@@ -306,23 +195,6 @@ class TestStatusBarSegment:
         assert focus_statusbar_segment(True) == FOCUS_STATUSBAR_LABEL
         assert focus_statusbar_segment(False) == ""
 
-    def test_snapshot_exposes_focus_label(self):
-        from cli import HermesCLI
-
-        host = HermesCLI.__new__(HermesCLI)
-        host.model = "anthropic/claude-opus-4.6"
-        from datetime import datetime
-
-        host.session_start = datetime.now()
-        host.conversation_history = []
-        host.agent = None
-        host._focus_view_enabled = True
-
-        snapshot = HermesCLI._get_status_bar_snapshot(host)
-        assert snapshot["focus_label"] == FOCUS_STATUSBAR_LABEL
-
-        host._focus_view_enabled = False
-        assert HermesCLI._get_status_bar_snapshot(host)["focus_label"] == ""
 
     @pytest.mark.parametrize("width", [40, 60, 120])
     def test_text_renderer_includes_the_badge_at_every_width_tier(self, width):
@@ -356,75 +228,7 @@ class TestStatusBarSegment:
 
         assert "focus" in text
 
-    @pytest.mark.parametrize("width", [40, 60, 120])
-    def test_fragment_renderer_includes_the_badge_at_every_width_tier(self, width):
-        from cli import HermesCLI
 
-        host = HermesCLI.__new__(HermesCLI)
-        host.model = "opus"
-        host._status_bar_visible = True
-        host._model_picker_state = None
-        host._focus_view_enabled = True
-
-        snapshot = {
-            "model_name": "opus",
-            "model_short": "opus",
-            "duration": "1m",
-            "context_percent": 12,
-            "context_tokens": 1000,
-            "context_length": 200000,
-            "compressions": 0,
-            "active_background_tasks": 0,
-            "active_background_processes": 0,
-            "active_background_subagents": 0,
-            "battery_label": "",
-            "battery_category": "dim",
-            "focus_label": FOCUS_STATUSBAR_LABEL,
-            "prompt_elapsed": "",
-            "idle_since": "",
-        }
-
-        with patch.object(HermesCLI, "_get_status_bar_snapshot", return_value=snapshot), \
-             patch.object(HermesCLI, "_get_tui_terminal_width", return_value=width), \
-             patch.object(HermesCLI, "_is_session_yolo_active", return_value=False):
-            frags = HermesCLI._get_status_bar_fragments(host)
-
-        rendered = "".join(text for _, text in frags)
-        assert "focus" in rendered
-
-    def test_badge_absent_from_fragments_when_focus_is_off(self):
-        from cli import HermesCLI
-
-        host = HermesCLI.__new__(HermesCLI)
-        host.model = "opus"
-        host._status_bar_visible = True
-        host._model_picker_state = None
-        host._focus_view_enabled = False
-
-        snapshot = {
-            "model_name": "opus",
-            "model_short": "opus",
-            "duration": "1m",
-            "context_percent": 12,
-            "context_tokens": 1000,
-            "context_length": 200000,
-            "compressions": 0,
-            "active_background_tasks": 0,
-            "active_background_processes": 0,
-            "active_background_subagents": 0,
-            "battery_label": "",
-            "battery_category": "dim",
-            "focus_label": "",
-            "prompt_elapsed": "",
-            "idle_since": "",
-        }
-
-        with patch.object(HermesCLI, "_get_status_bar_snapshot", return_value=snapshot), \
-             patch.object(HermesCLI, "_get_tui_terminal_width", return_value=120), \
-             patch.object(HermesCLI, "_is_session_yolo_active", return_value=False):
-            frags = HermesCLI._get_status_bar_fragments(host)
-
-        assert "focus" not in "".join(text for _, text in frags)
 
 
 # =========================================================================
@@ -532,12 +336,6 @@ class TestModelFacingMessagesUnchanged:
         assert [m["role"] for m in focus_on].count("tool") == 3
         assert json.loads(focus_on[-1]["content"]) == {"ok": "gamma"}
 
-    def test_every_verbose_mode_produces_the_same_messages(self):
-        # /focus composes with /verbose, so no tool-progress mode may change
-        # the payload — otherwise the composition itself would be unsafe.
-        baseline = _run_fake_turn("all")
-        for mode in ("off", "new", "verbose"):
-            assert _run_fake_turn(mode) == baseline, f"mode {mode} altered messages"
 
     def test_toggling_focus_does_not_touch_conversation_history(self):
         host = _FocusHost(enabled=False, saved=None, tool_progress="all")

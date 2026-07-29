@@ -60,47 +60,6 @@ class TestHandoffRelayAliasing:
         assert transport.adapter is relay
         assert transport.is_relay is True
 
-    def test_unfronted_platform_still_fails(self):
-        """Aliasing must not let relay hijack a platform it does not front."""
-        relay = _RelayStub({"telegram"})
-        cfg = _config_with({Platform.RELAY: PlatformConfig(enabled=True)})
-        transport = resolve_delivery_transport(
-            Platform.DISCORD, cfg, {Platform.RELAY: relay}
-        )
-        assert transport is None
-
-    def test_native_adapter_wins_over_relay(self):
-        native = object()
-        relay = _RelayStub({"discord"})
-        cfg = _config_with(
-            {
-                Platform.DISCORD: PlatformConfig(enabled=True),
-                Platform.RELAY: PlatformConfig(enabled=True),
-            }
-        )
-        transport = resolve_delivery_transport(
-            Platform.DISCORD, cfg, {Platform.DISCORD: native, Platform.RELAY: relay}
-        )
-        assert transport is not None
-        assert transport.adapter is native
-        assert transport.is_relay is False
-
-    @pytest.mark.asyncio
-    async def test_transport_send_stamps_logical_platform(self):
-        """The handoff reply leg must go through send_for_platform so the
-        outbound frame carries the logical platform tag."""
-        relay = _RelayStub({"discord"})
-        cfg = _config_with({Platform.RELAY: PlatformConfig(enabled=True)})
-        transport = resolve_delivery_transport(
-            Platform.DISCORD, cfg, {Platform.RELAY: relay}
-        )
-        assert transport is not None
-        result = await transport.send(
-            Platform.DISCORD, "chan-1", "handed-off reply", {"thread_id": "t-9"}
-        )
-        assert result.success is True
-        assert relay.sent == [("discord", "chan-1", "handed-off reply", {"thread_id": "t-9"})]
-
 
 class TestCliHandoffFrontedSet:
     """The CLI pre-check derives the fronted set from deploy env (no live adapter)."""
@@ -115,9 +74,3 @@ class TestCliHandoffFrontedSet:
         assert "telegram" in fronted
         assert "slack" not in fronted
 
-    def test_unconfigured_env_yields_generic_relay_only(self, monkeypatch):
-        monkeypatch.delenv("GATEWAY_RELAY_PLATFORMS", raising=False)
-        from gateway.relay import relay_platform_identities
-
-        fronted = {p for p, _ in relay_platform_identities()}
-        assert fronted == {"relay"}

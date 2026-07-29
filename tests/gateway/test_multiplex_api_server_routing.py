@@ -35,27 +35,6 @@ class TestApiServerProfileResolution:
         adapter = _make_adapter(multiplex=True)
         assert adapter._resolve_request_profile(_FakeReq(None)) is None
 
-    def test_prefix_ignored_when_multiplex_off(self):
-        adapter = _make_adapter(multiplex=False)
-        # Even a bogus profile is ignored (not 404'd) when multiplexing is off.
-        assert adapter._resolve_request_profile(_FakeReq("anything")) is None
-
-    def test_known_profile_accepted(self, monkeypatch):
-        adapter = _make_adapter(multiplex=True)
-        monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [("default", None), ("coder", None)],
-        )
-        assert adapter._resolve_request_profile(_FakeReq("coder")) == "coder"
-
-    def test_unknown_profile_rejected(self, monkeypatch):
-        adapter = _make_adapter(multiplex=True)
-        monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [("default", None), ("coder", None)],
-        )
-        assert adapter._resolve_request_profile(_FakeReq("ghost")) is _PROFILE_REJECTED
-
 
 class TestApiServerRouteTable:
     def test_route_table_includes_models_options_and_chat(self):

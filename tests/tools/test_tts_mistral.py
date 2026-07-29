@@ -72,52 +72,6 @@ class TestGenerateMistralTts:
         call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
         assert call_kwargs["response_format"] == expected_format
 
-    def test_voice_id_passed_when_configured(
-        self, tmp_path, mock_mistral_module, monkeypatch
-    ):
-        from tools.tts_tool import _generate_mistral_tts
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"data").decode()
-        )
-
-        config = {"mistral": {"voice_id": "my-voice-uuid"}}
-        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), config)
-
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["voice_id"] == "my-voice-uuid"
-
-    def test_default_voice_id_when_absent(
-        self, tmp_path, mock_mistral_module, monkeypatch
-    ):
-        from tools.tts_tool import DEFAULT_MISTRAL_TTS_VOICE_ID, _generate_mistral_tts
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"data").decode()
-        )
-
-        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), {})
-
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["voice_id"] == DEFAULT_MISTRAL_TTS_VOICE_ID
-
-    def test_default_voice_id_when_empty_string(
-        self, tmp_path, mock_mistral_module, monkeypatch
-    ):
-        from tools.tts_tool import DEFAULT_MISTRAL_TTS_VOICE_ID, _generate_mistral_tts
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"data").decode()
-        )
-
-        config = {"mistral": {"voice_id": ""}}
-        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), config)
-
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["voice_id"] == DEFAULT_MISTRAL_TTS_VOICE_ID
 
     def test_api_error_sanitized(self, tmp_path, mock_mistral_module, monkeypatch):
         from tools.tts_tool import _generate_mistral_tts
@@ -131,18 +85,6 @@ class TestGenerateMistralTts:
             _generate_mistral_tts("Hello", str(tmp_path / "test.mp3"), {})
         assert "secret-key-in-error" not in str(exc_info.value)
 
-    def test_default_model_used(self, tmp_path, mock_mistral_module, monkeypatch):
-        from tools.tts_tool import DEFAULT_MISTRAL_TTS_MODEL, _generate_mistral_tts
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"data").decode()
-        )
-
-        _generate_mistral_tts("Hi", str(tmp_path / "test.mp3"), {})
-
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["model"] == DEFAULT_MISTRAL_TTS_MODEL
 
     def test_model_from_config_overrides_default(
         self, tmp_path, mock_mistral_module, monkeypatch

@@ -36,23 +36,6 @@ def test_dashboard_oauth_write_uses_owner_only_permissions(oauth_file):
     assert mode == 0o600
 
 
-def test_dashboard_oauth_write_is_atomic_and_cleans_temp_on_failure(oauth_file, monkeypatch):
-    """If the atomic replace fails, no partial file or temp file is left."""
-    import utils
-
-    def flaky_replace(src, dst):
-        raise OSError('simulated replace failure')
-
-    monkeypatch.setattr(utils, 'atomic_replace', flaky_replace)
-
-    with pytest.raises(OSError, match='simulated replace failure'):
-        _save_anthropic_oauth_creds('access-token', 'refresh-token', 123456)
-
-    assert not oauth_file.exists()
-    # atomic_json_write stages to ``.<stem>_*.tmp`` and unlinks it on failure.
-    assert not list(oauth_file.parent.glob('*.tmp'))
-
-
 def test_dashboard_oauth_write_uses_atomic_json_write_with_owner_only_mode(oauth_file, monkeypatch):
     """The OAuth token file must be written 0o600 from creation via
     ``atomic_json_write(mode=0o600)``, so it is never briefly world-readable

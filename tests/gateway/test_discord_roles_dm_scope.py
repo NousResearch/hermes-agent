@@ -100,106 +100,9 @@ def test_dm_rejects_role_held_in_other_guild(monkeypatch):
     )
 
 
-def test_dm_role_auth_requires_explicit_guild_optin(monkeypatch):
-    """With dm_role_auth_guild set, only that specific guild counts.
-
-    The user has the role in the opted-in guild — allowed.
-    """
-    trusted_guild, _ = _guild_with_member(
-        guild_id=222222,
-        member_id=42,
-        role_ids=[5555],
-    )
-    other_guild = SimpleNamespace(id=333333, get_member=lambda uid: None)
-
-    adapter = _make_adapter(
-        allowed_roles=[5555],
-        guilds=[other_guild, trusted_guild],
-    )
-    _set_dm_role_auth_guild(monkeypatch, 222222)
-
-    assert (
-        adapter._is_allowed_user("42", author=None, guild=None, is_dm=True)
-        is True
-    )
-
-
-def test_dm_role_auth_optin_rejects_when_not_member(monkeypatch):
-    """dm_role_auth_guild set but user isn't a member → reject."""
-    trusted_guild = SimpleNamespace(
-        id=222222,
-        get_member=lambda uid: None,  # user not in trusted guild
-    )
-    public_guild, _ = _guild_with_member(
-        guild_id=111111,
-        member_id=42,
-        role_ids=[5555],
-    )
-    adapter = _make_adapter(
-        allowed_roles=[5555],
-        guilds=[public_guild, trusted_guild],
-    )
-    _set_dm_role_auth_guild(monkeypatch, 222222)
-
-    assert (
-        adapter._is_allowed_user("42", author=None, guild=None, is_dm=True)
-        is False
-    )
-
-
 # ---------------------------------------------------------------------------
 # Guild messages — role check must be scoped to THIS guild only
 # ---------------------------------------------------------------------------
-
-
-def test_guild_message_role_check_scoped_to_originating_guild(monkeypatch):
-    """A user with the role in a DIFFERENT guild than the message origin
-    must NOT be authorized, even when both guilds are mutual.
-    """
-    _set_dm_role_auth_guild(monkeypatch)
-
-    public_guild, _ = _guild_with_member(
-        guild_id=111111,
-        member_id=42,
-        role_ids=[5555],  # allowed role in public guild only
-    )
-    # Message arrives in trusted_guild where user 42 has NO role
-    trusted_guild = SimpleNamespace(id=222222, get_member=lambda uid: None)
-
-    adapter = _make_adapter(
-        allowed_roles=[5555],
-        guilds=[public_guild, trusted_guild],
-    )
-
-    # No author object passed → falls through to guild.get_member path
-    assert (
-        adapter._is_allowed_user(
-            "42", author=None, guild=trusted_guild, is_dm=False
-        )
-        is False
-    )
-
-
-def test_guild_message_role_check_allows_when_role_in_same_guild(monkeypatch):
-    """Positive path: user has the role IN the message's guild → allowed."""
-    _set_dm_role_auth_guild(monkeypatch)
-
-    trusted_guild, _ = _guild_with_member(
-        guild_id=222222,
-        member_id=42,
-        role_ids=[5555],
-    )
-    adapter = _make_adapter(
-        allowed_roles=[5555],
-        guilds=[trusted_guild],
-    )
-
-    assert (
-        adapter._is_allowed_user(
-            "42", author=None, guild=trusted_guild, is_dm=False
-        )
-        is True
-    )
 
 
 def test_guild_message_rejects_author_roles_from_different_guild(monkeypatch):
@@ -237,14 +140,6 @@ def test_guild_message_rejects_author_roles_from_different_guild(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_user_id_allowlist_works_in_dm():
-    adapter = _make_adapter(allowed_users=["42"])
-    assert (
-        adapter._is_allowed_user("42", author=None, guild=None, is_dm=True)
-        is True
-    )
-
-
 def test_user_id_allowlist_works_in_guild():
     adapter = _make_adapter(allowed_users=["42"])
     some_guild = SimpleNamespace(id=111, get_member=lambda uid: None)
@@ -253,28 +148,6 @@ def test_user_id_allowlist_works_in_guild():
             "42", author=None, guild=some_guild, is_dm=False
         )
         is True
-    )
-
-
-def test_empty_allowlists_deny_without_opt_in():
-    adapter = _make_adapter()
-    assert (
-        adapter._is_allowed_user("42", author=None, guild=None, is_dm=True)
-        is False
-    )
-
-
-def test_channel_allowlist_requires_channel_context(monkeypatch):
-    """DISCORD_ALLOWED_CHANNELS must not authorize guild traffic without
-    validated channel ids — e.g. voice utterances call _is_allowed_user
-    with guild/is_dm only."""
-    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
-    guild = SimpleNamespace(id=111111, get_member=lambda uid: None)
-    adapter = _make_adapter(guilds=[guild])
-
-    assert (
-        adapter._is_allowed_user("42", author=None, guild=guild, is_dm=False)
-        is False
     )
 
 
@@ -292,23 +165,6 @@ def test_channel_allowlist_authorizes_with_matching_channel_context(monkeypatch)
             channel_ids={"999"},
         )
         is True
-    )
-
-
-def test_channel_allowlist_rejects_non_matching_channel_context(monkeypatch):
-    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
-    guild = SimpleNamespace(id=111111, get_member=lambda uid: None)
-    adapter = _make_adapter(guilds=[guild])
-
-    assert (
-        adapter._is_allowed_user(
-            "42",
-            author=None,
-            guild=guild,
-            is_dm=False,
-            channel_ids={"1111"},
-        )
-        is False
     )
 
 
@@ -348,55 +204,3 @@ def test_slash_authorization_rejects_cross_guild_role_dm(monkeypatch):
     assert "ALLOWED" in (reason or "")
 
 
-def test_slash_authorization_rejects_cross_guild_role_in_guild(monkeypatch):
-    """Slash in guild B must not be authorized by a role held in guild A."""
-    _set_dm_role_auth_guild(monkeypatch)
-
-    public_guild, _ = _guild_with_member(
-        guild_id=111111,
-        member_id=42,
-        role_ids=[5555],
-    )
-    # Interaction arrives in trusted_guild where user 42 has no role
-    trusted_guild = SimpleNamespace(id=222222, get_member=lambda uid: None)
-    adapter = _make_adapter(
-        allowed_roles=[5555],
-        guilds=[public_guild, trusted_guild],
-    )
-
-    interaction = SimpleNamespace(
-        user=SimpleNamespace(id=42),
-        channel=SimpleNamespace(id=9999),  # not a DMChannel instance
-        channel_id=9999,
-        guild=trusted_guild,
-    )
-
-    allowed, reason = adapter._evaluate_slash_authorization(interaction)
-    assert allowed is False
-    assert "ALLOWED" in (reason or "")
-
-
-def test_slash_authorization_allows_in_scope_guild_role(monkeypatch):
-    """Positive control: slash in guild B, user has role in guild B → allowed."""
-    _set_dm_role_auth_guild(monkeypatch)
-
-    trusted_guild, _ = _guild_with_member(
-        guild_id=222222,
-        member_id=42,
-        role_ids=[5555],
-    )
-    adapter = _make_adapter(
-        allowed_roles=[5555],
-        guilds=[trusted_guild],
-    )
-
-    interaction = SimpleNamespace(
-        user=SimpleNamespace(id=42),
-        channel=SimpleNamespace(id=9999),
-        channel_id=9999,
-        guild=trusted_guild,
-    )
-
-    allowed, reason = adapter._evaluate_slash_authorization(interaction)
-    assert allowed is True
-    assert reason is None

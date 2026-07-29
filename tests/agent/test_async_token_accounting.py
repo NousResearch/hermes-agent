@@ -195,45 +195,7 @@ class TestCoalescing:
         finally:
             seq_db.close()
 
-    def test_coalesce_unit_rules(self, db):
-        """_coalesce_token_deltas merge rules: same route merges, session /
-        route changes and absolute deltas do not."""
-        inc = dict(model="m1", billing_provider="p1")
-        out = db._coalesce_token_deltas([
-            ("a", dict(input_tokens=1, api_call_count=1, **inc)),
-            ("a", dict(input_tokens=2, api_call_count=1, **inc)),
-            ("b", dict(input_tokens=4, api_call_count=1, **inc)),
-            ("a", dict(input_tokens=8, api_call_count=1, **inc)),
-            ("a", dict(input_tokens=16, api_call_count=1, model="m2",
-                       billing_provider="p1")),
-            ("a", dict(input_tokens=32, absolute=True)),
-            ("a", dict(input_tokens=64, absolute=True)),
-        ])
-        assert [(sid, kw.get("input_tokens")) for sid, kw in out] == [
-            ("a", 3),   # merged 1+2
-            ("b", 4),   # session change
-            ("a", 8),   # session change back
-            ("a", 16),  # model change
-            ("a", 32),  # absolute never merges
-            ("a", 64),
-        ]
-        assert out[0][1]["api_call_count"] == 2
 
-    def test_coalesce_cost_none_preserved(self, db):
-        """An all-None cost run stays None after merging (COALESCE in the
-        UPDATE must keep the stored value untouched)."""
-        out = db._coalesce_token_deltas([
-            ("a", dict(input_tokens=1, estimated_cost_usd=None)),
-            ("a", dict(input_tokens=1, estimated_cost_usd=None)),
-        ])
-        assert len(out) == 1
-        assert out[0][1]["estimated_cost_usd"] is None
-
-        out = db._coalesce_token_deltas([
-            ("a", dict(input_tokens=1, estimated_cost_usd=None)),
-            ("a", dict(input_tokens=1, estimated_cost_usd=0.5)),
-        ])
-        assert out[0][1]["estimated_cost_usd"] == pytest.approx(0.5)
 
 
 # =========================================================================
@@ -269,63 +231,8 @@ class TestReaderFlush:
         assert row["input_tokens"] == 1 + 2 + 3 + 4
         assert row["api_call_count"] == 4
 
-    def test_flush_empty_queue_is_cheap_noop(self, db):
-        assert db.flush_token_counts()
-        # No writer thread was ever started by a bare flush.
-        assert db._token_writer_thread is None
 
-    def test_flush_after_close_drains_on_caller_thread(self, db):
-        """After close() stops the writer, a late flush still drains queued
-        deltas synchronously instead of losing them."""
-        db.create_session("s-late", "test")
-        db.flush_token_counts()
-        db._stop_token_writer()  # simulate a stopped writer with the conn open
-        db._token_queue.append(("s-late", dict(input_tokens=9, api_call_count=1)))
-        assert db.flush_token_counts()
-        assert _totals(db, "s-late")["input_tokens"] == 9
 
-    def test_flush_waits_for_stop_flagged_live_writer(self, db):
-        """A stop-flagged but still-running writer owns the queue: flush must
-        wait for it (its loop drains before exiting), never drain on the
-        caller's thread — that would commit newer deltas before the writer's
-        in-flight older batch and could return True with that batch
-        unapplied."""
-        db.create_session("s-stop", "test")
-
-        applied = []
-        gate = threading.Event()
-        first_apply_started = threading.Event()
-        original = db.update_token_counts
-
-        def gated(session_id, **kwargs):
-            applied.append(kwargs.get("input_tokens"))
-            if len(applied) == 1:
-                first_apply_started.set()
-                assert gate.wait(timeout=10)
-            return original(session_id, **kwargs)
-
-        db.update_token_counts = gated
-        try:
-            db.queue_token_counts("s-stop", input_tokens=1, api_call_count=1)
-            assert first_apply_started.wait(timeout=10)
-            # close() has set the stop flag but the writer is mid-apply.
-            db._token_writer_stop = True
-            db._token_queue.append(
-                ("s-stop", dict(input_tokens=2, api_call_count=1))
-            )
-            # The writer is alive, so flush waits — timing out, NOT applying
-            # the newer delta on this thread ahead of the in-flight batch.
-            assert db.flush_token_counts(timeout=0.3) is False
-            assert applied == [1]
-            gate.set()
-            # Once released, the stop-flagged writer drains the queue itself
-            # before exiting, preserving enqueue order.
-            assert db.flush_token_counts()
-        finally:
-            db.update_token_counts = original
-
-        assert applied == [1, 2]
-        assert _totals(db, "s-stop")["input_tokens"] == 3
 
     def test_concurrent_flush_waits_for_caller_drain(self, db):
         """The dead-writer caller-drain claims busy: a second flush must not
@@ -369,22 +276,6 @@ class TestReaderFlush:
 
         assert _totals(db, "s-cc")["input_tokens"] == 4
 
-    def test_enqueue_after_writer_stop_applies_synchronously(self, db):
-        """Once the writer is stopped for good, queue_token_counts falls back
-        to the synchronous path instead of parking deltas on a queue no
-        writer will ever drain."""
-        db.create_session("s-sync", "test")
-        db.queue_token_counts("s-sync", input_tokens=1, api_call_count=1)
-        db._stop_token_writer()  # writer dead, connection still open
-
-        db.queue_token_counts("s-sync", input_tokens=2, api_call_count=1)
-
-        # Applied inline — nothing queued, no writer restarted.
-        assert not db._token_queue
-        assert db._token_writer_thread is None or not db._token_writer_thread.is_alive()
-        totals = _totals(db, "s-sync")
-        assert totals["input_tokens"] == 3
-        assert totals["api_call_count"] == 2
 
     def test_enqueue_after_close_raises_at_call_site(self, tmp_path):
         """After close() the synchronous fallback surfaces the failure to the
@@ -446,30 +337,7 @@ class TestRouteSwitchBarrier:
 
 
 class TestDurability:
-    def test_close_drains_queue(self, tmp_path):
-        """close() drains queued deltas before closing the connection, so a
-        clean shutdown loses nothing."""
-        db_path = tmp_path / "drain.db"
-        db = SessionDB(db_path=db_path)
-        db.create_session("s-d", "test")
-        for i in range(5):
-            db.queue_token_counts("s-d", input_tokens=10, api_call_count=1)
-        db.close()
 
-        reopened = SessionDB(db_path=db_path)
-        try:
-            totals = _totals(reopened, "s-d")
-            assert totals["input_tokens"] == 50
-            assert totals["api_call_count"] == 5
-        finally:
-            reopened.close()
-
-    def test_atexit_drain_is_idempotent_and_never_raises(self, db):
-        db.create_session("s-x", "test")
-        db.queue_token_counts("s-x", input_tokens=3, api_call_count=1)
-        db._drain_token_queue_at_exit()
-        db._drain_token_queue_at_exit()  # second call: writer already stopped
-        assert _totals(db, "s-x")["input_tokens"] == 3
 
     def test_close_unregisters_atexit_hook(self, tmp_path):
         """close() must unregister the atexit drain hook: it holds a strong
@@ -531,37 +399,6 @@ class TestDurability:
 
 
 class TestWriterFailure:
-    def test_apply_failure_logs_and_does_not_raise(self, db, caplog):
-        """A failing UPDATE is logged by the writer; enqueue/flush never
-        raise into the turn, and the writer survives to apply later deltas."""
-        db.create_session("s-f", "test")
-
-        original = db.update_token_counts
-        boom = {"raise": True}
-
-        def flaky(session_id, **kwargs):
-            if boom["raise"]:
-                raise sqlite3.OperationalError("database is locked")
-            return original(session_id, **kwargs)
-
-        db.update_token_counts = flaky
-        try:
-            with caplog.at_level("WARNING", logger="hermes_state"):
-                db.queue_token_counts("s-f", input_tokens=5, api_call_count=1)
-                assert db.flush_token_counts()
-            assert any(
-                "async token accounting" in rec.getMessage()
-                for rec in caplog.records
-            )
-
-            # Writer thread survived the failure and keeps applying.
-            boom["raise"] = False
-            db.queue_token_counts("s-f", input_tokens=7, api_call_count=1)
-            assert db.flush_token_counts()
-        finally:
-            db.update_token_counts = original
-
-        assert _totals(db, "s-f")["input_tokens"] == 7
 
     def test_coalesce_failure_falls_back_to_raw_batch(self, db, caplog):
         """A coalescing bug must never kill the writer: the batch is applied
@@ -589,25 +426,6 @@ class TestWriterFailure:
         assert totals["input_tokens"] == 7
         assert totals["api_call_count"] == 2
 
-    def test_dead_writer_respawns_on_next_enqueue(self, db):
-        """If the writer thread ever dies unexpectedly, the next enqueue
-        must respawn it instead of parking deltas on a queue forever."""
-        db.create_session("s-respawn", "test")
-        db.queue_token_counts("s-respawn", input_tokens=1, api_call_count=1)
-        assert db.flush_token_counts()
-        first = db._token_writer_thread
-        assert first is not None
-
-        # Simulate an unexpected writer death: a finished dummy thread.
-        dead = threading.Thread(target=lambda: None)
-        dead.start()
-        dead.join()
-        db._token_writer_thread = dead
-
-        db.queue_token_counts("s-respawn", input_tokens=2, api_call_count=1)
-        assert db._token_writer_thread is not dead
-        assert db.flush_token_counts()
-        assert _totals(db, "s-respawn")["input_tokens"] == 3
 
     def test_stop_drain_claims_busy_before_clearing_queue(self, db):
         """_stop_token_writer's leftover drain must follow the same

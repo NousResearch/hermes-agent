@@ -5,8 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -129,10 +129,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // Both save/toggle toasts offer the same one-click restart.
   const restartGatewayAction = { label: t.commandCenter.restartGateway, onClick: () => void runGatewayRestart() }
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
     approved: [],
     pending: []
   })
+
   const [approving, setApproving] = useState<null | string>(null)
   const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})

@@ -59,6 +59,8 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
     from hermes_cli import config as config_mod
 
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=show_notice))
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", lambda: _config(show_notice=show_notice))
     db = SessionDB(db_path=tmp_path / "state.db")
     stdout = io.StringIO()
 

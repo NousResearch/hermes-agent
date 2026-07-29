@@ -1280,6 +1280,15 @@ def _normalize_custom_provider_entry(
     if not isinstance(entry, dict):
         return None
 
+    # Shallow-copy before the alias normalization below writes into the
+    # entry: callers (get_compatible_custom_providers,
+    # providers_dict_to_custom_providers) pass live sub-dicts from
+    # load_config_readonly()'s shared cache, and mutating those both
+    # violates the cache's no-mutation contract and leaks duplicated
+    # alias keys back into config.yaml through any later
+    # save_config(load_config()) round-trip.
+    entry = dict(entry)
+
     # Accept camelCase aliases commonly used in hand-written configs.
     _CAMEL_ALIASES: Dict[str, str] = {
         "apiKey": "api_key",
@@ -1390,7 +1399,10 @@ def _normalize_custom_provider_entry(
 
     models = entry.get("models")
     if isinstance(models, dict) and models:
-        normalized["models"] = models
+        # Shallow-copy: `entry` may alias a cached config sub-dict, and the
+        # normalized entry escapes into long-lived runtime state
+        # (agent._custom_providers) — don't share the cached models mapping.
+        normalized["models"] = dict(models)
     elif isinstance(models, list) and models:
         # Hand-edited configs (and older Hermes versions) may write
         # ``models`` as a plain list of ids or as ``[{id: ...}]`` rows.

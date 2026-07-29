@@ -47,7 +47,7 @@ def _make_direct_start_agent(
     cfg: dict, *, model: str, provider: str, base_url: str
 ) -> AIAgent:
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
@@ -265,6 +265,8 @@ def test_lmstudio_switch_uses_destination_context_and_verified_runtime(monkeypat
         return LMStudioLoadResult(100_000)
 
     monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
     monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", fake_compatible)
     monkeypatch.setattr("hermes_cli.config.get_custom_provider_context_length", fake_provider_context)
     monkeypatch.setattr(AIAgent, "_ensure_lmstudio_runtime_loaded", fake_lmstudio_load)

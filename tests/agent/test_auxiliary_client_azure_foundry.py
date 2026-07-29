@@ -73,6 +73,10 @@ def patch_load_config(monkeypatch):
             "hermes_cli.config.load_config",
             lambda: {"model": model_cfg},
         )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"model": model_cfg},
+        )
     return _apply
 
 

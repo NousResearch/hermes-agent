@@ -638,6 +638,10 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
         lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
     )
     monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
+    )
+    monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         _fake_resolve_runtime_provider,
     )
@@ -658,6 +662,10 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
         lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
     )
     monkeypatch.setattr(

@@ -210,6 +210,27 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }
 
+  // Where to land after a prepend, in distance-from-bottom (survives the
+  // height change). Shared by "Show earlier" and the budget backfill below.
+  const restoreFromBottomRef = useRef<number | null>(null)
+  // False from a session switch until the settle loop below parks the
+  // transcript at its true bottom. While false, scrollTop is a way-point of a
+  // load in progress, not a reading position anyone chose — never anchor to it.
+  const loadSettledRef = useRef(false)
+  // Session the settle loop last armed for, so a re-arm within the same load
+  // is distinguishable from a switch to a different transcript.
+  const settleKeyRef = useRef(sessionKey)
+
+  // Record where the view should land once a prepend has grown the content,
+  // measured from the BOTTOM so the added height doesn't invalidate it. Only a
+  // settled load has an offset the user chose; mid-load the answer is simply
+  // the bottom.
+  const anchorBeforePrepend = useCallback(() => {
+    const el = scrollRef.current
+
+    restoreFromBottomRef.current = el && loadSettledRef.current ? el.scrollHeight - el.scrollTop : 0
+  }, [scrollRef])
+
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
   // commit painted — as a TRANSITION, so the heavy markdown + syntax
   // highlight render of the older turns is interruptible instead of one long
@@ -223,6 +244,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const rafId = requestAnimationFrame(() => {
+      // The backfill PREPENDS older turns, so everything on screen slides down
+      // by their height. Anchor first and let the restore effect below re-apply
+      // it in the same commit the taller tree lands in — otherwise the view is
+      // stranded near the TOP until use-stick-to-bottom's ResizeObserver
+      // catches up a frame or two later (measured: an 11.5k px jump showing
+      // ~160ms of unrelated old turns, on every session load).
+      anchorBeforePrepend()
+
       // Functional max, not a plain set: an urgent "Show earlier" click can
       // land between scheduling and committing this transition, and a plain
       // set would rebase over it and shrink the budget back down.
@@ -230,7 +259,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     })
 
     return () => cancelAnimationFrame(rafId)
-  }, [renderBudget])
+  }, [anchorBeforePrepend, renderBudget])
 
   // Weights (per-message part counts) fold into the BUDGET only. Group
   // identity stays structural, so a streaming append re-runs this cheap sum —
@@ -249,7 +278,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
-  const restoreFromBottomRef = useRef<number | null>(null)
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.
@@ -302,6 +330,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // follow re-pins every frame to a moving target — visible as ~10 scroll jumps.
   // Instead: quiet it, glue to the true bottom until the height holds steady,
   // then hand back locked. Live streaming afterward uses the normal resize follow.
+  //
+  // `hasGroups` joins sessionKey as a dep because a COLD load changes the key
+  // while the transcript is still empty and publishes messages hundreds of ms
+  // later. Keyed on the switch alone the loop measured an EMPTY viewport, saw
+  // a stable height in two frames, and handed back "settled" before the
+  // transcript existed — so the turns painted at scrollTop 0 and only snapped
+  // down once use-stick-to-bottom's ResizeObserver noticed, a full-viewport
+  // lurch on every cold load. The empty→non-empty flip re-arms for the
+  // transcript that actually arrived; being a boolean, it cannot re-fire on a
+  // streaming append.
   useLayoutEffect(() => {
     const el = scrollRef.current
 
@@ -311,6 +349,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     stopScroll()
     el.scrollTop = el.scrollHeight
+    loadSettledRef.current = false
+
+    // An anchor captured for the OUTGOING transcript must not be applied to
+    // this one — a switch owns the position outright. The empty→non-empty
+    // re-arm is the SAME load, whose in-flight anchor is still correct.
+    if (settleKeyRef.current !== sessionKey) {
+      settleKeyRef.current = sessionKey
+      restoreFromBottomRef.current = null
+    }
 
     let frame = 0
     let stableFrames = 0
@@ -334,6 +381,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
         void scrollToBottom('instant')
+        loadSettledRef.current = true
 
         return
       }
@@ -344,17 +392,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     let rafId = requestAnimationFrame(settle)
 
     return () => cancelAnimationFrame(rafId)
-  }, [scrollRef, scrollToBottom, sessionKey, stopScroll])
+  }, [hasGroups, scrollRef, scrollToBottom, sessionKey, stopScroll])
 
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and
   // won't fight this manual restore.
   const showEarlier = useCallback(() => {
-    const el = scrollRef.current
-
-    restoreFromBottomRef.current = el ? el.scrollHeight - el.scrollTop : null
+    anchorBeforePrepend()
     setRenderBudget(budget => budget + RENDER_BUDGET)
-  }, [scrollRef])
+  }, [anchorBeforePrepend])
 
   useLayoutEffect(() => {
     const el = scrollRef.current

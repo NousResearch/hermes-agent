@@ -5303,7 +5303,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         NOTE: the in-memory splice alone is not persisted — the subsequent
         ``_persist_session`` flush is append-only, so old DB rows stay
         ``active=1`` and a session resume double-loads both the summary and
-        the original exchanges (#82483).  This method therefore also calls
+        the original exchanges.  This method therefore also calls
         ``archive_and_compact`` on the session DB to soft-archive old rows
         and insert the compacted set atomically.
         """

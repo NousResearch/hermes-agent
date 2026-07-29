@@ -479,6 +479,7 @@ def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
             [driver_cmd, "--help"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3.0,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
             env=_sanitize_subprocess_env(cua_driver_child_env()),
         )
         help_text = (proc.stdout or "") + (proc.stderr or "")

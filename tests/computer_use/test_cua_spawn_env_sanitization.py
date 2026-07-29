@@ -163,7 +163,7 @@ def test_windows_status_hides_every_reachable_subprocess(monkeypatch):
 
     monkeypatch.setattr(permissions.sys, "platform", "win32")
     monkeypatch.setattr(permissions, "windows_hide_flags", lambda: CREATE_NO_WINDOW)
-    monkeypatch.setattr(permissions.shutil, "which", lambda command: binary)
+    monkeypatch.setattr(permissions, "_resolve_driver_cmd", lambda command: binary)
     monkeypatch.setattr(permissions.subprocess, "run", fake_run)
 
     status = permissions.computer_use_status("cua-driver")

@@ -289,6 +289,40 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_from_profile_session_stamps_profile(self):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id="12345",
+            chat_name="Profile Chat",
+            user_id="12345",
+            profile="coder",
+        )
+        try:
+            created = json.loads(
+                cronjob(
+                    action="create",
+                    prompt="Check server status",
+                    schedule="every 1h",
+                    name="Profile Server Check",
+                    deliver="origin",
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert created["success"] is True
+        assert created["job"]["profile"] == "coder"
+
+        from cron.jobs import get_job
+        stored = get_job(created["job_id"])
+        assert stored["profile"] == "coder"
+        assert stored["origin"]["profile"] == "coder"
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["profile"] == "coder"
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

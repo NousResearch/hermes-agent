@@ -11124,6 +11124,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             try:
                 with _profile_runtime_scope(profile_home):
+                    if hasattr(platform_config, "extra") and isinstance(platform_config.extra, dict):
+                        platform_config.extra.setdefault("profile", profile_name)
                     adapter = self._create_adapter(platform, platform_config)
             except Exception as e:
                 logger.error(
@@ -18608,12 +18610,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata["user_id"] = str(data["user_id"])
                 if data.get("scope_id"):
                     metadata["scope_id"] = str(data["scope_id"])
-            result = await transport.send(
-                platform,
-                str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
+            restart_message = "♻ Gateway restarted successfully. Your session continues."
+            restart_metadata = _non_conversational_metadata(metadata, platform=platform)
+            result = None
+            # Telegram can be connected but keep its send path marked degraded
+            # until the first getUpdates request proves polling progress.  The
+            # restart notification runs immediately after connect, so wait/retry
+            # briefly instead of dropping the only "I'm back" signal.
+            for _attempt in range(6):
+                result = await transport.send(
+                    platform,
+                    str(chat_id),
+                    restart_message,
+                    metadata=restart_metadata,
+                )
+                if result is None or getattr(result, "success", True) is True:
+                    break
+                if getattr(result, "error", None) != "send_path_degraded":
+                    break
+                await asyncio.sleep(1.0)
             # adapter.send() catches provider errors (e.g. "Chat not found")
             # and returns SendResult(success=False) rather than raising, so
             # we must inspect the result before claiming success — otherwise

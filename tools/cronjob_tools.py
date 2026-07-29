@@ -7,6 +7,7 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -288,6 +289,19 @@ def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
     return cleaned, ""
 
 
+def _profile_from_env() -> Optional[str]:
+    """Return the active gateway/CLI profile name for cron job stamping."""
+    try:
+        from gateway.session_context import get_session_env
+
+        profile = (get_session_env("HERMES_SESSION_PROFILE") or "").strip()
+    except Exception:
+        profile = ""
+    if not profile:
+        profile = os.environ.get("HERMES_PROFILE", "").strip()
+    return profile or None
+
+
 def _origin_from_env() -> Optional[Dict[str, str]]:
     from gateway.session_context import get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
@@ -299,7 +313,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
                 "Cron origin captured thread_id=%s for %s:%s",
                 thread_id, origin_platform, origin_chat_id,
             )
-        return {
+        origin = {
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
@@ -311,6 +325,10 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
+        profile = _profile_from_env()
+        if profile:
+            origin["profile"] = profile
+        return origin
     return None
 
 
@@ -545,6 +563,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
+        "profile": job.get("profile"),
         "next_run_at": job.get("next_run_at"),
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
@@ -704,6 +723,7 @@ def cronjob(
                 repeat=repeat,
                 deliver=_normalize_deliver_param(deliver),
                 origin=_origin_from_env(),
+                profile=_profile_from_env(),
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),

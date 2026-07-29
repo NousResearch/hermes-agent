@@ -1250,6 +1250,7 @@ def create_job(
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
     origin: Optional[Dict[str, Any]] = None,
+    profile: Optional[str] = None,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
     model: Optional[str] = None,
@@ -1273,6 +1274,7 @@ def create_job(
         repeat: How many times to run (None = forever, 1 = once)
         deliver: Where to deliver output ("origin", "local", "telegram", etc.)
         origin: Source info where job was created (for "origin" delivery)
+        profile: Optional Hermes profile name that authored/owns the job
         skill: Optional legacy single skill name to load before running the prompt
         skills: Optional ordered list of skills to load before running the prompt
         model: Optional per-job model override
@@ -1337,6 +1339,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_profile = _normalize_job_optional_text(profile)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1424,6 +1427,7 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        "profile": normalized_profile,
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }

@@ -587,6 +587,33 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def _resolve_job_profile_home(job: dict) -> Optional[Path]:
+    """Return the Hermes home for a stored cron job's owning profile, if any.
+
+    Multiplexed gateways may keep cron storage at the tier root while the
+    Telegram bot/config live under profiles/<name>.  A job-level profile lets
+    delivery resolve the correct profile config without moving jobs.json.
+    """
+    profile = str(job.get("profile") or "").strip()
+    if not profile or profile == "default":
+        return None
+    try:
+        from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+        from hermes_constants import get_default_hermes_root
+
+        profile = normalize_profile_name(profile)
+        validate_profile_name(profile)
+        candidate = get_default_hermes_root() / "profiles" / profile
+        if candidate.is_dir():
+            return candidate
+    except Exception as exc:
+        logger.debug(
+            "Job '%s': could not resolve profile home for profile=%r: %s",
+            job.get("id", "?"), profile, exc,
+        )
+    return None
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -1489,7 +1516,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     wrap_response = True
     user_cfg = None
     try:
-        user_cfg = load_config()
+        profile_home = _resolve_job_profile_home(job)
+        if profile_home is not None:
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+
+            token = set_hermes_home_override(profile_home)
+            try:
+                reset_secret_source_cache()
+                load_hermes_dotenv(hermes_home=profile_home)
+                user_cfg = load_config()
+            finally:
+                reset_hermes_home_override(token)
+        else:
+            user_cfg = load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
@@ -1526,7 +1566,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         mirror_text = (mirror_text or "").strip()
 
     try:
-        config = load_gateway_config()
+        profile_home = _resolve_job_profile_home(job)
+        if profile_home is not None:
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+
+            token = set_hermes_home_override(profile_home)
+            try:
+                reset_secret_source_cache()
+                load_hermes_dotenv(hermes_home=profile_home)
+                config = load_gateway_config()
+            finally:
+                reset_hermes_home_override(token)
+        else:
+            config = load_gateway_config()
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
         logger.error("Job '%s': %s", job["id"], msg)

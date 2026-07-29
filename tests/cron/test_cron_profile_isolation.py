@@ -102,6 +102,23 @@ def test_cron_execution_home_follows_active_profile(tmp_path, monkeypatch):
     assert scheduler._get_hermes_home().resolve() != root.resolve()
 
 
+def test_job_profile_resolves_profile_home_for_shared_cron_store(tmp_path, monkeypatch):
+    """A shared cron store can still deliver under the job owner's profile."""
+    root = tmp_path / "hermes_home"
+    profile_home = root / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+
+    _set_profile_env(monkeypatch, root, root)
+
+    import cron.scheduler as scheduler
+
+    resolved = scheduler._resolve_job_profile_home({"id": "job1", "profile": "coder"})
+    assert resolved is not None
+    assert resolved.resolve() == profile_home.resolve()
+
+    assert scheduler._resolve_job_profile_home({"id": "job2"}) is None
+
+
 def test_cron_storage_unaffected_when_no_profile(tmp_path, monkeypatch):
     """With no profile (HERMES_HOME == root), the store is the root's cron dir
     — unchanged behavior for single-profile installs."""

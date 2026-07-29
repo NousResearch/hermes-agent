@@ -77,7 +77,7 @@ class TestBrowseShSource(unittest.TestCase):
         results_all = self.src.search("", limit=10)
         self.assertEqual(len(results_all), 2)
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._guarded_http_get")
     @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
     def test_fetch_returns_bundle(self, _mock_catalog, mock_get):
         # First call: GET /api/skills/{slug} returns the detail object with skillMdUrl.
@@ -107,7 +107,7 @@ class TestBrowseShSource(unittest.TestCase):
         self.assertIn("/api/skills/airbnb.com/search-listings-ddgioa", first_url)
         self.assertEqual(second_url, blob_url)
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._guarded_http_get")
     @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
     def test_fetch_falls_back_to_raw_github_url(self, _mock_catalog, mock_get):
         # Detail endpoint fails → fall back to a raw.githubusercontent.com sourceUrl.
@@ -124,6 +124,26 @@ class TestBrowseShSource(unittest.TestCase):
             bundle = self.src.fetch("browse-sh/airbnb.com/search-listings-ddgioa")
             self.assertIsNotNone(bundle)
             self.assertEqual(bundle.files["SKILL.md"], "# Fallback content")
+
+    @patch("tools.skills_hub._guarded_http_get")
+    @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
+    def test_fetch_blocks_private_skill_md_url(self, _mock_catalog, mock_get):
+        """External skillMdUrl pointing at private/link-local must not be fetched."""
+        mock_get.side_effect = [
+            _MockResponse(
+                status_code=200,
+                json_data={"skillMdUrl": "http://127.0.0.1/secret.md"},
+            ),
+            # Guarded fetcher returns None when SSRF policy blocks the URL.
+            None,
+        ]
+        bundle = self.src.fetch("browse-sh/airbnb.com/search-listings-ddgioa")
+        self.assertIsNone(bundle)
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(
+            mock_get.call_args_list[1].args[0],
+            "http://127.0.0.1/secret.md",
+        )
 
     @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
     def test_fetch_missing_slug_returns_none(self, _mock_catalog):

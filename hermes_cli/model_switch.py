@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
 
@@ -345,11 +346,32 @@ class DirectAlias(NamedTuple):
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
 _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
-# Merged dict (builtins + user config); populated by _load_direct_aliases()
+# Merged dict (builtins + user config); populated by _load_direct_aliases().
+#
+# CONCURRENCY CONTRACT (#67007 review): this module attribute is an IMMUTABLE
+# snapshot.  ``_ensure_direct_aliases()`` never mutates the dict it publishes —
+# it builds a brand-new dict and rebinds this name, which is atomic under the
+# CPython evaluation loop.  A reader therefore takes its own local reference
+# (``aliases = DIRECT_ALIASES``) and iterates THAT; the object it holds is never
+# written to again, so a concurrent refresh can neither invalidate its iterator
+# ("dictionary changed size during iteration") nor expose a half-pruned table.
+#
+# Do not ``.update()``, ``.pop()`` or ``.clear()`` this dict in place.
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
+# Serializes refreshers so two concurrent /model switches can't interleave
+# read-modify-publish and lose one generation.  Readers never take this lock —
+# they only need the atomic rebind above, so the alias lookup on the request
+# path stays lock-free.
+_DIRECT_ALIASES_LOCK = threading.Lock()
 
-def _load_direct_aliases() -> dict[str, DirectAlias]:
+# Latch so the degraded-config warning fires once per degraded->healthy
+# transition (not on every /model switch while a broken config persists).
+# Only read/written under _DIRECT_ALIASES_LOCK.
+_DIRECT_ALIASES_DEGRADED: bool = False
+
+
+def _load_direct_aliases() -> tuple[dict[str, DirectAlias], bool]:
     """Load direct aliases from config.yaml ``model_aliases:`` section.
 
     Config format::
@@ -368,6 +390,11 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     and converts simple string entries (``ds-flash: deepseek/deepseek-v4-flash``)
     into DirectAlias objects.  The provider is parsed from the ``provider/``
     prefix in the value; if no slash, the current provider is used.
+
+    Returns ``(merged, ok)`` where *merged* always contains at least the
+    built-in direct aliases.  ``ok`` is ``False`` when reading the user config
+    raised — in that case *merged* holds builtins only, and the caller must
+    retain its last-known-good user aliases rather than pruning to builtins.
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
@@ -412,20 +439,62 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                         base_url="",
                     )
     except Exception:
-        pass
-    return merged
+        # Config read failed — signal degraded so the caller keeps
+        # last-known-good user aliases instead of pruning to builtins.
+        return merged, False
+    return merged, True
 
 
 def _ensure_direct_aliases() -> None:
-    """Lazy-load direct aliases on first use.
+    """Refresh DIRECT_ALIASES from config on every call (hot reload).
 
-    Mutates the existing DIRECT_ALIASES dict in place rather than rebinding
-    the module attribute. This keeps `from hermes_cli.model_switch import
-    DIRECT_ALIASES` references valid in callers — rebinding would leave them
-    pointing at a stale empty dict.
+    ``load_config()`` is mtime-cached (``_LOAD_CONFIG_CACHE``, keyed on
+    ``(mtime_ns, size)``), so on an unchanged config this is a ``stat()`` plus a
+    small merge over ~10 entries — no YAML re-parse.  Dropping the old
+    load-once guard lets a ``model.aliases`` / ``model_aliases`` edit take
+    effect on the next ``/model`` switch with no gateway restart.
+
+    Concurrency (#67007 review): gateway ``/model`` work runs the switch under
+    ``asyncio.to_thread``, so this refresh can run on one worker thread while
+    another is inside ``resolve_alias()``'s reverse-lookup scan over the alias
+    table.  Publishing by REPLACEMENT rather than in-place mutation makes that
+    safe: we build a brand-new dict and rebind the module attribute in a single
+    atomic store, so a reader that already grabbed the previous dict keeps
+    iterating an object nobody writes to.  In-place ``pop()``/``update()`` could
+    (and did) raise ``RuntimeError: dictionary changed size during iteration``
+    in that reader, and could expose a half-pruned table between the prune and
+    the overlay.
+
+    The lock serializes concurrent refreshers (so two switches can't interleave
+    load-and-publish and drop a generation) and guards the degraded latch.
+    Readers never take it — the atomic rebind is all they need, so alias lookup
+    stays lock-free.
+
+    On a degraded config read the currently published table is retained
+    (last-known-good) rather than pruning user aliases back to builtins, warning
+    once per healthy->degraded transition (not on every call).
     """
-    if not DIRECT_ALIASES:
-        DIRECT_ALIASES.update(_load_direct_aliases())
+    global DIRECT_ALIASES, _DIRECT_ALIASES_DEGRADED
+    fresh, ok = _load_direct_aliases()
+    with _DIRECT_ALIASES_LOCK:
+        if not ok and DIRECT_ALIASES:
+            if not _DIRECT_ALIASES_DEGRADED:
+                # Fire once on the healthy->degraded transition; stay quiet while
+                # the broken config persists so a mid-write YAML can't flood the
+                # log.
+                logger.warning(
+                    "model alias refresh: config read failed; retaining %d "
+                    "last-known-good alias(es) (aliases stay stale until config "
+                    "loads cleanly)", len(DIRECT_ALIASES),
+                )
+                _DIRECT_ALIASES_DEGRADED = True
+            return
+        _DIRECT_ALIASES_DEGRADED = False  # healthy read: re-arm the warning
+        # Publish by REPLACEMENT, never in-place mutation: build the complete
+        # next generation, then rebind in one atomic store.  Removed aliases are
+        # dropped simply by not being in *fresh*; concurrent readers holding the
+        # previous dict are unaffected because it is never written to again.
+        DIRECT_ALIASES = dict(fresh)
 
 
 # ---------------------------------------------------------------------------
@@ -734,14 +803,21 @@ def resolve_alias(
 
     # Check direct aliases first (exact model+provider+base_url mappings)
     _ensure_direct_aliases()
-    direct = DIRECT_ALIASES.get(key)
+    # Snapshot the published table ONCE.  _ensure_direct_aliases() rebinds
+    # DIRECT_ALIASES to a new dict rather than mutating it, so this local
+    # reference is a stable, never-written-to generation — a concurrent refresh
+    # on another thread (gateway /model runs under asyncio.to_thread) can't
+    # invalidate the iteration below.  Re-reading the global between the .get()
+    # and the loop would risk mixing two generations.
+    aliases = DIRECT_ALIASES
+    direct = aliases.get(key)
     if direct is not None:
         return (direct.provider, direct.model, key)
 
     # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
     # "glm-4.7") route through direct aliases instead of falling through
     # to the catalog/OpenRouter.
-    for alias_name, da in DIRECT_ALIASES.items():
+    for alias_name, da in aliases.items():
         if da.model.lower() == key:
             return (da.provider, da.model, alias_name)
 

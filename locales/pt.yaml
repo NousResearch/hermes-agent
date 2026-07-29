@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ O título fica vazio após a limpeza — sessão iniciada sem título."
     tip:                   "\n✦ Dica: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset só está disponível em tópicos do Telegram, Discord e Slack."
+    thread_only:           "Executa {prefix}autoreset dentro do tópico que queres configurar (não numa conversa principal nem no canal pai)."
+    usage:                 "Utilização: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "desativada"
+    policy_daily:          "diariamente às {hour}:{minute}"
+    policy_idle:           "após {minutes} minutos de inatividade"
+    policy_both:           "diariamente às {hour}:{minute} ou após {minutes} minutos de inatividade"
+    policy_unknown:        "{mode}"
+    scope_override:        "configuração específica do tópico"
+    scope_inherited:       "política herdada"
+    status:                "Reinicialização automática: {policy} ({scope})."
+    invalid_state:         "O estado da reinicialização automática dos tópicos é inválido; não foi feita qualquer alteração."
+    invalid_status:        "Reinicialização automática: desativada (alternativa segura; o estado da política do tópico é inválido)."
+    save_failed:           "Não foi possível guardar a política de reinicialização automática do tópico."
+    read_failed:           "Não foi possível ler a política de reinicialização automática do tópico."
+
   restart:
     in_progress:           "⏳ O reinício do gateway já está em curso..."
     restarting:            "♻ A reiniciar o gateway. Se não fores notificado em 60 segundos, reinicia a partir da consola com `hermes gateway restart`."

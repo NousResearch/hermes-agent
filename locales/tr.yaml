@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Temizlik sonrası başlık boş — oturum başlıksız başlatıldı."
     tip:                   "\n✦ İpucu: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset yalnızca Telegram, Discord ve Slack ileti dizilerinde kullanılabilir."
+    thread_only:           "{prefix}autoreset komutunu yapılandırmak istediğiniz ileti dizisinin içinde çalıştırın (kök konuşmada veya üst kanalda değil)."
+    usage:                 "Kullanım: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "devre dışı"
+    policy_daily:          "her gün {hour}:{minute}"
+    policy_idle:           "{minutes} dakika hareketsizlikten sonra"
+    policy_both:           "her gün {hour}:{minute} veya {minutes} dakika hareketsizlikten sonra"
+    policy_unknown:        "{mode}"
+    scope_override:        "ileti dizisine özel ayar"
+    scope_inherited:       "devralınan ilke"
+    status:                "Otomatik sıfırlama: {policy} ({scope})."
+    invalid_state:         "İleti dizisi otomatik sıfırlama durumu geçersiz; hiçbir değişiklik yapılmadı."
+    invalid_status:        "Otomatik sıfırlama: devre dışı (güvenli geri dönüş; ileti dizisi ilke durumu geçersiz)."
+    save_failed:           "İleti dizisi otomatik sıfırlama ilkesi kaydedilemedi."
+    read_failed:           "İleti dizisi otomatik sıfırlama ilkesi okunamadı."
+
   restart:
     in_progress:           "⏳ Gateway yeniden başlatma zaten sürüyor..."
     restarting:            "♻ Gateway yeniden başlatılıyor. 60 saniye içinde bildirim almazsanız konsoldan `hermes gateway restart` ile yeniden başlatın."

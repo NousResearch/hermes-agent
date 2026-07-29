@@ -244,6 +244,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Tá an teideal folamh tar éis glanta — seisiún tosaithe gan teideal."
     tip:                   "\n✦ Leid: {tip}"
 
+  autoreset:
+    unsupported_platform:  "Níl {prefix}autoreset ar fáil ach i snáitheanna Telegram, Discord agus Slack."
+    thread_only:           "Rith {prefix}autoreset taobh istigh den snáithe is mian leat a chumrú (ní sa phríomhchomhrá ná sa mháthairchainéal)."
+    usage:                 "Úsáid: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "díchumasaithe"
+    policy_daily:          "gach lá ag {hour}:{minute}"
+    policy_idle:           "tar éis {minutes} nóiméad neamhghníomhaíochta"
+    policy_both:           "gach lá ag {hour}:{minute} nó tar éis {minutes} nóiméad neamhghníomhaíochta"
+    policy_unknown:        "{mode}"
+    scope_override:        "sárú an tsnáithe"
+    scope_inherited:       "polasaí oidhreachta"
+    status:                "Athshocrú uathoibríoch: {policy} ({scope})."
+    invalid_state:         "Tá staid athshocraithe uathoibríoch an tsnáithe neamhbhailí; ní dhearnadh aon athrú."
+    invalid_status:        "Athshocrú uathoibríoch: díchumasaithe (cúlréiteach sábháilte; tá staid pholasaí an tsnáithe neamhbhailí)."
+    save_failed:           "Níorbh fhéidir polasaí athshocraithe uathoibríoch an tsnáithe a shábháil."
+    read_failed:           "Níorbh fhéidir polasaí athshocraithe uathoibríoch an tsnáithe a léamh."
+
   restart:
     in_progress:           "⏳ Tá atosú gateway ar siúl cheana féin..."
     restarting:            "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."

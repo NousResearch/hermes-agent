@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ После очистки название пусто — сеанс запущен без названия."
     tip:                   "\n✦ Совет: {tip}"
 
+  autoreset:
+    unsupported_platform:  "Команда {prefix}autoreset доступна только в ветках Telegram, Discord и Slack."
+    thread_only:           "Запустите {prefix}autoreset внутри ветки, которую хотите настроить (не в корневом диалоге или родительском канале)."
+    usage:                 "Использование: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "отключён"
+    policy_daily:          "ежедневно в {hour}:{minute}"
+    policy_idle:           "после {minutes} минут бездействия"
+    policy_both:           "ежедневно в {hour}:{minute} или после {minutes} минут бездействия"
+    policy_unknown:        "{mode}"
+    scope_override:        "настройка для ветки"
+    scope_inherited:       "унаследованная политика"
+    status:                "Автоматический сброс: {policy} ({scope})."
+    invalid_state:         "Состояние автоматического сброса веток недействительно; изменения не внесены."
+    invalid_status:        "Автоматический сброс: отключён (безопасный режим; состояние политики ветки недействительно)."
+    save_failed:           "Не удалось сохранить политику автоматического сброса ветки."
+    read_failed:           "Не удалось прочитать политику автоматического сброса ветки."
+
   restart:
     in_progress:           "⏳ Перезапуск шлюза уже выполняется..."
     restarting:            "♻ Перезапуск шлюза. Если уведомление не придёт в течение 60 секунд, перезапустите из консоли командой `hermes gateway restart`."

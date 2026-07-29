@@ -263,6 +263,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ العنوان فارغ بعد التنظيف — بدأت الجلسة دون عنوان."
     tip:                   "\n✦ نصيحة: {tip}"
 
+  autoreset:
+    unsupported_platform:  "لا يتوفر {prefix}autoreset إلا في سلاسل محادثات Telegram وDiscord وSlack."
+    thread_only:           "شغّل {prefix}autoreset داخل سلسلة المحادثة التي تريد إعدادها (وليس في محادثة جذرية أو قناة أصلية)."
+    usage:                 "الاستخدام: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "مُعطّل"
+    policy_daily:          "يوميًا عند {hour}:{minute}"
+    policy_idle:           "بعد {minutes} دقيقة من عدم النشاط"
+    policy_both:           "يوميًا عند {hour}:{minute} أو بعد {minutes} دقيقة من عدم النشاط"
+    policy_unknown:        "{mode}"
+    scope_override:        "تجاوز خاص بسلسلة المحادثة"
+    scope_inherited:       "السياسة الموروثة"
+    status:                "إعادة الضبط التلقائية: {policy} ({scope})."
+    invalid_state:         "حالة إعادة الضبط التلقائية لسلاسل المحادثات غير صالحة؛ لم تُجرَ أي تغييرات."
+    invalid_status:        "إعادة الضبط التلقائية: مُعطّلة (وضع احتياطي آمن؛ حالة سياسة سلسلة المحادثة غير صالحة)."
+    save_failed:           "تعذّر حفظ سياسة إعادة الضبط التلقائية لسلسلة المحادثة."
+    read_failed:           "تعذّرت قراءة سياسة إعادة الضبط التلقائية لسلسلة المحادثة."
+
   restart:
     in_progress:           "⏳ إعادة تشغيل البوابة قيد التنفيذ بالفعل..."
     restarting:            "♻ جارٍ إعادة تشغيل البوابة. إن لم تُخطَر خلال 60 ثانية، أعِد التشغيل من وحدة التحكّم باستخدام `hermes gateway restart`."

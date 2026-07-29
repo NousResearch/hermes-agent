@@ -10657,7 +10657,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("  " + "-" * 55)
             policy = config.default_reset_policy
             print(f"    Mode: {policy.mode}")
-            print(f"    Daily reset at: {policy.at_hour}:00")
+            print(
+                f"    Daily reset at: "
+                f"{policy.at_hour:02d}:{policy.at_minute:02d}"
+            )
             print(f"    Idle timeout: {policy.idle_minutes} minutes")
             
             print()

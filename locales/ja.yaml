@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ クリーンアップ後にタイトルが空になりました — タイトルなしでセッションを開始しました。"
     tip:                   "\n✦ ヒント: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset は Telegram、Discord、Slack のスレッドでのみ使用できます。"
+    thread_only:           "設定するスレッド内で {prefix}autoreset を実行してください（ルート会話や親チャンネルでは実行できません）。"
+    usage:                 "使用方法: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "無効"
+    policy_daily:          "毎日 {hour}:{minute}"
+    policy_idle:           "{minutes} 分間操作がない場合"
+    policy_both:           "毎日 {hour}:{minute}、または {minutes} 分間操作がない場合"
+    policy_unknown:        "{mode}"
+    scope_override:        "スレッド固有の設定"
+    scope_inherited:       "継承されたポリシー"
+    status:                "自動リセット: {policy}（{scope}）。"
+    invalid_state:         "スレッドの自動リセット状態が無効です。変更は行われませんでした。"
+    invalid_status:        "自動リセット: 無効（安全なフォールバック。スレッドポリシーの状態が無効です）。"
+    save_failed:           "スレッドの自動リセットポリシーを保存できませんでした。"
+    read_failed:           "スレッドの自動リセットポリシーを読み取れませんでした。"
+
   restart:
     in_progress:           "⏳ ゲートウェイの再起動はすでに進行中です..."
     restarting:            "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"

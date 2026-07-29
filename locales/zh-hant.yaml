@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ 清理後標題為空 — 工作階段以未命名方式啟動。"
     tip:                   "\n✦ 提示：{tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset 僅適用於 Telegram、Discord 和 Slack 討論串。"
+    thread_only:           "請在要設定的討論串內執行 {prefix}autoreset（不能在根對話或上層頻道中執行）。"
+    usage:                 "用法：{prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "已停用"
+    policy_daily:          "每天 {hour}:{minute}"
+    policy_idle:           "閒置 {minutes} 分鐘後"
+    policy_both:           "每天 {hour}:{minute}，或閒置 {minutes} 分鐘後"
+    policy_unknown:        "{mode}"
+    scope_override:        "討論串專屬設定"
+    scope_inherited:       "繼承的政策"
+    status:                "自動重設：{policy}（{scope}）。"
+    invalid_state:         "討論串自動重設狀態無效；未進行任何變更。"
+    invalid_status:        "自動重設：已停用（安全備援；討論串政策狀態無效）。"
+    save_failed:           "無法儲存討論串自動重設政策。"
+    read_failed:           "無法讀取討論串自動重設政策。"
+
   restart:
     in_progress:           "⏳ 閘道重新啟動已在進行中……"
     restarting:            "♻ 正在重新啟動閘道。如果 60 秒內未收到通知，請在主控台執行 `hermes gateway restart` 重新啟動。"

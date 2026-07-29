@@ -32,7 +32,13 @@ from typing import Any, Optional, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
-from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
+from gateway.config import (
+    HomeChannel,
+    Platform,
+    PlatformConfig,
+    SessionResetPolicy,
+    persist_home_channel,
+)
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
@@ -40,6 +46,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.thread_reset_policy import ThreadResetPolicyStateError
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
@@ -4530,6 +4537,104 @@ class GatewaySlashCommandsMixin:
             return t("gateway.topic.thread_ready")
 
         return await self._telegram_topic_root_status_message(source)
+
+    @staticmethod
+    def _format_autoreset_policy(policy) -> str:
+        if policy.mode == "none":
+            return t("gateway.autoreset.policy_off")
+        if policy.mode == "daily":
+            return t(
+                "gateway.autoreset.policy_daily",
+                hour=f"{policy.at_hour:02d}",
+                minute=f"{policy.at_minute:02d}",
+            )
+        if policy.mode == "idle":
+            return t(
+                "gateway.autoreset.policy_idle",
+                minutes=policy.idle_minutes,
+            )
+        if policy.mode == "both":
+            return t(
+                "gateway.autoreset.policy_both",
+                hour=f"{policy.at_hour:02d}",
+                minute=f"{policy.at_minute:02d}",
+                minutes=policy.idle_minutes,
+            )
+        return t("gateway.autoreset.policy_unknown", mode=policy.mode)
+
+    async def _handle_autoreset_command(self, event: MessageEvent) -> str:
+        """Manage the durable automatic-reset override for a supported thread."""
+        source = event.source
+        prefix = self._typed_command_prefix_for(source.platform)
+        if source.platform not in {
+            Platform.TELEGRAM,
+            Platform.DISCORD,
+            Platform.SLACK,
+        }:
+            return t("gateway.autoreset.unsupported_platform", prefix=prefix)
+        if not await self.async_session_store._is_supported_thread(source):
+            return t("gateway.autoreset.thread_only", prefix=prefix)
+
+        action = event.get_command_args().strip().lower() or "status"
+        policy = None
+        if action == "on":
+            policy = SessionResetPolicy(mode="daily", at_hour=4, at_minute=0)
+        elif action == "off":
+            policy = SessionResetPolicy(mode="none")
+        elif action.startswith("daily"):
+            match = re.fullmatch(r"daily ([01]\d|2[0-3]):([0-5]\d)", action)
+            if match is None:
+                return t("gateway.autoreset.usage", prefix=prefix)
+            policy = SessionResetPolicy(
+                mode="daily",
+                at_hour=int(match.group(1)),
+                at_minute=int(match.group(2)),
+            )
+        elif action not in {"status", "inherit"}:
+            return t("gateway.autoreset.usage", prefix=prefix)
+
+        if action != "status":
+            try:
+                await self.async_session_store.set_thread_reset_policy(
+                    source,
+                    None if action == "inherit" else policy,
+                )
+            except ThreadResetPolicyStateError as exc:
+                logger.warning(
+                    "Thread auto-reset state is not writable: %s",
+                    exc,
+                )
+                return t("gateway.autoreset.invalid_state")
+            except Exception as exc:
+                logger.warning(
+                    "Failed to save thread auto-reset policy: %s",
+                    exc,
+                )
+                return t("gateway.autoreset.save_failed")
+
+        try:
+            policy, resolution = await self.async_session_store.get_effective_reset_policy(
+                source=source,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve thread auto-reset policy: %s",
+                exc,
+            )
+            return t("gateway.autoreset.read_failed")
+
+        if resolution == "invalid":
+            return t("gateway.autoreset.invalid_status")
+        scope = (
+            t("gateway.autoreset.scope_override")
+            if resolution == "override"
+            else t("gateway.autoreset.scope_inherited")
+        )
+        return t(
+            "gateway.autoreset.status",
+            policy=self._format_autoreset_policy(policy),
+            scope=scope,
+        )
 
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""

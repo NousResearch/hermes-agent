@@ -16454,6 +16454,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
+
+        if canonical == "autoreset":
+            return await self._handle_autoreset_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -18155,10 +18158,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # - the platform is excluded (e.g. api_server, webhook)
             # - the expired session had no activity (nothing was cleared)
             try:
-                policy = self.session_store.config.get_reset_policy(
-                    platform=source.platform,
-                    session_type=getattr(source, 'chat_type', 'dm'),
+                _get_effective_policy = getattr(
+                    self.session_store,
+                    "get_effective_reset_policy",
+                    None,
                 )
+                _resolved_policy = (
+                    _get_effective_policy(source=source)
+                    if callable(_get_effective_policy)
+                    else None
+                )
+                if (
+                    isinstance(_resolved_policy, tuple)
+                    and len(_resolved_policy) == 2
+                ):
+                    policy = _resolved_policy[0]
+                else:
+                    # Compatibility for lightweight/custom session-store
+                    # fixtures that predate route-aware reset policies.
+                    policy = self.session_store.config.get_reset_policy(
+                        platform=source.platform,
+                        session_type=getattr(source, "chat_type", "dm"),
+                    )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
                 # Suspended and restart-recovery-expired sessions always notify
@@ -18178,7 +18199,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         elif reset_reason == "resume_pending_expired":
                             reason_text = "gateway restart recovery timed out"
                         elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
+                            reason_text = (
+                                f"daily schedule at "
+                                f"{policy.at_hour:02d}:{policy.at_minute:02d}"
+                            )
                         else:
                             hours = policy.idle_minutes // 60
                             mins = policy.idle_minutes % 60

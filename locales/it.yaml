@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Il titolo è vuoto dopo la pulizia — sessione avviata senza titolo."
     tip:                   "\n✦ Suggerimento: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset è disponibile solo nei thread di Telegram, Discord e Slack."
+    thread_only:           "Esegui {prefix}autoreset nel thread da configurare (non in una conversazione principale o nel canale padre)."
+    usage:                 "Uso: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "disattivato"
+    policy_daily:          "ogni giorno alle {hour}:{minute}"
+    policy_idle:           "dopo {minutes} minuti di inattività"
+    policy_both:           "ogni giorno alle {hour}:{minute} o dopo {minutes} minuti di inattività"
+    policy_unknown:        "{mode}"
+    scope_override:        "impostazione specifica del thread"
+    scope_inherited:       "criterio ereditato"
+    status:                "Reimpostazione automatica: {policy} ({scope})."
+    invalid_state:         "Lo stato della reimpostazione automatica dei thread non è valido; non è stata apportata alcuna modifica."
+    invalid_status:        "Reimpostazione automatica: disattivata (ripiego sicuro; lo stato del criterio del thread non è valido)."
+    save_failed:           "Impossibile salvare il criterio di reimpostazione automatica del thread."
+    read_failed:           "Impossibile leggere il criterio di reimpostazione automatica del thread."
+
   restart:
     in_progress:           "⏳ Riavvio del gateway già in corso..."
     restarting:            "♻ Riavvio del gateway. Se non ricevi una notifica entro 60 secondi, riavvia dalla console con `hermes gateway restart`."

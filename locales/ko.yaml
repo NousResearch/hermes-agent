@@ -240,6 +240,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다."
     tip:                   "\n✦ 팁: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset은 Telegram, Discord 및 Slack 스레드에서만 사용할 수 있습니다."
+    thread_only:           "설정할 스레드 안에서 {prefix}autoreset을 실행하세요(최상위 대화나 상위 채널에서는 실행할 수 없습니다)."
+    usage:                 "사용법: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "비활성화됨"
+    policy_daily:          "매일 {hour}:{minute}"
+    policy_idle:           "{minutes}분 동안 활동이 없을 때"
+    policy_both:           "매일 {hour}:{minute} 또는 {minutes}분 동안 활동이 없을 때"
+    policy_unknown:        "{mode}"
+    scope_override:        "스레드별 재정의"
+    scope_inherited:       "상속된 정책"
+    status:                "자동 재설정: {policy}({scope})."
+    invalid_state:         "스레드 자동 재설정 상태가 올바르지 않아 변경하지 않았습니다."
+    invalid_status:        "자동 재설정: 비활성화됨(안전 대체 동작; 스레드 정책 상태가 올바르지 않음)."
+    save_failed:           "스레드 자동 재설정 정책을 저장할 수 없습니다."
+    read_failed:           "스레드 자동 재설정 정책을 읽을 수 없습니다."
+
   restart:
     in_progress:           "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
     restarting:            "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."

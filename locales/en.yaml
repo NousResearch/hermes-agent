@@ -255,6 +255,23 @@ gateway:
     title_empty_untitled:  "\n⚠️ Title is empty after cleanup — session started untitled."
     tip:                   "\n✦ Tip: {tip}"
 
+  autoreset:
+    unsupported_platform:  "{prefix}autoreset is only available in Telegram, Discord, and Slack threads."
+    thread_only:           "Run {prefix}autoreset inside the thread you want to configure (not a root conversation or parent channel)."
+    usage:                 "Usage: {prefix}autoreset [status|on|daily HH:MM|off|inherit]"
+    policy_off:            "disabled"
+    policy_daily:          "daily at {hour}:{minute}"
+    policy_idle:           "after {minutes} minutes idle"
+    policy_both:           "daily at {hour}:{minute} or after {minutes} minutes idle"
+    policy_unknown:        "{mode}"
+    scope_override:        "thread override"
+    scope_inherited:       "inherited policy"
+    status:                "Automatic reset: {policy} ({scope})."
+    invalid_state:         "Thread auto-reset state is invalid; no changes were made."
+    invalid_status:        "Automatic reset: disabled (safe fallback; thread policy state is invalid)."
+    save_failed:           "Could not save the thread auto-reset policy."
+    read_failed:           "Could not read the thread auto-reset policy."
+
   restart:
     in_progress:           "⏳ Gateway restart already in progress..."
     restarting:            "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."

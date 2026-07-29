@@ -104,6 +104,13 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _ashby_signature(body: bytes, secret: str) -> str:
+    """Compute Ashby-Signature for *body* using *secret*."""
+    return "sha256=" + hmac.new(
+        secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+
+
 def _generic_v2_signature(body: bytes, secret: str, timestamp: str) -> str:
     """Compute X-Webhook-Signature-V2 (HMAC-SHA256 of "<timestamp>.<body>")."""
     signed_content = timestamp.encode() + b"." + body
@@ -146,6 +153,23 @@ class TestValidateSignature:
         secret = "webhook-secret-42"
         req = _mock_request(headers={"X-Hub-Signature-256": "sha256=deadbeef"})
         assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_ashby_signature_valid(self):
+        adapter = _make_adapter()
+        body = b'{"action":"applicationSubmit","data":{}}'
+        secret = "ashby-webhook-secret"
+        req = _mock_request(
+            headers={"Ashby-Signature": _ashby_signature(body, secret)}
+        )
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_ashby_signature_invalid(self):
+        adapter = _make_adapter()
+        body = b'{"action":"applicationSubmit","data":{}}'
+        req = _mock_request(
+            headers={"Ashby-Signature": "sha256=deadbeef"}
+        )
+        assert adapter._validate_signature(req, body, "correct-secret") is False
 
     def test_validate_gitlab_token(self):
         """GitLab plain-token match via X-Gitlab-Token."""
@@ -653,6 +677,96 @@ class TestEventFilter:
                 json={"type": "message.received"},
             )
             assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_ashby_action_field(self):
+        routes = {
+            "ashby": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["applicationSubmit"],
+                "prompt": "got it",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/ashby",
+                json={"action": "applicationSubmit", "data": {}},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_body_digest_deduplicates_retries_without_delivery_id(self):
+        routes = {
+            "ashby": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["applicationSubmit"],
+                "prompt": "got it",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+        payload = {"action": "applicationSubmit", "data": {"id": "app-1"}}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post("/webhooks/ashby", json=payload)
+            second = await cli.post("/webhooks/ashby", json=payload)
+
+            assert first.status == 202
+            assert second.status == 200
+            assert (await second.json())["status"] == "duplicate"
+            adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_route_loads_all_configured_skills(self, monkeypatch):
+        routes = {
+            "ashby": {
+                "secret": _INSECURE_NO_AUTH,
+                "skills": ["workflow", "operations", "calibration"],
+                "prompt": "qualify this application",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        monkeypatch.setattr(
+            "agent.skill_commands.get_skill_commands",
+            lambda: {
+                "/workflow": {},
+                "/operations": {},
+                "/calibration": {},
+            },
+        )
+        stacked = MagicMock(
+            return_value=(
+                "all three skills loaded\n\nqualify this application",
+                ["workflow", "operations", "calibration"],
+                [],
+            )
+        )
+        monkeypatch.setattr(
+            "agent.skill_commands.build_stacked_skill_invocation_message",
+            stacked,
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ashby", json={"type": "test"})
+
+        assert resp.status == 202
+        assert captured[0].text.startswith("all three skills loaded")
+        stacked.assert_called_once_with(
+            ["/workflow", "/operations", "/calibration"],
+            user_instruction="qualify this application",
+        )
 
 
 # ===================================================================

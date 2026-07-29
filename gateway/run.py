@@ -18460,8 +18460,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         }, ensure_ascii=False)
                     return f"[user did not respond within {int(timeout / 60)}m]"
 
-                # Rich path: response may already be a JSON result string from
-                # the adapter/view callback.  Pass it through directly.
+                # Rich path: pass through an adapter-built JSON envelope
+                # (Discord's InteractivePromptView) verbatim; otherwise return
+                # the bare value (Telegram) unchanged so clarify_tool formats
+                # it like the simple-choices path.  Do NOT wrap bare values
+                # in a JSON envelope — that breaks the bare-string contract.
                 if is_rich:
                     try:
                         parsed = _json.loads(response)
@@ -18469,11 +18472,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return response
                     except (_json.JSONDecodeError, ValueError):
                         pass
-                    # Wrap a plain-string rich response
-                    return _json.dumps({
-                        "status": "answered",
-                        "value": response,
-                    }, ensure_ascii=False)
 
                 return response
 

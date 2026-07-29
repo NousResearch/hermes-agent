@@ -808,3 +808,181 @@ class TestGatewayDispatchTraceback:
             "been restructured."
         )
 
+
+# ===========================================================================
+# Bare-value response contract (#9 — gateway must not add a JSON envelope)
+# ===========================================================================
+
+def _find_status_dumps_in_sync(status_value: str) -> list:
+    """Walk ``_clarify_callback_sync`` for ``_json.dumps(...)`` calls whose
+    first positional arg is a dict literal containing ``"status":
+    <status_value>``.  Shared by the structural tests below."""
+    import ast
+    import gateway.run as grun
+
+    tree = ast.parse(_read_module_source(grun.__file__))
+    sync_defs = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_clarify_callback_sync"
+    ]
+    assert sync_defs, "_clarify_callback_sync not found in gateway/run.py"
+
+    matches = []
+    for node in ast.walk(sync_defs[0]):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Attribute)
+                and node.func.attr == "dumps"):
+            continue
+        if not node.args or not isinstance(node.args[0], ast.Dict):
+            continue
+        for key, val in zip(node.args[0].keys, node.args[0].values):
+            if (isinstance(key, ast.Constant) and key.value == "status"
+                    and isinstance(val, ast.Constant)
+                    and val.value == status_value):
+                matches.append(node)
+                break
+    return matches
+
+
+class TestGatewayRichBareValueContract:
+    """#9: the production gateway callback must preserve the bare-string
+    contract for rich clarify responses.
+
+    The spec is explicit about response shape across platforms:
+
+      * **Discord** — ``InteractivePromptView`` builds its own JSON envelope
+        (``{"status": "answered", ...}``) and resolves the entry with it.
+        The gateway passes that envelope through unchanged.  This contract
+        is covered by ``test_discord_interactive_views.py``.
+      * **Telegram** — the inline-button / typed-coercion path resolves the
+        entry with the option's bare ``value`` (a plain string).  The
+        gateway must NOT wrap that bare value in a JSON envelope; it must
+        return it unchanged so ``clarify_tool`` formats it in the same
+        shape as the simple-choices path (``{"question": ...,
+        "choices_offered": null, "user_response": <value>}``).
+
+    The bug this pins: ``_clarify_callback_sync`` used to unconditionally
+    wrap any non-JSON rich response in ``{"status": "answered",
+    "value": response}``, which broke the Telegram bare-string contract.
+    The behavioral contract is pinned by ``TestClarifyToolBareValueContract``
+    below; this structural test guards against the specific wrap recurring
+    in the gateway closure (mirroring the existing AST-test pattern for
+    ``_clarify_callback_sync``).
+
+    The timeout envelope (``{"status": "timeout", ...}``) is a legitimate
+    gateway-constructed envelope and remains allowed.
+    """
+
+    def test_no_answered_envelope_wrap_in_rich_branch(self):
+        offenders = _find_status_dumps_in_sync("answered")
+        assert not offenders, (
+            "_clarify_callback_sync must not construct a "
+            "{'status': 'answered', ...} JSON envelope around a bare rich "
+            "response.  Platforms that build their own envelope (Discord) "
+            "resolve the entry with JSON directly; platforms that resolve "
+            "with a bare value (Telegram) must have that value passed "
+            "through unchanged so clarify_tool formats it like the "
+            "simple-choices path.  Found offending json.dumps call(s)."
+        )
+
+    def test_timeout_envelope_still_allowed(self):
+        """Regression guard: the timeout envelope is gateway-constructed
+        and legitimate (no adapter is involved on a timeout).  This test
+        documents that the bare-value fix does not remove it."""
+        assert _find_status_dumps_in_sync("timeout"), (
+            "The timeout envelope {'status': 'timeout', ...} should still "
+            "be constructed by _clarify_callback_sync for the no-response "
+            "rich path."
+        )
+
+
+class TestClarifyToolBareValueContract:
+    """#9: behavioral contract — what the agent sees from ``clarify_tool``
+    when the platform callback returns a bare value (Telegram) vs. a JSON
+    envelope (Discord).
+
+    These pin the agent-visible shapes that the gateway bare-value fix
+    produces.  They drive ``clarify_tool`` directly with a callback that
+    mimics each platform's contract:
+
+      * **Discord-style** — callback returns a JSON string with ``status``.
+        ``clarify_tool`` passes it through unchanged.
+      * **Telegram-style** — callback returns a bare value string.
+        ``clarify_tool`` formats it in the same shape as the simple-choices
+        path (no ``status`` envelope).
+    """
+
+    def test_discord_style_json_envelope_passes_through(self):
+        """Discord's InteractivePromptView resolves with a JSON envelope;
+        clarify_tool must pass it through verbatim."""
+        envelope = json.dumps({
+            "status": "answered",
+            "value": "deploy_prod",
+            "label": "Ship it",
+            "user_id": "42",
+            "user_name": "Alice",
+        }, ensure_ascii=False)
+
+        def _cb(question, choices=None, options=None, **kw):
+            return envelope
+
+        result = clarify_tool(
+            question="Deploy?",
+            options=[_valid_option(value="deploy_prod")],
+            callback=_cb,
+        )
+        # Passthrough — the agent sees the adapter's envelope unchanged.
+        assert result == envelope
+        parsed = json.loads(result)
+        assert parsed["status"] == "answered"
+        assert parsed["value"] == "deploy_prod"
+
+    def test_telegram_style_bare_value_formats_as_simple_path(self):
+        """Telegram resolves with the option's bare value; clarify_tool must
+        format it in the simple-path shape (no ``status`` envelope).
+
+        This is the agent-visible contract the spec requires: 'a bare value
+        string is sufficient and matches what the simple-choices path
+        returns today.'
+        """
+        def _cb(question, choices=None, options=None, **kw):
+            # Telegram inline-button tap → bare option value.
+            return "deploy_prod"
+
+        result = clarify_tool(
+            question="Deploy?",
+            options=[_valid_option(value="deploy_prod")],
+            callback=_cb,
+        )
+        parsed = json.loads(result)
+        # NO "status" envelope — the bare value was not wrapped.
+        assert "status" not in parsed
+        # Simple-path shape: question + choices_offered + user_response.
+        assert parsed["question"] == "Deploy?"
+        assert parsed["choices_offered"] is None
+        assert parsed["user_response"] == "deploy_prod"
+
+    def test_telegram_style_bare_value_matches_simple_choices_shape(self):
+        """The rich bare-value shape must be structurally identical to the
+        simple-choices shape (same keys), so the agent's parser does not
+        need a platform-specific branch."""
+        def _rich_cb(question, choices=None, options=None, **kw):
+            return "deploy_prod"
+
+        def _simple_cb(question, choices=None, **kw):
+            return "deploy_prod"
+
+        rich_result = json.loads(clarify_tool(
+            question="Deploy?",
+            options=[_valid_option(value="deploy_prod")],
+            callback=_rich_cb,
+        ))
+        simple_result = json.loads(clarify_tool(
+            question="Deploy?",
+            choices=["deploy_prod", "hold"],
+            callback=_simple_cb,
+        ))
+        # Same key set — no platform-specific envelope to special-case.
+        assert set(rich_result.keys()) == set(simple_result.keys())
+

@@ -450,7 +450,13 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     # Try to get models.dev data
     try:
         from agent.models_dev import get_provider_info as _mdev_provider
-        mdev_info = _mdev_provider(canonical, allow_network=allow_network)
+        # Keep the single-argument call on the default path: test sites
+        # monkeypatch get_provider_info with single-arg lambdas.
+        mdev_info = (
+            _mdev_provider(canonical)
+            if allow_network
+            else _mdev_provider(canonical, allow_network=False)
+        )
     except Exception:
         mdev_info = None
 

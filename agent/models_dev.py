@@ -837,7 +837,14 @@ def get_provider_info(
     # Resolve Hermes ID → models.dev ID
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
-    data = fetch_models_dev(allow_network=allow_network)
+    # NOTE: keep the zero-argument call on the default path. Dozens of test
+    # sites monkeypatch fetch_models_dev with zero-arg lambdas; passing the
+    # kwarg unconditionally would break them all (they raise TypeError).
+    data = (
+        fetch_models_dev()
+        if allow_network
+        else fetch_models_dev(allow_network=False)
+    )
     raw = data.get(mdev_id)
     if not isinstance(raw, dict):
         return None

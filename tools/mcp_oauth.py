@@ -60,19 +60,69 @@ logger = logging.getLogger(__name__)
 # Lazy imports -- MCP SDK with OAuth support is optional
 # ---------------------------------------------------------------------------
 
-_OAUTH_AVAILABLE=False
-try:
-    from mcp.client.auth import OAuthClientProvider
-    from mcp.shared.auth import (
-        OAuthClientInformationFull,
-        OAuthClientMetadata,
-        OAuthMetadata,
-        OAuthToken,
-    )
+# Availability is detected WITHOUT importing the mcp SDK (which costs
+# ~170 ms at module load). The actual classes are imported lazily on first
+# use via _ensure_sdk_loaded(); the module-level names below are kept as
+# placeholders so tests can patch them (patch.object requires the attribute
+# to exist on the module).
+import importlib.util as _importlib_util
 
-    _OAUTH_AVAILABLE=True
-except ImportError:
+_OAUTH_AVAILABLE = _importlib_util.find_spec("mcp") is not None
+if not _OAUTH_AVAILABLE:
     logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+
+# Lazily-bound SDK names (rebound by _ensure_sdk_loaded on first use).
+# Annotated ``Any`` so quoted type annotations elsewhere in the file remain
+# valid for static checkers while the runtime value starts as None.
+OAuthClientProvider: Any = None
+OAuthClientInformationFull: Any = None
+OAuthClientMetadata: Any = None
+OAuthMetadata: Any = None
+OAuthToken: Any = None
+
+# Cache of the real SDK classes so a test that temporarily patches one of the
+# module-level names (and restores it to None afterwards) doesn't strand the
+# module in a broken state.
+_SDK_CLASSES: dict[str, Any] = {}
+_SDK_LOAD_FAILED = False
+
+
+def _ensure_sdk_loaded() -> bool:
+    """Import the MCP SDK OAuth classes on first use and bind module globals.
+
+    Returns True when the SDK classes are available. Module-level names that
+    have been replaced (e.g. patched by tests) are left untouched; only names
+    that are currently ``None`` are (re)bound to the real SDK classes.
+    """
+    global _SDK_LOAD_FAILED, _OAUTH_AVAILABLE
+    if _SDK_LOAD_FAILED:
+        return False
+    if not _SDK_CLASSES:
+        try:
+            from mcp.client.auth import OAuthClientProvider as _Provider
+            from mcp.shared.auth import (
+                OAuthClientInformationFull as _InfoFull,
+                OAuthClientMetadata as _ClientMeta,
+                OAuthMetadata as _Meta,
+                OAuthToken as _Token,
+            )
+        except ImportError:
+            _SDK_LOAD_FAILED = True
+            _OAUTH_AVAILABLE = False
+            logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
+            return False
+        _SDK_CLASSES.update(
+            OAuthClientProvider=_Provider,
+            OAuthClientInformationFull=_InfoFull,
+            OAuthClientMetadata=_ClientMeta,
+            OAuthMetadata=_Meta,
+            OAuthToken=_Token,
+        )
+    g = globals()
+    for _name, _cls in _SDK_CLASSES.items():
+        if g.get(_name) is None:
+            g[_name] = _cls
+    return True
 
 try:
     from pydantic import AnyUrl
@@ -405,6 +455,8 @@ class HermesTokenStorage:
         data = _read_json(self._tokens_path())
         if data is None:
             return None
+        if OAuthToken is None and not _ensure_sdk_loaded():
+            return None
         # Hermes records an absolute wall-clock ``expires_at`` alongside the
         # SDK's serialized token (see ``set_tokens``). On read we rewrite
         # ``expires_in`` to the remaining seconds so the SDK's downstream
@@ -466,6 +518,8 @@ class HermesTokenStorage:
         data = _read_json(self._client_info_path())
         if data is None:
             return None
+        if OAuthClientInformationFull is None and not _ensure_sdk_loaded():
+            return None
         try:
             return OAuthClientInformationFull.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
@@ -491,6 +545,8 @@ class HermesTokenStorage:
     def load_oauth_metadata(self) -> "OAuthMetadata | None":
         data = _read_json(self._meta_path())
         if data is None:
+            return None
+        if OAuthMetadata is None and not _ensure_sdk_loaded():
             return None
         try:
             return OAuthMetadata.model_validate(data)
@@ -1139,6 +1195,8 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         raise ValueError(
             "_configure_callback_port() must be called before _build_client_metadata()"
         )
+    if OAuthClientMetadata is None:
+        _ensure_sdk_loaded()
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
     redirect_uri = _resolve_redirect_uri(cfg, port)
@@ -1171,6 +1229,8 @@ def _maybe_preregister_client(
     client_id = cfg.get("client_id")
     if not client_id:
         return
+    if OAuthClientInformationFull is None:
+        _ensure_sdk_loaded()
     port = cfg["_resolved_port"]
     redirect_uri = _resolve_redirect_uri(cfg, port)
 
@@ -1263,7 +1323,9 @@ def build_oauth_auth(
         An ``OAuthClientProvider`` instance, or None if the MCP SDK lacks
         OAuth support.
     """
-    if not _OAUTH_AVAILABLE:
+    if not _OAUTH_AVAILABLE or (
+        OAuthClientProvider is None and not _ensure_sdk_loaded()
+    ):
         logger.warning(
             "MCP OAuth requested for '%s' but SDK auth types are not available. "
             "Install with: pip install 'mcp>=1.26.0'",

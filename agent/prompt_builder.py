@@ -201,6 +201,15 @@ SKILLS_GUIDANCE = (
     "4. **DEDUP** — After reloading a pruned skill, **ignore any remaining `[SKILL_PRUNED]` markers for that same skill** — they are historical artifacts from previous compactions and do not need further action."
 )
 
+TOOL_SEARCH_GUIDANCE = (
+    "Many MCP and plugin tools are loaded on demand via tool_search. "
+    "Before concluding a capability is unavailable, always call "
+    "tool_search(\"keyword\") to check for a matching deferred tool. "
+    "Deferred MCP tools are fully connected and authenticated — "
+    "prefer them over skill-based alternatives that may require "
+    "separate setup."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

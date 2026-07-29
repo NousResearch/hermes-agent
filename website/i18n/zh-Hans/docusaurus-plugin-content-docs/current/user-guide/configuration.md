@@ -1272,7 +1272,7 @@ stt:
   local:
     model: "base"              # tiny、base、small、medium、large-v3
   openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
   # model: "whisper-1"         # 旧版回退键仍受支持
 ```
 

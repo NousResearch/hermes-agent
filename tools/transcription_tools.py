@@ -128,7 +128,7 @@ LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # Known model sets for auto-correction
-OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
+OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
 # Singleton for the local model — loaded once, reused across calls
@@ -1824,7 +1824,13 @@ def _transcribe_openai(
                     "response_format": "text" if model_name == "whisper-1" else "json",
                 }
                 if language:
-                    create_kwargs["language"] = language
+                    if model_name == "gpt-transcribe":
+                        # gpt-transcribe replaces the singular ``language``
+                        # field with a ``languages`` list; the API rejects
+                        # requests that send the legacy field.
+                        create_kwargs["extra_body"] = {"languages": [language]}
+                    else:
+                        create_kwargs["language"] = language
                     logger.debug("Using language hint '%s' for OpenAI STT", language)
                 return client.audio.transcriptions.create(**create_kwargs)
 

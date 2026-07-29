@@ -1068,6 +1068,70 @@ class TestModelAutoCorrection:
         call_kwargs = mock_client.audio.transcriptions.create.call_args
         assert call_kwargs.kwargs["model"] == "gpt-4o-mini-transcribe"
 
+    def test_gpt_transcribe_model_not_overridden(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "test"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(sample_wav, "gpt-transcribe")
+
+        call_kwargs = mock_client.audio.transcriptions.create.call_args
+        assert call_kwargs.kwargs["model"] == "gpt-transcribe"
+        assert call_kwargs.kwargs["response_format"] == "json"
+
+    def test_gpt_transcribe_language_hint_uses_languages_list(self, monkeypatch, sample_wav):
+        """gpt-transcribe rejects the singular ``language`` field; the hint
+        must be sent as a ``languages`` list via extra_body instead."""
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "test"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch("tools.transcription_tools._resolve_stt_language", return_value="fr"):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(sample_wav, "gpt-transcribe")
+
+        call_kwargs = mock_client.audio.transcriptions.create.call_args
+        assert "language" not in call_kwargs.kwargs
+        assert call_kwargs.kwargs["extra_body"] == {"languages": ["fr"]}
+
+    def test_legacy_openai_model_language_hint_uses_singular_field(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "test"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch("tools.transcription_tools._resolve_stt_language", return_value="fr"):
+            from tools.transcription_tools import _transcribe_openai
+            _transcribe_openai(sample_wav, "gpt-4o-transcribe")
+
+        call_kwargs = mock_client.audio.transcriptions.create.call_args
+        assert call_kwargs.kwargs["language"] == "fr"
+        assert "extra_body" not in call_kwargs.kwargs
+
+    def test_gpt_transcribe_rejected_on_groq(self, monkeypatch, sample_wav):
+        """gpt-transcribe is OpenAI-only and must be auto-corrected on Groq."""
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "test"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_groq, DEFAULT_GROQ_STT_MODEL
+            _transcribe_groq(sample_wav, "gpt-transcribe")
+
+        call_kwargs = mock_client.audio.transcriptions.create.call_args
+        assert call_kwargs.kwargs["model"] == DEFAULT_GROQ_STT_MODEL
+
     def test_unknown_model_passes_through_groq(self, monkeypatch, sample_wav):
         """A model not in either known set should not be overridden."""
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")

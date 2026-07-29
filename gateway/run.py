@@ -18416,8 +18416,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         already shown to the user as text, or (b) stale tool/inspected
         content that was never part of the intended visible reply. Promoting
         such paths into uploads after the fact sent files the model never
-        asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
-        attachment contract — trigger post-stream uploads.
+        asked to deliver (#20834). Only ``MEDIA:`` directives and explicit
+        ``file://`` markdown/HTML image tags — the explicit attachment
+        contracts — trigger post-stream uploads.
         """
         from pathlib import Path
         from urllib.parse import quote as _quote
@@ -18702,6 +18703,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Send extracted images via send_multiple_images so that
                 # ``file://`` URIs reach ``send_image_file`` (decoded) instead
                 # of being passed as a literal pathname to ``send_image``.
+                # Build canonical dedup keys from file:// images so the
+                # media_files loop below does NOT re-send the same file.
+                _image_dedup_keys: set = set()
+                for img_url, _ in (images or []):
+                    if img_url.lower().startswith('file://'):
+                        _n = BasePlatformAdapter._normalize_file_url(img_url)
+                        if _n:
+                            _image_dedup_keys.add(os.path.normcase(_n))
                 if images:
                     try:
                         await adapter.send_multiple_images(
@@ -18736,11 +18745,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 metadata=_thread_metadata,
                             )
                         elif _ext in _IMAGE_EXTS:
-                            await adapter.send_image_file(
-                                chat_id=source.chat_id,
-                                image_path=media_path,
-                                metadata=_thread_metadata,
-                            )
+                            if os.path.normcase(media_path) not in _image_dedup_keys:
+                                await adapter.send_image_file(
+                                    chat_id=source.chat_id,
+                                    image_path=media_path,
+                                    metadata=_thread_metadata,
+                                )
                         else:
                             await adapter.send_document(
                                 chat_id=source.chat_id,

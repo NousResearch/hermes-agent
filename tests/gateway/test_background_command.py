@@ -282,6 +282,98 @@ class TestRunBackgroundTask:
         )
 
 
+    @pytest.mark.asyncio
+    async def test_background_task_media_and_file_url_dedup(self, tmp_path, monkeypatch):
+        """Background finalizer with MEDIA:path + file:// tag for the same
+        file sends it only once via send_image_file."""
+        from urllib.parse import quote as _urlquote
+
+        from gateway import run as gateway_run
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        png = tmp_path / "shared.png"
+        png.write_bytes(b"png")
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (tmp_path.resolve(),),
+        )
+
+        class _QQBotLike(BasePlatformAdapter):
+            def __init__(self):
+                super().__init__(PlatformConfig(enabled=True, token="test"), Platform.QQBOT)
+                self.send_calls = []
+
+            async def connect(self, *, is_reconnect: bool = False):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, chat_id, content=None, **kwargs):
+                self.send_calls.append(("send", chat_id, content))
+                return SendResult(success=True, message_id="text")
+
+            async def get_chat_info(self, chat_id):
+                return {"id": chat_id, "type": "dm"}
+
+        adapter = _QQBotLike()
+        adapter.send_image = AsyncMock(return_value=SendResult(success=True, message_id="img"))
+        adapter.send_image_file = AsyncMock(
+            return_value=SendResult(success=True, message_id="img-file")
+        )
+        adapter.send_multiple_images = AsyncMock(
+            return_value=SendResult(success=True, message_id="batch")
+        )
+        adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
+        adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+        runner.adapters[Platform.QQBOT] = adapter
+
+        source = SessionSource(
+            platform=Platform.QQBOT,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        file_url = "file://" + _urlquote(str(png), safe="/:\\\\")
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={
+                "final_response": f"MEDIA:{png} ![pic]({file_url})",
+                "messages": [],
+            }
+        )
+
+        await runner._run_background_task(
+            "make pic", source, "bg_dedup_test",
+        )
+
+        # send_multiple_images was called once for the extracted image tag.
+        adapter.send_multiple_images.assert_awaited_once()
+        # The MEDIA: path points to the same file as the file:// tag,
+        # so the dedup guard in the media_files loop prevents re-send.
+        adapter.send_image_file.assert_not_awaited()
+        # No voice or document delivery for the image file
+        adapter.send_voice.assert_not_awaited()
+        adapter.send_document.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # /background in help and known_commands
 # ---------------------------------------------------------------------------

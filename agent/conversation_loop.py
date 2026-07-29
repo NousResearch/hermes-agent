@@ -3149,7 +3149,12 @@ def run_conversation(
                     if getattr(agent.context_compressor, "_context_probed", False):
                         ctx = agent.context_compressor.context_length
                         if getattr(agent.context_compressor, "_context_probe_persistable", False):
-                            save_context_length(agent.model, agent.base_url, ctx)
+                            save_context_length(
+                                agent.model,
+                                agent.base_url,
+                                ctx,
+                                provider=getattr(agent, "provider", "") or "",
+                            )
                             agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
                         agent.context_compressor._context_probed = False
                         agent.context_compressor._context_probe_persistable = False

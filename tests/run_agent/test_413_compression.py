@@ -411,6 +411,70 @@ class TestHTTP413Compression:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after compression"
 
+    def test_context_limit_cache_write_preserves_explicit_provider(self, agent):
+        """Provider-confirmed limits retain Gemini identity through persistence."""
+        proxy_url = "https://gemini-proxy.internal.example.com/v1"
+        agent.provider = "gemini"
+        agent.model = "gemini-3.5-flash"
+        agent.base_url = proxy_url
+        agent.context_compressor.context_length = 1_048_576
+        agent.context_compressor.threshold_tokens = 900_000
+
+        err_400 = Exception(
+            "Error code: 400 - This endpoint's maximum context length is "
+            "131072 tokens. Please reduce the length of the messages."
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(
+            content="Recovered with provider-aware cache",
+            finish_reason="stop",
+            usage={
+                "prompt_tokens": 1_000,
+                "completion_tokens": 10,
+                "total_tokens": 1_010,
+            },
+        )
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("agent.conversation_loop.save_context_length") as mock_save,
+            patch(
+                "agent.conversation_loop.estimate_usage_cost",
+                return_value=SimpleNamespace(
+                    amount_usd=None,
+                    status="unknown",
+                    source="none",
+                ),
+            ),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        mock_save.assert_called_once_with(
+            "gemini-3.5-flash",
+            proxy_url,
+            131_072,
+            provider="gemini",
+        )
+        assert agent.context_compressor.context_length == 131_072
+        assert agent.context_compressor._context_probed is False
+        assert agent.context_compressor._context_probe_persistable is False
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered with provider-aware cache"
+
     def test_400_reduce_length_triggers_compression(self, agent):
         """A 400 with 'reduce the length' should trigger compression."""
         err_400 = Exception(

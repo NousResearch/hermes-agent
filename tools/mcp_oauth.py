@@ -137,11 +137,9 @@ def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
     Uses HERMES_HOME so each profile gets its own OAuth tokens.
     Layout: ``HERMES_HOME/mcp-tokens/``
     """
-    try:
-        from hermes_constants import get_hermes_home
-        base = Path(hermes_home) if hermes_home is not None else Path(get_hermes_home())
-    except ImportError:
-        base = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    from hermes_constants import get_hermes_home
+
+    base = Path(hermes_home) if hermes_home is not None else Path(get_hermes_home())
     return base / "mcp-tokens"
 
 

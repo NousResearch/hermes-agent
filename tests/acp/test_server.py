@@ -1257,6 +1257,8 @@ class TestSessionConfiguration:
             assert state.agent.provider == "openrouter"
             assert state.agent.base_url == "https://openrouter.example/v1"
             assert state.agent.api_mode == "chat_completions"
+            state.agent.provider = ""
+            state.agent.base_url = "https://openrouter.example/v1"
             result = await acp_agent.set_session_model(
                 model_id="anthropic:claude-sonnet-4-6",
                 session_id=state.session_id,
@@ -1370,6 +1372,28 @@ class TestPrompt:
         assert state.agent.stream_delta_callback is not None
         assert state.agent.reasoning_callback is not None
         assert state.agent.thinking_callback is None
+
+    @pytest.mark.asyncio
+    async def test_prompt_returns_refusal_when_agent_turn_failed(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "HTTP 401: User not found.",
+            "messages": [],
+            "failed": True,
+            "completed": False,
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hello")],
+            session_id=new_resp.session_id,
+        )
+
+        assert resp.stop_reason == "refusal"
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):

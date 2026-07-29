@@ -1982,7 +1982,13 @@ class HermesACPAgent(acp.Agent):
 
         await self._send_usage_update(state)
 
-        stop_reason = "cancelled" if cancelled else "end_turn"
+        failed = bool(
+            result.get("failed")
+            or result.get("partial")
+            or result.get("error")
+            or result.get("completed") is False
+        )
+        stop_reason = "cancelled" if cancelled else "refusal" if failed else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     # ---- Slash commands (headless) -------------------------------------------
@@ -2346,7 +2352,7 @@ class HermesACPAgent(acp.Agent):
                 current_provider or "openrouter",
             )
             state.model = resolved_model
-            provider_changed = bool(current_provider and requested_provider != current_provider)
+            provider_changed = requested_provider != current_provider
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
             current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
             state.agent = self.session_manager._make_agent(

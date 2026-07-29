@@ -344,6 +344,13 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     }
     assert starts[0][2] == {}
     assert starts[0][3]["model_name"] == "unknown"
+    active_marks = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.client.active"
+    ]
+    assert len(active_marks) == 2
+    assert all(mark[2]["data"] == {} for mark in active_marks)
     assert ends[0][2] == {
         "model": "claude-sonnet",
         "provider": "anthropic",
@@ -365,11 +372,18 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     package = json.loads(packages[0].read_text(encoding="utf-8"))
     metrics = {metric["name"]: metric for metric in package["metrics"]}
     assert set(metrics) == {
+        "hermes.client.active",
         "hermes.model_call.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool_approval.count",
         "hermes.tool_call.count",
+    }
+    assert metrics["hermes.client.active"] == {
+        "name": "hermes.client.active",
+        "type": "counter",
+        "dimensions": {},
+        "value": 1,
     }
     assert metrics["hermes.model_call.count"]["dimensions"] == {
         "model": "claude-sonnet",
@@ -590,6 +604,8 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     for counter in snapshot:
         by_metric.setdefault(counter["metric_name"], []).append(counter)
 
+    assert by_metric["hermes.client.active"][0]["dimensions"] == {}
+    assert by_metric["hermes.client.active"][0]["value"] == 1
     assert len(by_metric["hermes.task_run.started"]) == 1
     assert by_metric["hermes.task_run.started"][0]["value"] == 3
     assert len(by_metric["hermes.model_call.count"]) == 1
@@ -1029,7 +1045,11 @@ def test_core_mark_uses_the_shared_session_handle_without_a_plugin(direct_runtim
         metadata={"data_schema": "hermes.skill.lifecycle.v1"},
     )
 
-    [mark] = [event for event in direct_runtime.events if event[0] == "scope.event"]
+    [mark] = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.event" and event[1] == "hermes.skill.created"
+    ]
     assert mark[1] == "hermes.skill.created"
     assert mark[2]["handle"] == handle
     assert plugins.get_plugin_manager().list_plugins() == []
@@ -1509,15 +1529,25 @@ def test_shared_metrics_subscribers_isolate_two_enabled_profiles(tmp_path, monke
         finally:
             reset_hermes_home_override(token)
 
+    install_ids: set[str] = set()
     for profile in (profile_a, profile_b):
         packages = list(
             (profile / "telemetry" / "shared_metrics" / "outbox").glob("*.json")
         )
         assert len(packages) == 1
         package = json.loads(packages[0].read_text(encoding="utf-8"))
+        install_ids.add(package["install_id"])
         metrics = {metric["name"]: metric for metric in package["metrics"]}
+        assert metrics["hermes.client.active"] == {
+            "name": "hermes.client.active",
+            "type": "counter",
+            "dimensions": {},
+            "value": 1,
+        }
         assert metrics["hermes.task_run.started"]["value"] == 1
         assert metrics["hermes.task_run.finished"]["value"] == 1
+
+    assert len(install_ids) == 2
 
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
@@ -1671,6 +1701,7 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     root = profile / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     assert [row["metric_name"] for row in store.counter_snapshot()] == [
+        "hermes.client.active",
         "hermes.task_run.started"
     ]
     assert list((root / "outbox").glob("*.json")) == []

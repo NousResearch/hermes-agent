@@ -12,8 +12,10 @@ from hermes_cli.config import detect_install_method
 
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
+    CLIENT_ACTIVE_METRIC,
     MODEL_CALL_METRIC,
     TOOL_CALL_METRIC,
+    client_active_counter,
     client_resource,
     model_call_dimensions,
     skill_counter,
@@ -59,8 +61,14 @@ class SharedMetricsSubscriber:
                 or metadata.get(RUNTIME_INSTANCE_KEY) != self._runtime_id
             ):
                 return
-        dimensions = model_call_dimensions(event)
-        metric_name = MODEL_CALL_METRIC
+        metric = client_active_counter(event)
+        dimensions = None
+        metric_name = CLIENT_ACTIVE_METRIC
+        if metric is not None:
+            metric_name, dimensions = metric
+        if dimensions is None:
+            dimensions = model_call_dimensions(event)
+            metric_name = MODEL_CALL_METRIC
         if dimensions is None:
             dimensions = tool_call_dimensions(event)
             metric_name = TOOL_CALL_METRIC
@@ -77,11 +85,14 @@ class SharedMetricsSubscriber:
             if not self._active:
                 return
             try:
-                self.store.record_counter(
-                    metric_name,
-                    dimensions,
-                    self._client_resource,
-                )
+                if metric_name == CLIENT_ACTIVE_METRIC:
+                    self.store.record_client_active(self._client_resource)
+                else:
+                    self.store.record_counter(
+                        metric_name,
+                        dimensions,
+                        self._client_resource,
+                    )
             except Exception:
                 logger.warning(
                     "Unable to persist the Hermes shared metric: %s",

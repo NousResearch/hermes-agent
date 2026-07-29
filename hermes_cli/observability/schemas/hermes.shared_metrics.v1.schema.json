@@ -69,6 +69,9 @@
       "items": {
         "oneOf": [
           {
+            "$ref": "#/$defs/client_active_counter"
+          },
+          {
             "$ref": "#/$defs/model_call_counter"
           },
           {
@@ -122,6 +125,32 @@
         "gte_11",
         "unknown"
       ]
+    },
+    "client_active_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.client.active"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "maxProperties": 0
+        },
+        "value": {
+          "const": 1
+        }
+      }
     },
     "model_call_counter": {
       "type": "object",

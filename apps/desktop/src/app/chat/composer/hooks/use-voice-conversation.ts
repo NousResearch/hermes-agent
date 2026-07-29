@@ -229,6 +229,12 @@ export function useVoiceConversation({
         onSilence: () => void handleTurn()
       })
       setStatus('listening')
+      // Clear any prior turn-timeout before arming a fresh one. Each listen
+      // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
+      // timer from an earlier cycle survives and later fires handleTurn() in
+      // the middle of a new listen, cutting it short (or, after enough idle
+      // re-listens, wedging the loop into a state it doesn't re-arm from).
+      clearTurnTimeout()
       turnTimeoutRef.current = window.setTimeout(() => void handleTurn(), 60_000)
     } catch (error) {
       notifyError(error, voiceCopy.couldNotStartSession)

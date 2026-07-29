@@ -115,6 +115,44 @@ def default_inference_framework() -> str:
     return "tflite" if _is_macos_arm64() else "onnx"
 
 
+_warned_onnx_coerced = False
+
+
+def resolve_inference_framework(cfg: Dict[str, Any]) -> str:
+    """Resolve the effective openWakeWord backend from config.
+
+    Honors an explicit ``openwakeword.inference_framework`` — EXCEPT the one
+    combination that is provably dead: an explicit ``onnx`` on macOS ARM64,
+    where ONNX's embedding model never lets a phrase cross threshold (upstream
+    #336). Existing macOS users who pinned ``onnx`` before the tflite fix landed
+    would otherwise keep a wake word that arms but never fires. Coerce that one
+    case to tflite (with a one-time warning) instead of silently shipping a dead
+    ear. Every other explicit value is respected as-is; empty falls back to the
+    platform default.
+    """
+    global _warned_onnx_coerced
+
+    sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
+    framework = str(sub.get("inference_framework") or "").strip().lower()
+
+    if not framework:
+        return default_inference_framework()
+
+    if framework == "onnx" and _is_macos_arm64():
+        if not _warned_onnx_coerced:
+            _warned_onnx_coerced = True
+            logger.warning(
+                "wake: openwakeword.inference_framework='onnx' is set but ONNX's "
+                "embedding model never fires on macOS ARM64 (openWakeWord #336) — "
+                "using tflite instead. Set inference_framework to '' (auto) or "
+                "'tflite' in config.yaml to silence this."
+            )
+        return "tflite"
+
+    return framework
+
+
+
 def ensure_tflite_runtime() -> bool:
     """Make ``import tflite_runtime.interpreter`` resolve, returning success.
 
@@ -324,9 +362,7 @@ class _OpenWakeWordEngine(_Engine):
 
         sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
         model_ref = str(sub.get("model") or _BUNDLED_MODEL_NAME).strip()
-        framework = str(sub.get("inference_framework") or "").strip().lower()
-        if not framework:
-            framework = default_inference_framework()
+        framework = resolve_inference_framework(cfg)
         # openWakeWord returns a 0..1 score per frame; sensitivity IS the raw
         # threshold a score must clear. Higher = stricter (fewer false fires).
         # Default 0.6 sits above openWakeWord's permissive 0.5 baseline, which
@@ -714,8 +750,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     # Report it as a real remediation instead of arming a detector that can't fire.
     tflite_ok = True
     if provider not in ("porcupine", "sherpa", "sherpa-onnx", "kws", "open"):
-        sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
-        framework = str(sub.get("inference_framework") or "").strip().lower() or default_inference_framework()
+        framework = resolve_inference_framework(cfg)
         if framework == "tflite":
             tflite_ok = ensure_tflite_runtime() or lazy_deps.is_available("wake.openwakeword.tflite") or lazy_ok
 

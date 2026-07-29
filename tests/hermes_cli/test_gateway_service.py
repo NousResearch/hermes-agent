@@ -487,6 +487,38 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in unit
         assert str(profile_node_bin) not in unit
 
+    def test_user_unit_resolves_ephemeral_fnm_multishell_node_path(self, tmp_path, monkeypatch):
+        stable_bin = (
+            tmp_path
+            / ".local"
+            / "share"
+            / "fnm"
+            / "node-versions"
+            / "v22.22.1"
+            / "installation"
+            / "bin"
+        )
+        stable_bin.mkdir(parents=True)
+        real_node = stable_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+
+        ephemeral_bin = (
+            tmp_path / "run" / "user" / "1000" / "fnm_multishells" / "12345" / "bin"
+        )
+        ephemeral_bin.mkdir(parents=True)
+        ephemeral_node = ephemeral_bin / "node"
+        ephemeral_node.symlink_to(real_node)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd: str(ephemeral_node) if cmd == "node" else None,
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert str(stable_bin) in unit
+        assert str(ephemeral_bin) not in unit
+
     def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Same #48700 regression for the macOS twin generate_launchd_plist().
         local_bin = tmp_path / ".local" / "bin"
@@ -504,6 +536,48 @@ class TestGeneratedSystemdUnits:
 
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
+
+    def test_launchd_plist_resolves_ephemeral_fnm_multishell_node_path(
+        self, tmp_path, monkeypatch
+    ):
+        stable_bin = (
+            tmp_path
+            / ".local"
+            / "share"
+            / "fnm"
+            / "node-versions"
+            / "v22.22.1"
+            / "installation"
+            / "bin"
+        )
+        stable_bin.mkdir(parents=True)
+        real_node = stable_bin / "node"
+        real_node.write_text("#!/bin/sh\n")
+
+        ephemeral_bin = (
+            tmp_path / "run" / "user" / "1000" / "fnm_multishells" / "12345" / "bin"
+        )
+        ephemeral_bin.mkdir(parents=True)
+        ephemeral_node = ephemeral_bin / "node"
+        ephemeral_node.symlink_to(real_node)
+        stale_ephemeral_bin = (
+            tmp_path / "run" / "user" / "1000" / "fnm_multishells" / "67890" / "bin"
+        )
+        stale_ephemeral_bin.mkdir(parents=True)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd: str(ephemeral_node) if cmd == "node" else None,
+        )
+        monkeypatch.setenv(
+            "PATH", f"{ephemeral_bin}:{stale_ephemeral_bin}:/usr/bin"
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert str(stable_bin) in plist
+        assert str(ephemeral_bin) not in plist
+        assert str(stale_ephemeral_bin) not in plist
 
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)

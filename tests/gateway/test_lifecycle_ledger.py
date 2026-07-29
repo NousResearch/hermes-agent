@@ -240,6 +240,24 @@ def test_mark_exited_without_prior_sentinel_writes_exited(tmp_path: Path) -> Non
     assert _read_sentinel(tmp_path)["phase"] == "exited"
 
 
+def test_mark_exited_leaves_pid_none_sentinel_alone(tmp_path: Path) -> None:
+    """A sentinel with pid=None has unknown ownership — mark_exited must not
+    clobber it with a clean-exit claim it cannot prove is its own."""
+    _write_sentinel(tmp_path, {"phase": "running", "pid": None, "start_time": 2000.0})
+    mark_exited(0, reason="graceful_shutdown", home=tmp_path)
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["phase"] == "running"
+    assert sentinel["pid"] is None
+
+
+def test_mark_exited_rewrites_own_sentinel(tmp_path: Path) -> None:
+    _write_sentinel(tmp_path, {
+        "phase": "running", "pid": os.getpid(), "start_time": 2000.0,
+    })
+    mark_exited(0, reason="graceful_shutdown", home=tmp_path)
+    assert _read_sentinel(tmp_path)["phase"] == "exited"
+
+
 # ---------------------------------------------------------------------------
 # read_prior_exit_label (container-boot annotation)
 # ---------------------------------------------------------------------------

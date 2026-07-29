@@ -275,14 +275,17 @@ def mark_exited(
 ) -> None:
     """Mark the current life as cleanly exited.  Idempotent, never raises.
 
-    Only rewrites the sentinel when it is still owned by this process —
+    Only rewrites the sentinel when it is provably owned by this process —
     during a ``--replace`` takeover the replacement claims the sentinel
     before the old process finishes teardown, and the old life must not
-    clobber the new owner's ``running`` phase on its way out.
+    clobber the new owner's ``running`` phase on its way out.  A sentinel
+    with ``pid=None`` (or a malformed pid) has *unknown* ownership and is
+    likewise left alone: we must not overwrite evidence we cannot prove is
+    ours with a ``clean exit`` claim.
     """
     try:
         sentinel = _read_json(get_lifecycle_sentinel_path(home))
-        if sentinel and sentinel.get("pid") not in (None, os.getpid()):
+        if sentinel is not None and sentinel.get("pid") != os.getpid():
             return
         _write_sentinel(
             {

@@ -128,12 +128,14 @@ export function useDesktopIntegrations({
   }, [resumeExhaustedSessionId])
 
   // Native-notification click -> jump to the session WHERE IT ALREADY IS (open
-  // tile / main) instead of forcing main. Runtime id is translated to the
-  // stored id the chat route is keyed by; action buttons resolve in place.
+  // tile / main), else beside what's loaded rather than over it — the click
+  // came from outside the app and shouldn't cost the user the chat they left
+  // on screen. Runtime id is translated to the stored id the chat route is
+  // keyed by; action buttons resolve in place.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate)
+        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate, 'stack')
       }
     })
 

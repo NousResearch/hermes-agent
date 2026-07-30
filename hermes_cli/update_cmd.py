@@ -3398,14 +3398,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "  Any running Hermes gateways, Desktop backends, or other "
                     "long-lived processes still use the previous runtime."
                 )
-                print(
-                    "  Restart each of them before removing the parked venv"
-                    + (
-                        f": {runtime_repaired.backup_venv}"
-                        if runtime_repaired.backup_venv is not None
-                        else "."
-                    )
-                )
+                print("  Restart each of them to pick up the repaired runtime.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 

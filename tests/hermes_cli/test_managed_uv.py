@@ -430,6 +430,82 @@ class TestRuntimeRepair:
         assert reacquired is not None
         _release_repair_lock(reacquired)
 
+    def test_safe_runtime_sweeps_old_stale_backups(self, tmp_path):
+        """A fixed runtime reclaims aged venv.stale.runtime-* leftovers
+        (issue #73109) but leaves fresh ones (possible in-flight repair)."""
+        import os
+        import time as _time
+
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, sentinel = _make_runtime_install(tmp_path)
+        old_backup = root / f"{live.name}.stale.runtime-1-2-aaaa"
+        (old_backup / "bin").mkdir(parents=True)
+        (old_backup / "bin" / "python").write_text("old", encoding="utf-8")
+        stale_mtime = _time.time() - 7200
+        os.utime(old_backup, (stale_mtime, stale_mtime))
+
+        fresh_backup = root / f"{live.name}.stale.runtime-9-9-bbbb"
+        (fresh_backup / "bin").mkdir(parents=True)
+
+        current = _runtime_info(live / "bin" / "python", (3, 53, 1))
+        with patch("hermes_cli.managed_uv.platform.system", return_value="Linux"), \
+             patch(
+                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 return_value=current,
+             ):
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "safe"
+        assert not old_backup.exists(), "aged stale backup must be reclaimed"
+        assert fresh_backup.exists(), "fresh backup may be an in-flight repair"
+        assert sentinel.read_text(encoding="utf-8") == "live"
+
+    def test_successful_repair_removes_parked_backup(self, tmp_path):
+        """After a successful cutover the parked venv is removed instead of
+        leaking ~1 GB at the project root forever (issue #73109)."""
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, sentinel = _make_runtime_install(tmp_path)
+        current = _runtime_info(live / "bin" / "python", (3, 50, 4))
+        generation = root / ".hermes-runtime" / "python" / "generation-test"
+        candidate_python = generation / "bin" / "python"
+        candidate_python.parent.mkdir(parents=True)
+        candidate_python.write_text("candidate interpreter", encoding="utf-8")
+        fixed = _runtime_info(candidate_python, (3, 53, 1))
+        candidate_venv = root / ".hermes-runtime" / "venv-candidate"
+        (candidate_venv / "bin").mkdir(parents=True)
+        (candidate_venv / "bin" / "python").write_text(
+            "candidate venv interpreter", encoding="utf-8"
+        )
+
+        with patch("hermes_cli.managed_uv.platform.system", return_value="Linux"), \
+             patch(
+                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 side_effect=[current, current],
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._install_safe_python_generation",
+                 return_value=(generation, candidate_python, fixed),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._stage_candidate_venv",
+                 return_value=candidate_venv,
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._smoke_candidate_venv",
+                 return_value=(True, "", fixed),
+             ):
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "repaired"
+        assert result.backup_venv is not None
+        assert not result.backup_venv.exists(), (
+            "parked venv must be removed after a successful repair"
+        )
+        leftovers = list(root.glob(f"{live.name}.stale.runtime-*"))
+        assert leftovers == [], f"no stale markers may remain: {leftovers}"
+
 
 class TestRuntimeCutover:
     def test_os_lock_blocks_concurrent_repair_and_releases(self, tmp_path):

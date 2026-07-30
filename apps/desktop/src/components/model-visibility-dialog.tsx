@@ -135,7 +135,10 @@ export function ModelVisibilityDialog({
                         size="0.625rem"
                       />
                     </button>
-                    <Checkbox checked={checkState} onCheckedChange={next => setProviderVisible(provider, next !== false)} />
+                    <Checkbox
+                      checked={checkState}
+                      onCheckedChange={next => setProviderVisible(provider, next !== false)}
+                    />
                   </div>
                   {!collapsed &&
                     models.map(family => {

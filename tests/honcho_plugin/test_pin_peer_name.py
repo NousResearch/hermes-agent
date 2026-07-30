@@ -551,6 +551,23 @@ class TestPinTransition:
         assert sig_unpinned["memory.pin_user_identity"] is False
         assert not any(k.startswith("honcho.") for k in sig_pinned)
 
+    def test_identity_signature_reflects_both_session_prefixes(self, tmp_path, monkeypatch):
+        """Flipping either session prefix mid-flight must invalidate the cached agent: both feed the
+        ``resolve_session_name`` output frozen into the provider's ``_session_key`` at construction."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = {"apiKey": "k", "peerName": "Igor", "aiPeer": "hermes"}
+        provider = HonchoMemoryProvider()
+
+        cfg_path.write_text(json.dumps({**base, "sessionPeerPrefix": True, "sessionAiPeerPrefix": False}))
+        sig_user_only = provider.identity_signature()["session_prefixing"]
+        cfg_path.write_text(json.dumps({**base, "sessionPeerPrefix": True, "sessionAiPeerPrefix": True}))
+        sig_both = provider.identity_signature()["session_prefixing"]
+
+        assert sig_user_only != sig_both
+
 
 class TestProfilePeerUniqueness:
     """Each Hermes profile can pin to its own unique peerName.

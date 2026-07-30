@@ -703,7 +703,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 "pin_user_identity": bool(cfg.pin_peer_name),
                 "runtime_identity_prefix": cfg.runtime_peer_prefix or "",
                 "user_identity_aliases": sorted(aliases.items()),
-                "session_prefixing": [bool(cfg.session_peer_prefix)],
+                "session_prefixing": [bool(cfg.session_peer_prefix), bool(cfg.session_ai_peer_prefix)],
                 "a2a_sessions": bool(cfg.a2a_sessions),
             }
             self._identity_signature_memo = {memo_key: values}

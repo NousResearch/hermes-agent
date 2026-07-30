@@ -13,9 +13,9 @@ import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
-import { referenceKind, referenceStyle } from './reference-kinds'
+import { referenceKind, referenceRe, referenceStyle, WIRE_REFERENCE_KINDS } from './reference-kinds'
 
-const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
+const HERMES_REF_TYPES = WIRE_REFERENCE_KINDS
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
 
 /** Icon glyphs come from the shared reference vocabulary, so the popover row
@@ -116,15 +116,7 @@ const DirectiveIcon: FC<{ type: string; className?: string }> = ({ type, classNa
  */
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
-const HERMES_DIRECTIVE_RE = new RegExp(
-  '@(file|folder|url|image|tool|line|terminal|session):(' +
-    '`[^`\\n]+`' +
-    '|"[^"\\n]+"' +
-    "|'[^'\\n]+'" +
-    '|\\S+' +
-    ')',
-  'g'
-)
+const HERMES_DIRECTIVE_RE = referenceRe()
 
 // A skill referenced in a sent message — either the invocation that opens it
 // (`/work fix the leak`, which is all a skill turn ever renders as) or one

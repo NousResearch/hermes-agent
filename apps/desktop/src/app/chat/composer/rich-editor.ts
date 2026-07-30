@@ -15,13 +15,15 @@ import {
   type SlashChipKind,
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
-import { referenceKind } from '@/components/assistant-ui/reference-kinds'
+import { referenceKind, referenceRe } from '@/components/assistant-ui/reference-kinds'
 
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
-export const REF_RE = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+/** @see referenceRe — the shared pattern every surface recognises a reference
+ *  with. Module-level `/g` regexes carry `lastIndex`, so call sites reset it. */
+export const REF_RE = referenceRe()
 
 const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }
 

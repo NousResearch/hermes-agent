@@ -449,6 +449,56 @@ def _isolate_hermes_home(_hermetic_environment):
     return None
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_webbrowser(monkeypatch):
+    """Record browser-open attempts instead of opening real browser windows."""
+    import webbrowser as _webbrowser
+
+    opened: list[object] = []
+
+    def _record(url=None, *_args, **_kwargs):
+        opened.append(url)
+        return True
+
+    class _RecordingBrowser:
+        def open(self, url, *_args, **_kwargs):
+            return _record(url)
+
+        def open_new(self, url, *_args, **_kwargs):
+            return _record(url)
+
+        def open_new_tab(self, url, *_args, **_kwargs):
+            return _record(url)
+
+    browser = _RecordingBrowser()
+
+    for name in ("open", "open_new", "open_new_tab"):
+        monkeypatch.setattr(_webbrowser, name, _record, raising=False)
+    monkeypatch.setattr(_webbrowser, "get", lambda *_args, **_kwargs: browser)
+
+    return opened
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_macos_keychain_creds(request, monkeypatch):
+    """Default Anthropic credential resolution away from the real macOS Keychain."""
+    if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):
+        return None
+
+    try:
+        import agent.anthropic_adapter as _anthropic_adapter
+    except Exception:
+        return None
+
+    monkeypatch.setattr(
+        _anthropic_adapter,
+        "_read_claude_code_credentials_from_keychain",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    return None
+
+
 # ── Kanban write guard (#69283) ─────────────────────────────────────────────
 # When hermetic isolation is bypassed (stale checkout, wrong rootdir, direct
 # invocation), kanban writes silently pollute the real ~/.hermes. This autouse
@@ -729,6 +779,7 @@ def _wal_is_usable() -> bool:
 # is the env var alone.
 
 _AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
+_ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
@@ -750,6 +801,11 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_AUDIO_GUARD_BYPASS_MARK}: bypass the audio-playback guard (only "
         "for tests that genuinely need real TTS synthesis and speaker "
         "playback — there are none in the default suite).",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{_ALLOW_MACOS_KEYCHAIN_MARK}: allow a test to exercise the macOS "
+        "Keychain credential reader with its own subprocess/platform mocks.",
     )
 
     # The pyproject addopts pin ``--timeout-method=signal`` relies on

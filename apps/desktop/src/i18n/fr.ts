@@ -133,6 +133,7 @@ export const fr: Translations = {
     errors: {
       elevenLabsNeedsKey: 'STT ElevenLabs nécessite ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs a rejeté la clé API (401).',
+      diskFull: 'Le disque est plein. Libérez de l’espace disque, puis réessayez.',
       gatewayAuthFailed: "Échec de l'authentification du gateway — vérifiez API_SERVER_KEY.",
       methodNotAllowed:
         'Le backend du desktop a rejeté cette requête (405 Method Not Allowed). Essayez de redémarrer Hermes Desktop.',
@@ -394,6 +395,10 @@ export const fr: Translations = {
         credits: {
           label: 'Alertes de crédits',
           description: "L'accès aux crédits est suspendu ou rétabli."
+        },
+        plugin: {
+          label: 'Notifications des plugins',
+          description: "Un plugin desktop a envoyé une notification pendant que Hermes était en arrière-plan."
         }
       },
       test: 'Envoyer une notification de test',
@@ -441,10 +446,19 @@ export const fr: Translations = {
       uiScaleTitle: "Échelle de l'interface",
       uiScaleDesc: (percent: number) =>
         `Redimensionne le texte et les contrôles dans toute l'application. Cmd/Ctrl avec +, - et 0 fonctionne aussi. Actuel : ${percent}%.`,
+      terminalFontTitle: 'Police du terminal',
+      terminalFontDesc:
+        'Choisissez une police installée pour les terminaux Desktop. Les Nerd Fonts affichent correctement Powerlevel10k et les icônes du shell ; laissez vide pour utiliser JetBrains Mono intégré.',
+      terminalFontPlaceholder: 'MesloLGS NF ou une pile de polices CSS',
+      terminalFontPreview: 'Aperçu des glyphes',
+      terminalFontReset: 'Utiliser la valeur par défaut',
       translucencyTitle: 'Translucidité de la fenêtre',
       translucencyDesc: 'Voir votre bureau à travers toute la fenêtre. macOS et Windows uniquement.',
       backdropTitle: 'Arrière-plan de la conversation',
       backdropDesc: "L'image de statue discrète derrière la conversation.",
+      reactionsTitle: 'Réactions aux messages',
+      reactionsDesc:
+        'Réactions emoji façon iMessage — réagissez aux messages, et Hermes peut réagir aux vôtres.',
       embedsTitle: 'Intégrations en ligne',
       embedsDesc:
         "Les aperçus enrichis se chargent depuis des sites tiers (YouTube, X, …). Demander affiche un espace réservé jusqu'à ce que vous autorisiez chacun ; Toujours les charge automatiquement ; Désactivé conserve les liens simples.",
@@ -972,6 +986,8 @@ export const fr: Translations = {
       sshHermesPathTitle: 'Chemin Hermes (facultatif)',
       sshHermesPathDesc: 'Chemin complet vers le binaire hermes distant. Vide = détection automatique.',
       sshHermesPathPlaceholder: 'détection automatique',
+      sshRemoteProfileTitle: 'Profil distant (facultatif)',
+      sshRemoteProfileDesc: "Nom du profil sur l'hôte distant. Vide = utiliser le nom du profil Desktop.",
       sshTestConnection: 'Tester SSH',
       sshConnect: 'Se connecter',
       sshButtonsHint: "Enregistrer s'applique au prochain lancement. Connecter se reconnecte immédiatement.",
@@ -1417,6 +1433,10 @@ export const fr: Translations = {
     goTo: 'Aller à',
     goToSession: 'Aller à la session',
     branches: 'Branches',
+    projects: 'Projets',
+    openFolder: 'Ouvrir un dossier en tant que projet…',
+    openFolderAt: path => `Ouvrir le dossier en tant que projet — ${path}`,
+    newSessionInProject: project => `Nouvelle session dans ${project}`,
     commands: 'Commandes',
     startInBranch: branch => `Nouvelle conversation dans ${branch}`,
     commandCenter: 'Centre de commandes',
@@ -1436,7 +1456,8 @@ export const fr: Translations = {
       installed: 'Installé',
       generatedTag: 'Généré',
       adoptFailed: "Impossible d'adopter cet animal.",
-      toggleFailed: "Impossible de basculer l'animal.",
+      toggleFailed: enabled =>
+        `Impossible d'${enabled ? 'activer' : 'désactiver'} l'animal.`,
       noneAvailable: "Aucun animal disponible — choisissez-en un ci-dessous pour l'installer."
     },
     generatePet: {
@@ -2255,6 +2276,7 @@ export const fr: Translations = {
       'Ajustez ou continuez'
     ],
     startVoice: 'Démarrer la conversation vocale',
+    openDirective: 'Ouvrir',
     queueMessage: "Mettre le message en file d'attente",
     steer: "Diriger l'exécution en cours",
     stop: 'Arrêter',
@@ -2952,16 +2974,11 @@ export const fr: Translations = {
     closeRunningBody:
       "Cette conversation est toujours en cours (ou en attente de votre saisie). Fermer l'onglet la masque — la session conserve sa progression et peut être rouverte depuis la barre latérale.",
     closeRunningConfirm: "Fermer l'onglet",
+    reload: 'Recharger',
     closeOthers: 'Fermer les autres',
     closeToRight: 'Fermer à droite',
     closeAll: 'Tout fermer',
     newSessionTab: 'Nouvel onglet de session',
-    split: dir => `Diviser ${dir}`,
-    move: dir => `Déplacer ${dir}`,
-    dirUp: 'en haut',
-    dirDown: 'en bas',
-    dirLeft: 'à gauche',
-    dirRight: 'à droite',
     pluginDisabled: pluginId => `Plugin « ${pluginId} » désactivé`,
     pluginDisabledBody: 'Réactivez-le dans Paramètres → Plugins pour faire revenir le panneau.',
     missingPane: paneId => `panneau manquant : ${paneId}`,
@@ -3011,6 +3028,9 @@ export const fr: Translations = {
       refresh: 'Actualiser',
       moreActions: "Plus d'actions",
       branchNewChat: 'Créer une branche dans une nouvelle conversation',
+      react: 'Réagir',
+      filesChanged: count => (count === 1 ? '1 fichier modifié' : `${count} fichiers modifiés`),
+      reviewChanges: 'Examiner',
       dismissError: "Ignorer l'erreur",
       readAloudFailed: 'Échec de la lecture à voix haute',
       preparingAudio: "Préparation de l'audio…",
@@ -3325,7 +3345,7 @@ export const fr: Translations = {
     sidebar: {
       title: 'Barre latérale',
       description: 'Affiche la barre latérale mobile.',
-      toggle: 'Afficher/Masquer la barre latérale'
+      toggle: open => `${open ? 'Afficher' : 'Masquer'} la barre latérale`
     }
   }
 }

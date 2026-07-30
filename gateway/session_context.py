@@ -331,6 +331,57 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+# Surfaces that are not a human chat channel. The gateway binds a platform
+# value (``telegram``) to HERMES_SESSION_PLATFORM, while the CLI, TUI, and
+# desktop bind HERMES_SESSION_SOURCE (``cli``, ``tui``, ``desktop``) and leave
+# the platform empty — so both have to be consulted. ``local``, ``api_server``,
+# ``webhook``, and ``msgraph_webhook`` are real Platform values that reach
+# HERMES_SESSION_PLATFORM but have no attachment channel behind them.
+# Default-deny: an unrecognized identity counts as messaging so a newly added
+# chat platform is never treated as a private surface before this set is
+# updated. Mirrors LOCAL_SESSION_SOURCE_IDS in
+# apps/desktop/src/lib/session-source.ts; keep roughly in sync when adding a
+# local or programmatic surface.
+NON_MESSAGING_SESSION_SURFACES = frozenset(
+    {
+        "",
+        "api_server",
+        "cli",
+        "codex",
+        "desktop",
+        "gateway",
+        "local",
+        "msgraph_webhook",
+        "tool",
+        "tui",
+        "webhook",
+    }
+)
+
+
+def session_is_messaging_surface() -> bool:
+    """Whether this turn is delivered over a human messaging channel.
+
+    Callers use this to decide anything that differs between "the user is
+    reading a chat message" and "the user is at a machine they own": whether
+    to emit a delivery tag, whether a file has to land somewhere the gateway
+    is allowed to send from, whether narration would read as chat noise.
+
+    Resolves ``HERMES_PLATFORM``, then the session platform, then the session
+    source, and reports messaging when any of them names a surface outside
+    :data:`NON_MESSAGING_SESSION_SURFACES`.
+    """
+    import os
+
+    platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM", "")
+    source = get_session_env("HERMES_SESSION_SOURCE", "")
+    for identity in (platform, source):
+        identity = str(identity or "").strip().lower()
+        if identity and identity not in NON_MESSAGING_SESSION_SURFACES:
+            return True
+    return False
+
+
 def declare_stateless_channel() -> None:
     """Declare that this session cannot receive an async background completion.
 

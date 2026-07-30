@@ -377,8 +377,27 @@ async def _save_if_ready(raw: str, save_to) -> str:
 
     details["saved_path"] = str(target)
     details["saved_bytes"] = size
-    payload["result"] = f"Saved to {target}. " + str(payload.get("result") or "")
+    payload["result"] = _delivery_lead_in(target) + str(payload.get("result") or "")
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _delivery_lead_in(target) -> str:
+    """Opens the result text, ahead of the gateway's own delivery guidance.
+
+    On a messaging platform the tag is spelled out rather than described. The
+    model has to reproduce this path exactly or the file is not sent, and the
+    reply is published either way — the tag is stripped from the text whether
+    or not it named a real file, so a wrong path reads to the user as a
+    message that simply forgot the attachment. Handing over the finished line
+    removes the step where that goes wrong; only this side knows the path.
+    """
+    if _delivers_as_an_attachment():
+        return (
+            f"Saved to {target}. To deliver it, copy the next line into your reply exactly as "
+            f"written, alone on its own line, with nothing added around it:\n"
+            f"MEDIA:{target}\n"
+        )
+    return f"Saved to {target}. "
 
 
 async def _download_video(url: str, save_to) -> tuple:
@@ -428,6 +447,47 @@ def _filename_from_url(url: str) -> str:
     return name or "flux3-video.mp4"
 
 
+def _delivers_as_an_attachment() -> bool:
+    """True on a surface where the clip is received rather than opened off disk.
+
+    Deferred to the shared classifier so this tool cannot drift from the rest
+    of the codebase about what counts as a chat channel. It matters here that
+    the API server and webhooks are *not* one: they carry a platform value but
+    no attachment channel, and neither strips an unfulfilled MEDIA: tag out of
+    the reply, so treating them as messaging puts the literal tag in front of
+    the caller.
+    """
+    try:
+        from gateway.session_context import session_is_messaging_surface
+
+        return session_is_messaging_surface()
+    except Exception:
+        return False
+
+
+def _default_directory():
+    """Where a clip lands when the caller named no location.
+
+    On a messaging platform the user has no filesystem — the only way they
+    ever see the clip is as an attachment — so it goes to the gateway's own
+    video cache, which is an unconditionally allowed delivery root. Downloads
+    is not: an operator running HERMES_MEDIA_DELIVERY_STRICT=1 delivers only
+    from the cache roots, so a clip saved to Downloads there is dropped on the
+    way out and the user is shown a reply with nothing attached.
+    """
+    from pathlib import Path
+
+    if _delivers_as_an_attachment():
+        try:
+            from hermes_constants import get_hermes_dir
+
+            return get_hermes_dir("cache/videos", "video_cache")
+        except Exception:
+            logger.debug("Could not resolve the video cache dir; using Downloads", exc_info=True)
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.is_dir() else Path.cwd()
+
+
 def _resolve_destination(save_to, filename: str):
     """Where to write, honouring an explicit request and never overwriting."""
     from pathlib import Path
@@ -439,8 +499,7 @@ def _resolve_destination(save_to, filename: str):
         else:
             directory, name = requested.parent, requested.name
     else:
-        downloads = Path.home() / "Downloads"
-        directory, name = (downloads if downloads.is_dir() else Path.cwd()), filename
+        directory, name = _default_directory(), filename
 
     directory.mkdir(parents=True, exist_ok=True)
     return _free_path(directory / name)

@@ -514,7 +514,21 @@ def _rewrite_v4a_patch_paths_for_host(
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
-    normalized = os.path.normpath(_expand_tilde(path))
+    expanded = _expand_tilde(path)
+    nt_namespace_path = expanded.replace("\\", "/").lower()
+    if nt_namespace_path.startswith("//./"):
+        return True
+    if nt_namespace_path.startswith("//?/"):
+        namespace_target = nt_namespace_path[4:]
+        is_drive_long_path = (
+            len(namespace_target) >= 3
+            and "a" <= namespace_target[0] <= "z"
+            and namespace_target[1:3] == ":/"
+        )
+        if not is_drive_long_path:
+            return True
+
+    normalized = os.path.normpath(expanded)
     if os.sep == "\\":
         # On Windows the read I/O shells through Git Bash, whose MSYS layer
         # emulates /dev/* and /proc/* as real (often blocking or infinite)
@@ -573,6 +587,8 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     the final resolved path so aliases to devices cannot bypass the guard.
     """
     expanded = _expand_tilde(filepath)
+    if _is_blocked_device_path(expanded):
+        return True
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
@@ -2116,6 +2132,18 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         cached_search_nf = _check_not_found_cache("search", resolved_search_path, task_id)
         if cached_search_nf is not None:
             return cached_search_nf
+
+        # read_file_tool has the same host-symlink behavior on upstream/main; scope this PR's no-host-dereference correction to search.
+        if not _uses_container_paths(task_id):
+            device_path = str(resolved_path) if resolved_path else path
+            device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
+            if _is_blocked_device(device_path, base_dir=device_base):
+                return json.dumps({
+                    "error": (
+                        f"Cannot search '{path}': this is a device file that would "
+                        "block or produce infinite output."
+                    ),
+                }, ensure_ascii=False)
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(

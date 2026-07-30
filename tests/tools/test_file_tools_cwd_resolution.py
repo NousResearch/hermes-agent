@@ -15,8 +15,10 @@ Core invariant these tests pin:
   never left to resolve against whatever the process cwd happens to be.
 """
 
+import json
 import os
 from pathlib import Path, PurePosixPath
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -132,6 +134,36 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
 
     assert resolved == container_mount / "oilsands-sim" / "README.md"
     assert resolved != host_project / "oilsands-sim" / "README.md"
+
+
+def test_container_search_does_not_follow_host_device_symlink(monkeypatch):
+    """A container path is classified by its backend, not a colliding host link."""
+    mock_ops = MagicMock()
+    result_obj = MagicMock()
+    result_obj.matches = []
+    result_obj.to_dict.return_value = {"matches": []}
+    mock_ops.search.return_value = result_obj
+    host_device_check = MagicMock(return_value=True)
+
+    monkeypatch.setattr(ft, "_uses_container_paths", lambda task_id="default": True)
+    monkeypatch.setattr(
+        ft,
+        "_resolve_path_for_task",
+        lambda path, task_id="default": Path("/host/workspace/regular.txt"),
+    )
+    monkeypatch.setattr(ft, "get_read_block_error", lambda path: None)
+    monkeypatch.setattr(ft, "_is_blocked_device", host_device_check)
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": mock_ops)
+
+    result = json.loads(ft.search_tool(
+        pattern="x",
+        path="regular.txt",
+        task_id="container-device-collision",
+    ))
+
+    assert result == {"matches": []}
+    mock_ops.search.assert_called_once()
+    host_device_check.assert_not_called()
 
 
 class _DummyDockerEnvironment:

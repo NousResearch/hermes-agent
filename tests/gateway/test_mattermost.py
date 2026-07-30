@@ -352,18 +352,48 @@ class TestMattermostSend:
         assert self.adapter._api_get.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_thread_metadata_avoids_redundant_root_lookup(self):
-        self.adapter._api_get = AsyncMock()
-
+    async def test_thread_metadata_root_is_resolved_once_then_cached(self):
+        """A metadata root still costs one lookup, but only one per thread."""
+        self.adapter._api_get = AsyncMock(
+            return_value={"id": "thread_root", "root_id": ""}
+        )
         self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
-        await self.adapter.send(
-            "channel_1", "Reply!",
-            "thread_root",
-            {"thread_id": "thread_root"},
+
+        for _ in range(2):
+            result = await self.adapter.send(
+                "channel_1", "Reply!", "thread_root", {"thread_id": "thread_root"},
+            )
+            assert result.success
+            assert self.adapter._api_post.await_args.args[1]["root_id"] == "thread_root"
+        self.adapter._api_get.assert_awaited_once_with("posts/thread_root")
+
+    @pytest.mark.asyncio
+    async def test_thread_metadata_reply_id_resolves_to_thread_root(self):
+        """A recorded thread_id pointing at a reply must not become root_id."""
+        self.adapter._api_get = AsyncMock(
+            return_value={"id": "user_reply", "root_id": "thread_root"}
+        )
+        self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
+
+        result = await self.adapter.send(
+            "channel_1", "Reply!", metadata={"thread_id": "user_reply"},
         )
 
+        assert result.success
         assert self.adapter._api_post.await_args.args[1]["root_id"] == "thread_root"
-        self.adapter._api_get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_thread_metadata_survives_transient_lookup_failure(self):
+        """Keep the thread on a failed lookup rather than flattening it."""
+        self.adapter._api_get = AsyncMock(return_value={})
+        self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
+
+        result = await self.adapter.send(
+            "channel_1", "Reply!", metadata={"thread_id": "thread_root"},
+        )
+
+        assert result.success
+        assert self.adapter._api_post.await_args.args[1]["root_id"] == "thread_root"
 
     @pytest.mark.asyncio
     async def test_thread_metadata_falls_back_when_reply_lookup_fails(self):
@@ -569,7 +599,8 @@ class TestMattermostAutoThreadRouting:
     async def test_explicit_dm_thread_metadata_is_always_preserved(self):
         self.adapter._auto_thread = False
         self.adapter._dm_auto_thread = False
-        self.adapter._api_get = AsyncMock()
+        # dm_root is already a thread root, so resolution returns it unchanged.
+        self.adapter._api_get = AsyncMock(return_value={"id": "dm_root", "root_id": ""})
 
         self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
         await self.adapter.send(
@@ -578,8 +609,9 @@ class TestMattermostAutoThreadRouting:
             {"thread_id": "dm_root", "chat_type": "dm"},
         )
 
-        assert self.adapter._api_post.await_args.args[1].get("root_id") == "dm_root"
-        self.adapter._api_get.assert_not_awaited()
+        assert self.adapter._api_post.await_args.args[1]["root_id"] == "dm_root"
+        # Only the metadata root is looked up — reply_to is never consulted.
+        self.adapter._api_get.assert_awaited_once_with("posts/dm_root")
 
     @pytest.mark.asyncio
     async def test_existing_reply_root_is_preserved_without_metadata(self):

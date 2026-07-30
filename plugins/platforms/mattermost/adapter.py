@@ -307,8 +307,9 @@ class MattermostAdapter(BasePlatformAdapter):
         payload = _with_mentions_disabled(base)
         metadata_root_id = (metadata.get("thread_id") or metadata.get("root_id")) if isinstance(metadata, dict) else None
         if metadata_root_id:
-            # Explicit threads are preserved independently of auto-thread policy.
-            payload["root_id"] = str(metadata_root_id)
+            # Delayed/synthesized metadata may name a reply, not its root.
+            # Preserve the recorded ID on transient lookup failure.
+            payload["root_id"] = await self._resolve_root_id(str(metadata_root_id)) or str(metadata_root_id)
         elif reply_to:
             resolved = await self._resolve_root_id(str(reply_to))
             if resolved and resolved != str(reply_to):

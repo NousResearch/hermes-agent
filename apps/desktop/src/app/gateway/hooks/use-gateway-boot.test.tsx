@@ -1,8 +1,10 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { translateNow } from '@/i18n'
 import type * as BootStore from '@/store/boot'
-import { $desktopBoot, completeDesktopBoot } from '@/store/boot'
+import { $desktopBoot, completeDesktopBoot, failDesktopBoot } from '@/store/boot'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { $connection, $gatewayState } from '@/store/session'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -11,7 +13,11 @@ import { useGatewayBoot } from './use-gateway-boot'
 vi.mock('@/store/boot', async importOriginal => {
   const actual = await importOriginal<typeof BootStore>()
 
-  return { ...actual, completeDesktopBoot: vi.fn(actual.completeDesktopBoot) }
+  return {
+    ...actual,
+    completeDesktopBoot: vi.fn(actual.completeDesktopBoot),
+    failDesktopBoot: vi.fn(actual.failDesktopBoot)
+  }
 })
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
@@ -181,7 +187,9 @@ beforeEach(() => {
     timestamp: Date.now(),
     visible: true
   })
+  clearNotifications()
   vi.mocked(completeDesktopBoot).mockClear()
+  vi.mocked(failDesktopBoot).mockClear()
 })
 
 afterEach(() => {
@@ -218,6 +226,19 @@ async function advanceBackoff() {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000)
   })
+}
+
+// The boot backoff is 1s, 2s, 4s, 8s then capped at 15s, and the dial lands a
+// little after the nominal delay, so neither a fixed small advance nor a flat
+// 15s one steps exactly one dial. Advance in small slices until the dial we are
+// waiting for actually happens.
+async function advanceToDial(expected: number) {
+  for (let i = 0; i < 200 && FakeWebSocket.instances.length < expected; i += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+    })
+  }
+  expect(FakeWebSocket.instances).toHaveLength(expected)
 }
 
 function deferred<T>() {
@@ -451,30 +472,37 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances).toHaveLength(1)
   })
 
-  it('BOOT FIX: repeated transient failures escalate to a recoverable error, and retries continue afterward', async () => {
+  it('BOOT FIX: the sixth consecutive connect failure escalates once, not on the fifth or again afterward', async () => {
     FakeWebSocket.mode = 'fail'
     render(<Harness />)
     await flushAsync()
-    expect($desktopBoot.get().error).toBeNull()
 
-    // Walk the backoff past the escalation threshold (mirrors the post-boot
-    // reconnect loop's own >=6-attempt walk above).
-    for (let i = 0; i < 8; i += 1) {
-      await advanceBackoff()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($desktopBoot.get().error).toBeNull()
+    expect(failDesktopBoot).not.toHaveBeenCalled()
+    expect($notifications.get()).toHaveLength(0)
+
+    for (let expectedDials = 2; expectedDials <= 5; expectedDials += 1) {
+      await advanceToDial(expectedDials)
+      expect(failDesktopBoot).not.toHaveBeenCalled()
+      expect($desktopBoot.get().error).toBeNull()
+      expect($notifications.get()).toHaveLength(0)
     }
 
-    expect($desktopBoot.get().error).toBeTruthy()
-    const attemptsAtEscalation = FakeWebSocket.instances.length
-    expect(attemptsAtEscalation).toBeGreaterThan(1)
+    await advanceToDial(6)
 
-    // Retrying must not stop once the overlay is up — a later attempt (the
-    // "7th try") still runs and can recover.
-    FakeWebSocket.mode = 'open'
+    expect(failDesktopBoot).toHaveBeenCalledTimes(1)
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($notifications.get()).toHaveLength(1)
+    expect($notifications.get()[0]?.title).toBe(translateNow('boot.errors.desktopBootFailed'))
+
+    const escalatedError = $desktopBoot.get().error
+
+    await advanceBackoff()
     await advanceBackoff()
 
-    expect($gatewayState.get()).toBe('open')
-    expect($desktopBoot.get().error).toBeNull()
-    expect(FakeWebSocket.instances.length).toBeGreaterThan(attemptsAtEscalation)
+    expect(failDesktopBoot).toHaveBeenCalledTimes(1)
+    expect($desktopBoot.get().error).toBe(escalatedError)
   })
 
   it('BOOT GENERATION: a boot connection released after a completed soft switch cannot commit stale state', async () => {

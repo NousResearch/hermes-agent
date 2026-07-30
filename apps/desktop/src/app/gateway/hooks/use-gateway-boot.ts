@@ -669,7 +669,10 @@ export function useGatewayBoot({
           isGatewayReauthRequired(err) || typeof (err as { wsCloseCode?: unknown } | null)?.wsCloseCode === 'number'
 
         if (reachedConnectPhase && !wsOpen && !gatewayRefusedHandshake) {
-          if (bootRetryAttempt >= RECONNECT_ESCALATE_AFTER && !bootEscalated) {
+          // bootRetryAttempt counts retries already SCHEDULED, and scheduleBootRetry()
+          // below is what increments it — so the failure being handled right now is not
+          // in the count yet. Add it, or the overlay appears one dial late.
+          if (bootRetryAttempt + 1 >= RECONNECT_ESCALATE_AFTER && !bootEscalated) {
             bootEscalated = true
             const message = err instanceof Error ? err.message : String(err)
             failDesktopBoot(message)

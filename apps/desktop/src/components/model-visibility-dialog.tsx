@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -125,7 +126,9 @@ export function ModelVisibilityDialog({
                       onClick={() => toggleCollapsedProvider(provider.slug)}
                       type="button"
                     >
-                      <span className="min-w-0 truncate">{provider.name}</span>
+                      <span className="min-w-0 truncate">
+                        <HighlightMatches query={search} text={provider.name} />
+                      </span>
                       <DisclosureCaret
                         className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
                         open={!collapsed}
@@ -145,7 +148,7 @@ export function ModelVisibilityDialog({
                           key={key}
                         >
                           <span className="min-w-0 flex-1 truncate">
-                            {name}
+                            <HighlightMatches query={search} text={name} />
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                           </span>
                           <Switch

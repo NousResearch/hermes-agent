@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
@@ -13,6 +13,8 @@ import { formatModelStatusLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
 
+import { onComposerModelMenuRequest } from './focus'
+import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
 
 const PILL = cn(
@@ -51,6 +53,28 @@ export function ModelPill({
   const defaultEffort = useStore($defaultReasoningEffort)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
+  const scope = useComposerScope()
+  const hasLiveMenu = Boolean(model.modelMenuContent)
+
+  // The `composer.modelPicker` hotkey, routed to exactly one surface (the pane
+  // under the pointer, else the active composer — see requestModelMenuToggle).
+  // Toggles the live dropdown; with no live menu (gateway closed) it opens the
+  // full picker dialog, same as clicking the pill.
+  useEffect(
+    () =>
+      onComposerModelMenuRequest(target => {
+        if (target !== scope.target || disabled) {
+          return
+        }
+
+        if (hasLiveMenu) {
+          setOpen(prev => !prev)
+        } else {
+          setModelPickerOpen(true)
+        }
+      }),
+    [scope.target, disabled, hasLiveMenu]
+  )
 
   // The composer pick is sticky: a manual selection is pinned and every NEW
   // chat uses it instead of the Settings → Model default — silently, which has

@@ -52,7 +52,7 @@ import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
+import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
 import { openSession } from '../open-session'
 import {
   AGENTS_ROUTE,
@@ -134,7 +134,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
     'composer.focus': () => requestComposerFocus('active'),
-    'composer.modelPicker': () => setModelPickerOpen(true),
+    // Toggle the composer pill's live model dropdown (pane under the pointer,
+    // else active composer); no chat surface on screen → the full dialog.
+    'composer.modelPicker': () => {
+      if (!requestModelMenuToggle()) {
+        setModelPickerOpen(true)
+      }
+    },
     'composer.voice': requestVoiceToggle,
 
     'nav.commandPalette': toggleCommandPalette,

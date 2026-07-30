@@ -147,6 +147,25 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
 
+# /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio.
+# The remaining suffixes can expose secrets, process arguments, memory layout,
+# raw memory, stack-canary seeds, or virtual-to-physical address mappings.
+# endswith also covers /proc/<pid>/task/<tid>/<suffix>.
+_BLOCKED_PROC_PATH_SUFFIXES = (
+    "/fd/0",
+    "/fd/1",
+    "/fd/2",
+    "/environ",
+    "/cmdline",
+    "/maps",
+    "/smaps",
+    "/smaps_rollup",
+    "/numa_maps",
+    "/mem",
+    "/auxv",
+    "/pagemap",
+)
+
 
 def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
@@ -512,6 +531,13 @@ def _rewrite_v4a_patch_paths_for_host(
     return patch
 
 
+def _is_blocked_proc_path(normalized: str) -> bool:
+    """Return True for blocked /proc pseudo-files using the shared policy."""
+    return normalized.startswith("/proc/") and normalized.endswith(
+        _BLOCKED_PROC_PATH_SUFFIXES
+    )
+
+
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
     expanded = _expand_tilde(path)
@@ -548,35 +574,43 @@ def _is_blocked_device_path(path: str) -> bool:
         normalized = normalized.replace("\\", "/")
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
-    # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
-    if normalized.startswith("/proc/") and normalized.endswith(
-        ("/fd/0", "/fd/1", "/fd/2")
-    ):
-        return True
-    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
-    # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
-    # memory layout (ASLR bypass) from the host process (issue #4427).
-    # /proc/*/mem exposes raw process memory; block it as defense-in-depth even
-    # though it requires address knowledge to exploit usefully.
-    # /proc/*/auxv leaks AT_RANDOM (stack canary seed) plus AT_BASE/AT_PHDR
-    # load addresses — an ASLR oracle on par with maps. /proc/*/pagemap exposes
-    # virtual->physical translation. Both are blocked alongside the maps family.
-    # endswith matches both /proc/<pid>/X and /proc/<pid>/task/<tid>/X.
-    if normalized.startswith("/proc/") and normalized.endswith(
-        (
-            "/environ",
-            "/cmdline",
-            "/maps",
-            "/smaps",
-            "/smaps_rollup",
-            "/numa_maps",
-            "/mem",
-            "/auxv",
-            "/pagemap",
-        )
-    ):
-        return True
-    return False
+    return _is_blocked_proc_path(normalized)
+
+
+def _is_blocked_container_device_path(path: str) -> bool:
+    """Return True for blocked paths under POSIX container semantics."""
+    segments = [s for s in path.split("/") if s and s != "."]
+    stack: list[str] = []
+    for seg in segments:
+        if seg == "..":
+            if stack:
+                stack.pop()
+            continue
+        stack.append(seg)
+        # /proc/<pid|self|thread-self>/root and its task/<tid>/root form are
+        # the container's own root, so everything so far collapses to "/".
+        if (
+            len(stack) in (3, 5)
+            and stack[0] == "proc"
+            and (
+                stack[1] in ("self", "thread-self")
+                or (stack[1].isascii() and stack[1].isdigit())
+            )
+            and (
+                stack[2:] == ["root"]
+                or (
+                    len(stack) == 5
+                    and stack[2] == "task"
+                    and stack[3].isascii()
+                    and stack[3].isdigit()
+                    and stack[4] == "root"
+                )
+            )
+        ):
+            stack.clear()
+    normalized = "/" + "/".join(stack)
+
+    return normalized in _BLOCKED_DEVICE_PATHS or _is_blocked_proc_path(normalized)
 
 
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
@@ -2134,16 +2168,25 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             return cached_search_nf
 
         # read_file_tool has the same host-symlink behavior on upstream/main; scope this PR's no-host-dereference correction to search.
-        if not _uses_container_paths(task_id):
+        if _uses_container_paths(task_id):
+            device_path = str(resolved_path) if resolved_path else path
+            blocked_device = _is_blocked_container_device_path(device_path)
+            if not blocked_device and path.startswith("/"):
+                # The resolver normalizes `..` away before we see it, and for an absolute
+                # container path the walk below is authoritative about `..` itself.
+                blocked_device = _is_blocked_container_device_path(path)
+        else:
             device_path = str(resolved_path) if resolved_path else path
             device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
-            if _is_blocked_device(device_path, base_dir=device_base):
-                return json.dumps({
-                    "error": (
-                        f"Cannot search '{path}': this is a device file that would "
-                        "block or produce infinite output."
-                    ),
-                }, ensure_ascii=False)
+            blocked_device = _is_blocked_device(device_path, base_dir=device_base)
+
+        if blocked_device:
+            return json.dumps({
+                "error": (
+                    f"Cannot search '{path}': this is a device file that would "
+                    "block or produce infinite output."
+                ),
+            }, ensure_ascii=False)
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(

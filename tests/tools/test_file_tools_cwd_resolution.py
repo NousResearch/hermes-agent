@@ -136,34 +136,104 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
     assert resolved != host_project / "oilsands-sim" / "README.md"
 
 
-def test_container_search_does_not_follow_host_device_symlink(monkeypatch):
-    """A container path is classified by its backend, not a colliding host link."""
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("/proc/1/task/1/root/dev/zero", True),
+        ("/proc/self/root", False),
+        ("/workspace/proc/self/root/dev/zero", False),
+        ("/proc/١/root/dev/zero", False),
+        ("/proc/1/task/١/root/dev/zero", False),
+    ],
+)
+def test_container_device_path_canonicalization_walk(path, expected):
+    assert ft._is_blocked_container_device_path(path) is expected
+
+
+def _empty_search_ops():
     mock_ops = MagicMock()
-    result_obj = MagicMock()
-    result_obj.matches = []
+    result_obj = MagicMock(matches=[])
     result_obj.to_dict.return_value = {"matches": []}
     mock_ops.search.return_value = result_obj
-    host_device_check = MagicMock(return_value=True)
+    return mock_ops
 
-    monkeypatch.setattr(ft, "_uses_container_paths", lambda task_id="default": True)
-    monkeypatch.setattr(
-        ft,
-        "_resolve_path_for_task",
-        lambda path, task_id="default": Path("/host/workspace/regular.txt"),
+
+@pytest.fixture
+def _container_search_backend(monkeypatch):
+    mock_ops = _empty_search_ops()
+    file_ops_factory = MagicMock(return_value=mock_ops)
+    host_check = MagicMock(
+        side_effect=AssertionError("container search used a host device predicate")
     )
-    monkeypatch.setattr(ft, "get_read_block_error", lambda path: None)
-    monkeypatch.setattr(ft, "_is_blocked_device", host_device_check)
-    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": mock_ops)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setenv("TERMINAL_CWD", "/workspace")
+    monkeypatch.setattr(ft, "get_read_block_error", lambda candidate: None)
+    monkeypatch.setattr(ft, "_is_blocked_device_path", host_check)
+    monkeypatch.setattr(ft, "_is_blocked_device", host_check)
+    monkeypatch.setattr(ft, "_get_file_ops", file_ops_factory)
+    return mock_ops, file_ops_factory
 
-    result = json.loads(ft.search_tool(
-        pattern="x",
-        path="regular.txt",
-        task_id="container-device-collision",
-    ))
+
+@pytest.mark.parametrize(
+    "path, blocked",
+    [
+        ("/proc/self/root/../dev/zero", True),
+        ("/proc/1/task/1/root/dev/zero", True),
+        ("/proc/1/root/proc/self/root/dev/zero", True),
+        ("/proc/thread-self/root/dev/zero", True),
+        ("/dev/zero", True),
+        ("/proc/self/environ", True),
+        ("//./etc/hosts", False),
+        ("//./workspace/tools", False),
+        ("/etc/hosts", False),
+        ("tools", False),
+        ("workspace/src", False),
+        ("dev/zero", False),
+        ("/workspace/proc/self/root/dev/zero", False),
+        ("/proc/self/root", False),
+    ],
+)
+def test_container_search_classifies_paths_through_production_resolution(
+    _container_search_backend, path, blocked
+):
+    """Use search_tool's real resolver with a configured Docker cwd."""
+    mock_ops, file_ops_factory = _container_search_backend
+    task_id = "container-production-resolution"
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id=task_id))
+
+    if blocked:
+        assert set(result) == {"error"}
+        assert "device file" in result["error"]
+        file_ops_factory.assert_not_called()
+    else:
+        assert result == {"matches": []}
+        file_ops_factory.assert_called_once_with(task_id)
+
+
+def test_local_search_dispatches_posix_double_slash_path_after_resolution(monkeypatch):
+    path = "//./etc/hosts"
+    resolved_path = PurePosixPath("/etc/hosts")
+    file_ops_factory = MagicMock(return_value=_empty_search_ops())
+    local_device_check = MagicMock(return_value=False)
+
+    assert ft._is_blocked_device_path(path)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "local"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(
+        ft, "_resolve_path_for_task",
+        lambda candidate, task_id="default": resolved_path,
+    )
+    monkeypatch.setattr(ft, "get_read_block_error", lambda candidate: None)
+    monkeypatch.setattr(ft, "_is_blocked_device", local_device_check)
+    monkeypatch.setattr(ft, "_get_file_ops", file_ops_factory)
+
+    result = json.loads(ft.search_tool(pattern="x", path=path, task_id="local-posix"))
 
     assert result == {"matches": []}
-    mock_ops.search.assert_called_once()
-    host_device_check.assert_not_called()
+    local_device_check.assert_called_once_with(str(resolved_path), base_dir=None)
 
 
 class _DummyDockerEnvironment:

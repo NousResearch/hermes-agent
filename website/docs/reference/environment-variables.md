@@ -483,7 +483,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATTERMOST_HOME_CHANNEL` | Channel ID for proactive message delivery (cron, notifications) |
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
-| `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `MATTERMOST_AUTO_THREAD` | Override `mattermost.auto_thread` (`true`/`false`) |
+| `MATTERMOST_DM_AUTO_THREAD` | Override `mattermost.dm_auto_thread` (`true`/`false`) |
+| `MATTERMOST_REPLY_MODE` | Deprecated compatibility fallback; use the two auto-thread settings instead |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |

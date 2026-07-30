@@ -31,9 +31,17 @@ optional_env:
     description: "Default channel ID for cron / notification delivery"
     prompt: "Home channel ID"
     password: false
+  - name: MATTERMOST_AUTO_THREAD
+    description: "Override mattermost.auto_thread (true/false). Default: false."
+    prompt: "Auto-thread channel messages? (true/false)"
+    password: false
+  - name: MATTERMOST_DM_AUTO_THREAD
+    description: "Override mattermost.dm_auto_thread (true/false). Default: false."
+    prompt: "Auto-thread direct messages? (true/false)"
+    password: false
   - name: MATTERMOST_REPLY_MODE
-    description: "How replies are sent: 'thread' (nested) or 'off' (flat). Default: off."
-    prompt: "Reply mode (thread|off)"
+    description: "Deprecated compatibility fallback. Use mattermost.auto_thread and mattermost.dm_auto_thread."
+    prompt: "Deprecated reply mode (thread|off)"
     password: false
   - name: MATTERMOST_REQUIRE_MENTION
     description: "Require @bot mention in channels (default true). Set false for free-response everywhere."

@@ -39,16 +39,35 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from contextvars import ContextVar, Token
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Sequence
+from typing import Dict, FrozenSet, List, MutableMapping, Optional, Sequence
 
 # Bump ONLY for breaking changes to the required contract surface
 # (abstract-method signatures, FetchResult required fields).  Additive
 # optional hooks must ship with defaults and must NOT bump this.
 SECRET_SOURCE_API_VERSION = 1
+
+_SOURCE_ENVIRONMENT: ContextVar[Optional[MutableMapping[str, str]]]
+_SOURCE_ENVIRONMENT = ContextVar("hermes_secret_source_environment", default=None)
+
+
+def set_source_environment(environ: MutableMapping[str, str]) -> Token:
+    """Install a per-fetch environment view without changing ``os.environ``."""
+    return _SOURCE_ENVIRONMENT.set(environ)
+
+
+def reset_source_environment(token: Token) -> None:
+    _SOURCE_ENVIRONMENT.reset(token)
+
+
+def get_source_environment() -> MutableMapping[str, str]:
+    """Return the active per-fetch environment, or the process environment."""
+    environ = _SOURCE_ENVIRONMENT.get()
+    return environ if environ is not None else os.environ
 
 # Timeout the orchestrator enforces around fetch() when the source's
 # config section doesn't override it.  Generous because a first run may

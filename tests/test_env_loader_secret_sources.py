@@ -135,6 +135,45 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
     )
 
 
+def test_cold_profile_bitwarden_uses_profile_bootstrap_without_global_env(
+    tmp_path, monkeypatch
+):
+    """Real Bitwarden adapter reads its token from the profile-local view."""
+    monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "BWS_ACCESS_TOKEN=profile-bootstrap\n", encoding="utf-8"
+    )
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: true\n"
+        "    project_id: test-project\n"
+        "    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8",
+    )
+
+    import agent.secret_sources.bitwarden as bw_module
+    from agent.secret_sources import registry as reg_module
+
+    captured = {}
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+
+    def _fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return {"ANTHROPIC_API_KEY": "profile-provider-key"}, []
+
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _fake_fetch)
+    reg_module._reset_registry_for_tests()
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "ANTHROPIC_API_KEY": "profile-provider-key"
+    }
+    assert captured["access_token"] == "profile-bootstrap"
+    assert os.environ.get("BWS_ACCESS_TOKEN") is None
+    assert os.environ.get("ANTHROPIC_API_KEY") is None
+
+
 def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch):
     """Disabled Bitwarden config must not touch the source map."""
 

@@ -269,13 +269,33 @@ export function noteHoveredTreeGroup(groupId: null | string) {
   }
 }
 
-/** The zone every keyboard tab verb acts on: the HOVERED zone, else the focused
- *  one. Hover-first is what makes ⌘1…⌘9 land in the pane you're pointing at
- *  without clicking into it first; with the pointer outside the panes it's the
- *  plain focused-zone behavior. One resolver so the number keys, ⌃Tab, and the
- *  ⌘W / ⌘T family can never disagree about which zone is "the" zone. */
-function tabTargetGroupId(): null | string {
-  return $hoveredTreeGroup.get() ?? $activeTreeGroup.get()
+/** The zone every keyboard tab verb acts on, as an ELIGIBILITY LADDER: the
+ *  hovered zone, else the focused one, else the workspace's. Each rung must
+ *  satisfy `eligible` to claim the keys, so a pointer parked somewhere that
+ *  can't serve the verb — the sidebar, the titlebar, a single-pane rail —
+ *  hands off to the next rung instead of swallowing the keystroke. Hover-first
+ *  is what makes ⌘1…⌘9 land in the pane you're pointing at without clicking
+ *  into it; the rungs below are why the keys still work when you're pointing
+ *  at nothing. One resolver so the number keys, ⌃Tab, and the ⌘W / ⌘T family
+ *  can never disagree about which zone is "the" zone. */
+function tabTargetGroup(eligible: (group: GroupNode) => boolean): GroupNode | null {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return null
+  }
+
+  for (const groupId of [$hoveredTreeGroup.get(), $activeTreeGroup.get()]) {
+    const group = groupId ? findGroup(tree, groupId) : null
+
+    if (group && eligible(group)) {
+      return group
+    }
+  }
+
+  const main = findGroupOfPane(tree, 'workspace')
+
+  return main && eligible(main) ? main : null
 }
 
 const treeGroupOfEvent = (event: Event): null | string => {
@@ -328,23 +348,13 @@ export const isSessionStripPane = (paneId: string): boolean =>
   paneId === 'workspace' || paneId.startsWith('session-tile:')
 
 /** The zone the session-tab verbs (⌘W / ⌘T / ⌘⇧T / the strip's "+") act on:
- *  the TARGET zone (hovered, else focused) when it hosts a chat strip, else the
- *  workspace's zone. Same source ⌘1…⌘9 indexes (`tabTargetGroupId`), so the
- *  number keys and the tab verbs can't disagree about which strip is "the"
- *  strip. A target parked in the sidebar / terminal / files must NOT retarget
- *  them — those zones fall back to main rather than letting ⌘W close the file
- *  tree. */
+ *  the first of hovered / focused / workspace that hosts a chat strip. Same
+ *  ladder ⌘1…⌘9 indexes, so the number keys and the tab verbs can't disagree
+ *  about which strip is "the" strip. A target parked in the sidebar / terminal
+ *  / files must NOT retarget them — those zones fall through to main rather
+ *  than letting ⌘W close the file tree. */
 function focusedSessionGroup(): GroupNode | null {
-  const tree = $layoutTree.get()
-
-  if (!tree) {
-    return null
-  }
-
-  const groupId = tabTargetGroupId()
-  const focused = groupId ? findGroup(tree, groupId) : null
-
-  return focused?.panes.some(isSessionStripPane) ? focused : findGroupOfPane(tree, 'workspace')
+  return tabTargetGroup(group => group.panes.some(isSessionStripPane))
 }
 
 /** The pane a NEW session tab should dock beside (⌘T): the focused chat zone's
@@ -467,50 +477,53 @@ function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
   })
 }
 
-/** ⌘1…⌘9: activate the Nth *visible* tab of the target zone (hovered, else
- *  focused), but only when it's a real tab strip (≥2 shown panes).
- *  Returns false so the caller falls back to its default (profile switch) —
- *  the number keys mean "switch tab" only while a multi-tab zone is targeted. */
+/** ⌘1…⌘9: activate the Nth *visible* tab of the target zone — the first of
+ *  hovered / focused / workspace that is a real tab strip (≥2 shown panes).
+ *  Pointing at the sidebar (or nothing) therefore still switches main's tabs
+ *  instead of dead-ending. Returns false so the caller falls back to its
+ *  default (profile switch) when no zone qualifies. */
 export function activateTreeTabSlot(slot: number): boolean {
-  const groupId = tabTargetGroupId()
-  const tree = $layoutTree.get()
-  const group = groupId && tree ? findGroup(tree, groupId) : null
+  const group = tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
   const panes = group ? shownPanesInGroup(group) : []
 
-  if (panes.length < 2 || slot < 1 || slot > panes.length) {
+  if (!group || slot < 1 || slot > panes.length) {
     return false
   }
 
-  activateTreePane(groupId!, panes[slot - 1])
+  activateTreePane(group.id, panes[slot - 1])
 
   return true
 }
 
-/** ⌃Tab / ⌃⇧Tab: cycle the target zone's *visible* tabs (wrapping) — but only a
- *  session/main strip with ≥2 shown tabs. Returns false so the caller falls
- *  back to the recent-session switcher when the target isn't a chat tab strip. */
+/** ⌃Tab / ⌃⇧Tab: cycle the target zone's *visible* tabs (wrapping) — the first
+ *  of hovered / focused / workspace that is a chat strip with ≥2 shown tabs.
+ *  Returns false so the caller falls back to the recent-session switcher when
+ *  no zone qualifies. */
 export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
-  const groupId = tabTargetGroupId()
-  const tree = $layoutTree.get()
-  const group = groupId && tree ? findGroup(tree, groupId) : null
-  const panes = group ? shownPanesInGroup(group) : []
+  const group = tabTargetGroup(candidate => {
+    const shown = shownPanesInGroup(candidate)
 
-  if (panes.length < 2 || !panes.some(isSessionStripPane)) {
+    return shown.length >= 2 && shown.some(isSessionStripPane)
+  })
+
+  if (!group) {
     return false
   }
 
+  const panes = shownPanesInGroup(group)
+
   // Active may itself be hidden (Files collapsed mid-cycle) — treat it as
   // missing so the step starts from a real chip rather than landing on a ghost.
-  const current = Math.max(0, panes.indexOf(group!.active ?? ''))
-  const idx = panes.includes(group!.active ?? '') ? current : 0
+  const current = Math.max(0, panes.indexOf(group.active ?? ''))
+  const idx = panes.includes(group.active ?? '') ? current : 0
   const nextId = panes[(idx + direction + panes.length) % panes.length]
-  activateTreePane(group!.id, nextId)
+  activateTreePane(group.id, nextId)
 
   // Cycling onto a session/main tab must surface the name card — a zone that
   // was double-tap-hidden stays headerless otherwise ("the one that cycles
   // never gets it").
-  if (nextId === 'workspace' || nextId.startsWith('session-tile:')) {
-    setTreeGroupHeaderHidden(group!.id, false)
+  if (isSessionStripPane(nextId)) {
+    setTreeGroupHeaderHidden(group.id, false)
   }
 
   return true

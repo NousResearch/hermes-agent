@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom'
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listAllProfileSessions } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -233,12 +234,14 @@ const PaletteRow = memo(function PaletteRow({
   bindings,
   item,
   onSelectMods,
-  onSelectItem
+  onSelectItem,
+  search
 }: {
   bindings: Record<string, string[]>
   item: PaletteItem
   onSelectMods: (event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => void
   onSelectItem: (item: PaletteItem) => void
+  search: string
 }) {
   const Icon = item.icon
   const combo = item.action ? bindings[item.action]?.[0] : undefined
@@ -252,7 +255,11 @@ const PaletteRow = memo(function PaletteRow({
       value={paletteValue(item)}
     >
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="truncate">{item.label}</span>
+      <span className="truncate">
+        {/* Same per-term split as scoreItem's AND matcher, so the emphasis
+            shows exactly which words earned the row its rank. */}
+        <HighlightMatches query={search.split(/\s+/)} text={item.label} />
+      </span>
       {item.detail && <span className="truncate text-muted-foreground/80">{item.detail}</span>}
       {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
       {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />}
@@ -1078,6 +1085,7 @@ export function CommandPalette() {
                           key={item.id}
                           onSelectItem={handleSelect}
                           onSelectMods={noteSelectMods}
+                          search={search}
                         />
                       ))}
                     </CommandGroup>

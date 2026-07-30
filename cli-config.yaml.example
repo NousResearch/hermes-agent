@@ -1268,6 +1268,9 @@ platform_toolsets:
 #   headers: HTTP headers (e.g., for authentication)
 #
 # Optional per-server settings:
+#   env_file: isolated secrets used only to resolve this server's ${VAR}
+#     placeholders. Relative paths use TERMINAL_CWD when available, otherwise
+#     the Hermes process cwd. Use an absolute path for gateways and cron jobs.
 #   timeout: tool call timeout in seconds (default: 120)
 #   connect_timeout: initial connection timeout (default: 60)
 #   keepalive_interval: liveness ping cadence in seconds (default: 180).
@@ -1284,6 +1287,9 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
 #   notion:
 #     url: https://mcp.notion.com/mcp
+#     env_file: /home/user/projects/acme/.env.hermes
+#     headers:
+#       Authorization: "Bearer ${ACME_MCP_TOKEN}"
 #   github:
 #     command: npx
 #     args: ["-y", "@modelcontextprotocol/server-github"]

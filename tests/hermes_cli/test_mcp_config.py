@@ -504,6 +504,29 @@ class TestProbeEnvResolution:
         })
 
         assert resolved["headers"]["Authorization"] == "Bearer env-file-token"
+        assert os.environ["OMI_API_KEY"] == "stale-shell-token"
+
+    def test_resolve_env_file_overrides_profile_scope_without_mutation(
+        self, tmp_path, monkeypatch
+    ):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        env_file = tmp_path / "project.env"
+        env_file.write_text("MCP_SHARED_API_KEY=server-token\n", encoding="utf-8")
+        monkeypatch.setenv("MCP_SHARED_API_KEY", "process-token")
+
+        token = set_secret_scope({"MCP_SHARED_API_KEY": "profile-token"})
+        try:
+            resolved = _resolve_mcp_server_config({
+                "env_file": str(env_file),
+                "headers": {"Authorization": "Bearer ${MCP_SHARED_API_KEY}"},
+            })
+        finally:
+            reset_secret_scope(token)
+
+        assert resolved["headers"]["Authorization"] == "Bearer server-token"
+        assert os.environ["MCP_SHARED_API_KEY"] == "process-token"
 
     def test_resolve_leaves_unset_var_literal(self, monkeypatch):
         from hermes_cli.mcp_config import _resolve_mcp_server_config

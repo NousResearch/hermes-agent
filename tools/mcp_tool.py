@@ -35,6 +35,7 @@ Example config::
         supports_parallel_tool_calls: true  # tools from this server may run concurrently
       remote_api:
         url: "https://my-mcp-server.example.com/mcp"
+        env_file: "/home/user/projects/acme/.env.hermes"
         headers:
           Authorization: "Bearer sk-..."
         identity_header:       # optional per-user identity header attached
@@ -42,6 +43,7 @@ Example config::
           value_from: "static" # "static" (default) or "profile"
           value: "alice"       # required for static; profile mode uses the
                                # active Hermes profile name
+ (fix(mcp): isolate per-server env file resolution)
         timeout: 180
         skip_preflight: true  # bypass the content-type probe for a valid
                               # Streamable HTTP endpoint that answers HEAD/GET
@@ -69,6 +71,7 @@ Features:
     - SSE transport (transport: sse) for MCP servers using the SSE protocol
     - Automatic reconnection with exponential backoff (up to 5 retries)
     - Environment variable filtering for stdio subprocesses (security)
+    - Isolated per-server env files for project-specific credentials
     - Credential stripping in error messages returned to the LLM
     - Configurable per-server timeouts for tool calls and connections
     - Thread-safe architecture with dedicated background event loop
@@ -5380,7 +5383,54 @@ def _interrupted_call_result() -> str:
 # Config loading
 # ---------------------------------------------------------------------------
 
-def _interpolate_env_vars(value):
+def _load_mcp_server_env(config: dict) -> Dict[str, str]:
+    """Load one MCP server's optional env file into an isolated mapping."""
+    from pathlib import Path
+
+    raw_path = config.get("env_file")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return {}
+
+    interpolated_path = _interpolate_env_vars(raw_path.strip())
+    if not isinstance(interpolated_path, str):
+        return {}
+
+    env_path = os.path.expanduser(interpolated_path)
+    if not os.path.isabs(env_path):
+        terminal_cwd = (os.environ.get("TERMINAL_CWD") or "").strip()
+        if not (os.path.isabs(terminal_cwd) and os.path.isdir(terminal_cwd)):
+            terminal_cwd = os.getcwd()
+        env_path = os.path.abspath(os.path.join(terminal_cwd, env_path))
+
+    env_path_obj = Path(env_path)
+    if not env_path_obj.is_file():
+        logger.warning(
+            "MCP env_file does not exist; falling back to profile/process secrets"
+        )
+        return {}
+    if not os.access(env_path_obj, os.R_OK):
+        logger.warning(
+            "MCP env_file is not readable; falling back to profile/process secrets"
+        )
+        return {}
+
+    try:
+        from agent.secret_scope import load_env_file
+
+        return load_env_file(env_path_obj)
+    except Exception as exc:
+        logger.warning("Failed to load MCP env file: %s", exc)
+        return {}
+
+
+def _resolve_mcp_server_config(config: dict) -> dict:
+    """Resolve one server config using its isolated env-file overlay."""
+    server_env = _load_mcp_server_env(config)
+    resolved = _interpolate_env_vars(config, server_env)
+    return resolved if isinstance(resolved, dict) else config
+
+
+def _interpolate_env_vars(value, env_overrides: Optional[Dict[str, str]] = None):
     """Recursively resolve ``${VAR}`` placeholders.
 
     Both ``${VAR}`` and Cursor-style ``${env:VAR}`` are accepted — the
@@ -5394,6 +5444,7 @@ def _interpolate_env_vars(value):
     profile's value, not the process-global ``os.environ`` which may hold
     another profile's), falling back to ``os.environ`` otherwise. Unset vars
     keep the literal placeholder, as before.
+ (fix(mcp): isolate per-server env file resolution)
     """
     from agent.secret_scope import get_secret as _get_secret
 
@@ -5403,12 +5454,14 @@ def _interpolate_env_vars(value):
             if ctx is not None:
                 return ctx
             name = _env_ref_name(m.group(1))
+            if env_overrides is not None and name in env_overrides:
+                return env_overrides[name]
             return _get_secret(name, m.group(0)) or m.group(0)
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
-        return {k: _interpolate_env_vars(v) for k, v in value.items()}
+        return {k: _interpolate_env_vars(v, env_overrides) for k, v in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env_vars(v) for v in value]
+        return [_interpolate_env_vars(v, env_overrides) for v in value]
     return value
 
 
@@ -5463,6 +5516,53 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
     return flagged
 
 
+def _load_mcp_server_env(config: dict) -> Dict[str, str]:
+    """Load one MCP server's optional env file into an isolated mapping."""
+    from pathlib import Path
+
+    raw_path = config.get("env_file")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return {}
+
+    interpolated_path = _interpolate_env_vars(raw_path.strip())
+    if not isinstance(interpolated_path, str):
+        return {}
+
+    env_path = os.path.expanduser(interpolated_path)
+    if not os.path.isabs(env_path):
+        terminal_cwd = (os.environ.get("TERMINAL_CWD") or "").strip()
+        if not (os.path.isabs(terminal_cwd) and os.path.isdir(terminal_cwd)):
+            terminal_cwd = os.getcwd()
+        env_path = os.path.abspath(os.path.join(terminal_cwd, env_path))
+
+    env_path_obj = Path(env_path)
+    if not env_path_obj.is_file():
+        logger.warning(
+            "MCP env_file does not exist; falling back to profile/process secrets"
+        )
+        return {}
+    if not os.access(env_path_obj, os.R_OK):
+        logger.warning(
+            "MCP env_file is not readable; falling back to profile/process secrets"
+        )
+        return {}
+
+    try:
+        from agent.secret_scope import load_env_file
+
+        return load_env_file(env_path_obj)
+    except Exception as exc:
+        logger.warning("Failed to load MCP env file: %s", exc)
+        return {}
+
+
+def _resolve_mcp_server_config(config: dict) -> dict:
+    """Resolve one server config using its isolated env-file overlay."""
+    server_env = _load_mcp_server_env(config)
+    resolved = _interpolate_env_vars(config, server_env)
+    return resolved if isinstance(resolved, dict) else config
+
+
 def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
     try:
@@ -5496,10 +5596,11 @@ def _load_mcp_config() -> Dict[str, dict]:
     Returns a dict of ``{server_name: server_config}`` or empty dict.
     Server config can contain either ``command``/``args``/``env`` for stdio
     transport or ``url``/``headers`` for HTTP transport, plus optional
-    ``timeout``, ``connect_timeout``, and ``auth`` overrides.
+    ``env_file``, ``timeout``, ``connect_timeout``, and ``auth`` overrides.
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
-    ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
+    the server's ``env_file`` first when configured, then from the active
+    profile secret scope or ``os.environ``.
     """
     try:
         from hermes_cli.config import load_config
@@ -5519,7 +5620,7 @@ def _load_mcp_config() -> Dict[str, dict]:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
-            interpolated = _interpolate_env_vars(cfg)
+            interpolated = _resolve_mcp_server_config(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated

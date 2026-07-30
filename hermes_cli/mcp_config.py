@@ -13,7 +13,6 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -263,15 +262,6 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     auth-requiring servers (e.g. n8n) returned 401 — while runtime tool
     loading worked because it interpolates. (#37792)
     """
-    from tools.mcp_tool import _interpolate_env_vars
-    from hermes_cli.env_loader import _load_dotenv_with_fallback
-
-    env_file = config.get("env_file")
-    if env_file:
-        env_path = Path(env_file).expanduser()
-        if env_path.exists():
-            _load_dotenv_with_fallback(env_path, override=True)
-
     from agent.secret_scope import current_secret_scope
 
     if current_secret_scope() is None:
@@ -280,7 +270,9 @@ def _resolve_mcp_server_config(config: dict) -> dict:
             load_hermes_dotenv()
         except Exception:  # pragma: no cover — defensive
             pass
-    return _interpolate_env_vars(config)
+    from tools.mcp_tool import _resolve_mcp_server_config as _resolve_config
+
+    return _resolve_config(config)
 
 
 def _probe_single_server(

@@ -2921,3 +2921,137 @@ class TestRedirectHeaderStripper:
         asyncio.run(hook(response))
         assert next_request.headers["authorization"] == "Bearer x"
         assert next_request.headers["x-tenant"] == "t"
+
+
+def test_missing_server_env_file_warns_and_falls_back(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A missing file is visible to operators but does not disable the server."""
+        monkeypatch.setenv("MCP_TEST_TOKEN", "process-token")
+        missing_path = tmp_path / "missing.env"
+        servers = {
+            "project": {
+                "url": "https://project.example/mcp",
+                "env_file": str(missing_path),
+                "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+            },
+        }
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": servers},
+        ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
+            logging.WARNING, logger="tools.mcp_tool"
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result["project"]["headers"]["Authorization"] == "Bearer process-token"
+        assert "MCP env_file does not exist" in caplog.text
+        assert "process-token" not in caplog.text
+
+
+def test_relative_server_env_file_uses_terminal_cwd(self, tmp_path, monkeypatch):
+        """Relative env files resolve from the active terminal working directory."""
+        gateway_cwd = tmp_path / "gateway"
+        project_cwd = tmp_path / "project"
+        gateway_cwd.mkdir()
+        project_cwd.mkdir()
+        (project_cwd / ".env.hermes").write_text(
+            "MCP_TEST_TOKEN=project-token\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(gateway_cwd)
+        monkeypatch.setenv("TERMINAL_CWD", str(project_cwd))
+        monkeypatch.setenv("MCP_TEST_TOKEN", "process-token")
+
+        servers = {
+            "project": {
+                "url": "https://project.example/mcp",
+                "env_file": ".env.hermes",
+                "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+            },
+        }
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": servers},
+        ), patch("hermes_cli.env_loader.load_hermes_dotenv"):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result["project"]["headers"]["Authorization"] == "Bearer project-token"
+        assert os.environ["MCP_TEST_TOKEN"] == "process-token"
+
+
+def test_server_env_file_is_isolated_and_overrides_profile_scope(
+        self, tmp_path, monkeypatch
+    ):
+        """A server env file wins locally without leaking into sibling servers."""
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        env_file = tmp_path / ".env.hermes"
+        env_file.write_text("MCP_TEST_TOKEN=server-token\n", encoding="utf-8")
+        monkeypatch.setenv("MCP_TEST_TOKEN", "process-token")
+
+        servers = {
+            "project": {
+                "url": "https://project.example/mcp",
+                "env_file": str(env_file),
+                "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+            },
+            "sibling": {
+                "url": "https://sibling.example/mcp",
+                "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+            },
+        }
+
+        token = set_secret_scope({"MCP_TEST_TOKEN": "profile-token"})
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={"mcp_servers": servers},
+            ), patch("hermes_cli.env_loader.load_hermes_dotenv"):
+                from tools.mcp_tool import _load_mcp_config
+
+                result = _load_mcp_config()
+        finally:
+            reset_secret_scope(token)
+
+        assert result["project"]["headers"]["Authorization"] == "Bearer server-token"
+        assert result["sibling"]["headers"]["Authorization"] == "Bearer profile-token"
+        assert os.environ["MCP_TEST_TOKEN"] == "process-token"
+
+
+def test_unreadable_server_env_file_warns_without_leaking_secret(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Unreadable files fall back without logging their secret contents."""
+        import tools.mcp_tool as mcp_tool
+
+        env_file = tmp_path / "unreadable.env"
+        env_file.write_text("MCP_TEST_TOKEN=file-secret\n", encoding="utf-8")
+        monkeypatch.setattr(mcp_tool.os, "access", lambda _path, _mode: False)
+        monkeypatch.setenv("MCP_TEST_TOKEN", "process-token")
+        servers = {
+            "project": {
+                "url": "https://project.example/mcp",
+                "env_file": str(env_file),
+                "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+            },
+        }
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": servers},
+        ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
+            logging.WARNING, logger="tools.mcp_tool"
+        ):
+            result = mcp_tool._load_mcp_config()
+
+        assert result["project"]["headers"]["Authorization"] == "Bearer process-token"
+        assert "MCP env_file is not readable" in caplog.text
+        assert "file-secret" not in caplog.text
+        assert "process-token" not in caplog.text

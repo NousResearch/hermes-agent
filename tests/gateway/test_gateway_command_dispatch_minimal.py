@@ -129,3 +129,16 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert runner._running_agents == {}
 
 
+@pytest.mark.asyncio
+async def test_idle_login_dispatches_registered_gateway_handler():
+    runner, _adapter = _make_runner()
+    runner._handle_login_command = AsyncMock(return_value="login-started")
+
+    result = await runner._handle_message(_make_event("/login codex"))
+
+    assert result == "login-started"
+    runner._handle_login_command.assert_awaited_once()
+    dispatched_event = runner._handle_login_command.await_args.args[0]
+    assert dispatched_event.get_command() == "login"
+    assert dispatched_event.get_command_args() == "codex"
+

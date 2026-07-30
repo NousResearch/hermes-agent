@@ -14429,6 +14429,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
+        if canonical == "login":
+            return await self._handle_login_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -17711,6 +17714,118 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if time.time() - requested_at > 300:
                 return False
         return True
+
+
+    async def _handle_login_command(self, event: MessageEvent) -> str:
+        """Add a Codex account from an authorized private gateway session."""
+        source = event.source
+        provider = event.get_command_args().strip().lower() or "codex"
+        if provider not in {"codex", "openai-codex", "openai_codex"}:
+            return "Usage: /login codex"
+
+        if (source.chat_type or "").strip().lower() not in {
+            "",
+            "dm",
+            "direct",
+            "private",
+        }:
+            return (
+                "For safety, Codex login codes are only sent in a private "
+                "conversation. DM this bot `/login codex` to add an account."
+            )
+
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return "Codex login could not find a private response path for this conversation."
+
+        # When command roles are configured, only an explicit admin may add
+        # credentials. Resolve roles from the source adapter so a multiplexed
+        # profile cannot inherit the primary profile's command policy.
+        from gateway.slash_access import policy_for_source
+
+        policy_config = self.config
+        adapter_config = getattr(adapter, "config", None)
+        if adapter_config is not None:
+            from types import SimpleNamespace
+
+            policy_config = SimpleNamespace(
+                platforms={source.platform: adapter_config},
+            )
+        policy = policy_for_source(policy_config, source)
+        if not policy.is_admin(source.user_id):
+            return "⛔ /login is admin-only because it adds Hermes credentials."
+
+        if getattr(self.config, "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(source)
+        else:
+            from hermes_constants import get_hermes_home
+
+            profile_home = get_hermes_home()
+
+        flow_key = (
+            str(profile_home),
+            source.platform.value if source.platform else "",
+            str(source.chat_id or ""),
+            str(source.thread_id or ""),
+            str(source.user_id or ""),
+        )
+        active_flows = getattr(self, "_active_codex_login_flows", None)
+        if active_flows is None:
+            active_flows = set()
+            self._active_codex_login_flows = active_flows
+        if flow_key in active_flows:
+            return (
+                "A Codex login code is already active for this conversation. "
+                "Complete it, or wait for it to expire before requesting a new one."
+            )
+
+        loop = asyncio.get_running_loop()
+        metadata = self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+        )
+
+        def _send_verification(prompt) -> None:
+            minutes = max(1, round(prompt.expires_in_seconds / 60))
+            message = (
+                "Open this link in your browser and enter the Codex pairing code:\n\n"
+                f"{prompt.verification_url}\n\n"
+                f"Code: `{prompt.user_code}`\n\n"
+                f"The code expires in about {minutes} minutes. Never share it."
+            )
+            future = asyncio.run_coroutine_threadsafe(
+                adapter.send(str(source.chat_id), message, metadata=metadata),
+                loop,
+            )
+            result = future.result(timeout=30)
+            if getattr(result, "success", True) is False:
+                raise RuntimeError("private device-code delivery failed")
+
+        active_flows.add(flow_key)
+        try:
+            from hermes_cli.auth import login_openai_codex_to_pool
+
+            if getattr(self.config, "multiplex_profiles", False):
+                with _profile_runtime_scope(profile_home):
+                    await asyncio.to_thread(
+                        login_openai_codex_to_pool,
+                        _send_verification,
+                    )
+            else:
+                await asyncio.to_thread(
+                    login_openai_codex_to_pool,
+                    _send_verification,
+                )
+            return "Codex login complete. The account was added to this profile."
+        except Exception:
+            logger.warning(
+                "Codex device-code login failed for %s:%s",
+                source.platform.value if source.platform else "?",
+                source.user_id,
+            )
+            return "Codex login did not complete. Send `/login codex` to request a new code."
+        finally:
+            active_flows.discard(flow_key)
 
 
 

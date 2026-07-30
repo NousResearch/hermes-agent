@@ -51,18 +51,48 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # `start` is intentionally excluded: starting a gateway from inside a
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
-    r"(?:hermes\s+gateway\s+(?:restart|stop))"
+    # The separator class is ["',\s]+ rather than \s+ throughout: the same
+    # command reaches this guard both as a shell string ("launchctl bootout X")
+    # and as a Python argv list from execute_code
+    # (subprocess.run(["launchctl", "bootout", "X"])), where the tokens are
+    # separated by quotes and commas instead of spaces. Verified 2026-07-19:
+    # with \s+ the list form was the one variant that slipped past every other
+    # branch.
+    r"(?:hermes[\"',\s]+gateway[\"',\s]+(?:restart|stop))"
     # Branch B: launchctl ops on a hermes-gateway label. macOS launchd
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
     # `launchctl unload ai.hermes.update-checker.plist`).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart)\b[^\n]*\bhermes[.\-]?gateway)"
+    # `bootout`/`bootstrap` (the modern launchctl verbs) are the worst of the
+    # set and were missing: `bootout` *unloads* the job, so KeepAlive can no
+    # longer revive it, and the `bootstrap` that would re-register it dies with
+    # the gateway it just killed. Real incident 2026-07-13: the agent fell
+    # through this gap, booted the job out, and the Mac gateway stayed dead for
+    # 26h until a manual restart. `disable`/`remove` are blocked for the same
+    # reason (they leave the label un-startable).
+    r"|(?:launchctl[\"',\s]+(?:kickstart|unload|load|stop|restart|bootout|bootstrap|disable|remove)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
     # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    # No right-hand \b after `hermes`: the process as it actually appears in
+    # `ps` is `hermes_cli.main gateway run`, and `\bhermes\b` does NOT match
+    # `hermes_cli` because `_` is a word character — so the single most likely
+    # kill command (`pkill -f "hermes_cli.main gateway"`) sailed straight
+    # through this guard until 2026-07-19. Matching `hermes` as a prefix also
+    # covers `hermes-gateway`, `hermesd`, etc. `gateway` must still appear.
+    r"|(?:p?kill\b[^\n]*\bhermes[^\n]*\bgateway)"
     r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # Branch E: starting a SECOND gateway with `--replace`. Branch A excludes
+    # bare `start`/`run` on the theory that starting a gateway from inside one
+    # is benign ("already running"), and that holds — but only WITHOUT this
+    # flag. `--replace` means "SIGTERM whoever holds the slot, then take it",
+    # i.e. it is a restart wearing a start's clothes. Real incident 2026-07-19:
+    # a second `gateway run --replace` SIGTERM'd the live gateway mid-task; the
+    # victim logged `parent_pid=1` (its own launchd parent), which reads like
+    # launchd killed it and hides the actual caller. Covers both the CLI shape
+    # and the module shape (`python -m hermes_cli.main gateway run --replace`).
+    r"|(?:gateway\s+(?:run|start)\b[^\n]*--replace)"
 )
 
 

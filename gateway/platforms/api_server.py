@@ -2523,15 +2523,16 @@ class APIServerAdapter(BasePlatformAdapter):
         chain, and fails closed if the locked provider's credentials cannot
         be resolved.
         """
-        from run_agent import AIAgent
         from gateway.run import (
             _checkpoint_agent_kwargs,
             _current_max_iterations,
             _resolve_runtime_agent_kwargs,
             _resolve_gateway_model,
             _load_gateway_config,
+            _load_runtime_ai_agent_class,
             GatewayRunner,
         )
+        AIAgent = _load_runtime_ai_agent_class()
         from hermes_cli.tools_config import _get_platform_tools
 
         # Catch RuntimeError ONLY around this call, not the wider

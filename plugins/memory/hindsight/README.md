@@ -137,8 +137,9 @@ Available in `hybrid` and `tools` memory modes:
 | Tool | Description |
 |------|-------------|
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
-| `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
+| `hindsight_recall` | Multi-strategy search (semantic + entity graph); supports optional `types` param |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
+| `hindsight_invalidate` | Soft-delete or restore memories (world/experience only) |
 
 ## Environment Variables
 

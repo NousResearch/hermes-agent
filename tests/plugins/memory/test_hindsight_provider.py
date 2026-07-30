@@ -83,8 +83,8 @@ def _make_mock_client():
     client.arecall = AsyncMock(
         return_value=SimpleNamespace(
             results=[
-                SimpleNamespace(text="Memory 1"),
-                SimpleNamespace(text="Memory 2"),
+                SimpleNamespace(id="5e79c849-f3b6-4a1e-b789-123456789abc", text="Memory 1", state="valid"),
+                SimpleNamespace(id="baee4d5b-84bd-4c3e-9f12-abcdef123456", text="Memory 2", state="valid"),
             ]
         )
     )
@@ -237,11 +237,11 @@ class TestSchemas:
         assert "content" in RETAIN_SCHEMA["parameters"]["required"]
 
 
-    def test_get_tool_schemas_returns_three(self, provider):
+    def test_get_tool_schemas_returns_four(self, provider):
         schemas = provider.get_tool_schemas()
-        assert len(schemas) == 3
+        assert len(schemas) == 4
         names = {s["name"] for s in schemas}
-        assert names == {"hindsight_retain", "hindsight_recall", "hindsight_reflect"}
+        assert names == {"hindsight_retain", "hindsight_recall", "hindsight_reflect", "hindsight_invalidate"}
 
     def test_context_mode_returns_no_tools(self, provider_with_config):
         p = provider_with_config(memory_mode="context")
@@ -509,6 +509,46 @@ class TestToolHandlers:
         ))
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
+        assert "id=5e79c849-f3b6-4a1e-b789-123456789abc" in result["result"]
+
+    def test_recall_with_types_override(self, provider):
+        """Agent-provided types param overrides the default recall_types."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test", "types": ["world", "experience"]}
+        ))
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["types"] == ["world", "experience"]
+        assert "Memory 1" in result["result"]
+
+    def test_recall_without_types_uses_default(self, provider):
+        """When types is omitted, default observation filter applies."""
+        provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        )
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["types"] == ["observation"]
+
+    def test_recall_invalidated_flag(self, provider, monkeypatch):
+        """Results with state=invalidated show [INVALIDATED] flag."""
+        mock_resp = SimpleNamespace(results=[
+            SimpleNamespace(id="abc-def-123", text="Old address", state="invalidated"),
+        ])
+        provider._client.arecall = AsyncMock(return_value=mock_resp)
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "address"}
+        ))
+        assert "[INVALIDATED]" in result["result"]
+
+    def test_recall_missing_id(self, provider, monkeypatch):
+        """Results without an id attribute show '?' gracefully."""
+        mock_resp = SimpleNamespace(results=[
+            SimpleNamespace(text="No ID memory"),
+        ])
+        provider._client.arecall = AsyncMock(return_value=mock_resp)
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+        assert "id=?" in result["result"]
 
 
     def test_reflect_success(self, provider):
@@ -542,10 +582,65 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
 
-        assert result["result"] == "1. Recovered memory"
+        assert result["result"] == "1. id=? Recovered memory"
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
+    def test_invalidate_success(self, provider, monkeypatch):
+        """Invalidate via SDK path successfully."""
+        mock_req_class = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: mock_req_class)
+        monkeypatch.setattr(provider, "_run_hindsight_operation", MagicMock())
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "abc-123-def", "reason": "stale info"},
+        ))
+        assert provider._run_hindsight_operation.called
+        assert "invalidated" in result["result"]
+        assert "abc-123-def" in result["result"]
+
+    def test_invalidate_restore(self, provider, monkeypatch):
+        """Restore=true sets state=valid."""
+        mock_req_class = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: mock_req_class)
+        monkeypatch.setattr(provider, "_run_hindsight_operation", MagicMock())
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "abc-123", "restore": True},
+        ))
+        assert "restored" in result["result"]
+
+    def test_invalidate_http_fallback(self, provider, monkeypatch):
+        """When SDK < 0.8.4, HTTP fallback is used."""
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: None)
+        monkeypatch.setattr(provider, "_http_patch_memory", MagicMock())
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "abc-123-def"},
+        ))
+        assert provider._http_patch_memory.called
+        assert "invalidated" in result["result"]
+
+    def test_invalidate_missing_id(self, provider):
+        """Missing memory_id returns error."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate", {}
+        ))
+        assert "error" in result
+
+    def test_invalidate_error_handling(self, provider, monkeypatch):
+        """API errors are surfaced."""
+        monkeypatch.setattr(provider, "_try_import_update_memory_request", lambda: None)
+        monkeypatch.setattr(
+            provider, "_http_patch_memory",
+            MagicMock(side_effect=RuntimeError("HTTP 422: observation type cannot be invalidated")),
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"memory_id": "obs-123"},
+        ))
+        assert "error" in result
+        assert "422" in result["error"]
 
 
 # ---------------------------------------------------------------------------

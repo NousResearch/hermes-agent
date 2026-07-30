@@ -238,10 +238,33 @@ RECALL_SCHEMA = {
     "name": "hindsight_recall",
     "description": (
         "Search long-term memory. Returns memories ranked by relevance using "
-        "semantic search, keyword matching, entity graph traversal, and reranking."
+        "semantic search, keyword matching, entity graph traversal, and reranking.\n\n"
+        "Each result includes an id=... prefix so the target can be passed to "
+        "hindsight_invalidate. Use the optional `types` parameter to recall "
+        "world/experience facts (curatable) instead of the default observations.\n\n"
+        "FACT TYPES: observation (consolidated summaries), world (external "
+        "knowledge), experience (agent's own actions). Only world/experience "
+        "facts can be invalidated."
     ),
-    "parameters": {"type": "object", "required": ["query"],
-                   "properties": {"query": {"type": "string", "description": "What to search for."}}},
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for."},
+            "types": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": ["world", "experience", "observation"],
+                },
+                "description": (
+                    "Fact types to recall. Overrides the configured default "
+                    "for this single call. Use ['world','experience'] when "
+                    "looking for facts to invalidate. Omit to use defaults."
+                ),
+            },
+        },
+        "required": ["query"],
+    },
 }
 
 REFLECT_SCHEMA = {
@@ -271,7 +294,7 @@ INVALIDATE_SCHEMA = {
         "properties": {
             "memory_id": {
                 "type": "string",
-                "description": "Memory ID from hindsight_recall results (e.g. '5e79c849-f3b6')."
+                "description": "Full memory ID from hindsight_recall results (e.g. from 'id=5e79c849-f3b6-4a1e-b789-123456789abc' output)."
             },
             "reason": {
                 "type": "string",
@@ -908,12 +931,14 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Prefetch: skipped (%s)", why)
         return why is not None
 
-    def _recall(self, query: str) -> list:
+    def _recall(self, query: str, types: list | None = None) -> list:
         kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
         if self._recall_tags:
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
-        if self._recall_types:
-            kwargs["types"] = self._recall_types
+        # Agent-provided `types` (per call) overrides the configured default.
+        effective_types = types or self._recall_types
+        if effective_types:
+            kwargs["types"] = effective_types
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
         return resp.results or []
 
@@ -1135,16 +1160,19 @@ class HindsightMemoryProvider(MemoryProvider):
         query = args["query"]
         logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
                      self._bank_id, len(query), self._budget)
-        results = self._recall(query)
+        # Agent-provided `types` param overrides the configured default
+        # for this single call. Omit → fall back to self._recall_types.
+        results = self._recall(query, types=args.get("types"))
         logger.debug("Tool hindsight_recall: %d results", len(results))
         if not results:
             return "No relevant memories found."
         lines = []
         for i, r in enumerate(results, 1):
-            sid = r.id[:12] if r.id else "?"
+            sid = getattr(r, "id", None)
+            sid_str = sid if sid else "?"
             state = getattr(r, "state", None)
             flag = " [INVALIDATED]" if state == "invalidated" else ""
-            lines.append(f"{i}. id={sid} {r.text}{flag}")
+            lines.append(f"{i}. id={sid_str} {r.text}{flag}")
         return "\n".join(lines)
 
     def _tool_reflect(self, args: dict) -> str:
@@ -1178,7 +1206,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._http_patch_memory(memory_id, state, reason=reason or None)
 
         action = "restored" if state == "valid" else "invalidated"
-        return f"Memory {memory_id[:12]}... {action}."
+        return f"Memory {memory_id} {action}."
 
     # tool name -> (required arg, handler, user-facing failure prefix)
     _TOOL_HANDLERS = {

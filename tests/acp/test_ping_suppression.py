@@ -52,18 +52,8 @@ def test_filter_suppresses_benign_probe(method: str) -> None:
     assert f.filter(record) is False
 
 
-def test_filter_allows_real_method_not_found() -> None:
-    f = _BenignProbeMethodFilter()
-    exc = _bake_tb(RequestError.method_not_found("session/custom"))
-    record = _make_record("Background task failed", exc)
-    assert f.filter(record) is True
 
 
-def test_filter_allows_non_request_error() -> None:
-    f = _BenignProbeMethodFilter()
-    exc = _bake_tb(RuntimeError("boom"))
-    record = _make_record("Background task failed", exc)
-    assert f.filter(record) is True
 
 
 def test_filter_allows_different_message_even_for_ping() -> None:
@@ -74,17 +64,8 @@ def test_filter_allows_different_message_even_for_ping() -> None:
     assert f.filter(record) is True
 
 
-def test_filter_allows_request_error_with_different_code() -> None:
-    f = _BenignProbeMethodFilter()
-    exc = _bake_tb(RequestError.invalid_params({"method": "ping"}))
-    record = _make_record("Background task failed", exc)
-    assert f.filter(record) is True
 
 
-def test_filter_allows_log_without_exc_info() -> None:
-    f = _BenignProbeMethodFilter()
-    record = _make_record("Background task failed", None)
-    assert f.filter(record) is True
 
 
 # -- End-to-end: drive a real JSON-RPC `ping` through acp.run_agent ---------

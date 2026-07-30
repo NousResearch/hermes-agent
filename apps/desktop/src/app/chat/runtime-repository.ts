@@ -30,10 +30,22 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
   return useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
     const branchParentByGroup = new Map<string, string | null>()
+    const seenIds = new Set<string>()
     let visibleParentId: string | null = null
     let headId: string | null = null
 
     for (const message of coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)) {
+      // A repeated id is a transcript bug upstream, but it must not reach the
+      // repository: MessageRepository throws on the second link ("A message
+      // with the same id already exists in the parent tree") and takes the
+      // whole workspace pane down with it. Keep the first occurrence — the
+      // later copy carries the same id, so it is the row we already rendered.
+      if (seenIds.has(message.id)) {
+        continue
+      }
+
+      seenIds.add(message.id)
+
       let parentId = visibleParentId
 
       if (message.role === 'assistant' && message.branchGroupId) {

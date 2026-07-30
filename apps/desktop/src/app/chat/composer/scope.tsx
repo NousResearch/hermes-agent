@@ -23,8 +23,6 @@ export interface ComposerScope {
   /** This scope's "turn parked on user input" edge — gates Esc-to-stop. */
   $awaitingInput: ReadableAtom<boolean>
   attachments: ComposerAttachmentScope
-  /** Only the main scope may pop out (the floating composer is a singleton). */
-  popoutAllowed: boolean
   /** This scope's transcript. Read it imperatively (input-history browse) to
    *  keep streaming out of the composer's renders; subscribe only off-render
    *  (auto-speak) where the reply edge is the whole point. */
@@ -37,7 +35,6 @@ export const MAIN_COMPOSER_SCOPE: ComposerScope = {
   $awaitingInput: $activeSessionAwaitingInput,
   $messages,
   attachments: mainComposerScope,
-  popoutAllowed: true,
   target: 'main'
 }
 

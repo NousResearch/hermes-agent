@@ -712,6 +712,20 @@ def _run_bws_list(
 ) -> Tuple[Dict[str, str], List[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
     env = _bws_child_env(access_token, server_url=server_url)
+    # bws child intentionally receives the access token; exact preservation
+    # (BWS_SERVER_URL manual overrides etc. must survive untouched).
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    env["BWS_ACCESS_TOKEN"] = access_token
+    # Make sure we're not echoing telemetry / colour codes into json.
+    env.setdefault("NO_COLOR", "1")
+    # Region / self-hosted support.  bws defaults to https://vault.bitwarden.com
+    # (US Cloud); EU Cloud users need https://vault.bitwarden.eu, and
+    # self-hosted users need their own URL.  When unset, fall back to whatever
+    # BWS_SERVER_URL the caller already had in their shell env (preserved by
+    # the copy above) so manual overrides keep working too.
+    if server_url:
+        env["BWS_SERVER_URL"] = server_url
 
     try:
         proc = subprocess.run(  # noqa: S603 — bws path is trusted

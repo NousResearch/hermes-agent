@@ -264,10 +264,10 @@ def _handle_call_service(args: dict, **kw) -> str:
         return tool_error(f"Invalid service format: {service!r}")
 
     if domain in _BLOCKED_DOMAINS:
-        return json.dumps({
-            "error": f"Service domain '{domain}' is blocked for security. "
+        return tool_error(
+            f"Service domain '{domain}' is blocked for security. "
             f"Blocked domains: {', '.join(sorted(_BLOCKED_DOMAINS))}"
-        })
+        )
 
     entity_id = args.get("entity_id")
     if entity_id and not _ENTITY_ID_RE.match(entity_id):

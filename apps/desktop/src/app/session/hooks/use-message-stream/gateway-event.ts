@@ -15,6 +15,7 @@ import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
@@ -23,6 +24,15 @@ import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { applyGoalStatusText } from '@/store/goals'
+import {
+  notifyCronChanged,
+  notifyPairingChanged,
+  notifyPetChanged,
+  notifyPlatformsChanged,
+  notifySessionsChanged,
+  type PetChangeMeta,
+  setChangeEventsAvailable
+} from '@/store/live-sync'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
@@ -31,6 +41,7 @@ import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import { recordAgentReaction } from '@/store/reactions-local'
 import {
   $currentCwd,
   $currentModel,
@@ -43,6 +54,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setMessages,
   setSessions,
   setTurnStartedAt,
   setYoloActive
@@ -274,6 +286,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Seed the active skin into the desktop theme registry without applying,
         // so a fresh connect never overrides the user's persisted desktop theme.
         ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
+        // Backends with the change watcher broadcast pet/cron/sessions change
+        // events; consumers demote their legacy polls to slow backstops.
+        setChangeEventsAvailable(Boolean((payload as { change_events?: boolean } | undefined)?.change_events))
 
         return
       } else if (event.type === 'skin.changed') {
@@ -284,6 +299,35 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (fromActiveProfile) {
           ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
+        }
+
+        return
+      } else if (
+        event.type === 'pet.changed' ||
+        event.type === 'cron.changed' ||
+        event.type === 'sessions.changed' ||
+        event.type === 'platforms.changed' ||
+        event.type === 'pairing.changed'
+      ) {
+        // Change-watcher broadcasts (server._broadcast_watched_changes): the
+        // backend's on-disk signature moved. Route to the live-sync ticks the
+        // former pollers now subscribe to. Only the active profile's changes
+        // apply — background profile sockets watch their own homes.
+        const fromActiveChangeProfile =
+          !event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())
+
+        if (fromActiveChangeProfile) {
+          if (event.type === 'pet.changed') {
+            notifyPetChanged(payload as PetChangeMeta | undefined)
+          } else if (event.type === 'cron.changed') {
+            notifyCronChanged()
+          } else if (event.type === 'platforms.changed') {
+            notifyPlatformsChanged()
+          } else if (event.type === 'pairing.changed') {
+            notifyPairingChanged()
+          } else {
+            notifySessionsChanged()
+          }
         }
 
         return
@@ -756,6 +800,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
         }
 
+        // The agent just created/deleted/renamed a skill, which adds or removes
+        // its `/name` command. Drop the composer's cached `/` list so the new
+        // skill is offerable now rather than after the hour-long TTL.
+        if (payload?.name === 'skill_manage') {
+          invalidateSlashCompletions()
+        }
+
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
           recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
         }
@@ -944,6 +995,53 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // offer, don't hijack).
         if (isActiveEvent) {
           revealDesktopPane(payload?.pane ?? '')
+        }
+      } else if (event.type === 'message.reaction') {
+        // The agent reacted to a message via the desktop-gated
+        // react_to_message tool. Already persisted — this only paints it now
+        // instead of at the next resume. Fresh ChatMessage object per change:
+        // the runtime repository caches normalized ThreadMessages in a WeakMap
+        // keyed by ChatMessage identity.
+        const reactedRowId = payload?.row_id
+
+        if (typeof reactedRowId === 'number') {
+          const nextReactions = Array.isArray(payload?.reactions) ? payload.reactions : []
+          const reactedRole = payload?.role === 'assistant' ? 'assistant' : 'user'
+
+          setMessages(messages => {
+            // Preferred leg: the message already knows its durable row id
+            // (rehydrated transcript, or a live row that has round-tripped).
+            const byRowId = messages.find(message => message.rowId === reactedRowId)
+
+            if (byRowId) {
+              // Overlay survives the end-of-turn resume, which rebuilds from
+              // in-memory history that doesn't carry this mid-turn DB write.
+              recordAgentReaction(reactedRowId, nextReactions)
+
+              return messages.map(message =>
+                message.rowId === reactedRowId ? { ...message, reactions: nextReactions } : message
+              )
+            }
+
+            // Live leg: the targeted message is still optimistic (no rowId —
+            // it hasn't round-tripped through a resume). The agent's default
+            // target is the newest message of that role, so stamp the reaction
+            // AND the now-known row id onto it. Without this the event matches
+            // nothing and the reaction only appears after a reload.
+            const lastIndex = messages.findLastIndex(
+              message => message.role === reactedRole && message.rowId === undefined
+            )
+
+            if (lastIndex === -1) {
+              return messages
+            }
+
+            recordAgentReaction(reactedRowId, nextReactions)
+
+            return messages.map((message, index) =>
+              index === lastIndex ? { ...message, rowId: reactedRowId, reactions: nextReactions } : message
+            )
+          })
         }
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {

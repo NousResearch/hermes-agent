@@ -170,6 +170,35 @@ def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
     return fresh
 
 
+def _template_visible_role(message: Any) -> Optional[str]:
+    """Role as counted by strict chat-template alternation checks.
+
+    Mistral-family templates (Devstral, Mistral Small 3.x, Magistral)
+    enforce user/assistant alternation at render time but EXEMPT the tool
+    flow from the check: ``tool`` results and assistant messages carrying
+    ``tool_calls`` are skipped. A summary role chosen against the *literal*
+    neighbouring roles can therefore still violate alternation as the
+    template sees it. The canonical failure: the protected head ends
+    ``[user, assistant(tool_calls), tool]``, so the literal last role is
+    ``tool`` and the summary is pinned to ``role="user"`` -- but the last
+    role the template counts is ``user``, the template sees user -> user,
+    and llama.cpp / Mistral-hosted backends reject the ENTIRE request with
+    a Jinja alternation error (HTTP 500). Because the summary persists in
+    the stored conversation, every retry replays the same poisoned history
+    and the session is unrecoverable.
+
+    Returns ``None`` for messages the alternation check skips.
+    """
+    if not isinstance(message, dict):
+        return None
+    role = message.get("role")
+    if role == "tool":
+        return None
+    if role == "assistant" and message.get("tool_calls"):
+        return None
+    return role
+
+
 def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
     """Enforce the compaction invariant: no assembled message carries a
     session-store persistence marker.
@@ -1354,6 +1383,125 @@ class ContextCompressor(ContextEngine):
         previous = telemetry.get("aux_call_duration_ms") or 0
         telemetry["aux_call_duration_ms"] = previous + max(0, int(duration_ms))
 
+    def _emit_init_summary_once(self) -> None:
+        """Emit the informative startup line once, on first resolution.
+
+        Deferred out of ``__init__`` (#32221): the line reports resolved token
+        budgets, so emitting it there would force the synchronous
+        ``get_model_context_length()`` probe during construction. Reads via
+        the properties below are safe here because
+        ``_resolved_context_length`` is already set.
+        """
+        if not getattr(self, "_log_init_summary", False):
+            return
+        self._log_init_summary = False
+        logger.info(
+            "Context compressor initialized: model=%s context_length=%d "
+            "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+            "provider=%s base_url=%s",
+            self.model, self._resolved_context_length, self.threshold_tokens,
+            self.threshold_percent * 100, self.summary_target_ratio * 100,
+            self.tail_token_budget,
+            self.provider or "none", self.base_url or "none",
+        )
+
+    def _resolve_context_length(self) -> int:
+        """Resolve and cache the model's context length on first access."""
+        if self._resolved_context_length is None:
+            self._resolved_context_length = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                config_context_length=self._config_context_length,
+                provider=self.provider,
+            )
+            # Small-context threshold floor: models under 512K trigger at
+            # >=75% so compaction doesn't fire with half the window still
+            # free. Raise-only; must run AFTER context_length is resolved
+            # and BEFORE threshold_tokens is derived (deferred here from
+            # __init__ along with the resolution itself, #32221).
+            # _base_threshold_percent already has the per-model override
+            # applied, so the floor stacks on top of it.
+            self.threshold_percent = self._effective_threshold_percent(
+                self._resolved_context_length, self._base_threshold_percent,
+            )
+            self._emit_init_summary_once()
+        return self._resolved_context_length
+
+    @property
+    def context_length(self) -> int:
+        return self._resolve_context_length()
+
+    @context_length.setter
+    def context_length(self, value: int) -> None:
+        # No-op guard: repeated assignment of the SAME window (e.g. the codex
+        # app-server usage callback re-reports the window on every response)
+        # must not invalidate the derived budgets — that would wipe runtime
+        # corrections applied directly to threshold_tokens/tail_token_budget
+        # (see conversation_compression's aux-context threshold sync), which
+        # persisted on main's eager-init behavior.
+        if value == getattr(self, "_resolved_context_length", None):
+            return
+        self._resolved_context_length = value
+        # Re-apply the small-context floor (raise-only) for the genuinely new
+        # window so the invalidated budgets below recompute coherently —
+        # percent and tokens must derive from the same window. Skipped on
+        # bare test instances built via object.__new__ that never ran
+        # __init__ (no _base_threshold_percent).
+        _base = getattr(self, "_base_threshold_percent", None)
+        if _base is not None:
+            self.threshold_percent = self._effective_threshold_percent(
+                value, _base,
+            )
+        self._threshold_tokens = None
+        self._tail_token_budget = None
+        self._max_summary_tokens = None
+        self._emit_init_summary_once()
+
+    @property
+    def threshold_tokens(self) -> int:
+        if self._threshold_tokens is None:
+            # Resolve the window FIRST (may apply the small-context floor to
+            # threshold_percent as a side effect) so the percent read below
+            # is the floored value regardless of argument evaluation order.
+            _ctx = self.context_length
+            # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even
+            # if the percentage would suggest a lower value (#14690 handles
+            # the degenerate small-window case inside the helper).
+            self._threshold_tokens = self._compute_threshold_tokens(
+                _ctx, self.threshold_percent, self.max_tokens,
+            )
+            # Apply absolute token cap (compression.threshold_tokens) —
+            # takes the lower of the ratio-based threshold and the cap.
+            self._apply_threshold_tokens_cap()
+        return self._threshold_tokens
+
+    @threshold_tokens.setter
+    def threshold_tokens(self, value: int) -> None:
+        self._threshold_tokens = value
+
+    @property
+    def tail_token_budget(self) -> int:
+        if self._tail_token_budget is None:
+            self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+        return self._tail_token_budget
+
+    @tail_token_budget.setter
+    def tail_token_budget(self, value: int) -> None:
+        self._tail_token_budget = value
+
+    @property
+    def max_summary_tokens(self) -> int:
+        if self._max_summary_tokens is None:
+            self._max_summary_tokens = min(
+                int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+            )
+        return self._max_summary_tokens
+
+    @max_summary_tokens.setter
+    def max_summary_tokens(self, value: int) -> None:
+        self._max_summary_tokens = value
+
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear all per-session compaction state at a real session boundary.
 
@@ -1988,56 +2136,30 @@ class ContextCompressor(ContextEngine):
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
-        self.context_length = get_model_context_length(
-            model, base_url=base_url, api_key=api_key,
-            config_context_length=config_context_length,
-            provider=provider,
-        )
-        # Small-context threshold floor: models under 512K trigger at >=75%
-        # so compaction doesn't fire with half the window still free (the
-        # incompressible floor makes 50%-triggered compaction thrash on
-        # 128K-262K models). Raise-only; must run AFTER context_length is
-        # resolved and BEFORE threshold_tokens is derived. The pre-floor
-        # value is kept so update_model() can re-derive for a new window
-        # (switching small -> large must drop back to the configured value).
-        # Note: _base_threshold_percent already has the per-model override
-        # applied, so the floor stacks on top of any model-specific threshold.
+        # Defer context-length resolution to first access (#32221):
+        # get_model_context_length() can issue a synchronous /models HTTP
+        # probe, which must not block AIAgent construction. The small-context
+        # threshold floor and the absolute threshold cap both need the
+        # resolved window, so they are applied on first resolution (see
+        # _resolve_context_length / the threshold_tokens property) instead
+        # of here. update_model() re-derives the floor for a new window from
+        # _config_threshold_percent (the raw config value snapshotted above),
+        # so switching small -> large correctly drops back to the configured
+        # value.
+        self._config_context_length = config_context_length
         self._configured_threshold_percent = self.threshold_percent
-        self.threshold_percent = self._effective_threshold_percent(
-            self.context_length, self._base_threshold_percent,
-        )
-        threshold_percent = self.threshold_percent
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum. _compute_threshold_tokens also
-        # guards the degenerate case where the floor would equal/exceed the
-        # window (small models), so auto-compression can still fire (#14690).
-        self.threshold_tokens = self._compute_threshold_tokens(
-            self.context_length, threshold_percent, self.max_tokens,
-        )
-        # Apply absolute token cap (compression.threshold_tokens) — takes
-        # the lower of the ratio-based threshold and the cap.
-        self._apply_threshold_tokens_cap()
+        self._resolved_context_length: int | None = None
+        self._threshold_tokens: int | None = None
+        self._tail_token_budget: int | None = None
+        self._max_summary_tokens: int | None = None
         self.compression_count = 0
 
-        # Derive token budgets: ratio is relative to the threshold, not total context
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
-        self.max_summary_tokens = min(
-            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
-        )
-
-        if not quiet_mode:
-            logger.info(
-                "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
-                "provider=%s base_url=%s",
-                model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
-                self.tail_token_budget,
-                provider or "none", base_url or "none",
-            )
+        # The "initialized" log reports resolved token budgets, which would
+        # force the deferred get_model_context_length() probe to run inside
+        # __init__ and re-introduce the exact synchronous blocking this change
+        # removes (#32221). Emit it on first context-length resolution instead
+        # so construction stays non-blocking on every path (not just quiet).
+        self._log_init_summary = not quiet_mode
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0
@@ -5327,8 +5449,43 @@ This compaction should PRIORITISE preserving all information related to the focu
         # last_head_role reads the assembled (post-strip) head; first_tail_role
         # reads the assembled (post-strip) tail_messages — a stripped stale
         # handoff must not influence alternation-safe role selection.
-        last_head_role = compressed[-1].get("role", "user") if compressed else "user"
-        first_tail_role = tail_messages[0].get("role", "user") if tail_messages else None
+        # Both are TEMPLATE-VISIBLE roles (``_template_visible_role``), not the
+        # literal list neighbours: strict Mistral-style templates skip tool
+        # results and assistant tool-call messages when enforcing
+        # user/assistant alternation, so the summary must alternate against
+        # the nearest message the template actually counts. Selecting against
+        # the literal neighbour (previously ``compressed[-1]``) emitted the
+        # summary as role="user" behind a ``[user, assistant(tool_calls),
+        # tool]`` head — which every Mistral-strict backend rejects with a
+        # Jinja alternation 500, permanently poisoning the session.
+        last_head_role: Optional[str] = "user"
+        if compressed:
+            last_head_role = next(
+                (
+                    role
+                    for role in (
+                        _template_visible_role(m) for m in reversed(compressed)
+                    )
+                    if role is not None
+                ),
+                # Head holds only template-exempt messages: the summary will
+                # be the first message the template counts, and the sequence
+                # must open with "user" (handled below alongside the forced
+                # cases).
+                None,
+            )
+        first_tail_role = None
+        if tail_messages:
+            first_tail_role = next(
+                (
+                    role
+                    for role in (
+                        _template_visible_role(m) for m in tail_messages
+                    )
+                    if role is not None
+                ),
+                None,
+            )
         # When the only protected head message is the system prompt, the
         # summary becomes the first *visible* message in the API request
         # (most adapters — Anthropic, Bedrock — send the system prompt as
@@ -5362,9 +5519,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
             if not _user_survives:
                 _force_user_leading = True
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"} or _force_user_leading:
+        # Pick a role that alternates with both template-visible neighbors.
+        # Priority: alternate against the head (already committed), then tail.
+        # ``None`` (all-exempt head) means the summary opens the visible
+        # sequence, which strict templates require to start with "user".
+        if (
+            last_head_role is None
+            or last_head_role in {"assistant", "tool"}
+            or _force_user_leading
+        ):
             summary_role = "user"
         else:
             summary_role = "assistant"
@@ -5372,7 +5535,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         # collide with the head, flip it.
         if first_tail_role is not None and summary_role == first_tail_role:
             flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role and not _force_user_leading:
+            # ``last_head_role is None`` (all-exempt head) pins the summary to
+            # "user" above; flipping to "assistant" would make the visible
+            # sequence open with "assistant", which strict templates reject.
+            if (
+                flipped != last_head_role
+                and last_head_role is not None
+                and not _force_user_leading
+            ):
                 summary_role = flipped
             else:
                 # Both roles would create consecutive same-role messages

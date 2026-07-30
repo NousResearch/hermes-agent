@@ -6,6 +6,9 @@ import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } fr
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+import * as ClipboardModule from '../lib/clipboard.js'
+import * as Osc52Module from '../lib/osc52.js'
+import * as TerminalSetupModule from '../lib/terminalSetup.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
 // so toggling process.env in a test body can't move it. Mock just that one
@@ -24,6 +27,7 @@ vi.mock('../config/env.js', async importActual => {
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     resetOverlayState()
     resetUiState()
     envState.dashboardTuiMode = false
@@ -241,6 +245,51 @@ describe('createSlashHandler', () => {
       session_id: 'sid-abc',
       value: 'x-model --global'
     })
+  })
+
+  it('prefers OSC52 copy for remote sessions', async () => {
+    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(true)
+
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'remote answer' }])
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/copy')).toBe(true)
+    await vi.waitFor(() => {
+      expect(writeOsc52Clipboard).toHaveBeenCalledWith('remote answer')
+    })
+    expect(writeClipboardText).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('sent OSC52 copy sequence (terminal support required)')
+  })
+
+  it('keeps native-first copy in local tmux sessions', async () => {
+    const tmuxBackup = process.env.TMUX
+    process.env.TMUX = '/tmp/tmux-123/default,1,0'
+
+    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
+
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'local answer' }])
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/copy')).toBe(true)
+    await vi.waitFor(() => {
+      expect(writeClipboardText).toHaveBeenCalledWith('local answer')
+    })
+    expect(writeOsc52Clipboard).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('copied to clipboard')
+
+    process.env.TMUX = tmuxBackup
   })
 
   it('applies /reasoning hide to the thinking section immediately', async () => {
@@ -810,8 +859,10 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
-  it('falls through to command.dispatch for skill commands and sends the message', async () => {
-    const skillMessage = 'Use this skill to do X.\n\n## Steps\n1. First step'
+  it('falls through to command.dispatch for skill commands, sending the body but showing the invocation', async () => {
+    const skillMessage =
+      '[IMPORTANT: The user has invoked the "hermes-agent-dev" skill, indicating they want you to follow its instructions.\n' +
+      'The full skill content is loaded below.]\n\nUse this skill to do X.\n\n## Steps\n1. First step'
 
     const ctx = buildCtx({
       gateway: {
@@ -823,7 +874,12 @@ describe('createSlashHandler', () => {
             }
 
             if (method === 'command.dispatch') {
-              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+              return Promise.resolve({
+                type: 'skill',
+                message: skillMessage,
+                name: 'hermes-agent-dev',
+                display: '/hermes-agent-dev'
+              })
             }
 
             return Promise.resolve({})
@@ -836,9 +892,13 @@ describe('createSlashHandler', () => {
     const h = createSlashHandler(ctx)
     expect(h('/hermes-agent-dev')).toBe(true)
     await vi.waitFor(() => {
-      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: hermes-agent-dev')
+      expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage, true, '/hermes-agent-dev')
     })
-    expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
+
+    // The expanded skill body is model-facing: no transcript line may carry it.
+    for (const [line] of ctx.transcript.sys.mock.calls) {
+      expect(line).not.toContain('Use this skill to do X')
+    }
   })
 
   it('handles command.dispatch payloads returned directly by slash.exec', async () => {

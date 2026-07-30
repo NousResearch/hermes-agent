@@ -241,6 +241,81 @@ describe('useModelControls', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
+  it('keeps a mid-turn pick painted and skips the refetch that would repaint the old model', async () => {
+    // The gateway queues a switch made during a turn and applies it at the next
+    // turn start. Invalidating now would answer with the still-running model
+    // and overwrite the user's choice in the pill.
+    $activeSessionId.set('session-1')
+    const requestGateway = vi.fn(async () => ({ deferred: true, key: 'model', value: 'grok-4.5' }) as never)
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(true)
+
+    expect($currentModel.get()).toBe('grok-4.5')
+    expect($currentProvider.get()).toBe('xai')
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('still refetches after a switch that applied immediately', async () => {
+    $activeSessionId.set('session-1')
+    const requestGateway = vi.fn(async () => ({ key: 'model', scope: 'session', value: 'grok-4.5' }) as never)
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
+
+    expect(invalidate).toHaveBeenCalled()
+  })
+
+  it('keeps the pick when an OLDER gateway refuses a mid-turn switch', async () => {
+    // Pre-deferral backends answer 4009 instead of parking the pick. Rolling
+    // back would bounce the pill to the old model and toast an error at a user
+    // who did nothing wrong; the pick still applies to the next turn.
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('session busy — /interrupt the current turn before switching models')
+    })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(true)
+
+    expect($currentModel.get()).toBe('grok-4.5')
+    expect($currentProvider.get()).toBe('xai')
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('still rolls back and reports a real switch failure', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('fable-5')
+    setCurrentProvider('nous')
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'bogus', provider: 'xai' })).resolves.toBe(false)
+
+    expect($currentModel.get()).toBe('fable-5')
+    expect($currentProvider.get()).toBe('nous')
+    expect(notifyError).toHaveBeenCalled()
+  })
+
   it('session-scopes MoA preset selections so they cannot persist as the global gateway default', async () => {
     $activeSessionId.set('session-1')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'BeastMode' }) as never)

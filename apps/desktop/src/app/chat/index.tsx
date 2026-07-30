@@ -542,7 +542,7 @@ export function ChatView({
               config={COMPOSER_HEART_CONFIG}
               style={{
                 top: 0,
-                bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.25rem)'
+                bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
               }}
             />
           )}

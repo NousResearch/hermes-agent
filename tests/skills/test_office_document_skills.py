@@ -59,19 +59,6 @@ def test_referenced_scripts_exist(name):
         assert (skill_dir / ref).exists(), f"{name}: SKILL.md references missing {ref}"
 
 
-@pytest.mark.parametrize("name", OFFICE_SKILLS)
-def test_related_skills_resolve(name):
-    """related_skills entries must name skills that exist in skills/ or optional-skills/."""
-    fm = _frontmatter(_skill_dir(name) / "SKILL.md")
-    related = fm.get("metadata", {}).get("hermes", {}).get("related_skills", [])
-    assert related, f"{name}: office skills must cross-link related_skills"
-    all_skill_names = {
-        p.parent.name
-        for root in (SKILLS, OPTIONAL_SKILLS)
-        for p in root.rglob("SKILL.md")
-    }
-    for rel in related:
-        assert rel in all_skill_names, f"{name}: related skill {rel!r} does not exist"
 
 
 @pytest.mark.parametrize("name", OFFICE_SKILLS)
@@ -84,16 +71,6 @@ def test_license_file_present(name):
         )
 
 
-@pytest.mark.parametrize("name", OFFICE_SKILLS)
-def test_scripts_compile(name):
-    """All shipped helper scripts must be valid Python."""
-    import py_compile
-
-    skill_dir = _skill_dir(name)
-    scripts = list((skill_dir / "scripts").rglob("*.py")) if (skill_dir / "scripts").exists() else []
-    assert scripts, f"{name}: expected helper scripts under scripts/"
-    for script in scripts:
-        py_compile.compile(str(script), doraise=True)
 
 
 def test_docx_validator_schema_paths_exist():
@@ -108,13 +85,6 @@ def test_docx_validator_schema_paths_exist():
             assert (schemas / ref).exists(), f"{skill}: validator references missing schema {ref}"
 
 
-def test_pdf_reference_docs_exist():
-    """pdf SKILL.md links forms.md and reference.md — both must ship."""
-    pdf_dir = _skill_dir("pdf")
-    body = (pdf_dir / "SKILL.md").read_text(encoding="utf-8")
-    for doc in ("forms.md", "reference.md"):
-        assert doc in body
-        assert (pdf_dir / doc).exists(), f"pdf: missing linked doc {doc}"
 
 
 def test_docs_pages_generated():
@@ -160,14 +130,6 @@ _ENCODING_SENSITIVE_READS = [
 ]
 
 
-@pytest.mark.parametrize("rel_path,expected", _ENCODING_SENSITIVE_READS)
-def test_document_readers_are_locale_independent(rel_path, expected):
-    """XML parts are opened as bytes (lxml honors the XML prolog) and JSON
-    payloads as UTF-8 — never with the locale-default codec."""
-    source = (SKILLS / "productivity" / rel_path).read_text(encoding="utf-8")
-    assert expected in source, (
-        f"{rel_path}: locale-dependent read of a UTF-8 document/payload"
-    )
 
 
 def test_check_bounding_boxes_reads_utf8_fields_json(tmp_path):

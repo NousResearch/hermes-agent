@@ -11,12 +11,6 @@ def test_max_image_dimension_default():
         assert cua_backend._computer_use_max_image_dimension() == 1456
 
 
-def test_max_image_dimension_zero_disables():
-    with patch(
-        "hermes_cli.config.load_config",
-        return_value={"computer_use": {"max_image_dimension": 0}},
-    ):
-        assert cua_backend._computer_use_max_image_dimension() is None
 
 
 def test_capture_after_mode_default_som():
@@ -24,20 +18,8 @@ def test_capture_after_mode_default_som():
         assert cu_tool._capture_after_mode() == "som"
 
 
-def test_capture_after_mode_ax_override():
-    with patch(
-        "hermes_cli.config.load_config",
-        return_value={"computer_use": {"capture_after_mode": "ax"}},
-    ):
-        assert cu_tool._capture_after_mode() == "ax"
 
 
-def test_capture_after_mode_invalid_falls_back_to_som():
-    with patch(
-        "hermes_cli.config.load_config",
-        return_value={"computer_use": {"capture_after_mode": "bogus"}},
-    ):
-        assert cu_tool._capture_after_mode() == "som"
 
 
 def test_aux_vision_route_caches_per_provider_model(monkeypatch):

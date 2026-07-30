@@ -33,3 +33,21 @@ export const composerPanelCard = cn(
   'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
   composerSurfaceGlass
 )
+
+/**
+ * Shared grid for the chrome-free floating strips that bracket the composer —
+ * the micro-action pills above the surface and the `composer.underside` slot
+ * below it.
+ *
+ * Both are in-flow children of the composer DOCK, siblings of the composer
+ * itself rather than children of it. That's deliberate: the pop-out drag
+ * region is `absolute inset-0` inside the composer, so anything rendered in
+ * there is inside the grab area by construction. Living outside makes that
+ * impossible instead of something the gesture has to exclude.
+ *
+ * One parent and one constant means the two strips share a left edge without
+ * anyone matching numbers across files. Vertical spacing stays at the call
+ * site; the horizontal inset matches the composer's 5px grab margin so the
+ * strips line up with the surface rather than the margin's outer edge.
+ */
+export const composerFloatingStrip = 'flex flex-wrap items-center gap-1.5'

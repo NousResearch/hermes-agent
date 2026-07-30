@@ -37,10 +37,12 @@ import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
+import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
+  PTY_RESUME_SANITIZE_WINDOW_MS,
   type PtyConnectionState,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
@@ -889,6 +891,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    let eraseSuppressionTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearEraseSuppressionTimer = () => {
+      if (eraseSuppressionTimer) {
+        clearTimeout(eraseSuppressionTimer);
+        eraseSuppressionTimer = null;
+      }
+    };
     const forceFresh = forceFreshPtyRef.current;
     forceFreshPtyRef.current = false;
     // A connect attempt is now in flight — set synchronously (before the async
@@ -989,15 +998,41 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
 
+    // Session resume: Ink's two-pass virtual scroll floods the PTY with
+    // erase codes and blank-line bursts while replaying a long session.
+    // Suppress them for a bounded window after connect, then let ordinary
+    // in-place redraws through untouched. See pty-resume-sanitizer.ts.
+    const decoder = new TextDecoder();
+    const sanitizer = new PtyResumeSanitizer();
+    if (resumeParam) {
+      eraseSuppressionTimer = setTimeout(() => {
+        eraseSuppressionTimer = null;
+        sanitizer.endEraseSuppression();
+      }, PTY_RESUME_SANITIZE_WINDOW_MS);
+    }
+
     ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
+      const text =
+        typeof ev.data === "string"
+          ? ev.data
+          : decoder.decode(new Uint8Array(ev.data as ArrayBuffer), {
+              stream: true,
+            });
+      term.write(resumeParam ? sanitizer.next(text) : text);
     };
 
     ws.onclose = (ev) => {
+      // Drain buffered sanitizer state. A buffered partial escape is dropped
+      // (writing an unterminated CSI would wedge xterm's parser); a buffered
+      // newline run is emitted collapsed.
+      if (resumeParam) {
+        clearEraseSuppressionTimer();
+        try {
+          term.write(sanitizer.flush());
+        } catch {
+          /* ignore */
+        }
+      }
       wsRef.current = null;
       connectInFlightRef.current = false;
       clearConnectingTimer();
@@ -1144,6 +1179,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       unmounting = true;
       imageUploadDisposed = true;
       syncMetricsRef.current = null;
+      clearEraseSuppressionTimer();
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       mobileInputCleanup?.();

@@ -43,8 +43,11 @@ import logging
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -205,14 +208,44 @@ def extract_markdown_entries(text: str) -> List[str]:
 
 
 def parse_existing_memory_entries(path: Path) -> List[str]:
+    """Parse the DESTINATION memory store into entries.
+
+    ``memories/MEMORY.md`` is the entry-delimited store written by
+    ``MemoryStore._write_file`` (tools/memory_tool.py), not a markdown
+    document, so this splits on ``ENTRY_DELIMITER`` only — exactly what
+    ``MemoryStore._parse_entries`` does.  A store with no delimiter (a single
+    entry, or one that was hand-edited / shell-appended) is therefore ONE
+    intact entry.
+
+    Do NOT fall back to :func:`extract_markdown_entries` here.  That extractor
+    is correct for CLAUDE.md / AGENTS.md *sources*, but it drops fenced code
+    blocks and table rows and splits a block into one entry per bullet — and
+    the merged result is written straight back over the user's store, so the
+    loss is permanent.
+    """
     if not path.exists():
         return []
     raw = read_text(path)
     if not raw.strip():
         return []
-    if ENTRY_DELIMITER in raw:
-        return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-    return extract_markdown_entries(raw)
+    return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
+
+
+def backup_memory_file(path: Path) -> Optional[Path]:
+    """Snapshot ``path`` before a destructive rewrite; return the backup path.
+
+    Restores parity with the openclaw migration script this module was ported
+    from, which calls ``maybe_backup(destination)`` before rewriting a memory
+    store.  Uses the same ``<name>.bak.<unix_ts>`` naming as
+    ``MemoryStore._backup_drifted_file``.  Returns None when there is nothing
+    to back up.
+    """
+    if not path.exists():
+        return None
+    backup = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
+    shutil.copy2(path, backup)
+    return backup
+
 
 
 def merge_entries(
@@ -513,10 +546,26 @@ class AgentImporter:
             return
         if self.execute:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(
-                ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""),
-                encoding="utf-8",
-            )
+            try:
+                backup = backup_memory_file(destination)
+            except OSError as exc:
+                # Never rewrite the store when the safety net failed.
+                self.record(kind, source, destination, "error",
+                            f"Could not back up existing memory file: {exc}",
+                            **details)
+                return
+            if backup is not None:
+                details["backup"] = str(backup)
+            try:
+                atomic_write_text(
+                    destination,
+                    ENTRY_DELIMITER.join(merged) + ("\n" if merged else ""),
+                )
+            except OSError as exc:
+                self.record(kind, source, destination, "error",
+                            f"Could not write merged memory file: {exc}",
+                            **details)
+                return
             self.record(kind, source, destination, "imported", **details)
         else:
             self.record(kind, source, destination, "imported",

@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
@@ -64,10 +65,11 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
   )
 }
 
-// UI scale presets, as zoom percentages. 100 is the browser-default size;
-// the ids double as the percent values sent to the main process. A Cmd/Ctrl
-// +/- step landing between presets highlights nothing, and the row
-// description keeps showing the exact current percent.
+// UI scale presets, as zoom percentages. 100 is Chromium's actual-size
+// baseline; the shipped default is the 90% preset. Ids double as the percent
+// values sent to the main process. A Cmd/Ctrl +/- step landing between
+// presets highlights nothing, and the row description keeps showing the
+// exact current percent.
 const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
 
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
@@ -249,6 +251,7 @@ export function AppearanceSettings() {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
+  const reactionsEnabled = useStore($reactionsEnabled)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
@@ -469,6 +472,24 @@ export function AppearanceSettings() {
             }
             description={a.backdropDesc}
             title={a.backdropTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setReactionsEnabled(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={reactionsEnabled ? 'on' : 'off'}
+              />
+            }
+            description={a.reactionsDesc}
+            title={a.reactionsTitle}
           />
 
           <ListRow

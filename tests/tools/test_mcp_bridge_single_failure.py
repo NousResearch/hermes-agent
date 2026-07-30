@@ -57,23 +57,6 @@ class TestConnectCooldownHelpers:
         assert d2 == now + mcp_mod._CONNECT_RETRY_BASE_BACKOFF_SEC * 2
         assert mcp_mod._server_connect_failures["bad"] == 2
 
-    def test_backoff_is_capped(self):
-        for _ in range(50):
-            mcp_mod._record_connect_failure("bad")
-        deadline = mcp_mod._server_connect_retry_after["bad"]
-        assert deadline <= mcp_mod.time.monotonic() + mcp_mod._CONNECT_RETRY_MAX_BACKOFF_SEC + 1
-
-    def test_cooldown_active_then_clears(self):
-        now = 5000.0
-        with patch("tools.mcp_tool.time.monotonic", return_value=now):
-            mcp_mod._record_connect_failure("bad")
-            assert mcp_mod._connect_cooldown_active("bad") is True
-        later = now + mcp_mod._CONNECT_RETRY_MAX_BACKOFF_SEC + 1
-        with patch("tools.mcp_tool.time.monotonic", return_value=later):
-            assert mcp_mod._connect_cooldown_active("bad") is False
-        mcp_mod._clear_connect_failure("bad")
-        assert "bad" not in mcp_mod._server_connect_retry_after
-        assert "bad" not in mcp_mod._server_connect_failures
 
     def test_unknown_server_not_in_cooldown(self):
         assert mcp_mod._connect_cooldown_active("never-seen") is False

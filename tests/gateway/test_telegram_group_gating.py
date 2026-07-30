@@ -814,8 +814,9 @@ def test_unmentioned_photo_observed_entry_records_media_for_replay(monkeypatch, 
         await adapter._handle_media_message(update, SimpleNamespace())
 
         _, message, _ = store.messages[0]
-        assert message["media_urls"] == [str(cached_path)]
-        assert message["media_types"] and message["media_types"][0].startswith("image/")
+        assert message["content"][1] == {
+            "type": "image_url", "image_url": {"url": str(cached_path)},
+        }
 
     asyncio.run(_run())
 

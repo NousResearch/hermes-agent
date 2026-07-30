@@ -160,14 +160,18 @@ def _strip_inline_comment(value: str) -> str:
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
-    """Parse a ``.env`` file into a dict WITHOUT touching ``os.environ``: ``export``
-    prefix, ``#`` comments, and the writer's quote escapes reversed via the canonical
-    ``_parse_env_value``. ``utf-8-sig`` so a BOM doesn't prefix the first key."""
+def load_env_file(env_path: Path, *, strict: bool = False) -> Dict[str, str]:
+    """Parse an env file without mutating the process environment.
+
+    Supports export, comments, canonical quote escapes and UTF-8 BOMs.
+    With strict=True, read failures propagate for caller-owned safe warnings.
+    """
     secrets: Dict[str, str] = {}
     try:
         text = env_path.read_text(encoding="utf-8-sig")
     except (FileNotFoundError, OSError, UnicodeDecodeError):
+        if strict:
+            raise
         return secrets
 
     from hermes_cli.config import _parse_env_value

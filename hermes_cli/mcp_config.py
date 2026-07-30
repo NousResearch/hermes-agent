@@ -232,11 +232,8 @@ def _apply_mcp_preset(
 def _resolve_mcp_server_config(config: dict) -> dict:
     """Resolve ``${ENV}`` placeholders in a server config before connecting.
 
-    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``: load ``~/.hermes/.env`` into ``os.environ`` and
-    recursively interpolate any ``${VAR}`` placeholders. The CLI builds header templates like
-    ``Authorization: Bearer ${MCP_X_API_KEY}`` but the probe path never resolved them, so the discovery
-    probe sent the literal placeholder and auth-requiring servers (e.g. n8n) returned 401 — while runtime
-    tool loading worked because it interpolates. (#37792)
+    Initialize the active profile fallback, then resolve the server's isolated
+    env-file overlay through tools.mcp_tool_config, just like runtime discovery.
     """
     from agent.secret_scope import current_secret_scope
 

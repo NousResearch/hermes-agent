@@ -15506,6 +15506,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if transcript.strip()
         )
 
+    async def _history_with_observed_tail(
+        self, history: List[Dict[str, Any]], source
+    ) -> List[Dict[str, Any]]:
+        """Append the persisted trailing observed rows to an agent message list.
+
+        ``_build_gateway_agent_history`` lifts observed group rows out of the
+        replayed history into the text-only context prefix, so the agent's
+        returned ``messages`` never contain them.  The queued-follow-up path
+        reuses that list as history, which means a photo observed *while the
+        previous turn was running* would be invisible when the follow-up is
+        prepared — the idle path handles it, the queued path did not (#47415).
+
+        Re-read the persisted tail so both paths see the same observed rows.
+        Best-effort: any store failure returns the history unchanged rather
+        than dropping a queued turn.
+        """
+        if source is None:
+            return history
+        try:
+            store = self.async_session_store
+            session_entry = await store.get_or_create_session(source)
+            persisted = await store.load_transcript(session_entry.session_id)
+        except Exception:
+            logger.debug(
+                "Observed-tail reload failed for queued follow-up; using agent history",
+                exc_info=True,
+            )
+            return history
+
+        tail: List[Dict[str, Any]] = []
+        for msg in reversed(persisted or []):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") in {"session_meta", "system"}:
+                continue
+            if not msg.get("observed"):
+                break
+            tail.append(msg)
+        if not tail:
+            return history
+        tail.reverse()
+        return list(history) + tail
+
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
         if state is None or not state.persistent.native_image_paths:
@@ -24485,7 +24528,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_message = await self._prepare_profile_scoped_inbound_message_text(
                         event=pending_event,
                         source=next_source,
-                        history=updated_history,
+                        history=await self._history_with_observed_tail(
+                            updated_history, next_source
+                        ),
                         session_key=next_session_key,
                     )
                     if next_message is None:

@@ -610,12 +610,28 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| `contribute_worker_env` | The kanban dispatcher has composed a worker's environment, just before the worker subprocess spawns | `task_id: str, board: str, workspace: str, branch: str, run_id: int \| None, profile: str` | `dict` of extra env vars |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `contribute_worker_env`, whose returned dict extends a kanban worker's environment.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
+
+`contribute_worker_env` fires in the dispatcher process too, at the last moment before the worker subprocess is launched. Return a dict of environment variables to add:
+
+```python
+def wire_telemetry(**kwargs):
+    return {
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+        "OTEL_RESOURCE_ATTRIBUTES": f"hermes.kanban.task={kwargs['task_id']}",
+    }
+
+def register(ctx):
+    ctx.register_hook("contribute_worker_env", wire_telemetry)
+```
+
+Contributions fill gaps only — the merge uses `setdefault`, so every key the dispatcher pinned (kanban DB / board / workspace paths, profile, timeouts) always wins and a plugin can never redirect a worker to another board. Keys whose value is `None` are skipped, other values are stringified, and a return value that isn't a dict is ignored. The worker's environment is inherited by nested coding agents (ACP `claude-code` / `codex` children), which makes this the place to wire per-session observability.
 
 ### `pre_llm_call` context injection
 

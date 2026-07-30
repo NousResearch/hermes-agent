@@ -228,8 +228,24 @@ function atTokenBoundary(editor: HTMLElement, range: Range | null): boolean {
  *  — Chromium's editing pipeline is ~O(n²) on large multiline blobs.
  *
  *  The text arrives whole rather than typed, so a `/command` ending it is
- *  complete rather than half-written and chips like the rest. */
-export function insertComposerContentsAtCaret(editor: HTMLElement, text: string) {
+ *  complete rather than half-written and chips like the rest.
+ *
+ *  `consumeBefore` characters immediately before the caret are swallowed by the
+ *  insert. That's how a paste into an open `@url:` scope replaces the scope
+ *  instead of stacking on it (`@url:@url:\`https://…\``). */
+export function insertComposerContentsAtCaret(editor: HTMLElement, text: string, consumeBefore = 0) {
+  const scoped = consumeBefore > 0 ? rangeBeforeCaret(editor, consumeBefore) : null
+
+  if (scoped) {
+    scoped.deleteContents()
+    scoped.collapse(true)
+
+    const selection = window.getSelection()
+
+    selection?.removeAllRanges()
+    selection?.addRange(scoped)
+  }
+
   const hit = composerSelectionRange(editor)
   const fragment = document.createDocumentFragment()
 

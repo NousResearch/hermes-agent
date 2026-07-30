@@ -51,6 +51,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { BuzzIcon } from "@/components/BuzzIcon";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -74,6 +75,7 @@ const CATEGORY_ICONS: Record<
   stt: Ear,
   logging: ClipboardList,
   discord: MessageCircle,
+  buzz: BuzzIcon,
   auxiliary: Wrench,
   bedrock: Cloud,
   curator: Sparkles,

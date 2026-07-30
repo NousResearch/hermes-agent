@@ -23,6 +23,7 @@ check_requirements = _buzz_mod.check_requirements
 validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
 _env_enablement = _buzz_mod._env_enablement
+_apply_yaml_config = _buzz_mod._apply_yaml_config
 _standalone_send = _buzz_mod._standalone_send
 
 # Real key pair (Chip's public identity — public information, not a secret)
@@ -45,6 +46,10 @@ _ENV_VARS = (
     "BUZZ_POLL_INTERVAL",
     "BUZZ_CLI_PATH",
     "BUZZ_CREDENTIALS_FILE",
+    "BUZZ_REQUIRE_MENTION",
+    "BUZZ_THREAD_REQUIRE_MENTION",
+    "_HERMES_YAML_BRIDGED_BUZZ_REQUIRE_MENTION",
+    "_HERMES_YAML_BRIDGED_BUZZ_THREAD_REQUIRE_MENTION",
 )
 
 
@@ -239,6 +244,362 @@ class TestMentionGating:
         assert adapter._dispatched == []
 
     @pytest.mark.asyncio
+    async def test_unmentioned_followup_dispatches_after_agent_replies_when_thread_mentions_disabled(self):
+        adapter = _make_adapter({"thread_require_mention": False})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {},
+        }
+
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "root", CHANNEL, content="@Chip does it work?", created_at=10,
+            ),
+        )
+
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "send",
+            {"accepted": True, "event_id": "agent", "message": ""},
+        )
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "Yes.", reply_to="root")
+
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "followup", CHANNEL, content="Tell me more", created_at=12,
+                reply_to="root",
+            ),
+        )
+
+        assert [d["message_id"] for d in adapter._dispatched] == ["root", "followup"]
+
+    @pytest.mark.asyncio
+    async def test_nested_unmentioned_followup_stays_in_agent_thread(self):
+        adapter = _make_adapter({"thread_require_mention": False})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {},
+        }
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "send",
+            {"accepted": True, "event_id": "agent", "message": ""},
+        )
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "Yes.", reply_to="root")
+
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "first-followup", CHANNEL, content="Tell me more", created_at=12,
+                reply_to="root",
+            ),
+            _tagged_event(
+                "nested-followup", CHANNEL, content="More detail", created_at=13,
+                reply_to="first-followup",
+            ),
+        )
+
+        assert [d["message_id"] for d in adapter._dispatched] == [
+            "first-followup",
+            "nested-followup",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_thread_mention_gate_still_applies_when_top_level_mentions_disabled(
+        self,
+    ):
+        adapter = _make_adapter(
+            {"require_mention": False, "thread_require_mention": True}
+        )
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {},
+        }
+
+        await self._poll_with(
+            adapter,
+            _tagged_event("root", CHANNEL, content="Top level", created_at=10),
+            _tagged_event(
+                "reply", CHANNEL, content="Thread reply", created_at=11,
+                reply_to="root",
+            ),
+        )
+
+        assert [d["message_id"] for d in adapter._dispatched] == ["root"]
+
+    @pytest.mark.asyncio
+    async def test_saved_mention_settings_apply_without_adapter_restart(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _apply_yaml_config(
+            {}, {"extra": {"require_mention": True, "thread_require_mention": False}}
+        )
+        adapter = _make_adapter()
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+            "agent_thread_ids": {"root": None},
+        }
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            "    require_mention: false\n"
+            "    thread_require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "top-level", CHANNEL, content="No mention needed", created_at=11,
+            ),
+            _tagged_event(
+                "followup", CHANNEL, content="Tell me more", created_at=12,
+                reply_to="root",
+            ),
+        )
+
+        assert [d["message_id"] for d in adapter._dispatched] == ["top-level"]
+
+    def test_malformed_saved_config_preserves_working_mention_policy(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter(
+            {"require_mention": False, "thread_require_mention": False}
+        )
+        (tmp_path / "config.yaml").write_text(
+            "buzz: [unterminated\n",
+            encoding="utf-8",
+        )
+
+        adapter._refresh_mention_policy()
+
+        assert adapter.require_mention is False
+        assert adapter.thread_require_mention is False
+
+    def test_missing_saved_settings_preserve_working_mention_policy(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter(
+            {"require_mention": False, "thread_require_mention": False}
+        )
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n  extra: {}\n",
+            encoding="utf-8",
+        )
+
+        adapter._refresh_mention_policy()
+
+        assert adapter.require_mention is False
+        assert adapter.thread_require_mention is False
+
+    def test_explicit_env_overrides_saved_mention_policy(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("BUZZ_REQUIRE_MENTION", "false")
+        monkeypatch.setenv("BUZZ_THREAD_REQUIRE_MENTION", "false")
+        adapter = _make_adapter()
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n"
+            "  extra:\n"
+            "    require_mention: true\n"
+            "    thread_require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        adapter._refresh_mention_policy()
+
+        assert adapter.require_mention is False
+        assert adapter.thread_require_mention is False
+
+    def test_runtime_env_replacement_takes_ownership_from_yaml(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _apply_yaml_config(
+            {}, {"extra": {"require_mention": False, "thread_require_mention": False}}
+        )
+        adapter = _make_adapter()
+        monkeypatch.setenv("BUZZ_REQUIRE_MENTION", "true")
+        (tmp_path / "config.yaml").write_text(
+            "buzz:\n  extra:\n    require_mention: false\n",
+            encoding="utf-8",
+        )
+
+        adapter._refresh_mention_policy()
+
+        assert adapter.require_mention is True
+
+    @pytest.mark.asyncio
+    async def test_seeded_agent_reply_restores_thread_followups_after_restart(self):
+        adapter = _make_adapter({"thread_require_mention": False})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "get",
+            [
+                _tagged_event(
+                    "root", CHANNEL, content="@Chip does it work?", created_at=10,
+                ),
+                _tagged_event(
+                    "agent", CHANNEL, content="Yes.", pubkey=SELF_PUBKEY,
+                    created_at=11, reply_to="root",
+                ),
+            ],
+        )
+        adapter._run_cli = cli
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "followup", CHANNEL, content="Tell me more", created_at=12,
+                reply_to="root",
+            ),
+        )
+
+        assert [d["message_id"] for d in adapter._dispatched] == ["followup"]
+
+    @pytest.mark.asyncio
+    async def test_early_followup_retries_after_agent_echo_arrives(self):
+        adapter = _make_adapter({"thread_require_mention": False})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {},
+        }
+
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "followup", CHANNEL, content="Tell me more", created_at=12,
+                reply_to="root",
+            ),
+            _tagged_event(
+                "agent", CHANNEL, content="Yes.", pubkey=SELF_PUBKEY,
+                created_at=11, reply_to="root",
+            ),
+        )
+
+        assert [d["message_id"] for d in adapter._dispatched] == ["followup"]
+        assert adapter._channel_state[CHANNEL].get("pending_thread_events") == {}
+
+    @pytest.mark.asyncio
+    async def test_rejected_agent_reply_does_not_open_thread_for_followups(self):
+        adapter = _make_adapter({"thread_require_mention": False})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {},
+        }
+
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "send",
+            {"accepted": False, "event_id": "agent", "message": "rejected"},
+        )
+        adapter._run_cli = cli
+        result = await adapter.send(CHANNEL, "No.", reply_to="root")
+        assert result.success is False
+
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "followup", CHANNEL, content="Tell me more", created_at=12,
+                reply_to="root",
+            ),
+        )
+
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_agent_reply_targets_thread_root_instead_of_latest_nested_reply(self):
+        adapter = _make_adapter({"require_mention": False})
+        adapter._dispatched = []
+
+        async def capture(**kwargs):
+            adapter._dispatched.append(kwargs)
+
+        adapter._dispatch_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group", "last_ts": 0, "seen": {},
+        }
+
+        await self._poll_with(
+            adapter,
+            _tagged_event("root", CHANNEL, content="Start", created_at=10),
+            _tagged_event(
+                "first-reply", CHANNEL, content="First", created_at=11,
+                reply_to="root",
+            ),
+            _tagged_event(
+                "nested-reply", CHANNEL, content="Nested", created_at=12,
+                reply_to="first-reply",
+            ),
+        )
+
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "send",
+            {"accepted": True, "event_id": "agent", "message": ""},
+        )
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "Reply.", reply_to="nested-reply")
+
+        assert cli.calls[-1][0][-2:] == ["--reply-to", "root"]
+
+    @pytest.mark.asyncio
     async def test_name_mention_dispatched(self, adapter):
         await self._poll_with(adapter, _event("e1", content="hey @Chip can you help?", created_at=10))
         assert len(adapter._dispatched) == 1
@@ -421,6 +782,36 @@ class TestBuzzAdapterSend:
         args, _stdin = cli.calls[0]
         assert args[args.index("--file") + 1] == str(img)
 
+    @pytest.mark.asyncio
+    async def test_send_image_reply_targets_root_and_opens_active_thread(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {
+            "chat_type": "group",
+            "last_ts": 0,
+            "seen": {},
+            "thread_roots": _buzz_mod.OrderedDict({"nested": "root"}),
+        }
+        cli = _ScriptedCli()
+        cli.script(
+            "messages", "send",
+            {"accepted": True, "event_id": "agent-image", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL, str(img), caption="screenshot", reply_to="nested"
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "root"
+        assert list(adapter._channel_state[CHANNEL]["agent_thread_ids"]) == [
+            "root",
+            "agent-image",
+        ]
+
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -489,6 +880,14 @@ class TestEnvEnablement:
 
     def test_returns_none_when_unconfigured(self):
         assert _env_enablement() is None
+
+    def test_yaml_config_bridges_thread_mention_setting(self):
+        _apply_yaml_config(
+            {},
+            {"extra": {"thread_require_mention": False}},
+        )
+
+        assert _make_adapter().thread_require_mention is False
 
 
 class TestBuzzPluginRegistration:

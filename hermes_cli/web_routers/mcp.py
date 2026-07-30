@@ -162,6 +162,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         _get_mcp_servers,
         _oauth_tokens_present,
         _probe_single_server,
+        _sanitize_mcp_probe_error,
     )
 
     def _read():
@@ -201,7 +202,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     except Exception as exc:
         return {
             "ok": False,
-            "error": str(exc),
+            "error": _sanitize_mcp_probe_error(exc, servers[name]),
             "tools": [],
         }
     if not token_present:

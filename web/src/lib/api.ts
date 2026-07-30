@@ -61,8 +61,8 @@ export function getManagementProfile(): string {
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
 // _profile_scope or explicit per-profile DB opens). Anything else — ops,
-// pairing, cron (which has its own per-job profile params), profiles
-// themselves — is machine-global or self-scoped and must NOT be rewritten.
+// cron (which has its own per-job profile params), profiles themselves — is
+// machine-global or self-scoped and must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
   "/api/status",
   "/api/gateway",
@@ -80,6 +80,10 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  // A named profile keeps its own pairing whitelist, and its gateway only
+  // consults that one — approving into the global store would grant access
+  // the running gateway never sees.
+  "/api/pairing",
 ];
 
 function withManagementProfile(url: string): string {
@@ -1090,18 +1094,29 @@ export const api = {
     ),
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
+  // The mutating endpoints read the profile off the BODY, so the query-param
+  // rewrite in withManagementProfile doesn't reach them — send it explicitly
+  // or an approval lands in the wrong profile's whitelist.
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
   approvePairing: (platform: string, request_id: string) =>
     fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform, request_id }),
+      body: JSON.stringify({
+        platform,
+        request_id,
+        profile: getManagementProfile() || undefined,
+      }),
     }),
   revokePairing: (platform: string, user_id: string) =>
     fetchJSON<{ ok: boolean }>("/api/pairing/revoke", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform, user_id }),
+      body: JSON.stringify({
+        platform,
+        user_id,
+        profile: getManagementProfile() || undefined,
+      }),
     }),
   clearPendingPairing: () =>
     fetchJSON<{ ok: boolean; cleared: number }>("/api/pairing/clear-pending", {

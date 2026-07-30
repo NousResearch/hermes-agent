@@ -582,7 +582,16 @@ def _(rid, params: dict) -> dict:
         # normal agent turn. The live agent gathers whatever the user
         # described (dirs, URLs, this conversation, pasted text) with its own
         # tools and authors the skill via skill_manage. Works on any backend.
-        from agent.learn_prompt import build_learn_prompt
+        from agent.learn_prompt import (
+            LEARN_UNAVAILABLE_MESSAGE,
+            build_learn_prompt,
+            skill_manage_available,
+        )
+
+        agent = session.get("agent") if session else None
+        tool_names = getattr(agent, "valid_tool_names", None) if agent else None
+        if not skill_manage_available(tool_names):
+            return _err(rid, 4003, LEARN_UNAVAILABLE_MESSAGE)
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
     if name == "init":

@@ -11,6 +11,8 @@ These tests import and exercise the actual helper functions extracted from
   (was inline at conversation_loop.py:3773-3811)
 - ``build_terminal_return_dict`` — the terminal return dict shape (was inline
   at conversation_loop.py:3812-3825)
+- ``transient_outage_retry_ceiling`` — the retry ceiling that lets the full
+  extended backoff schedule run with default ``api_max_retries=3``
 
 The production code in ``conversation_loop.py`` calls these same functions,
 so if the production logic changes the tests catch it — they test the
@@ -20,13 +22,19 @@ The ``TestProductionErrorClassifier`` class calls the real
 ``classify_api_error`` and feeds its output into the production helpers,
 verifying the full classify → decide → message pipeline.
 
+The ``TestTransientOutageLoopCeiling`` class drives a real ``AIAgent`` turn
+through the conversation loop with a mocked 503 provider outage, asserting
+that the transient-outage retry ceiling raises the effective ``max_retries``
+above the default 3 so the full extended backoff schedule runs.
+
 Tests follow AGENTS.md rules: behavior contracts (not snapshots), real
 imports, no logic duplication.
 """
 
 import httpx
 import pytest
-from unittest.mock import MagicMock
+import re
+from unittest.mock import MagicMock, patch
 
 from agent.error_classifier import FailoverReason, ClassifiedError, classify_api_error
 from agent.retry_messaging import (
@@ -37,6 +45,7 @@ from agent.retry_messaging import (
     build_terminal_return_dict,
     is_transient_outage,
     select_backoff_params,
+    transient_outage_retry_ceiling,
 )
 from agent.retry_utils import jittered_backoff
 
@@ -418,3 +427,293 @@ class TestProductionErrorClassifier:
         assert result["failed"] is True
         assert "/resume" not in result["final_response"]
         assert result["failure_reason"] == classified.reason.value
+
+
+# ── Production-path: transient outage retry ceiling ─────────────────────
+
+
+class TestTransientOutageRetryCeiling:
+    """Unit test for the ``transient_outage_retry_ceiling`` helper itself."""
+
+    def test_ceiling_allows_full_backoff_schedule(self):
+        """The ceiling must be high enough that all 5 backoff waits
+        (5s + 10s + 20s + 40s + 80s) execute before the loop gives up.
+
+        With ``api_max_retries=3``, the loop gives up after only ~15s.
+        The ceiling must raise the effective ``max_retries`` to at least 6
+        (5 waits + 1, because the ``retry_count >= max_retries`` check runs
+        before the attempt's backoff).
+        """
+        ceiling = transient_outage_retry_ceiling()
+        assert ceiling >= 6, (
+            f"ceiling {ceiling} must be >= 6 to cover all 5 backoff waits"
+        )
+
+    def test_ceiling_raises_default_above_3(self):
+        """With the default ``api_max_retries=3``, the ceiling must raise
+        the effective max to allow the full schedule."""
+        default_retries = 3
+        effective = max(default_retries, transient_outage_retry_ceiling())
+        assert effective > default_retries, (
+            "ceiling must raise the effective max above the default 3"
+        )
+
+
+# ── Loop-level: transient outage ceiling drives the conversation loop ────
+
+
+class TestTransientOutageLoopCeiling:
+    """Drive the REAL conversation loop (``AIAgent.run_conversation``) with a
+    mocked 503 provider outage and assert that the transient-outage retry
+    ceiling raises the effective ``max_retries`` above the default ``3`` so
+    the full extended backoff schedule runs.
+
+    This test does NOT call ``jittered_backoff`` directly — it exercises the
+    production ``run_conversation`` path that Teknium1's review asked for.
+    It imports from production modules (``retry_messaging``, ``conversation_loop``)
+    and mocks only the OpenAI client call, not the retry logic.
+
+    The approach:
+      1. Create an ``AIAgent`` with default config (``api_max_retries=3``).
+      2. Mock ``client.chat.completions.create`` to always raise a 503 error.
+      3. Intercept ``time.sleep`` (no-op) and ``time.time`` (fast-forward) so
+         the loop runs instantly.
+      4. Intercept ``_buffer_status`` to capture the retry status messages
+         (they contain ``retry_count`` and ``max_retries``).
+      5. Assert that the loop retried MORE than 3 times (the ceiling kicked in)
+         and that the cumulative scheduled wait exceeds what 3 default
+         retries would give.
+    """
+
+    def test_loop_retries_beyond_default_with_transient_ceiling(self):
+        """The conversation loop with default ``api_max_retries=3`` and a 503
+        outage must retry more than 3 times — the transient-outage ceiling
+        raises the effective ``max_retries`` so the extended backoff runs."""
+        import run_agent
+        from run_agent import AIAgent
+
+        # ── Build an AIAgent with default config (api_max_retries=3) ──
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://api.openai.com/v1",
+                provider="openai",
+                api_mode="chat_completions",
+                model="gpt-5.5",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+        # Guard: default config really is 3
+        assert agent._api_max_retries == 3, (
+            "test premise: default api_max_retries must be 3"
+        )
+
+        # ── Mock the API to always raise a 503 (transient outage) ──
+        class _Transient503Error(Exception):
+            """Side-effect callable that accepts any kwargs and raises a 503."""
+            status_code = 503
+            message = "Service Unavailable"
+
+            def __init__(self, *args, **kwargs):
+                super().__init__("Service Unavailable")
+                self.response = MagicMock()
+                self.response.headers = {}
+                self.response.status_code = 503
+
+        agent.client.chat.completions.create.side_effect = _Transient503Error
+
+        # ── Intercept retry status messages ──
+        # The loop calls ``_buffer_status`` with:
+        #   "⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
+        # We capture these to extract the effective max_retries and the
+        # scheduled wait times.
+        status_messages: list[str] = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        # ── Fast-forward time so the loop runs instantly ──
+        # The loop sleeps in 0.2s increments: while time.time() < sleep_end.
+        # We advance the clock by the wait_time on each sleep call.
+        _virtual_time = [1000.0]
+
+        def _fake_time():
+            return _virtual_time[0]
+
+        def _fake_sleep(seconds):
+            _virtual_time[0] += seconds
+
+        with (
+            patch.object(agent, "_buffer_status", side_effect=_capture_status),
+            patch.object(agent, "_buffer_vprint"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_flush_status_buffer"),
+            patch.object(agent, "_emit_status"),
+            patch("agent.conversation_loop.time.sleep", side_effect=_fake_sleep),
+            patch("agent.conversation_loop.time.time", side_effect=_fake_time),
+        ):
+            result = agent.run_conversation("hello")
+
+        # ── Assert the loop hit the API (not a vacuous pass) ──
+        assert agent.client.chat.completions.create.called, (
+            "the mocked 503 must actually be the failure that ran"
+        )
+
+        # ── Assert the result is a terminal failure ──
+        assert result.get("failed") is True
+
+        # ── Extract retry attempts from status messages ──
+        # Pattern: "⏳ Retrying in 5.0s (attempt 1/6) (provider outage — extended retry)..."
+        retry_pattern = re.compile(
+            r"Retrying in ([\d.]+)s \(attempt (\d+)/(\d+)\)"
+        )
+        retries = []
+        for msg in status_messages:
+            m = retry_pattern.search(msg)
+            if m:
+                wait_time = float(m.group(1))
+                attempt = int(m.group(2))
+                effective_max = int(m.group(3))
+                retries.append((wait_time, attempt, effective_max))
+
+        # ── Assert the transient ceiling raised max_retries above 3 ──
+        assert retries, (
+            f"no retry status messages captured; got: {status_messages}"
+        )
+        effective_max_values = {r[2] for r in retries}
+        assert effective_max_values == {transient_outage_retry_ceiling()}, (
+            f"effective max_retries should be {transient_outage_retry_ceiling()} "
+            f"(the transient ceiling), got {effective_max_values}"
+        )
+        assert max(effective_max_values) > 3, (
+            f"transient ceiling must raise effective max above default 3, "
+            f"got {effective_max_values}"
+        )
+
+        # ── Assert the loop retried more than 3 times ──
+        num_retries = len(retries)
+        assert num_retries > 3, (
+            f"loop must retry > 3 times (ceiling kicks in), got {num_retries}"
+        )
+
+        # ── Assert cumulative wait exceeds what 3 default retries give ──
+        # 3 default (non-transient) retries: ~2s + ~4s + ~8s = ~14s
+        # 3 transient retries without ceiling: ~5s + ~10s + ~20s = ~35s
+        # With ceiling (6 retries): ~5s + ~10s + ~20s + ~40s + ~80s = ~155s
+        cumulative_wait = sum(r[0] for r in retries)
+        default_3_total = sum(
+            jittered_backoff(a, **DEFAULT_BACKOFF_PARAMS) for a in range(1, 4)
+        )
+        assert cumulative_wait > default_3_total, (
+            f"cumulative wait ({cumulative_wait:.1f}s) must exceed "
+            f"what 3 default retries give (~{default_3_total:.1f}s)"
+        )
+
+        # ── Assert each wait uses the transient (extended) backoff ──
+        for wait_time, attempt, _ in retries:
+            # Transient backoff: base_delay=5, so attempt 1 >= 5s
+            min_expected = TRANSIENT_BACKOFF_PARAMS["base_delay"]
+            assert wait_time >= min_expected, (
+                f"attempt {attempt} wait {wait_time:.1f}s should be >= "
+                f"transient base_delay {min_expected}s"
+            )
+
+    def test_loop_without_transient_error_stays_at_default_3(self):
+        """When the error is NOT a transient outage (e.g. billing 402),
+        the ceiling must NOT raise max_retries — the loop stays at the
+        default 3 and gives up quickly."""
+        import run_agent
+        from run_agent import AIAgent
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://api.openai.com/v1",
+                provider="openai",
+                api_mode="chat_completions",
+                model="gpt-5.5",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+
+        assert agent._api_max_retries == 3
+
+        # Billing 402 — NOT transient, NOT retryable via ceiling
+        class _Billing402Error(Exception):
+            """Side-effect callable that accepts any kwargs and raises a 402."""
+            status_code = 402
+            message = "Insufficient credits"
+
+            def __init__(self, *args, **kwargs):
+                super().__init__("Insufficient credits")
+                self.response = MagicMock()
+                self.response.headers = {}
+                self.response.status_code = 402
+
+        agent.client.chat.completions.create.side_effect = _Billing402Error
+
+        status_messages: list[str] = []
+
+        _virtual_time = [1000.0]
+
+        def _fake_time():
+            return _virtual_time[0]
+
+        def _fake_sleep(seconds):
+            _virtual_time[0] += seconds
+
+        with (
+            patch.object(agent, "_buffer_status", side_effect=lambda m: status_messages.append(m)),
+            patch.object(agent, "_buffer_vprint"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_flush_status_buffer"),
+            patch.object(agent, "_emit_status"),
+            patch("agent.conversation_loop.time.sleep", side_effect=_fake_sleep),
+            patch("agent.conversation_loop.time.time", side_effect=_fake_time),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert agent.client.chat.completions.create.called
+        assert result.get("failed") is True
+
+        # Billing 402 should NOT produce "Retrying in" messages with the
+        # transient ceiling — it should abort as a non-retryable client error
+        # or give up within default retries.
+        retry_pattern = re.compile(r"Retrying in ([\d.]+)s \(attempt (\d+)/(\d+)\)")
+        retries_with_ceiling = [
+            (float(m.group(1)), int(m.group(2)), int(m.group(3)))
+            for msg in status_messages
+            for m in [retry_pattern.search(msg)]
+            if m and int(m.group(3)) == transient_outage_retry_ceiling()
+        ]
+        assert not retries_with_ceiling, (
+            "billing 402 must NOT trigger the transient outage ceiling — "
+            f"got ceiling retries: {retries_with_ceiling}"
+        )

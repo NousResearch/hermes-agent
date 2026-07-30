@@ -294,3 +294,117 @@ def test_gateway_resume_preserves_active_dialog():
     original = [dict(m) for m in history]
     result = sanitize_replay_history(history)
     assert result == original
+
+
+# ── Completed side-effecting tool tail (#68766 review) ──────────────────
+
+
+def test_sanitize_completed_side_effecting_tool_tail_preserves_as_unknown():
+    """A completed side-effecting tool tail (both the assistant tool_call
+    AND the tool result exist) must have its trailing tool result stripped
+    by ``strip_trailing_orphan_tool_messages``, then the dangling
+    ``assistant(tool_calls)`` is recovered as UNKNOWN (not erased) by
+    ``strip_dangling_tool_call_tail`` — because the tool may have executed
+    and had side effects before the session died.
+
+    This is the behavior Teknium1's review asked us to lock: replay recovery
+    preserves uncertain effects as UNKNOWN rather than erasing them
+    (``agent/replay_cleanup.py:155-180``).
+    """
+    history = [
+        {"role": "user", "content": "write the file"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "File written successfully"},
+    ]
+
+    result = sanitize_replay_history(history)
+
+    # The trailing tool result is stripped, then the dangling
+    # assistant(tool_calls) with a side-effecting tool is recovered as
+    # UNKNOWN — a synthetic tool result with effect_disposition="unknown"
+    # is appended. The result should contain the user message, the
+    # assistant(tool_calls), and the UNKNOWN recovery tool result.
+    assert len(result) == 3, (
+        f"expected 3 messages (user, assistant, UNKNOWN tool result), "
+        f"got {len(result)}: {result}"
+    )
+    assert result[0] == {"role": "user", "content": "write the file"}
+    assert result[1]["role"] == "assistant"
+    assert result[1].get("tool_calls"), (
+        "the assistant(tool_calls) message must be preserved when the "
+        "side-effecting call is recovered as UNKNOWN"
+    )
+    # The last message is the UNKNOWN recovery tool result (not the original)
+    assert result[-1]["role"] == "tool"
+    assert result[-1]["tool_call_id"] == "c1"
+    assert result[-1]["effect_disposition"] == "unknown", (
+        "side-effecting tool must be preserved as UNKNOWN, not erased — "
+        "see replay_cleanup.py:155-180"
+    )
+    assert "may have executed" in result[-1]["content"].lower(), (
+        "the UNKNOWN recovery message must indicate the tool may have "
+        "executed before Hermes stopped"
+    )
+    # The original tool result content must NOT be in the result — it was
+    # stripped and replaced with the UNKNOWN recovery message.
+    assert "File written successfully" not in result[-1]["content"], (
+        "the original tool result content should be replaced with the "
+        "UNKNOWN recovery message"
+    )
+
+
+def test_sanitize_completed_terminal_tool_tail_preserves_as_unknown():
+    """Same as above but with ``terminal`` (a session-mutating tool) —
+    the completed tool tail is recovered as UNKNOWN, not erased."""
+    history = [
+        {"role": "user", "content": "run the command"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "exit_code: 0\ncommand output"},
+    ]
+
+    result = sanitize_replay_history(history)
+
+    # Trailing tool result stripped, dangling assistant(tool_calls) recovered
+    # as UNKNOWN because terminal is a side-effecting tool.
+    assert result[-1]["role"] == "tool"
+    assert result[-1]["effect_disposition"] == "unknown"
+    assert "may have executed" in result[-1]["content"].lower()
+
+
+def test_sanitize_completed_read_only_tool_tail_is_erased():
+    """Contrast: a completed READ-ONLY tool tail (e.g. read_file) is NOT
+    recovered as UNKNOWN — the dangling assistant(tool_calls) is popped
+    entirely because a read-only tool has no side effects to preserve."""
+    history = [
+        {"role": "user", "content": "read the file"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "file contents here"},
+    ]
+
+    result = sanitize_replay_history(history)
+
+    # Trailing tool result stripped, dangling assistant popped (read-only,
+    # no side effects) → only the user message remains.
+    assert result == [{"role": "user", "content": "read the file"}]
+
+
+def test_sanitize_completed_side_effecting_tool_tail_with_user_followup_preserved():
+    """When a completed side-effecting tool tail is followed by a user
+    message, the dialog is active — nothing should be stripped, and the
+    completed tool pair is preserved as-is."""
+    history = [
+        {"role": "user", "content": "write the file"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "File written successfully"},
+        {"role": "user", "content": "now read it back"},
+    ]
+    original = [dict(m) for m in history]
+    result = sanitize_replay_history(history)
+    assert result == original, (
+        "active dialog with a user follow-up after a completed tool pair "
+        "must be preserved as-is"
+    )

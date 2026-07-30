@@ -34,6 +34,13 @@ TRANSIENT_OUTAGE_REASONS: frozenset[FailoverReason] = frozenset({
 # window of a real provider outage.
 TRANSIENT_BACKOFF_PARAMS = {"base_delay": 5.0, "max_delay": 120.0}
 
+# Number of backoff waits in the transient-outage schedule before the loop
+# would reach terminal handling.  With ``base_delay=5.0`` the waits are
+# ~5s, ~10s, ~20s, ~40s, ~80s — five waits that span the 2-3 minute outage
+# window.  The retry-loop ceiling must be high enough for all five to run
+# before ``retry_count >= max_retries`` gives up.
+_TRANSIENT_OUTAGE_BACKOFF_WAITS = 5
+
 # Default backoff for non-transient errors.
 DEFAULT_BACKOFF_PARAMS = {"base_delay": 2.0, "max_delay": 60.0}
 
@@ -49,6 +56,24 @@ def is_transient_outage(reason: FailoverReason) -> bool:
     the tests both call this function.
     """
     return reason in TRANSIENT_OUTAGE_REASONS
+
+
+def transient_outage_retry_ceiling() -> int:
+    """Retry-loop ceiling needed for the full transient-outage backoff schedule.
+
+    The extended backoff for transient outages (``TRANSIENT_BACKOFF_PARAMS``)
+    produces ~5s + ~10s + ~20s + ~40s + ~80s — five waits that span the 2-3
+    minute outage window.  With the default ``api_max_retries`` (3), the retry
+    loop gives up after only ~5s + ~10s = 15s, never reaching the longer waits.
+
+    The retry loop gives up as soon as ``retry_count >= ceiling`` — and that
+    check runs *before* the attempt's backoff is computed — so the ceiling must
+    sit one past the final backoff wait for every wait to actually execute.
+
+    Mirrors ``zai_coding_overload_retry_ceiling`` in ``agent/retry_utils.py``,
+    which uses the same ``short_attempts + len(long_backoff_table) + 1`` shape.
+    """
+    return _TRANSIENT_OUTAGE_BACKOFF_WAITS + 1
 
 
 def select_backoff_params(

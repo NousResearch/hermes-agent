@@ -79,6 +79,7 @@ from agent.retry_messaging import (
     build_terminal_return_dict,
     is_transient_outage,
     select_backoff_params,
+    transient_outage_retry_ceiling,
 )
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
@@ -4281,6 +4282,13 @@ def run_conversation(
                 # 2-3 minutes. Use an extended backoff schedule for these so
                 # retries span the outage window instead of giving up at ~14s.
                 _is_transient_outage = is_transient_outage(classified.reason)
+                if _is_transient_outage:
+                    # Raise the retry ceiling so the full extended backoff
+                    # schedule (~5s + ~10s + ~20s + ~40s + ~80s) runs instead
+                    # of giving up after only ~15s with the default
+                    # api_max_retries=3.  Mirrors the zai_coding_overload_retry
+                    # ceiling pattern above.  See #68766.
+                    max_retries = max(max_retries, transient_outage_retry_ceiling())
                 _should_fallback = (
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)

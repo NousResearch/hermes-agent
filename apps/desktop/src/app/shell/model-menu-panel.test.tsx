@@ -186,7 +186,11 @@ describe('ModelMenuPanel search', () => {
 
     // First matching family of the first (alphabetical) matching provider.
     await vi.waitFor(() => {
-      expect(onSelectModel).toHaveBeenCalledWith({ model: 'gemini-3.1-pro', provider: 'google', sessionId: 'runtime-1' })
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-3.1-pro',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
     })
   })
 
@@ -219,7 +223,11 @@ describe('ModelMenuPanel search', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     await vi.waitFor(() => {
-      expect(onSelectModel).toHaveBeenCalledWith({ model: 'gemini-2.5-flash', provider: 'google', sessionId: 'runtime-1' })
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-2.5-flash',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
     })
   })
 

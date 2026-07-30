@@ -192,12 +192,15 @@ def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, An
     so Hermes operates in the same browser profile instead of creating a
     separate private session.
     """
-    user_id = os.getenv("CAMOFOX_USER_ID", "").strip() or str(camofox_cfg.get("user_id") or "").strip()
+    user_id = (
+        (get_secret("CAMOFOX_USER_ID", "") or "").strip()
+        or str(camofox_cfg.get("user_id") or "").strip()
+    )
     if not user_id:
         return None
 
     session_key = (
-        os.getenv("CAMOFOX_SESSION_KEY", "").strip()
+        (get_secret("CAMOFOX_SESSION_KEY", "") or "").strip()
         or str(camofox_cfg.get("session_key") or "").strip()
         or f"task_{(task_id or 'default')[:16]}"
     )

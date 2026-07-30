@@ -211,3 +211,84 @@ async def test_model_switch_resolves_credentials_under_routed_profile_scope(
         "see the ROUTED profile's secret scope, not the ambient/default "
         f"value (got {captured.get('resolved_secret')!r})"
     )
+
+
+@pytest.mark.asyncio
+async def test_model_refresh_clears_only_routed_profile_cache(tmp_path, monkeypatch):
+    """/model --refresh from a routed source must clear the ROUTED profile's
+    provider-models cache. The cache path resolves through get_hermes_home(),
+    so an unscoped clear deletes the default profile's cache and leaves the
+    routed profile's stale file in place (#69242 sweeper review)."""
+    default_home = tmp_path / "default"
+    profile_home = tmp_path / "profiles" / "work"
+    _write_config(default_home, "default-model")
+    _write_config(profile_home, "profile-model")
+    default_cache = default_home / "provider_models_cache.json"
+    profile_cache = profile_home / "provider_models_cache.json"
+    default_cache.write_text("{}", encoding="utf-8")
+    profile_cache.write_text("{}", encoding="utf-8")
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kw: _fake_switch_result(),
+    )
+
+    runner = _make_runner(profile_home)
+    result = await runner._handle_model_command(
+        _make_event("/model gpt-5.5 --global --refresh")
+    )
+    assert result is not None
+
+    assert not profile_cache.exists(), (
+        "the routed profile's cache must be cleared by --refresh"
+    )
+    assert default_cache.exists(), (
+        "the DEFAULT profile's cache must survive a routed /model --refresh"
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_refresh_lists_providers_under_routed_scope(tmp_path, monkeypatch):
+    """A bare routed ``/model --refresh`` (no target) falls through to the
+    provider listing. That listing reads and repopulates the catalog cache
+    through get_hermes_home(), so it must observe the ROUTED profile's home,
+    not the default one (#69242 sweeper review, second pass)."""
+    default_home = tmp_path / "default"
+    profile_home = tmp_path / "profiles" / "work"
+    _write_config(default_home, "default-model")
+    _write_config(profile_home, "profile-model")
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+    observed = []
+
+    def _observing_list(**_kw):
+        from hermes_constants import get_hermes_home
+
+        observed.append(get_hermes_home())
+        return []
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_picker_providers", _observing_list
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers", _observing_list
+    )
+
+    runner = _make_runner(profile_home)
+    await runner._handle_model_command(_make_event("/model --refresh"))
+
+    assert observed, "provider listing was never reached"
+    assert all(h == profile_home for h in observed), (
+        f"provider listing observed {observed} instead of the routed "
+        f"profile home {profile_home}"
+    )

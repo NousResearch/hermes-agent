@@ -138,6 +138,7 @@ def test_nvidia_tts_missing_key_is_actionable(tmp_path):
 
 
 def test_asr_conversion_is_noninteractive_and_hides_windows_console(tmp_path):
+    from hermes_cli._subprocess_compat import windows_hide_flags
     from tools.transcription_tools import (
         DEFAULT_NVIDIA_ASR_MODEL,
         _transcribe_nvidia,
@@ -167,4 +168,4 @@ def test_asr_conversion_is_noninteractive_and_hides_windows_console(tmp_path):
 
     assert result["success"] is True
     assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
-    assert "creationflags" in run.call_args.kwargs
+    assert run.call_args.kwargs["creationflags"] == windows_hide_flags()

@@ -210,6 +210,34 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             logger.info("[%s] Loaded %d WhatsApp mention pattern(s)", self.name, len(compiled))
         return compiled
 
+    # Mention rendering ---------------------------------------------------
+    # WhatsApp bodies carry mentions as bare numeric ids (``@<lid>`` /
+    # ``@<phone>``); the human-readable identity never appears inline. These
+    # power _clean_bot_mention_text's symmetric rewrite.
+    _MENTION_TOKEN_RE = re.compile(r"@(\d{5,})\b")
+    _MENTION_SELF_LABEL = "@you"
+    _MENTION_OTHER_SUFFIX = " (another person)"
+
+    def _mention_name_map(self, data: dict[str, Any]) -> dict[str, str]:
+        """Map bare mention id -> display name, from bridge-supplied ``mentionedNames``.
+
+        Falls back to the sender's own name so a self-referential tag still resolves. Unknown
+        ids are simply absent: the caller renders those as "another person" instead of guessing.
+        """
+        mapping: dict[str, str] = {}
+        raw = data.get("mentionedNames")
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                bare = self._normalize_whatsapp_id(key).split("@", 1)[0]
+                name = str(value or "").strip()
+                if bare and name:
+                    mapping[bare] = name
+        sender_id = self._normalize_whatsapp_id(data.get("senderId")).split("@", 1)[0]
+        sender_name = str(data.get("senderName") or "").strip()
+        if sender_id and sender_name:
+            mapping.setdefault(sender_id, sender_name)
+        return mapping
+
     def _bot_ids_from_message(self, data: dict[str, Any]) -> set[str]:
         return {nid for c in (data.get("botIds") or []) if (nid := self._normalize_whatsapp_id(c))}
 
@@ -235,14 +263,26 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return any(pattern.search(body) for pattern in self._mention_patterns or ())
 
     def _clean_bot_mention_text(self, text: str, data: dict[str, Any]) -> str:
+        """Rewrite raw ``@<id>`` mention tokens into labels the agent can read.
+
+        Stripping only the bot's own id inverted the signal: a message addressed to the bot lost
+        its marker, while one addressed to someone else kept a bare number that reads like "someone
+        tagged me". Every mention is now rewritten: the bot becomes an explicit self-marker, humans
+        keep their display names, and an unresolved id is marked as another person.
+        """
         if not text:
             return text
-        cleaned = text
-        for bot_id in self._bot_ids_from_message(data):
-            bare_id = bot_id.split("@", 1)[0]
-            if bare_id:
-                cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
-        return cleaned.strip() or text
+        bot_bare = {bid.split("@", 1)[0] for bid in self._bot_ids_from_message(data)} - {""}
+        names = self._mention_name_map(data)
+
+        def _label(match: re.Match[str]) -> str:
+            bare_id = match.group(1)
+            if bare_id in bot_bare:
+                return self._MENTION_SELF_LABEL
+            name = names.get(bare_id)
+            return f"@{name}" if name else f"@{bare_id}{self._MENTION_OTHER_SUFFIX}"
+
+        return self._MENTION_TOKEN_RE.sub(_label, text).strip() or text
 
     def _should_process_message(self, data: dict[str, Any]) -> bool:
         chat_id = str(data.get("chatId") or "")

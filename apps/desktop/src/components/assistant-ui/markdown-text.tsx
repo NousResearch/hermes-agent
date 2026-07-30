@@ -127,7 +127,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
   return (
     <span className="block">
       <button
-        className="mt-2 link-chip bg-transparent text-xs font-medium text-muted-foreground hover:text-foreground"
+        className="mt-2 ref text-xs font-medium text-muted-foreground hover:text-foreground"
         onClick={open}
         type="button"
       >
@@ -223,7 +223,7 @@ function MediaAttachment({ path }: { path: string }) {
   return (
     <span className="wrap-anywhere">
       <a
-        className="link-chip wrap-anywhere"
+        className="ref wrap-anywhere"
         href="#"
         onClick={event => {
           event.preventDefault()
@@ -273,7 +273,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   if (!target || !/^https?:\/\//i.test(target)) {
     return (
       <a
-        className={cn('link-chip wrap-anywhere', className)}
+        className={cn('ref wrap-anywhere', className)}
         href={href}
         rel="noopener noreferrer"
         target="_blank"
@@ -370,7 +370,7 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
       <span className="my-2 block text-sm text-muted-foreground">
         Couldn&apos;t load {name}.{' '}
         <button
-          className="link-chip bg-transparent font-medium text-foreground hover:text-foreground"
+          className="ref font-medium text-foreground"
           onClick={open}
           type="button"
         >

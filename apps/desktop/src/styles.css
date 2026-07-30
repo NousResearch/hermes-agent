@@ -583,36 +583,107 @@
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
 
-/* Inline content links: color at rest, a tinted chip on hover, never an
-   underline. Tint is currentColor-relative (the old `decoration-current/20`
-   idiom), so text and fill share a hue on every theme from one `color`. */
-.link-chip {
-  /* The one knob: resting fill. 0% = color-only until hovered. */
-  --link-chip-tint: 0%;
+/* ─────────────────────────────────────────────────────────────────────────
+   INLINE REFERENCES — the one system for anything that points at something
+   from inside a run of text.
+
+   A pasted link, an `@file:` the user picked, a `/skill`, a `@session:` the
+   agent wrote: all the same species. They render the same way in the composer
+   and in a sent message, because they're the same thing before and after send.
+
+   A reference is TEXT, not a badge — colour and an optional icon, no fill, no
+   padding, no border. A pill turns every mention into a widget the eye has to
+   step over, and mid-sentence that's most of the sentence.
+
+   Usage: `class="ref"` plus `data-ref="<kind>"` for the accent. Kinds live in
+   `components/assistant-ui/reference-kinds.ts` (icon + label); their colour
+   lives here, so a theme restyles every reference at once and TS never ships a
+   hex. No `data-ref` = an ordinary link, which keeps the primary link colour.
+   ───────────────────────────────────────────────────────────────────────── */
+/* Kind → accent. Keyed on the attribute ALONE so anything can adopt a
+   reference's colour without also taking its inline-text layout (a completion
+   row's icon column wants the hue, not the margin). Grouped by what a
+   reference DOES, so the palette reads as meaning rather than decoration:
+     · things you point at (paths)          → neutral, they're the common case
+     · things you fetch (links, media)      → secondary
+     · things that act (commands, tools)    → accent
+     · things that change code (skills, git)→ warm */
+[data-ref] {
+  --ref-color: var(--dt-primary);
+}
+
+[data-ref='file'],
+[data-ref='folder'],
+[data-ref='line'],
+[data-ref='terminal'] {
+  --ref-color: var(--ui-text-secondary);
+}
+
+[data-ref='url'],
+[data-ref='image'],
+[data-ref='session'],
+[data-ref='theme'] {
+  --ref-color: color-mix(in srgb, var(--ui-accent-secondary) 82%, var(--foreground));
+}
+
+[data-ref='command'],
+[data-ref='tool'] {
+  --ref-color: color-mix(in srgb, var(--ui-accent) 82%, var(--foreground));
+}
+
+[data-ref='skill'],
+[data-ref='git'],
+[data-ref='diff'],
+[data-ref='staged'] {
+  --ref-color: color-mix(in srgb, var(--ui-warm) 82%, var(--foreground));
+}
+
+.ref {
+  --ref-color: var(--dt-primary);
 
   /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
      sets `prose a { font-weight: 500 }`, which outranks a utility class on the
-     anchor — so the override belongs here, on the shared chip. */
+     anchor — so the override belongs here, on the shared class. */
   font-weight: inherit;
-
-  /* `ch`/`em` so the chip tracks the text at any size. Block padding is
-     asymmetric because an inline box's content area is ascent+descent — equal
-     padding paints the glyphs high. Keep it small: `padding-block` doesn't grow
-     the line box, so an over-padded chip creeps into the line above. */
-  padding: 0.05ch 0.5ch 0.2ch;
-  border-radius: 0.25rem;
-  color: var(--dt-primary);
-  background: color-mix(in srgb, currentColor var(--link-chip-tint), transparent);
+  color: var(--ref-color);
   /* Explicit: the base layer underlines every `a` (see the :where(a, …) reset). */
   text-decoration: none;
-  /* A wrapped link gets a chip per line fragment, not one ragged box. */
+  /* A wrapped reference breaks per line fragment, not as one ragged box. */
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
-  transition: background-color 0.12s ease;
 }
 
-.link-chip:hover {
-  --link-chip-tint: 15%;
+/* Affordance without chrome: only the ones you can actually activate respond,
+   and they do it with an underline rather than a background. */
+:where(a, button).ref:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* The leading glyph. Sized in `em` so it tracks the text at any scale, and
+   spaced with `margin` — not flex `gap` — so `.ref` stays an inline box whose
+   label can wrap mid-word (a long URL has to break across lines like the prose
+   around it, which a flex container would prevent).
+
+   The margin is unconditional. A `:not(:only-child)` guard looks right and is
+   silently wrong: CSS counts ELEMENT siblings, so an icon followed by a bare
+   text-node label still matches `:only-child` — which is exactly how every
+   chip lost its spacer. Icon-only users take the hue via `[data-ref]` instead
+   of this class. */
+.ref > :where(svg, i.codicon) {
+  margin-inline-end: 0.25em;
+  opacity: 0.8;
+}
+
+.ref > svg {
+  display: inline-block;
+  width: 0.875em;
+  height: 0.875em;
+  vertical-align: -0.1em;
+}
+
+.ref > i.codicon {
+  font-size: 0.875em;
 }
 
 /* Hover-reveal suppression — the shared, declarative escape hatch.

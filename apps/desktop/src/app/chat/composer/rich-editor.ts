@@ -7,15 +7,15 @@
  * plain-text round-trip.
  */
 import {
-  DIRECTIVE_CHIP_CLASS,
   directiveIconElement,
   directiveIconSvg,
   formatRefValue,
+  refAttrsHtml,
   refChipLabel,
-  slashChipClass,
   type SlashChipKind,
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
+import { referenceKind } from '@/components/assistant-ui/reference-kinds'
 
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
@@ -60,42 +60,38 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
 
   const label = displayLabel || refChipLabel(kind, id)
 
-  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
+  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" ${refAttrsHtml(kind)}>${directiveIconSvg(kind)}${escapeHtml(label)}</span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
   const id = unquoteRef(rawValue)
   const text = `@${kind}:${quoteRefValue(id)}`
   const chip = document.createElement('span')
-  const label = document.createElement('span')
 
   chip.contentEditable = 'false'
   chip.title = id
   chip.dataset.refText = text
   chip.dataset.refId = id
   chip.dataset.refKind = kind
-  chip.className = DIRECTIVE_CHIP_CLASS
-  label.className = 'truncate'
-  label.textContent = displayLabel || refChipLabel(kind, id)
-  chip.append(directiveIconElement(kind), label)
+  chip.className = 'ref'
+  chip.dataset.ref = referenceKind(kind)
+  chip.append(directiveIconElement(kind), document.createTextNode(displayLabel || refChipLabel(kind, id)))
 
   return chip
 }
 
-/** A non-editable pill for a picked slash command (`/skin nous`, `/tropes`).
+/** A non-editable reference for a picked slash command (`/skin nous`, `/tropes`).
  *  `data-ref-text` carries the literal command so `composerPlainText` round-trips
  *  it back to the exact text that gets submitted. */
 export function slashChipElement(command: string, kind: SlashChipKind, label?: string) {
   const chip = document.createElement('span')
-  const text = document.createElement('span')
 
   chip.contentEditable = 'false'
   chip.dataset.refText = command
   chip.dataset.slashKind = kind
-  chip.className = slashChipClass(kind)
-  text.className = 'truncate'
-  text.textContent = label || command
-  chip.append(slashIconElement(kind), text)
+  chip.className = 'ref'
+  chip.dataset.ref = kind
+  chip.append(slashIconElement(kind), document.createTextNode(label || command))
 
   return chip
 }
@@ -228,8 +224,24 @@ function atTokenBoundary(editor: HTMLElement, range: Range | null): boolean {
  *  — Chromium's editing pipeline is ~O(n²) on large multiline blobs.
  *
  *  The text arrives whole rather than typed, so a `/command` ending it is
- *  complete rather than half-written and chips like the rest. */
-export function insertComposerContentsAtCaret(editor: HTMLElement, text: string) {
+ *  complete rather than half-written and chips like the rest.
+ *
+ *  `consumeBefore` characters immediately before the caret are swallowed by the
+ *  insert. That's how a paste into an open `@url:` scope replaces the scope
+ *  instead of stacking on it (`@url:@url:\`https://…\``). */
+export function insertComposerContentsAtCaret(editor: HTMLElement, text: string, consumeBefore = 0) {
+  const scoped = consumeBefore > 0 ? rangeBeforeCaret(editor, consumeBefore) : null
+
+  if (scoped) {
+    scoped.deleteContents()
+    scoped.collapse(true)
+
+    const selection = window.getSelection()
+
+    selection?.removeAllRanges()
+    selection?.addRange(scoped)
+  }
+
   const hit = composerSelectionRange(editor)
   const fragment = document.createDocumentFragment()
 

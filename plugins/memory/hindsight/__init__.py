@@ -280,21 +280,32 @@ REFLECT_SCHEMA = {
 INVALIDATE_SCHEMA = {
     "name": "hindsight_invalidate",
     "description": (
-        "Invalidate (soft-delete) or restore a stored memory. "
+        "Invalidate (soft-delete) or restore a stored memory, or search for "
+        "invalidated memories to restore. "
         "Invalidated memories are excluded from recall, consolidation, "
         "and graph maintenance, but kept for audit — fully reversible. "
         "Only world/experience facts can be invalidated; observations are derived.\n\n"
-        "WORKFLOW: first use hindsight_recall to find the memory_id "
-        "(each result includes an id=... prefix), confirm it is the "
-        "target, then call this tool. "
-        "Pass restore=true to revert a previous invalidation."
+        "TWO MODES (one of memory_id or query is required):\n"
+        "1. Mutation: provide memory_id to invalidate or restore a specific memory.\n"
+        "2. Discovery: provide query to search for previously-invalidated memories.\n\n"
+        "WORKFLOW: use query mode to find invalidated memories and their IDs, "
+        "then call again with memory_id + restore=true to restore."
     ),
     "parameters": {
         "type": "object",
         "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Search term to find invalidated (soft-deleted) memories for "
+                    "potential restore. Returns matching memories with their full IDs. "
+                    "Use this when you need to find and restore a previously-invalidated "
+                    "memory but don't know its ID. Mutually exclusive with memory_id."
+                ),
+            },
             "memory_id": {
                 "type": "string",
-                "description": "Full memory ID from hindsight_recall results (e.g. from 'id=5e79c849-f3b6-4a1e-b789-123456789abc' output)."
+                "description": "Full memory ID from hindsight_recall or query results. Required for mutation mode."
             },
             "reason": {
                 "type": "string",
@@ -306,7 +317,6 @@ INVALIDATE_SCHEMA = {
                 "description": "Set true to RESTORE a previously invalidated memory to valid."
             },
         },
-        "required": ["memory_id"],
     },
 }
 
@@ -1183,8 +1193,36 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Tool hindsight_reflect: response_len=%d", len(text))
         return text or "No relevant memories found."
 
-    def _tool_invalidate(self, args: dict) -> str:
-        memory_id = args["memory_id"]
+    def _tool_invalidate(self, args: dict):
+        memory_id = args.get("memory_id", "")
+        query = args.get("query", "")
+
+        # —— Discovery mode: search for invalidated memories ——
+        if query:
+            if memory_id:
+                return {"error": "Provide query or memory_id, not both"}
+            try:
+                results = self._http_list_invalidated(query)
+                if not results:
+                    return {"result": "No invalidated memories match that query."}
+                lines = []
+                for r in results:
+                    sid = r.get("id", "?")
+                    text = r.get("content", "") or r.get("text", "")
+                    lines.append(f"id={sid} {text}")
+                return {
+                    "result": "\n".join(lines),
+                    "ids": [r.get("id") for r in results],
+                }
+            except Exception as e:
+                logger.warning(
+                    "hindsight_invalidate query failed: %s", e, exc_info=True,
+                )
+                return {"error": f"Failed to search invalidated memories: {e}"}
+
+        # —— Mutation mode ——
+        if not memory_id:
+            return {"error": "Provide query to search or memory_id to mutate"}
         state = "valid" if args.get("restore", False) else "invalidated"
         reason = args.get("reason", "")
 
@@ -1213,17 +1251,22 @@ class HindsightMemoryProvider(MemoryProvider):
         "hindsight_retain": ("content", _tool_retain, "Failed to store memory"),
         "hindsight_recall": ("query", _tool_recall, "Failed to search memory"),
         "hindsight_reflect": ("query", _tool_reflect, "Failed to reflect"),
-        "hindsight_invalidate": ("memory_id", _tool_invalidate, "Failed to curate memory"),
+        "hindsight_invalidate": (None, _tool_invalidate, "Failed to curate memory"),
     }
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name not in self._TOOL_HANDLERS:
             return tool_error(f"Unknown tool: {tool_name}")
         required, handler, failure = self._TOOL_HANDLERS[tool_name]
-        if not args.get(required, ""):
+        # An empty ``required`` means the handler validates its own arguments
+        # (hindsight_invalidate takes either ``query`` or ``memory_id``).
+        if required and not args.get(required, ""):
             return tool_error(f"Missing required parameter: {required}")
         try:
-            return json.dumps({"result": handler(self, args)})
+            result = handler(self, args)
+            # A dict is a full payload (extra fields, per-tool error body);
+            # a str is the plain ``result`` value.
+            return json.dumps(result if isinstance(result, dict) else {"result": result})
         except Exception as e:
             logger.warning("%s failed: %s", tool_name, e, exc_info=True)
             return tool_error(f"{failure}: {e}")
@@ -1279,6 +1322,47 @@ class HindsightMemoryProvider(MemoryProvider):
             raise RuntimeError(f"HTTP {e.code}: {body[:300]}") from None
 
     # -- session lifecycle -------------------------------------------------------
+
+    def _http_list_invalidated(self, query: str):
+        """GET /v1/default/banks/{bank_id}/memories?state=invalidated.
+
+        Retrieves invalidated memories and filters by substring match
+        against *query* on content/text fields. Returns a list of
+        ``{id, content, text}`` dicts, or empty when nothing matches.
+        """
+        import urllib.error
+        import urllib.request
+
+        url = (
+            f"{self._api_url.rstrip('/')}"
+            f"/v1/default/banks/{self._bank_id}/memories"
+            f"?state=invalidated&limit=50"
+        )
+        req = urllib.request.Request(url, headers={})
+        if self._api_key:
+            req.add_header("Authorization", f"Bearer {self._api_key}")
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body_raw = e.read().decode(errors="replace")
+            raise RuntimeError(f"HTTP {e.code}: {body_raw[:300]}") from None
+
+        items = body if isinstance(body, list) else body.get("memories", [])
+        query_lower = query.lower()
+        matched = []
+        for m in items:
+            if not isinstance(m, dict):
+                continue
+            content = (m.get("content") or m.get("text") or "").lower()
+            if query_lower in content:
+                matched.append({
+                    "id": m.get("id", "?"),
+                    "content": m.get("content", ""),
+                    "text": m.get("text", ""),
+                })
+        return matched
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "",
                           reset: bool = False, **kwargs) -> None:

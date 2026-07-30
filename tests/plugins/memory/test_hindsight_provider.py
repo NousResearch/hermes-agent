@@ -621,10 +621,44 @@ class TestToolHandlers:
         assert provider._http_patch_memory.called
         assert "invalidated" in result["result"]
 
-    def test_invalidate_missing_id(self, provider):
-        """Missing memory_id returns error."""
+    def test_invalidate_missing_params(self, provider):
+        """Neither query nor memory_id returns error."""
         result = json.loads(provider.handle_tool_call(
             "hindsight_invalidate", {}
+        ))
+        assert "error" in result
+
+    def test_invalidate_query_mode(self, provider, monkeypatch):
+        """Query mode searches invalidated memories."""
+        monkeypatch.setattr(
+            provider, "_http_list_invalidated",
+            MagicMock(return_value=[
+                {"id": "abc-123", "content": "old server address"},
+                {"id": "def-456", "text": "deprecated config"},
+            ]),
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate", {"query": "server"}
+        ))
+        assert "abc-123" in result["result"]
+        assert "old server address" in result["result"]
+        assert result["ids"] == ["abc-123", "def-456"]
+
+    def test_invalidate_query_no_results(self, provider, monkeypatch):
+        """Query mode with no matches returns empty message."""
+        monkeypatch.setattr(
+            provider, "_http_list_invalidated", MagicMock(return_value=[])
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate", {"query": "nonexistent"}
+        ))
+        assert "No invalidated memories" in result["result"]
+
+    def test_invalidate_query_and_id_mutually_exclusive(self, provider):
+        """Providing both query and memory_id returns error."""
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_invalidate",
+            {"query": "test", "memory_id": "abc-123"}
         ))
         assert "error" in result
 

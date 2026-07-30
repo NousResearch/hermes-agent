@@ -34,6 +34,8 @@ export interface NativeTokenStoreIo {
   /**
    * Encrypt one plaintext blob. main.ts passes the strict safeStorage helper,
    * which THROWS when the OS keychain is unavailable — that must stay loud.
+   * A `null` return is treated as the same authoritative failure: the caller
+   * throws rather than persisting an empty entry over good tokens.
    */
   encrypt: (plaintext: string) => StoredTokenSecret | null
   /** Decrypt a stored payload; returns '' when it cannot be read. */
@@ -76,7 +78,17 @@ export function persistNativeTokenSet(baseUrl: string, tokens: NativeTokenSet | 
     // plaintext on disk. Deliberately outside the try below: an unusable
     // keychain is an authoritative write failure and must surface to the
     // caller, not be logged away as if the tokens were saved.
-    store[baseUrl] = io.encrypt(JSON.stringify(tokens))
+    const secret = io.encrypt(JSON.stringify(tokens))
+
+    if (!secret) {
+      // A null blob is the same failure as a throw, only quieter. Storing it
+      // would replace a good entry with nothing: the write would report
+      // success, the next launch would show signed out, and the refresh token
+      // would be unrecoverable. Fail before touching the store.
+      throw new Error('Secure token storage returned no encrypted payload; refusing to overwrite stored native tokens.')
+    }
+
+    store[baseUrl] = secret
   } else {
     delete store[baseUrl]
   }

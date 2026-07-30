@@ -444,7 +444,7 @@ def _(rid, params: dict) -> dict:
         # feeds live replay. Fall back to it if the display read fails.
         try:
             display_history = db.get_messages_as_conversation(
-                target, repair_alternation=False
+                target, repair_alternation=False, include_row_ids=True
             )
         except Exception:
             logger.debug("child-watch display projection read failed", exc_info=True)
@@ -917,6 +917,59 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4022, str(e))
         except Exception as e:
             return _err(rid, 5007, str(e))
+
+
+@method("message.react")
+def _(rid, params: dict) -> dict:
+    """Set or clear one author's emoji reaction on a persisted message.
+
+    iOS Tapback semantics, enforced in the DB layer: one reaction per author
+    per message, re-sending the same emoji retracts it. ``emoji: null`` clears
+    unconditionally. ``row_id`` is the durable ``messages.id`` forwarded by
+    ``_history_to_messages`` — the renderer's own message ids are ephemeral.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    # A live message hasn't round-tripped through a resume, so the desktop has
+    # no durable row id for it yet. It can instead name the ROLE whose newest
+    # row it means — which is the message the user just reacted to.
+    newest_role = str(params.get("newest_role") or "").strip()
+    row_id = params.get("row_id")
+    if row_id is None and newest_role not in {"user", "assistant"}:
+        return _err(rid, 4023, "row_id or newest_role required")
+
+    emoji = params.get("emoji")
+    if emoji is not None:
+        emoji = str(emoji).strip()
+        if not emoji:
+            return _err(rid, 4024, "emoji must be a non-empty string or null")
+
+    author = str(params.get("author") or "user").strip()
+    if author not in {"user", "agent"}:
+        return _err(rid, 4025, "author must be 'user' or 'agent'")
+
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        try:
+            if row_id is None:
+                row_id = db.latest_message_row_id(
+                    session["session_key"], role=newest_role
+                )
+                if row_id is None:
+                    return _err(rid, 4040, "no message to react to yet")
+            reactions = db.set_message_reaction(
+                session["session_key"], int(row_id), emoji, author=author
+            )
+        except Exception as e:
+            return _err(rid, 5007, str(e))
+
+    if reactions is None:
+        return _err(rid, 4040, "message not found in this session")
+
+    return _ok(rid, {"row_id": int(row_id), "reactions": reactions})
 
 
 @method("llm.oneshot")

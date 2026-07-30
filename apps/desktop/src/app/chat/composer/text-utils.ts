@@ -1,10 +1,11 @@
 import { DATA_IMAGE_URL_RE, dataUrlToBlob } from '@/lib/embedded-images'
+import { $reactionsEnabled } from '@/store/reactions-enabled'
 
 export interface TriggerState {
   /** True for a `/` typed mid-message — an inline skill/command reference in
    *  prose rather than a command invocation. Arg completion doesn't apply. */
   inline?: boolean
-  kind: '@' | '/'
+  kind: '@' | '/' | ':'
   query: string
   tokenLength: number
 }
@@ -44,6 +45,10 @@ export interface TriggerState {
 const AT_TRIGGER_RE = /(?:^|[\s\uFFFC])(@)([^\s@\uFFFC]*)$/
 const SLASH_COMMAND_TRIGGER_RE = /^(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
 const SLASH_INLINE_TRIGGER_RE = /[\s\uFFFC](\/)([a-zA-Z][\w-]*)?$/
+// `:joy` → emoji completions, Slack-style. Boundary-anchored so a mid-word
+// colon (`localhost:8080`, `note:`) never fires; two chars minimum so a bare
+// `:` or `:D` smiley doesn't open a popover the user didn't ask for.
+const EMOJI_TRIGGER_RE = /(?:^|[\s\uFFFC])(:)([a-zA-Z0-9_+-]{2,})$/
 
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {
@@ -178,6 +183,15 @@ export function detectTrigger(textBefore: string): TriggerState | null {
 
   if (at) {
     return { kind: '@', query: at[2], tokenLength: 1 + at[2].length }
+  }
+
+  // After `@` so a directive starter's colon (`@file:`) stays an `@` query.
+  // Rides the reactions opt-in (Settings → Appearance) — both are one
+  // "emoji features" surface, off by default.
+  const emoji = $reactionsEnabled.get() ? EMOJI_TRIGGER_RE.exec(textBefore) : null
+
+  if (emoji) {
+    return { kind: ':', query: emoji[2], tokenLength: 1 + emoji[2].length }
   }
 
   return null

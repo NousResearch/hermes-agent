@@ -6655,6 +6655,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
+        # Durable row identity, stamped by _rows_to_conversation. The renderer's
+        # own message ids are ephemeral (timestamp+index derived, and a
+        # different shape for live vs rehydrated vs optimistic rows), so
+        # anything that addresses a specific persisted message later — message
+        # reactions — needs this instead.
+        if m.get("_row_id") is not None:
+            msg["row_id"] = m["_row_id"]
         if role == "user":
             invocation = _skill_scaffold_projection(content_text)
             if invocation:
@@ -7499,7 +7506,7 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
     key = session.get("session_key")
     if db is not None and key:
         try:
-            display = db.get_messages_as_conversation(key, include_ancestors=True)
+            display = db.get_messages_as_conversation(key, include_ancestors=True, include_row_ids=True)
             return _reconcile_display_with_live(display, in_memory_fallback)
         except Exception:
             logger.debug("live display projection read failed", exc_info=True)
@@ -9131,6 +9138,17 @@ def _run_prompt_submit(
                     run_message = f"{SPEECH_INTERRUPTED_NOTE}\n\n{run_message}"
                 elif isinstance(run_message, list):
                     run_message = [{"type": "text", "text": SPEECH_INTERRUPTED_NOTE}, *run_message]
+
+            # Reactions the user added since the last turn ride the MODEL INPUT
+            # only (same enrichment channel as the speech-interrupted note);
+            # persist_user_message below stays the clean prompt, so no
+            # scaffolding reaches the transcript. Cache-safe: annotating the
+            # NEW turn never rewrites an already-sent message.
+            if reaction_notes := _pending_reaction_notes(session):
+                if isinstance(run_message, str):
+                    run_message = f"{reaction_notes}\n\n{run_message}"
+                elif isinstance(run_message, list):
+                    run_message = [{"type": "text", "text": reaction_notes}, *run_message]
 
             def _stream(delta):
                 with session["history_lock"]:
@@ -11671,7 +11689,7 @@ def _format_live_history_output(session: dict) -> str:
     if db is not None and session.get("session_key"):
         try:
             history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True
+                session["session_key"], include_ancestors=True, include_row_ids=True
             )
         except Exception:
             pass
@@ -11711,7 +11729,9 @@ def _format_live_context_output(session: dict) -> str:
     if db is not None and session.get("session_key"):
         try:
             messages = _history_to_messages(
-                db.get_messages_as_conversation(session["session_key"], include_ancestors=True)
+                db.get_messages_as_conversation(
+                    session["session_key"], include_ancestors=True, include_row_ids=True
+                )
             )
         except Exception:
             messages = []

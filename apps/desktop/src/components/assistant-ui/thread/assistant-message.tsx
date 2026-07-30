@@ -7,7 +7,7 @@ import {
   useMessageRuntime
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useMemo } from 'react'
+import { type FC, useCallback, useMemo, useState } from 'react'
 
 import {
   contentHasVisibleText,
@@ -15,6 +15,7 @@ import {
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
+import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseLoadingIndicator, StreamStallIndicator } from '@/components/assistant-ui/thread/status'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
@@ -22,15 +23,23 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
+import type { ChatMessage } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, VolumeXIcon, XIcon } from '@/lib/icons'
+import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { formatAgo } from '@/lib/time'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { toggleMessageReaction } from '@/store/reactions'
+import { $reactionsEnabled } from '@/store/reactions-enabled'
+import { $agentReactions, $localReactions, mergeReactions, setLocalReaction } from '@/store/reactions-local'
 import { $voicePlayback } from '@/store/voice-playback'
+import type { MessageReaction } from '@/types/hermes'
+
+// Stable empty identity — a fresh [] per render would re-run every consumer.
+const EMPTY_REACTIONS: MessageReaction[] = []
 
 interface MessageActionProps {
   messageId: string
@@ -135,8 +144,42 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
   const { t } = useI18n()
   const copy = t.assistant.thread
 
+  const reactions = useAuiState(s => {
+    const custom = (s.message.metadata?.custom ?? {}) as { reactions?: MessageReaction[] }
+
+    return custom.reactions ?? EMPTY_REACTIONS
+  })
+
+  const rowId = useAuiState(s => {
+    const custom = (s.message.metadata?.custom ?? {}) as { rowId?: number }
+
+    return custom.rowId
+  })
+
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const reactionsEnabled = useStore($reactionsEnabled)
+  const localAll = useStore($localReactions)
+  const agentLive = useStore($agentReactions)
+
+  const shownReactions = mergeReactions(
+    reactions,
+    localAll[messageId],
+    rowId !== undefined ? agentLive[rowId] : undefined
+  )
+
+  const react = useCallback(
+    (emoji: null | string) => {
+      setPickerOpen(false)
+      // Flip the UI immediately — a tapback is direct manipulation and must
+      // never wait on a round-trip. Persistence follows in the background.
+      setLocalReaction(messageId, emoji)
+      void toggleMessageReaction({ id: messageId, role: 'assistant', rowId, reactions } as ChatMessage, emoji)
+    },
+    [messageId, reactions, rowId]
+  )
+
   return (
-    <div className="relative flex w-full shrink-0 justify-end">
+    <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
       <ActionBarPrimitive.Root
         className={
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the
@@ -170,6 +213,42 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
       </ActionBarPrimitive.Root>
+      {/* ONE slot, Slack-style: the picker trigger and the landed reaction are
+          the same element, so reacting never shifts layout. Empty → ☺, hidden
+          until hover like its action-bar neighbors (state lives in styles.css
+          — the aui_msg-reactions rules outweigh Tailwind utilities here).
+          Reacted → the emoji itself, always visible at full strength, and
+          clicking it reopens the picker to switch or retract. Outside
+          ActionBarPrimitive.Root so a landed reaction doesn't ride the bar's
+          hover opacity. */}
+      {(reactionsEnabled || shownReactions.length > 0) && (
+        <ReactionPicker
+          onOpenChange={setPickerOpen}
+          onSelect={react}
+          open={pickerOpen}
+          selected={shownReactions.find(reaction => reaction.author === 'user')?.emoji}
+        >
+          <TooltipIconButton
+            data-reacted={shownReactions.length > 0 || undefined}
+            data-slot="aui_msg-reactions"
+            data-state={pickerOpen ? 'open' : undefined}
+            onClick={reactionsEnabled ? () => setPickerOpen(open => !open) : undefined}
+            tooltip={copy.react}
+          >
+            {shownReactions.length > 0 ? (
+              <span className="flex items-center gap-0.5 text-[0.8125rem] leading-none">
+                {shownReactions.map(reaction => (
+                  <span className="reaction-pop" key={`${reaction.author}-${reaction.emoji}`}>
+                    {reaction.emoji}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <SmilePlusIcon className="size-3.5" />
+            )}
+          </TooltipIconButton>
+        </ReactionPicker>
+      )}
     </div>
   )
 }

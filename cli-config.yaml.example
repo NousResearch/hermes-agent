@@ -14,6 +14,9 @@
 # NFS, or SMB. Hermes will not live-downgrade a database already open in WAL.
 database:
   journal_mode: "wal"  # Supported values: "wal", "delete"
+  # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
+  # wal_autocheckpoint: 1000     # pages between automatic checkpoints
+  # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
 
 # =============================================================================
 # Model Configuration

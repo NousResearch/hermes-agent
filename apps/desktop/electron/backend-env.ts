@@ -120,13 +120,14 @@ function buildProfileScopedParentEnv({
 }
 
 function readProfileEnvContents(hermesHome, { fsModule = fs, pathModule = path }: any = {}) {
-  const envPaths = [pathModule.join(hermesHome, '.env')]
+  const envNames = ['.env', '.op.env']
+  const envPaths = envNames.map(name => pathModule.join(hermesHome, name))
   const profilesRoot = pathModule.join(hermesHome, 'profiles')
 
   try {
     for (const entry of fsModule.readdirSync(profilesRoot, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        envPaths.push(pathModule.join(profilesRoot, entry.name, '.env'))
+        envPaths.push(...envNames.map(name => pathModule.join(profilesRoot, entry.name, name)))
       }
     }
   } catch {
@@ -140,6 +141,32 @@ function readProfileEnvContents(hermesHome, { fsModule = fs, pathModule = path }
       return []
     }
   })
+}
+
+function buildProfileBackendSpawnEnv({
+  hermesHome,
+  profile,
+  backendEnv = {},
+  childEnv = {},
+  currentEnv = process.env,
+  platform = process.platform,
+  fsModule = fs,
+  pathModule = path
+}: any = {}) {
+  return {
+    ...buildProfileBackendParentEnv({ hermesHome, profile, currentEnv, platform, fsModule, pathModule }),
+    HERMES_HOME: hermesHome,
+    ...(backendEnv || {}),
+    ...(childEnv || {})
+  }
+}
+
+function buildPoolBackendSpawnEnv(options: any = {}) {
+  return buildProfileBackendSpawnEnv(options)
+}
+
+function buildPrimaryBackendSpawnEnv({ profile, ...options }: any = {}) {
+  return buildProfileBackendSpawnEnv({ ...options, profile: profile || 'default' })
 }
 
 function buildProfileBackendParentEnv({
@@ -226,6 +253,8 @@ export {
   appendUniquePathEntries,
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
+  buildPoolBackendSpawnEnv,
+  buildPrimaryBackendSpawnEnv,
   buildProfileBackendParentEnv,
   buildProfileScopedParentEnv,
   delimiterForPlatform,

@@ -146,7 +146,11 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
+        # decode the same way so ✓-glyph assertions hold on Windows, where
+        # text=True alone would decode with the locale codec (cp1252).
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
 
@@ -220,7 +224,11 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
+        # decode the same way so ✓-glyph assertions hold on Windows, where
+        # text=True alone would decode with the locale codec (cp1252).
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
 

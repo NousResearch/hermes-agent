@@ -1549,6 +1549,13 @@ text-* variant utilities. */ .btn-arc {
   margin: 0 !important;
 }
 
+/* react-shiki nests its own `pre.shiki` inside our `.aui-shiki` Pre, so the
+   code card's `[&_pre]` padding lands on both and doubles the inset. The outer
+   Pre already carries the card's padding — zero the inner one. */
+[data-slot='aui_assistant-message-content'] .aui-md .aui-shiki .shiki {
+  padding: 0 !important;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md .aui-md-table {
   border-spacing: 0;
 }

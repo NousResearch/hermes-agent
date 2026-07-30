@@ -5643,9 +5643,11 @@ def _load_mcp_server_env(config: dict) -> Dict[str, str]:
     try:
         from agent.secret_scope import load_env_file
 
-        return load_env_file(env_path_obj)
-    except Exception as exc:
-        logger.warning("Failed to load MCP env file: %s", exc)
+        return load_env_file(env_path_obj, strict=True)
+    except Exception:
+        logger.warning(
+            "MCP env_file could not be read; falling back to profile/process secrets"
+        )
         return {}
 
 

@@ -198,6 +198,36 @@ class TestLoadMCPConfig:
         assert server["env"]["PLUGIN_DATA"].startswith(str(home / "plugin-data"))
         assert "agent_plugin" not in server
 
+    def test_invalid_utf8_server_env_file_warns_and_falls_back(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Decode failures are visible without exposing file paths or secrets."""
+        env_file = tmp_path / "invalid-secret.env"
+        env_file.write_bytes(b"MCP_TEST_TOKEN=hidden-\xff-value\n")
+        monkeypatch.setenv("MCP_TEST_TOKEN", "process-token")
+        servers = {
+            "project": {
+                "url": "https://project.example/mcp",
+                "env_file": str(env_file),
+                "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+            },
+        }
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": servers},
+        ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
+            logging.WARNING, logger="tools.mcp_tool"
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result["project"]["headers"]["Authorization"] == "Bearer process-token"
+        assert "MCP env_file could not be read" in caplog.text
+        assert str(env_file) not in caplog.text
+        assert "process-token" not in caplog.text
+
     def test_env_file_cannot_hide_suspicious_stdio_arguments(self, tmp_path, caplog):
         """Spawn-time security validation also covers interpolated values."""
         env_file = tmp_path / "server.env"

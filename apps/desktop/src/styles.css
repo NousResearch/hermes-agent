@@ -327,6 +327,10 @@
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    /* Inline chat widgets (clarify, artifact card) — the card fill in light
+       mode, nudged down in dark so a widget settles into the transcript
+       instead of glowing above it (see the `.dark` override). */
+    --ui-widget-surface-background: var(--ui-bg-editor);
     --ui-chat-bubble-background: color-mix(
       in srgb,
       var(--theme-bubble-seed) var(--theme-mix-bubble),
@@ -512,6 +516,11 @@
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
+    /* A dark card sits ABOVE the chrome (#161618 over #0d0d0e), so an inline
+       widget wearing the raw card fill reads as a lit panel. Take it down a
+       touch — still clearly a surface, no longer the brightest thing in the
+       transcript. Derived from the card so every skin follows its own seed. */
+    --ui-widget-surface-background: color-mix(in srgb, var(--ui-bg-editor) 88%, #000);
   }
 
   * {
@@ -1485,7 +1494,7 @@ text-* variant utilities. */ .btn-arc {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead {
-  border-bottom-color: var(--dt-border) !important;
+  border-bottom-color: var(--ui-stroke-tertiary) !important;
 }
 
 /* Tool / thinking blocks are scaffolding around the model's reply, so we

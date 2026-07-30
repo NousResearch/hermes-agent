@@ -11,9 +11,16 @@ request, at whatever moment you happened to cross the line.
 
 Micro-compaction pays the same bill in instalments. After each completed turn,
 Hermes folds the single oldest un-absorbed exchange into a running summary. The
-work is the same work; it just happens continuously, in small pieces, during the
-idle moment after a response instead of all at once in the middle of your
-session.
+work is the same work; it just happens continuously, a piece at a time, instead
+of all at once in the middle of your session.
+
+It is not free and it is not a magic bullet. Each pass is a real call to the
+compression model, and it runs at the end of a turn — your answer has already
+streamed, but the turn does not close until the pass finishes. What the feature
+gives you is a **tuning option**: you choose how the compression cost is
+distributed, and which model pays it. See
+[Choosing a compression model](#choosing-a-compression-model), because that
+choice matters more than anything else here.
 
 **The tradeoff is that knowledge gets a little earlier than you may be used to.**
 Because compaction is always running, older parts of the conversation become
@@ -160,6 +167,49 @@ compression:
 Set it to `false` to disable micro-compaction and return to batch-only
 compaction. Everything else about compression is unchanged.
 
+## Choosing a compression model
+
+Micro-compaction uses the `auxiliary.compression` model:
+
+```yaml
+auxiliary:
+  compression:
+    provider: openai-api
+    model: <your choice>
+    base_url: <endpoint>
+```
+
+This is the single most important knob, and there is no universally right
+answer — it depends on your hardware and what you are willing to trade.
+
+Each pass sends the running summary plus one exchange, so the prompt is small
+(a few thousand tokens) but the call happens **every turn**, at the end of the
+turn. Two properties matter:
+
+- **Latency dominates.** Because a pass runs per turn, its wall-clock cost is
+  felt repeatedly. A model that takes 30 seconds turns every turn into a turn
+  plus 30 seconds.
+- **Reasoning models are a poor fit.** Merging one exchange into a summary is
+  mechanical work. A thinking model will spend reasoning tokens on it and be
+  substantially slower than a plain instruct model of similar size, for no
+  benefit to the output.
+
+Some measured points, on one particular setup — treat them as illustrations of
+the shape, not as recommendations:
+
+| model | observed |
+|---|---|
+| 7B 4-bit instruct, local (MLX, Apple Silicon) | ~31s per pass; box also serving other work |
+| large MoE reasoning model, remote GPU | noticeably slower still — thinking tokens on a summarisation task |
+
+The pattern is that a small, fast, non-reasoning instruct model is usually the
+right shape, and that a bigger or "smarter" model is often worse here rather
+than better. Where that lands for you depends on what you have to run it on.
+
+If passes feel too slow, your options in rough order of effect are: pick a
+faster or smaller compression model; give it a less contended host; or turn
+micro-compaction off and go back to batch compaction.
+
 ## Measuring it
 
 Micro-compaction is not primarily a token-saving or time-saving optimisation,
@@ -209,6 +259,41 @@ python scripts/micro_compaction_report.py [--per-session] [LOGFILE ...]
 
 Defaults to `$HERMES_HOME/logs/agent.log`. It reports passes, outcome mix, net
 tokens saved, mean absorbed-exchange size and pass durations.
+
+### What it looks like when it is working
+
+One real session — a 3.5 hour whole-project code review, ~75K tokens of
+transcript, 400K window, compaction threshold at 320K:
+
+| pass | messages | tokens | delta | occupancy | duration |
+|---|---|---|---|---|---|
+| 1 | 40 -> 39 | 27,479 -> 27,778 | +299 | 8.7% | 2.2s |
+| 2 | 61 -> 59 | 48,676 -> 48,128 | -548 | 15.0% | 4.5s |
+| 3 | 70 -> 67 | 58,309 -> 55,915 | -2,394 | 17.5% | 9.1s |
+| 4 | 84 -> 80 | 75,251 -> 69,818 | -5,433 | 21.8% | 36.2s |
+| 5 | 84 -> 80 | 74,659 -> 70,264 | -4,395 | 22.0% | 31.2s |
+
+Three things to read off it.
+
+**Occupancy flattened.** It climbed to about 22% and stopped. The last two
+passes are identical (84 -> 80 messages); between them the conversation added
+4,841 tokens and micro-compaction reclaimed 4,395. That is equilibrium: the
+window holds steady instead of marching toward the threshold.
+
+**No batch compaction fired.** Across the whole session the long pause never
+happened.
+
+**Reclamation only ramps after the tail budget.** The first passes recovered
+almost nothing, because below the tail budget (here 64,000 tokens, 16% of the
+window) nearly the whole transcript is protected tail and there is very little
+that may be touched. Early sessions legitimately show no passes at all.
+
+And the cost, stated plainly: passes ran 2 to 37 seconds, median around 31, on
+a small local model that was also serving other work. Roughly two minutes of
+summarisation spread across three and a half hours. Against one batch
+compaction of a 75K-token middle that is still the better trade, but a
+37-second increment is not a rounding error. See
+[Choosing a compression model](#choosing-a-compression-model).
 
 ### Reading the numbers honestly
 

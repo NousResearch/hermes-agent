@@ -464,6 +464,60 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_command_dispatch_expands_stacked_skills_from_temp_home(
+    server, tmp_path, monkeypatch
+):
+    """Desktop/TUI dispatch scans and expands every real leading skill."""
+    import agent.skill_commands as skill_commands
+    import tools.skills_tool as skills_tool
+
+    home = tmp_path / ".hermes"
+    skills_dir = home / "skills"
+    for name, instructions in (
+        ("nature-figure", "Render figures with natural colors."),
+        ("academic-plotting", "Label every axis and include units."),
+    ):
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Test {name}.\n---\n\n{instructions}\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # skills_tool is imported by the gateway fixture before HERMES_HOME is set;
+    # point its import-time compatibility constant at the same temporary home.
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_commands, "_skill_commands", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    resp = server.handle_request({
+        "id": "stacked-skills",
+        "method": "command.dispatch",
+        "params": {
+            "name": "nature-figure",
+            "arg": "/academic-plotting Plot the results",
+            "session_id": sid,
+        },
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    assert result["notice"] == (
+        "⚡ Loading 2 stacked skills: nature-figure, academic-plotting"
+    )
+    assert "Skills loaded: nature-figure, academic-plotting" in result["message"]
+    assert "Render figures with natural colors." in result["message"]
+    assert "Label every axis and include units." in result["message"]
+    assert "User instruction: Plot the results" in result["message"]
+    assert result["display"] == (
+        "/nature-figure /academic-plotting Plot the results"
+    )
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

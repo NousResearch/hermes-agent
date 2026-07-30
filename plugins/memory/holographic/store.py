@@ -218,10 +218,22 @@ class MemoryStore:
         rather than SELECT-then-write, so two processes racing to initialise
         a fresh database can never overwrite each other's chosen dim — both
         end up agreeing on whichever value actually landed first.
+
+        Legacy adoption (#68908 review): a pre-_meta database already holds
+        real vectors, and their dimension lives in memory_banks.dim. Seeding
+        _meta from the CONFIGURED dim would let new writes at a different
+        dimension sit beside those legacy vectors — the exact mixing this
+        method exists to prevent. So when banks exist, their stored dim
+        seeds _meta instead of the constructor value.
         """
+        legacy_row = self._conn.execute(
+            "SELECT dim FROM memory_banks WHERE dim IS NOT NULL "
+            "ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        seed_dim = int(legacy_row["dim"]) if legacy_row is not None else self.hrr_dim
         self._conn.execute(
             "INSERT OR IGNORE INTO _meta (key, value) VALUES ('hrr_dim', ?)",
-            (str(self.hrr_dim),),
+            (str(seed_dim),),
         )
         self._conn.commit()
         row = self._conn.execute(

@@ -362,3 +362,75 @@ class TestHrrDimPersistence:
                 b.close()
         finally:
             a.close()
+
+
+class TestLegacyDatabaseAdoption:
+    """#68908 sweeper review, second pass: opening a PRE-_meta database must
+    adopt the dimension its existing banks were built with, not the current
+    configuration — otherwise new writes at the configured dim sit beside
+    legacy vectors, the exact mixing _load_or_persist_hrr_dim() prevents."""
+
+    def test_legacy_db_adopts_banks_dim_over_config(self, db_path):
+        pytest.importorskip("numpy")
+        # Build a real 256-dim database (facts + banks), then erase _meta to
+        # simulate a database created before dimension metadata existed.
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.add_fact("An old fact from the 256-dim era.", category="hist")
+        store._conn.execute("DELETE FROM _meta WHERE key = 'hrr_dim'")
+        store._conn.commit()
+        store.close()
+
+        # A later session configured at 1024 opens the legacy database.
+        store2 = MemoryStore(db_path, hrr_dim=1024)
+        try:
+            assert store2.hrr_dim == 256, (
+                "legacy banks are 256-dim; adopting the configured 1024 "
+                "would mix dimensions in one database"
+            )
+            row = store2._conn.execute(
+                "SELECT value FROM _meta WHERE key = 'hrr_dim'"
+            ).fetchone()
+            assert int(row["value"]) == 256
+        finally:
+            store2.close()
+
+    def test_interrupted_rebuild_leaves_recoverable_state(self, db_path):
+        """#68908 sweeper review: a rebuild interrupted between vector
+        rewrites and _persist_hrr_dim() leaves partial new-dim vectors
+        beside the OLD persisted dim. That state must be non-crashing and
+        self-quarantining: reopening adopts the old dim, and bank rebuild
+        skips (not bundles) the partial new-dim vectors. Full recovery is
+        an explicit rebuild_all_vectors() — pinned here so the documented
+        metadata-last mitigation stays real."""
+        np = pytest.importorskip("numpy")
+
+        store = MemoryStore(db_path, hrr_dim=256)
+        store.add_fact("Fact one, fully in the 256 era.", category="mix")
+        store.add_fact("Fact two, about to be half-migrated.", category="mix")
+        # Simulate a crash mid-rebuild to 1024: ONE fact's vector was
+        # rewritten at the new dim, then the process died before
+        # _persist_hrr_dim — _meta still says 256.
+        new_dim_vec = np.zeros(1024, dtype=np.float64)
+        store._conn.execute(
+            "UPDATE facts SET hrr_vector = ? WHERE rowid = "
+            "(SELECT rowid FROM facts LIMIT 1)",
+            (new_dim_vec.tobytes(),),
+        )
+        store._conn.commit()
+        store.close()
+
+        # Reopen: must adopt the persisted (old) dim and rebuild the bank
+        # without crashing on the stray 1024-dim vector.
+        store2 = MemoryStore(db_path, hrr_dim=256)
+        try:
+            assert store2.hrr_dim == 256
+            store2._rebuild_bank("mix")  # must not raise
+            row = store2._conn.execute(
+                "SELECT fact_count FROM memory_banks WHERE bank_name = 'cat:mix'"
+            ).fetchone()
+            assert row is not None and row["fact_count"] == 1, (
+                "the partial new-dim vector must be quarantined (skipped), "
+                "leaving only the consistent old-dim vector in the bank"
+            )
+        finally:
+            store2.close()

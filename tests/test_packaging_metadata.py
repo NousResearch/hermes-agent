@@ -25,6 +25,19 @@ def _distribution_name(requirement: str) -> str:
     return spec.strip().lower()
 
 
+def test_hermes_state_common_declared_as_top_level_module():
+    """Editable installs must include hermes_state_common outside the repo cwd.
+
+    hermes_state imports this module at runtime. Omitting it from setuptools'
+    py-modules lets commands work only while cwd happens to be the source tree,
+    then fails with ModuleNotFoundError from arbitrary directories.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    modules = data["tool"]["setuptools"]["py-modules"]
+    assert (REPO_ROOT / "hermes_state_common.py").is_file()
+    assert "hermes_state_common" in modules
+
+
 def test_packaging_declared_as_core_dependency():
     """Regression for #40503.
 

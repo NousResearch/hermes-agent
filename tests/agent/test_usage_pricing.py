@@ -518,3 +518,55 @@ def test_usage_without_any_cache_fields_still_normalizes():
 
     assert normalized.cache_read_tokens == 0
     assert normalized.input_tokens == 500
+
+
+def test_normalize_usage_handles_dict_shaped_usage():
+    """Regression test for #74314: when the Responses API returns usage as a
+    plain dict (e.g. from a middleware/proxy that deserialises JSON to dict
+    instead of a typed SDK object), normalize_usage() must read the same
+    token counts as it would from an attribute-style object.
+
+    Before this fix, getattr() on a dict silently returned 0 for every field,
+    so token counts and cost appeared as zero for dict-shaped usage.
+    """
+    # Same payload as both a dict and a SimpleNamespace
+    payload = {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "input_tokens_details": {"cached_tokens": 60, "cache_creation_tokens": 10},
+    }
+    ns = SimpleNamespace(
+        input_tokens=100,
+        output_tokens=20,
+        input_tokens_details=SimpleNamespace(cached_tokens=60, cache_creation_tokens=10),
+    )
+
+    dict_result = normalize_usage(payload, api_mode="codex_responses")
+    ns_result = normalize_usage(ns, api_mode="codex_responses")
+
+    assert dict_result.input_tokens == ns_result.input_tokens, f"input_tokens: dict={dict_result.input_tokens} vs ns={ns_result.input_tokens}"
+    assert dict_result.output_tokens == ns_result.output_tokens, f"output_tokens: dict={dict_result.output_tokens} vs ns={ns_result.output_tokens}"
+    assert dict_result.cache_read_tokens == ns_result.cache_read_tokens, f"cache_read: dict={dict_result.cache_read_tokens} vs ns={ns_result.cache_read_tokens}"
+    assert dict_result.cache_write_tokens == ns_result.cache_write_tokens, f"cache_write: dict={dict_result.cache_write_tokens} vs ns={ns_result.cache_write_tokens}"
+    # Sanity: values must be non-zero (the whole point of the bug)
+    assert dict_result.input_tokens > 0
+    assert dict_result.cache_read_tokens > 0
+
+
+def test_normalize_usage_handles_dict_openai_chat_completions():
+    """Dict-shaped usage must also work in the default (OpenAI chat-completions)
+    branch, not just the codex_responses branch.
+    """
+    payload = {
+        "prompt_tokens": 500,
+        "completion_tokens": 100,
+        "prompt_tokens_details": {"cached_tokens": 200},
+        "completion_tokens_details": {"reasoning_tokens": 30},
+    }
+
+    result = normalize_usage(payload, api_mode="chat_completions")
+
+    assert result.output_tokens == 100
+    assert result.cache_read_tokens == 200
+    assert result.input_tokens == 500 - 200  # prompt_total - cache_read
+    assert result.reasoning_tokens == 30

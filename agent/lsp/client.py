@@ -45,6 +45,7 @@ Implementation notes:
   backoff up to 3 times.  This matches Claude Code's
   ``LSPServerInstance.sendRequest``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -56,8 +57,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
+from agent.subprocess_utils import create_subprocess
 from hermes_cli._subprocess_compat import windows_hide_flags
-
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED,
     ERROR_METHOD_NOT_FOUND,
@@ -107,7 +108,7 @@ def uri_to_path(uri: str) -> str:
     """Inverse of :func:`file_uri`."""
     if not uri.startswith("file://"):
         return uri
-    raw = uri[len("file://"):]
+    raw = uri[len("file://") :]
     if os.name == "nt" and raw.startswith("/") and len(raw) > 2 and raw[2] == ":":
         raw = raw[1:]  # strip leading slash before drive letter
     return os.path.normpath(unquote(raw))
@@ -255,7 +256,11 @@ class LSPClient:
 
     @property
     def is_running(self) -> bool:
-        return self._state == "running" and self._proc is not None and self._proc.returncode is None
+        return (
+            self._state == "running"
+            and self._proc is not None
+            and self._proc.returncode is None
+        )
 
     @property
     def state(self) -> str:
@@ -311,7 +316,7 @@ class LSPClient:
             # gateway's child set, it captures the LSP PID, records the
             # inherited pgid, and killpg() then kills the TUI parent itself.
             # See tui_gateway_crash.log "killpg → SIGTERM received" stacks.
-            self._proc = await asyncio.create_subprocess_exec(
+            self._proc = await create_subprocess(
                 cmd[0],
                 *cmd[1:],
                 stdin=asyncio.subprocess.PIPE,
@@ -336,9 +341,21 @@ class LSPClient:
     async def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:
             return
+        stderr = self._proc.stderr
         try:
             while True:
-                line = await self._proc.stderr.readline()
+                try:
+                    line = await stderr.readline()
+                except ValueError:
+                    # StreamReader.readline() translates LimitOverrunError to
+                    # ValueError after discarding the oversized buffer. Continue
+                    # draining so a pathological stderr line cannot leave the
+                    # pipe unread and block the server.
+                    logger.warning(
+                        "[%s] stderr: line exceeded stream limit, discarding",
+                        self.server_id,
+                    )
+                    continue
                 if not line:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
@@ -364,7 +381,9 @@ class LSPClient:
                 elif kind == "notification":
                     self._dispatch_notification(key, msg)
                 else:
-                    logger.warning("[%s] dropping invalid message: %r", self.server_id, msg)
+                    logger.warning(
+                        "[%s] dropping invalid message: %r", self.server_id, msg
+                    )
         except LSPProtocolError as e:
             logger.warning("[%s] protocol error in reader loop: %s", self.server_id, e)
         except (asyncio.CancelledError, OSError):
@@ -462,7 +481,9 @@ class LSPClient:
         try:
             if self.is_running:
                 try:
-                    await asyncio.wait_for(self._send_request("shutdown", None), timeout=2.0)
+                    await asyncio.wait_for(
+                        self._send_request("shutdown", None), timeout=2.0
+                    )
                 except (asyncio.TimeoutError, LSPRequestError, LSPProtocolError):
                     pass
                 try:
@@ -509,7 +530,11 @@ class LSPClient:
     # ------------------------------------------------------------------
 
     async def _send_request(self, method: str, params: Any) -> Any:
-        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
+        if (
+            self._proc is None
+            or self._proc.stdin is None
+            or self._proc.stdin.is_closing()
+        ):
             raise LSPProtocolError(f"cannot send {method!r}: stdin closed")
         loop = asyncio.get_running_loop()
         req_id = self._next_id
@@ -527,7 +552,9 @@ class LSPClient:
         finally:
             self._pending.pop(req_id, None)
 
-    async def _send_request_with_retry(self, method: str, params: Any, *, timeout: float) -> Any:
+    async def _send_request_with_retry(
+        self, method: str, params: Any, *, timeout: float
+    ) -> Any:
         """Send a request, retrying on ``ContentModified`` (-32801).
 
         Other errors propagate.  The retry policy matches Claude Code's
@@ -536,15 +563,24 @@ class LSPClient:
         """
         for attempt in range(MAX_CONTENT_MODIFIED_RETRIES + 1):
             try:
-                return await asyncio.wait_for(self._send_request(method, params), timeout=timeout)
+                return await asyncio.wait_for(
+                    self._send_request(method, params), timeout=timeout
+                )
             except LSPRequestError as e:
-                if e.code == ERROR_CONTENT_MODIFIED and attempt < MAX_CONTENT_MODIFIED_RETRIES:
-                    await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                if (
+                    e.code == ERROR_CONTENT_MODIFIED
+                    and attempt < MAX_CONTENT_MODIFIED_RETRIES
+                ):
+                    await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
                     continue
                 raise
 
     async def _send_notification(self, method: str, params: Any) -> None:
-        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
+        if (
+            self._proc is None
+            or self._proc.stdin is None
+            or self._proc.stdin.is_closing()
+        ):
             return
         try:
             self._proc.stdin.write(encode_message(make_notification(method, params)))
@@ -553,7 +589,11 @@ class LSPClient:
             logger.debug("[%s] notify %s failed: %s", self.server_id, method, e)
 
     async def _send_response(self, req_id: Any, result: Any) -> None:
-        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
+        if (
+            self._proc is None
+            or self._proc.stdin is None
+            or self._proc.stdin.is_closing()
+        ):
             return
         try:
             self._proc.stdin.write(encode_message(make_response(req_id, result)))
@@ -562,10 +602,16 @@ class LSPClient:
             pass
 
     async def _send_error_response(self, req_id: Any, code: int, message: str) -> None:
-        if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
+        if (
+            self._proc is None
+            or self._proc.stdin is None
+            or self._proc.stdin.is_closing()
+        ):
             return
         try:
-            self._proc.stdin.write(encode_message(make_error_response(req_id, code, message)))
+            self._proc.stdin.write(
+                encode_message(make_error_response(req_id, code, message))
+            )
             await self._proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
@@ -591,12 +637,16 @@ class LSPClient:
         params = msg.get("params")
         handler = self._request_handlers.get(method)
         if handler is None:
-            await self._send_error_response(req_id, ERROR_METHOD_NOT_FOUND, f"method not found: {method}")
+            await self._send_error_response(
+                req_id, ERROR_METHOD_NOT_FOUND, f"method not found: {method}"
+            )
             return
         try:
             result = await handler(params)
         except Exception as e:  # noqa: BLE001 — protocol must not blow up
-            logger.warning("[%s] request handler %s failed: %s", self.server_id, method, e)
+            logger.warning(
+                "[%s] request handler %s failed: %s", self.server_id, method, e
+            )
             await self._send_error_response(req_id, -32000, f"handler failed: {e}")
             return
         await self._send_response(req_id, result)
@@ -608,7 +658,9 @@ class LSPClient:
         try:
             handler(msg.get("params"))
         except Exception as e:  # noqa: BLE001
-            logger.debug("[%s] notification handler %s failed: %s", self.server_id, method, e)
+            logger.debug(
+                "[%s] notification handler %s failed: %s", self.server_id, method, e
+            )
 
     # ------------------------------------------------------------------
     # built-in server-→-client request handlers
@@ -892,7 +944,9 @@ class LSPClient:
 
             # Concurrent: document pull + push wait.
             pull_task = asyncio.create_task(self._pull_document_diagnostics(abs_path))
-            push_task = asyncio.create_task(self._wait_for_fresh_push(abs_path, version, remaining))
+            push_task = asyncio.create_task(
+                self._wait_for_fresh_push(abs_path, version, remaining)
+            )
             done, pending = await asyncio.wait(
                 {pull_task, push_task},
                 timeout=remaining,
@@ -937,7 +991,9 @@ class LSPClient:
                         break
                     self._push_event.clear()
                     try:
-                        await asyncio.wait_for(self._push_event.wait(), timeout=remaining)
+                        await asyncio.wait_for(
+                            self._push_event.wait(), timeout=remaining
+                        )
                     except asyncio.TimeoutError:
                         break
                 return
@@ -951,7 +1007,9 @@ class LSPClient:
                 continue
             self._push_event.clear()
             try:
-                await asyncio.wait_for(self._push_event.wait(), timeout=min(remaining, 0.5))
+                await asyncio.wait_for(
+                    self._push_event.wait(), timeout=min(remaining, 0.5)
+                )
             except asyncio.TimeoutError:
                 continue
 
@@ -1008,15 +1066,13 @@ def _diagnostic_key(d: Dict[str, Any]) -> str:
     code = d.get("code")
     if code is not None and not isinstance(code, str):
         code = str(code)
-    return "\x00".join(
-        [
-            str(d.get("severity") or 1),
-            str(code or ""),
-            str(d.get("source") or ""),
-            str(d.get("message") or "").strip(),
-            f"{start.get('line', 0)}:{start.get('character', 0)}-{end.get('line', 0)}:{end.get('character', 0)}",
-        ]
-    )
+    return "\x00".join([
+        str(d.get("severity") or 1),
+        str(code or ""),
+        str(d.get("source") or ""),
+        str(d.get("message") or "").strip(),
+        f"{start.get('line', 0)}:{start.get('character', 0)}-{end.get('line', 0)}:{end.get('character', 0)}",
+    ])
 
 
 __all__ = [

@@ -26,6 +26,7 @@ import { $gateway } from '@/store/gateway'
 import { applyGoalStatusText } from '@/store/goals'
 import {
   notifyCronChanged,
+  notifyPairingChanged,
   notifyPetChanged,
   notifyPlatformsChanged,
   notifySessionsChanged,
@@ -303,7 +304,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         event.type === 'pet.changed' ||
         event.type === 'cron.changed' ||
         event.type === 'sessions.changed' ||
-        event.type === 'platforms.changed'
+        event.type === 'platforms.changed' ||
+        event.type === 'pairing.changed'
       ) {
         // Change-watcher broadcasts (server._broadcast_watched_changes): the
         // backend's on-disk signature moved. Route to the live-sync ticks the
@@ -319,6 +321,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             notifyCronChanged()
           } else if (event.type === 'platforms.changed') {
             notifyPlatformsChanged()
+          } else if (event.type === 'pairing.changed') {
+            notifyPairingChanged()
           } else {
             notifySessionsChanged()
           }

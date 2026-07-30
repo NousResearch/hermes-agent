@@ -41,7 +41,13 @@ def _clear_auth_env(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
+def _make_event(
+    platform: Platform,
+    user_id: str,
+    chat_id: str,
+    *,
+    profile: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text="hello",
         message_id="m1",
@@ -51,6 +57,7 @@ def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
             chat_id=chat_id,
             user_name="tester",
             chat_type="dm",
+            profile=profile,
         ),
     )
 

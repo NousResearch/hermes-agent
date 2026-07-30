@@ -3082,6 +3082,46 @@ def _platforms_sig():
         return None
 
 
+def _pairing_sig():
+    """Newest mtime across every profile's pairing store.
+
+    An unknown DMer's pending code is written by the messaging gateway — a
+    DIFFERENT process that never touches this gateway's transports — so the
+    files are the only shared signal. ``platforms.changed`` cannot stand in
+    for this: it tracks connect/disconnect/health, and a pairing request
+    moves nothing in gateway_state.json.
+    """
+    home = _watcher_home()
+    sig = None
+    # Global store (legacy `pairing/` and consolidated `platforms/pairing/`)
+    # plus every named profile's own — the Messaging page can be scoped to any
+    # of them, and a request landing in a profile store must still tick.
+    roots = [home / "pairing", home / "platforms" / "pairing"]
+    try:
+        for profile_dir in (home / "profiles").iterdir():
+            roots.append(profile_dir / "pairing")
+            roots.append(profile_dir / "platforms" / "pairing")
+    except OSError:
+        pass
+
+    for root in roots:
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            # Only the pending/approved ledgers — _rate_limits.json moves on
+            # every unauthorized DM, including ones that produce no new row.
+            if not entry.name.endswith(("-pending.json", "-approved.json")):
+                continue
+            try:
+                mtime = entry.stat().st_mtime_ns
+            except OSError:
+                continue
+            sig = mtime if sig is None else max(sig, mtime)
+    return sig
+
+
 # Watched change signals: event → (check interval, signature fn, payload fn).
 # Signatures are stat/dict-lookup cheap, same bar as the skin watcher; the
 # check interval keeps the pricier probes (pet resolves the active sheet off
@@ -3091,6 +3131,7 @@ _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "cron.changed": (1.0, _cron_sig, lambda: {}),
     "sessions.changed": (0.5, _sessions_sig, lambda: {}),
     "platforms.changed": (2.0, _platforms_sig, lambda: {}),
+    "pairing.changed": (2.0, _pairing_sig, lambda: {}),
 }
 
 # state.db moves on every message append during a streaming turn, and the

@@ -480,6 +480,15 @@ export function composerPlainText(node: Node): string {
     return el.dataset.refText
   }
 
+  // An editor holding nothing but the placeholder <br> is EMPTY. That <br> is
+  // scaffolding normalizeComposerEditorDom adds so the contenteditable keeps
+  // its height — not a line the user typed. Reading it as "\n" is how a
+  // just-cleared composer stayed non-empty: the newline got stashed as the
+  // session's draft and painted back on return.
+  if (el.dataset.slot === RICH_INPUT_SLOT && el.childNodes.length === 1 && el.firstChild?.nodeName === 'BR') {
+    return ''
+  }
+
   if (el.tagName === 'BR') {
     return '\n'
   }

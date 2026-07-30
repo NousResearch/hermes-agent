@@ -44,10 +44,14 @@ class _FakeResponse:
 
 
 class _FakeClient:
-    """Captures the one request each handler makes."""
+    """Captures each request a handler makes.
+
+    A list of responses is served in order, with the last one repeating, so a
+    poll that looks twice can be given a job that finishes between looks.
+    """
 
     def __init__(self, response, sink):
-        self._response = response
+        self._responses = list(response) if isinstance(response, list) else [response]
         self._sink = sink
 
     async def __aenter__(self):
@@ -58,9 +62,10 @@ class _FakeClient:
 
     async def request(self, method, url, headers=None, json=None):
         self._sink.append({"method": method, "url": url, "headers": headers or {}, "json": json})
-        if isinstance(self._response, Exception):
-            raise self._response
-        return self._response
+        response = self._responses[min(len(self._sink) - 1, len(self._responses) - 1)]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 class _FakeStream:
@@ -113,6 +118,13 @@ def _fake_download(body, status_code=200):
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _record_sleep(sink):
+    async def _sleep(seconds):
+        sink.append(seconds)
+
+    return _sleep
 
 
 def _call(handler, args, response, headers=None):
@@ -249,17 +261,81 @@ class TestSubmitTransport:
         assert "error" in parsed
 
 
+@pytest.fixture(autouse=True)
+def _no_real_poll_wait(monkeypatch):
+    """Keep the in-call wait out of the test clock."""
+    monkeypatch.setattr(flux3, "_POLL_FOLLOW_UP_WAIT_SECONDS", 0)
+
+
 class TestPollTransport:
-    def test_poll_gets_the_job_and_returns_guidance(self):
-        response = _FakeResponse(200, {"id": "bfl_job_1", "status": "Generating", "guidance": "Still going."})
+    def test_a_terminal_status_returns_at_once_without_waiting(self):
+        response = _FakeResponse(200, {"id": "bfl_job_1", "status": "Error", "guidance": "The job is over."})
 
         parsed, requests = _call(flux3._handle_get_result, {"id": "bfl_job_1"}, response)
 
         assert requests[0]["method"] == "GET"
         assert requests[0]["url"] == f"{BASE_URL}/generations/bfl_job_1"
         assert requests[0]["json"] is None
-        assert parsed["result"] == "Still going."
+        assert len(requests) == 1
+        assert parsed["result"] == "The job is over."
+
+    def test_a_running_job_is_waited_out_inside_the_call(self, monkeypatch):
+        # A model has no clock, so telling it to pause produced a burst of polls
+        # instead of a paced one. The wait lives here where it cannot be skipped.
+        monkeypatch.setattr(flux3, "_POLL_FOLLOW_UP_WAIT_SECONDS", 45.0)
+        running = _FakeResponse(200, {"id": "bfl_job_1", "status": "Generating", "guidance": "Still going."})
+
+        slept = []
+        with patch.object(flux3.asyncio, "sleep", new=_record_sleep(slept)):
+            parsed, requests = _call(flux3._handle_get_result, {"id": "bfl_job_1"}, running)
+
+        assert len(requests) == 2, "should look again after waiting"
+        assert sum(slept) == 45.0
         assert parsed["details"]["status"] == "Generating"
+
+    def test_the_wait_is_answerable_to_a_stop(self, monkeypatch):
+        # Nothing outside the tool can end a call that has already started —
+        # the executor only checks for an interrupt between tools — so /stop
+        # has to land inside the wait rather than at the end of it.
+        monkeypatch.setattr(flux3, "_POLL_FOLLOW_UP_WAIT_SECONDS", 45.0)
+        from tools import interrupt as interrupt_module
+
+        running = _FakeResponse(200, {"id": "bfl_job_1", "status": "Generating", "guidance": "Still going."})
+        looks = []
+
+        def _stop_after_one_slice():
+            looks.append(True)
+            return len(looks) > 1
+
+        slept = []
+        with patch.object(interrupt_module, "is_interrupted", _stop_after_one_slice), \
+                patch.object(flux3.asyncio, "sleep", new=_record_sleep(slept)):
+            parsed, requests = _call(flux3._handle_get_result, {"id": "bfl_job_1"}, running)
+
+        assert slept == [flux3._POLL_WAIT_SLICE_SECONDS], "the rest of the wait is abandoned"
+        assert len(requests) == 1, "and so is the second look"
+        assert parsed["details"]["status"] == "Generating"
+
+    def test_the_call_returns_as_soon_as_the_job_finishes(self):
+        # The point of waiting in here is that the caller gets the result on the
+        # wait it was already taking, not one round trip later.
+        running = _FakeResponse(200, {"id": "bfl_job_1", "status": "Generating", "guidance": "Still going."})
+        done = _FakeResponse(200, {"id": "bfl_job_1", "status": "Error", "guidance": "That job failed."})
+
+        parsed, requests = _call(flux3._handle_get_result, {"id": "bfl_job_1"}, [running, done])
+
+        assert len(requests) == 2
+        assert parsed["result"] == "That job failed."
+
+    def test_a_refusal_is_returned_immediately_rather_than_waited_on(self):
+        # A 429 carries its own retry guidance; sleeping on it would only delay
+        # showing the model what to do, and spend the poll budget twice.
+        response = _FakeResponse(429, {"error": {"message": "Too many polls. Wait 30 seconds."}})
+
+        parsed, requests = _call(flux3._handle_get_result, {"id": "bfl_job_1"}, response)
+
+        assert len(requests) == 1
+        assert "Too many polls" in parsed["error"]
 
     def test_ready_saves_the_clip_and_never_returns_the_signed_url(self, tmp_path):
         # The signed URL is a bearer credential for the clip and it used to be

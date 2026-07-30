@@ -47,6 +47,7 @@ import {
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
+import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
@@ -1099,6 +1100,14 @@ let bootstrapAbortController = null
 // repair can force the installer without destroying provenance about how the
 // install was created. Cleared once the reinstall is under way.
 let bootstrapRepairRequested = false
+// Counter for in-flight repair attempts. Reset on a clean boot completion
+// (see runBootstrap -> ensureRuntime resolve path). Each successive repair
+// in the same failure episode increments this; once it crosses
+// MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS the guard escalates from "soft restart"
+// to "hard reinstall" so a transient backend stall (issue #74874) stops
+// looping the user through a destructive venv reinstall.
+let bootstrapRepairAttempt = 0
+const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -4037,6 +4046,7 @@ async function ensureRuntime(backend) {
     // The repair request has been honoured by reaching the installer; clear it
     // so a later boot isn't forced through bootstrap again.
     bootstrapRepairRequested = false
+    bootstrapRepairAttempt = 0
 
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
@@ -8547,6 +8557,13 @@ async function startHermes() {
       error: null
     })
 
+    // A successful boot (including a soft restart that the repair-guard
+    // chose over a hard reinstall, see #74874) means any in-flight repair
+    // attempt counter has been honoured — reset it so the next genuine
+    // failure starts fresh from attempt 1 instead of inheriting the
+    // accumulated count of the resolved episode.
+    bootstrapRepairAttempt = 0
+
     return {
       baseUrl,
       mode: 'local',
@@ -9628,9 +9645,41 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // transient backend errors on a perfectly healthy install, and deleting the
   // marker in that case stranded the app in first-run setup with no way back
   // (#72166). The explicit flag carries the intent instead.
-  rememberLog('[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure')
+  bootstrapRepairAttempt += 1
 
-  bootstrapRepairRequested = true
+  // Probe the live backend process so the guard can distinguish "venv is
+  // genuinely broken" (force reinstall) from "backend is just transiently
+  // stalled under GIL pressure" (#74874 — `event loop stalled` followed by
+  // `ws ready frame send failed`, then renderer keeps reporting dead).
+  const primaryProc = backendConnectionState.getProcess()
+
+  const primaryBackendAlive = Boolean(
+    primaryProc &&
+    (primaryProc as { exitCode?: number | null }).exitCode === null &&
+    (primaryProc as { signalCode?: string | null }).signalCode === null
+  )
+
+  const repairDecision = decideBootstrapRepair({
+    attempt: bootstrapRepairAttempt,
+    maxSoftAttempts: MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS,
+    primaryBackendAlive
+  })
+
+  rememberLog(
+    `[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure ` +
+      `(attempt=${repairDecision.attempt}/${MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS}, ` +
+      `primaryBackendAlive=${primaryBackendAlive}, ` +
+      `hardReinstall=${repairDecision.hardReinstall}): ${repairDecision.reason}`
+  )
+
+  // The guard may decide the install is healthy enough that a restart
+  // (without touching the venv) is the right answer. Translate that into
+  // the existing flag: if the guard said "soft restart", we skip the
+  // "bypass active runtime" path inside startHermes() and fall through
+  // to the normal restart branch, which just kills the current child
+  // and respawns it against the same venv. See #74874 — this is what
+  // breaks the infinite reinstall loop the user hit.
+  bootstrapRepairRequested = repairDecision.hardReinstall
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null

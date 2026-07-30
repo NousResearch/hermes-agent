@@ -53,6 +53,7 @@ import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
+import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { QueuePanel } from './queue-panel'
 import {
@@ -162,6 +163,9 @@ export function ChatBar({
   useComposerMicroActions(statusSessionId, busy)
 
   const composerRef = useRef<HTMLFormElement | null>(null)
+  // The dock wraps the strips + status stack + composer; the thread's bottom
+  // clearance measures this, while the pop-out drag still tracks the composer.
+  const composerDockRef = useRef<HTMLDivElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
 
   // Pop-out engine: docked↔floating state, dock/float/toggle, drag gestures, and
@@ -279,7 +283,14 @@ export function ChatBar({
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
 
-  const { compactPill, stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
+  const { compactPill, stacked } = useComposerMetrics({
+    composerDockRef,
+    composerRef,
+    composerSurfaceRef,
+    editorRef,
+    poppedOut
+  })
+
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
 
@@ -1020,36 +1031,29 @@ export function ChatBar({
         />
       )}
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-        <ComposerPrimitive.Root
+        {/* Dock column: owns the composer's POSITION and stacks, bottom-up,
+            [micro actions] · [status stack] · [composer] · [underside].
+            Anchored at the bottom, so in-flow children grow upward and still
+            overlay the thread — no absolute lane needed.
+
+            The strips are siblings of the composer, not children: the pop-out
+            drag region is `absolute inset-0` INSIDE the composer, so anything
+            rendered in there is inside the grab area by construction. Keeping
+            them out here is what makes that impossible rather than excluded. */}
+        <div
           className={cn(
-            'group/composer z-30 overflow-visible rounded-2xl',
+            'z-30 flex flex-col',
             poppedOut
-              ? // Floating: the composer (with its own border) floats with an even
-                // 5px transparent grab margin around it — drag that to move it.
-                'fixed w-[var(--composer-popout-width)] max-w-[calc(100vw-1.5rem)] bg-transparent p-[5px]'
-              : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
-            dragging && 'cursor-grabbing select-none touch-none'
+              ? 'fixed max-w-[calc(100vw-1.5rem)]'
+              : 'absolute bottom-0 left-1/2 max-w-full -translate-x-1/2'
           )}
-          data-drag-active={dragActive ? '' : undefined}
           data-popped-out={poppedOut ? '' : undefined}
-          data-slot="composer-root"
-          data-status-stack={statusStackVisible ? '' : undefined}
+          data-slot="composer-dock"
           data-thread-scrolled-up={scrolledUp ? '' : undefined}
-          onDragEnter={handleDragEnter}
-          onDragLeave={handleDragLeave}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-          onPointerDown={popoutAllowed ? onComposerGesturePointerDown : undefined}
-          onSubmit={e => {
-            e.preventDefault()
-
-            if (composingRef.current) {
-              return
-            }
-
-            submitDraft()
-          }}
-          ref={composerRef}
+          // Measured for the thread's bottom clearance: the dock is the box
+          // that contains the strips, the status stack, AND the composer, so
+          // one measurement covers everything the thread must clear.
+          ref={composerDockRef}
           style={
             poppedOut
               ? {
@@ -1061,22 +1065,16 @@ export function ChatBar({
               : undefined
           }
         >
-          {isHelpHint && <HelpHint />}
-          {trigger && !argStageEmpty && (
-            <ComposerTriggerPopover
-              activeIndex={triggerActive}
-              items={triggerItems}
-              kind={trigger.kind}
-              loading={triggerLoading}
-              onHover={setTriggerActive}
-              onPick={replaceTriggerWithChip}
-            />
-          )}
+          {/* Aligned to the composer SURFACE, which sits inside the composer's
+              5px transparent grab margin — so both strips carry the same inset
+              and share one left edge with it. */}
+          <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
+            <ActionBadges sessionId={statusSessionId} />
+          </div>
           {/* Session-scoped status stack (todos, subagents, background tasks,
-              queue). Out of flow so it never inflates the composer's measured
-              height; it overlays the chat instead of pushing it, and publishes
-              its own --status-stack-measured-height so the thread's clearance
-              accounts for it. Collapses to nothing when every status is empty. */}
+              queue). An in-flow dock child: the dock is bottom-anchored, so it
+              grows upward over the thread and the dock's own measurement covers
+              it. Collapses to nothing when every status is empty. */}
           <ComposerStatusStack
             queue={
               activeQueueSessionKey && queuedPrompts.length > 0 ? (
@@ -1106,6 +1104,44 @@ export function ChatBar({
             }
             sessionId={statusSessionId}
           />
+          <ComposerPrimitive.Root
+            className={cn(
+              'group/composer relative w-full overflow-visible rounded-2xl',
+              poppedOut && 'bg-transparent',
+              dragging && 'cursor-grabbing select-none touch-none'
+            )}
+            data-drag-active={dragActive ? '' : undefined}
+            data-popped-out={poppedOut ? '' : undefined}
+            data-slot="composer-root"
+            data-status-stack={statusStackVisible ? '' : undefined}
+            data-thread-scrolled-up={scrolledUp ? '' : undefined}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onPointerDown={popoutAllowed ? onComposerGesturePointerDown : undefined}
+            onSubmit={e => {
+              e.preventDefault()
+
+              if (composingRef.current) {
+                return
+              }
+
+              submitDraft()
+            }}
+            ref={composerRef}
+          >
+          {isHelpHint && <HelpHint />}
+          {trigger && !argStageEmpty && (
+            <ComposerTriggerPopover
+              activeIndex={triggerActive}
+              items={triggerItems}
+              kind={trigger.kind}
+              loading={triggerLoading}
+              onHover={setTriggerActive}
+              onPick={replaceTriggerWithChip}
+            />
+          )}
           {!poppedOut && (
             <div
               className="pointer-events-none absolute inset-0 rounded-[inherit]"
@@ -1123,14 +1159,7 @@ export function ChatBar({
               className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
               data-dragging={dragging ? '' : undefined}
               data-slot="composer-drag-region"
-              onDoubleClick={event => {
-                // The pill strips paint above this region; a double-click that
-                // lands on one must not float the composer. onPointerDown goes
-                // through gestureTargetOk, but this handler doesn't.
-                if (!(event.target as Element).closest('[data-slot="composer-no-drag"]')) {
-                  handleComposerToggle()
-                }
-              }}
+              onDoubleClick={handleComposerToggle}
             />
           )}
           <div className="relative w-full rounded-[inherit]">
@@ -1222,18 +1251,15 @@ export function ChatBar({
               </div>
             </div>
           </div>
-          {/* Underside: a floating strip BELOW the whole composer surface.
-              Chrome-free by design — contributions bring their own pill/skin,
-              like the micro-action strip above. In flow (the root is
-              bottom-anchored, so this grows the composer upward and stays on
-              screen) but OUTSIDE the surface, so it escapes the surface's
-              clipping, border, and scroll fade. Shares the micro-action
-              strip's grid so the two bracket the composer on one vertical
-              line. Renders nothing until something contributes. */}
-          <div className={cn(composerFloatingStrip, 'pt-1.5 empty:hidden')} data-slot="composer-no-drag">
+          </ComposerPrimitive.Root>
+          {/* Underside: chrome-free strip BELOW the composer. Outside the root
+              for the same reason as the micro actions — it must not fall inside
+              the pop-out drag region. Same px as the strip above, so the two
+              bracket the composer on one vertical line. */}
+          <div className={cn(composerFloatingStrip, 'px-[5px] pt-1.5 empty:hidden')}>
             <ContribSlot area={COMPOSER_AREAS.underside} />
           </div>
-        </ComposerPrimitive.Root>
+        </div>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
 
       <UrlDialog

@@ -1,8 +1,9 @@
 import { memo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import type { ComposerAction } from '@/store/composer-actions'
+import { $composerActionsBySession, type ComposerAction } from '@/store/composer-actions'
 import { notifyError } from '@/store/notifications'
 
 /**
@@ -31,19 +32,14 @@ const PILL = cn(
  * (`composerFloatingStrip`), this owns only the pills, so the strip above the
  * surface and the `composer.underside` strip below it can't drift apart.
  */
-export const ActionBadges = memo(function ActionBadges({
-  actions,
-  sessionId
-}: {
-  actions: ComposerAction[]
-  sessionId: string
-}) {
+export const ActionBadges = memo(function ActionBadges({ sessionId }: { sessionId: null | string }) {
+  const actions = useSessionSlice($composerActionsBySession, sessionId)
   // A pill can kick off async work (a gateway call, a submit). Track which one
   // is in flight so it can spin and lock instead of double-firing.
   const [runningId, setRunningId] = useState<null | string>(null)
 
   const run = async (action: ComposerAction) => {
-    if (runningId) {
+    if (runningId || !sessionId) {
       return
     }
 

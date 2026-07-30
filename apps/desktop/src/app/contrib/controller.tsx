@@ -38,7 +38,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { LayoutDashboard, PanelBottom, Zap } from '@/lib/icons'
+import { FileText, LayoutDashboard, PanelBottom, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { setYoloEnabled } from '@/lib/yolo-session'
@@ -232,12 +232,12 @@ registry.registerMany([
   },
   {
     // Optional chrome — in NO default layout. Adoption stacks it with the
-    // terminal; $logsOpen (default off, ⌘K "Logs on") reveals it.
+    // terminal; $logsOpen (default off, ⌘K "Toggle logs") reveals it.
     id: 'logs',
     area: 'panes',
     title: 'logs',
     // revealOnPreset: the Quad layout places logs, so applying it turns the
-    // logs pane on (like a ⌘K "Logs on") instead of leaving it collapsed.
+    // logs pane on (like a ⌘K "Toggle logs") instead of leaving it collapsed.
     data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
     render: () => idle(<LogsPane />)
   }
@@ -598,6 +598,7 @@ registry.register(
   paletteToggle({
     id: 'logs.toggle',
     label: 'Toggle logs',
+    icon: FileText,
     keywords: ['logs', 'agent log', 'tail', 'debug'],
     get: () => $logsOpen.get(),
     set: enabled => $logsOpen.set(enabled)
@@ -610,7 +611,7 @@ registry.register(
 registry.register(
   paletteToggle({
     id: 'session.yolo',
-    label: 'Toggle YOLO',
+    label: 'Toggle yolo',
     icon: Zap,
     keywords: ['yolo', 'approvals', 'auto-approve', 'bypass', 'dangerous', 'commands'],
     get: () => $yoloActive.get(),

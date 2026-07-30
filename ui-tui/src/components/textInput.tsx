@@ -322,6 +322,24 @@ export function resolveCursorLayout(display: string, cur: number, curRefCurrent:
 }
 
 /**
+ * True when a Backspace / ForwardDelete keystroke should kill to the line
+ * boundary rather than delete a single word.
+ *
+ * Only the *super* bit qualifies. It is tempting to reuse `isActionMod`,
+ * but that accepts `key.meta` on macOS — and hermes-ink reports Option as
+ * `meta`, so Option+Backspace (delete-word, the macOS standard) would be
+ * swallowed. On Linux/Windows `isActionMod` is `key.ctrl`, and
+ * Ctrl+Backspace is delete-word there too. `super` is set only by kitty
+ * CSI-u / xterm modifyOtherKeys, where it unambiguously means Cmd.
+ *
+ * Terminals that instead rewrite Cmd+Backspace to Ctrl+U are handled by
+ * the `isMacActionFallback` kill-to-start path, not by this predicate.
+ */
+export function isLineKillModifier(key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean {
+  return key.super === true
+}
+
+/**
  * Pure computation for the fast-echo backspace bypass: given the
  * current value/cursor (already validated by `canFastBackspaceShape`),
  * returns what the new value/cursor should be, the exact stdout write
@@ -1198,7 +1216,12 @@ export function TextInput({
         v = v.slice(0, range.start) + v.slice(range.end)
         c = range.start
       } else if (k.backspace && c > 0) {
-        if (wordMod) {
+        if (isLineKillModifier(k)) {
+          // Cmd+Backspace — kill backward to start of line, matching the
+          // Ctrl+U (unix-line-discard) path below.
+          v = v.slice(c)
+          c = 0
+        } else if (wordMod) {
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
           c = t
@@ -1222,7 +1245,10 @@ export function TextInput({
           c = t
         }
       } else if (delFwd && c < v.length) {
-        if (wordMod) {
+        if (isLineKillModifier(k)) {
+          // Cmd+ForwardDelete — kill to end of line, matching Ctrl+K.
+          v = v.slice(0, c)
+        } else if (wordMod) {
           const t = wordRight(v, c)
           v = v.slice(0, c) + v.slice(t)
         } else {

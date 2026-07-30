@@ -582,11 +582,12 @@ _POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
 # Telegram transcodes an uploaded video before it answers sendVideo, so the
-# wait for the response is unrelated to how fast the bytes went out and
-# routinely exceeds the 20s read timeout the rest of the Bot API is tuned for.
-# Only media sends take this longer budget; ordinary calls keep the short one
-# so a dead request is still noticed quickly.
-_MEDIA_SEND_READ_TIMEOUT = 120.0
+# wait for the response is unrelated to how fast the bytes went out and can
+# outlast the 20s read timeout the rest of the Bot API is tuned for. Only
+# media sends take this longer budget; ordinary calls keep the short one so a
+# dead request is still noticed quickly. Kept modest deliberately — this is
+# also how long a user waits to be told the attachment failed.
+_MEDIA_SEND_READ_TIMEOUT = 60.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
     "telegram_polling_generation", default=None
 )
@@ -3673,11 +3674,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Not a duplicate of write_timeout: PTB routes any request
                 # carrying files to media_write_timeout instead, so the line
                 # above never applied to an upload and every upload was pinned
-                # to PTB's own 20s default. 120s covers a 50MB video on a
-                # ~4Mbps uplink; going higher only lengthens how long a dead
-                # socket takes to report itself.
+                # to PTB's own 20s default. 60s covers Telegram's 50MB ceiling
+                # on a ~7Mbps uplink; going higher only lengthens how long a
+                # dead socket takes to report itself.
                 "media_write_timeout": _env_float(
-                    "HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 120.0
+                    "HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 60.0
                 ),
             }
 

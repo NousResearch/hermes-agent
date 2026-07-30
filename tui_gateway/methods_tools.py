@@ -676,7 +676,20 @@ def _prompt_builtin(module: str, fn: str, kw: str = ""):
     return cmd
 
 
-_cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
+def _cmd_learn(rid, params, session, name, arg):
+    """/learn submits build_learn_prompt(arg) as a normal turn — but only when the
+    session's live agent can actually author skills. On read-only skill tool sets
+    (skills_list + skill_view, no skill_manage) the turn would be doomed: the model
+    is invited to call a tool that is not in its schema (#74249)."""
+    from agent.learn_prompt import LEARN_UNAVAILABLE_MESSAGE, skill_manage_available
+
+    agent = session.get("agent") if session else None
+    tool_names = getattr(agent, "valid_tool_names", None) if agent is not None else None
+    if not skill_manage_available(tool_names):
+        return _err(rid, 4003, LEARN_UNAVAILABLE_MESSAGE)
+    return _prompt_builtin("agent.learn_prompt", "build_learn_prompt")(rid, params, session, name, arg)
+
+
 _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
 
 

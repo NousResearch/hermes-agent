@@ -590,6 +590,17 @@ DEFAULT_CONFIG = {
                                       # measured that the amortized stall is worth
                                       # more to you than the cached-prefix discount.
                                       # See docs/micro-compaction.md.
+        "micro_compact_every_n_turns": 1,  # cadence: run a pass every Nth completed
+                                      # turn. Since each pass costs one prompt-cache
+                                      # break, this is the dial for how often that
+                                      # cost is paid — 1 reclaims most aggressively
+                                      # at one break per turn, 5 trades reclaim rate
+                                      # for a fifth of the breaks. Clamped to >= 1.
+                                      # Ignored unless `micro_compact` is true.
+        "micro_compact_defrag_threshold_tokens": 2000,  # once the rolling summary
+                                      # exceeds this many tokens, the next pass
+                                      # re-summarizes the summary itself instead of
+                                      # letting it grow without bound.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
                                       # WITHOUT forward progress. The summary call streams, so

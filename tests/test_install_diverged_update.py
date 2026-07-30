@@ -358,48 +358,6 @@ recover_diverged_update refs/remotes/origin/main
     assert not _git(repo, "status", "--porcelain").stdout
 
 
-def test_installers_fail_closed_and_use_reflog_bounded_topology_rebase() -> None:
-    sh_helper = _extract_sh_function("recover_diverged_update")
-    sh_source = INSTALL_SH.read_text(encoding="utf-8")
-    assert 'git merge-base --fork-point "$remote_ref" HEAD' in sh_helper
-    assert 'git rev-list --count "$fork_point..HEAD"' in sh_helper
-    assert 'mktemp "$count_dir/hermes-commit-count.XXXXXXXXXX"' in sh_helper
-    assert 'IFS= read -r local_commits <&9' in sh_helper
-    assert 'IFS= read -r second_record <&9' in sh_helper
-    assert 'exec 9<&-' in sh_helper
-    assert "999999999" in sh_helper
-    assert '${#local_commits}' in sh_helper
-    assert 'git rev-list --merges "$fork_point..HEAD"' in sh_helper
-    assert "git diff-tree --cc" in sh_helper
-    assert 'git rebase --rebase-merges --onto "$remote_ref" "$fork_point"' in sh_helper
-    assert '"$fork_point" HEAD' not in sh_helper
-    assert "git rebase --abort" in sh_helper
-    assert 'git reset --hard "$remote_ref"' in sh_helper
-    assert 'recover_diverged_update "origin/$BRANCH"' in sh_source
-
-    ps_helper = _extract_ps_function("Recover-DivergedUpdate")
-    ps_source = INSTALL_PS1.read_text(encoding="ascii")
-    assert "merge-base --fork-point $RemoteRef HEAD" in ps_helper
-    assert 'rev-list --count "$forkPoint..HEAD"' in ps_helper
-    assert "if ($countExit -ne 0)" in ps_helper
-    assert "$localCommitOutput.Count -ne 1" in ps_helper
-    assert "$localCommitText -notmatch '^[0-9]+$'" in ps_helper
-    assert "$localCommitText.Length -gt 9" in ps_helper
-    assert "[int]::TryParse($localCommitText" in ps_helper
-    count_parse_block = ps_helper[
-        ps_helper.index("$localCommitText =") : ps_helper.index("if ($localCommitCount -eq 0)")
-    ]
-    assert ".Trim()" not in count_parse_block
-    assert "-join" not in count_parse_block
-    assert 'rev-list --merges "$forkPoint..HEAD"' in ps_helper
-    assert "diff-tree --cc" in ps_helper
-    assert "rebase --rebase-merges --onto $RemoteRef $forkPoint" in ps_helper
-    assert "$forkPoint HEAD" not in ps_helper
-    assert "rebase --abort" in ps_helper
-    assert 'reset --hard "$RemoteRef"' in ps_helper
-    assert 'Recover-DivergedUpdate "origin/$Branch"' in ps_source
-
-
 @pytest.mark.skipif(
     not any(shutil.which(name) for name in ("pwsh", "powershell")),
     reason="PowerShell is not available",

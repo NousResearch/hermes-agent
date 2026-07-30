@@ -880,3 +880,44 @@ def test_unrelated_thread_spawn_is_not_swept_into_job():
                 proc.kill()
             except Exception:
                 pass
+
+
+def test_spawn_local_background_shell_uses_kill_on_exit_wrapper(tmp_path):
+    """ProcessRegistry.spawn_local's non-PTY background shell must route its
+    Popen through spawn_bash_with_kill_on_exit — it was the one local spawn
+    site outside the job object, so on Windows a background terminal's whole
+    tree could outlive Hermes (#69076 sweeper review). PTY spawns use winpty
+    (a different process-creation API) and are outside this wrapper.
+
+    Call-contract check in the same style as the base.py test: the wrapper
+    must be invoked and its return value must become the session's process."""
+    from unittest.mock import MagicMock, patch
+
+    from tools.process_registry import ProcessRegistry
+    from tools import process_registry as pr_mod
+
+    fake_proc = MagicMock()
+    fake_proc.pid = 4242
+    fake_proc.stdout = None
+    wrapper_calls = []
+
+    def fake_wrapper(popen_fn):
+        wrapper_calls.append(popen_fn)
+        return fake_proc
+
+    fake_thread = MagicMock()
+    with patch.object(pr_mod, "spawn_bash_with_kill_on_exit", fake_wrapper), \
+         patch.object(pr_mod, "_find_shell", return_value="/bin/bash", create=True), \
+         patch("threading.Thread", return_value=fake_thread), \
+         patch.object(ProcessRegistry, "_write_checkpoint"):
+        registry = ProcessRegistry()
+        session = registry.spawn_local(
+            "echo bg", cwd=str(tmp_path), use_pty=False
+        )
+
+    assert len(wrapper_calls) == 1, (
+        "spawn_local must create its background shell through "
+        "spawn_bash_with_kill_on_exit"
+    )
+    assert session.process is fake_proc
+    assert session.pid == 4242

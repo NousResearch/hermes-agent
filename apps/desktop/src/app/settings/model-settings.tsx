@@ -82,14 +82,12 @@ export function ModelSettingsSkeleton() {
   )
 }
 
-// agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
-// normal (mirrors tui_gateway _load_service_tier).
-const isFastTier = (tier: unknown): boolean =>
-  ['fast', 'priority', 'on'].includes(
-    String(tier ?? '')
-      .trim()
-      .toLowerCase()
-  )
+const speedMode = (tier: unknown): string => {
+  const value = String(tier ?? '').trim().toLowerCase()
+  if (['fast', 'priority', 'on'].includes(value)) return 'fast'
+  if (value === 'auto' || value === 'cold') return value
+  return 'normal'
+}
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -511,7 +509,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
   const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
 
-  const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
+  const configuredSpeedMode = speedMode(getNested(config ?? {}, 'agent.service_tier'))
 
   // Persist a single agent.* default by round-tripping the whole config record
   // (PUT /api/config replaces it) — optimistic, with rollback on failure.
@@ -857,14 +855,24 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               </div>
             )}
             {fastSupported && (
-              <label className="flex items-center gap-2 text-xs">
+              <div className="flex items-center gap-2 text-xs">
                 {t.shell.modelOptions.fast}
-                <Switch
-                  checked={fastOn}
-                  onCheckedChange={checked => void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')}
-                  size="xs"
-                />
-              </label>
+                <Select
+                  onValueChange={value => void writeAgentDefault('agent.service_tier', value)}
+                  value={configuredSpeedMode}
+                >
+                  <SelectTrigger className={cn('min-w-24', CONTROL_TEXT)}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {['normal', 'fast', 'auto', 'cold'].map(value => (
+                      <SelectItem key={value} value={value}>
+                        {value[0]!.toUpperCase() + value.slice(1)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             )}
           </div>
         )}

@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { persistString, storedString } from '@/lib/storage'
 
 import { notifyError } from './notifications'
-import { setCurrentFastMode, setCurrentReasoningEffort } from './session'
+import { setCurrentFastMode, setCurrentReasoningEffort, setCurrentServiceTier } from './session'
 import { sessionTileDelegate } from './session-states'
 
 const STORAGE_KEY = 'hermes.desktop.model-presets'
@@ -14,6 +14,7 @@ const STORAGE_KEY = 'hermes.desktop.model-presets'
 export interface ModelPreset {
   effort?: string
   fast?: boolean
+  serviceTier?: string
 }
 
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -61,7 +62,7 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
  *  `primary: false` scopes the optimistic write to the tile's session slice —
  *  a tile's picker must not clobber the primary composer's effort/fast. */
 export async function applyModelPreset(
-  { effort, fast }: ModelPreset,
+  { effort, fast, serviceTier }: ModelPreset,
   ctx: { failMessage: string; primary?: boolean; request: RequestGateway; sessionId: null | string }
 ): Promise<void> {
   if (ctx.primary ?? true) {
@@ -72,11 +73,16 @@ export async function applyModelPreset(
     if (fast !== undefined) {
       setCurrentFastMode(fast)
     }
+    if (serviceTier !== undefined) {
+      setCurrentServiceTier(serviceTier)
+      setCurrentFastMode(serviceTier === 'priority' || serviceTier === 'fast')
+    }
   } else if (ctx.sessionId) {
     sessionTileDelegate()?.updateSession(ctx.sessionId, state => ({
       ...state,
       ...(effort !== undefined ? { reasoningEffort: effort } : {}),
-      ...(fast !== undefined ? { fast } : {})
+      ...(fast !== undefined ? { fast } : {}),
+      ...(serviceTier !== undefined ? { serviceTier, fast: serviceTier === 'priority' || serviceTier === 'fast' } : {})
     }))
   }
 
@@ -91,6 +97,13 @@ export async function applyModelPreset(
 
     if (fast !== undefined) {
       await ctx.request('config.set', { key: 'fast', session_id: ctx.sessionId, value: fast ? 'fast' : 'normal' })
+    }
+    if (serviceTier !== undefined) {
+      await ctx.request('config.set', {
+        key: 'fast',
+        session_id: ctx.sessionId,
+        value: serviceTier === 'priority' ? 'fast' : serviceTier || 'normal'
+      })
     }
   } catch (err) {
     notifyError(err, ctx.failMessage)

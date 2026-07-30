@@ -100,11 +100,15 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           (force || getCurrentModelSource() !== 'manual')
 
         if (shouldSeedComposer) {
+          const normalizedTier = FAST_TIERS.has(tier.toLowerCase())
+            ? 'priority'
+            : ['auto', 'cold'].includes(tier.toLowerCase())
+              ? tier.toLowerCase()
+              : ''
           setCurrentReasoningEffort(reasoning)
-          setCurrentFastMode(FAST_TIERS.has(tier.toLowerCase()))
+          setCurrentFastMode(normalizedTier === 'priority')
+          setCurrentServiceTier(normalizedTier)
         }
-
-        setCurrentServiceTier(prev => (activeSessionIdRef.current ? prev : tier))
 
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)

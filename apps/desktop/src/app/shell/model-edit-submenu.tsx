@@ -25,7 +25,8 @@ import {
   $defaultReasoningEffort,
   markComposerSelectionManual,
   setCurrentFastMode,
-  setCurrentReasoningEffort
+  setCurrentReasoningEffort,
+  setCurrentServiceTier
 } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 
@@ -94,6 +95,8 @@ interface ModelEditSubmenuProps {
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  /** Parameter-based speed policy for this row. */
+  speedMode?: string
 }
 
 export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
@@ -117,7 +120,8 @@ function ModelEditSubmenuBody({
   onSelectModel,
   provider,
   reasoning,
-  requestGateway
+  requestGateway,
+  speedMode = ''
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
@@ -223,6 +227,54 @@ function ModelEditSubmenuBody({
     }
   }
 
+  const patchSpeedMode = async (next: string) => {
+    const normalized = ['priority', 'auto', 'cold'].includes(next) ? next : ''
+    setModelPreset(provider, model, {
+      fast: normalized === 'priority',
+      serviceTier: normalized
+    })
+
+    if (!isActive) return
+
+    if (touchesPrimary) {
+      markComposerSelectionManual()
+      setCurrentServiceTier(normalized)
+      setCurrentFastMode(normalized === 'priority')
+    } else if (activeSessionId) {
+      sessionTileDelegate()?.updateSession(activeSessionId, state => ({
+        ...state,
+        fast: normalized === 'priority',
+        serviceTier: normalized
+      }))
+    }
+
+    if (!activeSessionId) return
+
+    try {
+      await requestGateway('config.set', {
+        key: 'fast',
+        session_id: activeSessionId,
+        value: normalized === 'priority' ? 'fast' : normalized || 'normal'
+      })
+    } catch (err) {
+      if (touchesPrimary) {
+        setCurrentServiceTier(speedMode)
+        setCurrentFastMode(speedMode === 'priority')
+      } else {
+        sessionTileDelegate()?.updateSession(activeSessionId, state => ({
+          ...state,
+          fast: speedMode === 'priority',
+          serviceTier: speedMode
+        }))
+      }
+      setModelPreset(provider, model, {
+        fast: speedMode === 'priority',
+        serviceTier: speedMode
+      })
+      notifyError(err, copy.fastFailed)
+    }
+  }
+
   const hasFast = fastControl.kind !== 'none'
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on
 
@@ -242,11 +294,34 @@ function ModelEditSubmenuBody({
           />
         </DropdownMenuItem>
       ) : null}
-      {hasFast ? (
+      {fastControl.kind === 'variant' ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.fast}
           <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
         </DropdownMenuItem>
+      ) : null}
+      {fastControl.kind === 'param' ? (
+        <>
+          <DropdownMenuSeparator className="mx-0" />
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.fast}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup onValueChange={value => void patchSpeedMode(value)} value={speedMode || 'normal'}>
+            {[
+              ['normal', 'Normal'],
+              ['priority', 'Fast'],
+              ['auto', 'Auto'],
+              ['cold', 'Cold']
+            ].map(([value, label]) => (
+              <DropdownMenuRadioItem
+                className={dropdownMenuRow}
+                key={value || 'normal'}
+                onSelect={event => event.preventDefault()}
+                value={value}
+              >
+                {label}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </>
       ) : null}
       {reasoning ? (
         <>

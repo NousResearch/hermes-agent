@@ -28,6 +28,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $currentServiceTier,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
@@ -165,6 +166,7 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
+    serviceTier: $currentServiceTier.get().trim(),
     model: $currentModel.get().trim(),
     provider: $currentProvider.get().trim()
   }
@@ -181,7 +183,9 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
       ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
       : {}),
     ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
-    fast: selection.fast
+    fast: selection.fast,
+    service_tier:
+      selection.serviceTier || (selection.fast ? 'priority' : 'normal')
   }
 }
 

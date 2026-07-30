@@ -23,6 +23,7 @@ const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+const COMPOSER_SERVICE_TIER_KEY = 'hermes.desktop.composer.service-tier'
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
@@ -439,7 +440,7 @@ export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
-export const $currentServiceTier = atom('')
+export const $currentServiceTier = atom(storedString(COMPOSER_SERVICE_TIER_KEY) ?? '')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // Effective approval-bypass state mirrored from the gateway (session.info).
 // Persistence lives in the backend config (approvals.mode), so this is a plain
@@ -553,7 +554,10 @@ export const $defaultReasoningEffort = atom('')
 
 export const setDefaultReasoningEffort = (next: string) => updateAtom($defaultReasoningEffort, next)
 
-export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
+export const setCurrentServiceTier = (next: Updater<string>) => {
+  updateAtom($currentServiceTier, next)
+  persistString(COMPOSER_SERVICE_TIER_KEY, $currentServiceTier.get() || null)
+}
 
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)

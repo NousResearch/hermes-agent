@@ -12,6 +12,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $currentServiceTier,
   $messages,
   $selectedStoredSessionId
 } from '@/store/session'
@@ -52,6 +53,7 @@ export interface SessionView {
   $model: ReadableAtom<string>
   $provider: ReadableAtom<string>
   $fast: ReadableAtom<boolean>
+  $serviceTier: ReadableAtom<string>
   $reasoningEffort: ReadableAtom<string>
 }
 
@@ -82,6 +84,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $busy: primaryField<boolean>(state => state.busy, $busy),
   $cwd: primaryField<string>(state => state.cwd, $currentCwd),
   $fast: primaryField<boolean>(state => state.fast, $currentFastMode),
+  $serviceTier: primaryField<string>(state => state.serviceTier, $currentServiceTier),
   $lastVisibleIsUser: computed($primaryMessages, lastVisibleMessageIsUser),
   $messages: $primaryMessages,
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),

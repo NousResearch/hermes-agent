@@ -48,7 +48,12 @@ afterEach(() => {
 })
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.
-function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; requestGateway: () => Promise<unknown> }) {
+function renderSubmenu(opts: {
+  fastControl: FastControl
+  reasoning: boolean
+  requestGateway: () => Promise<unknown>
+  speedMode?: string
+}) {
   return render(
     <DropdownMenu open>
       <DropdownMenuContent>
@@ -63,6 +68,7 @@ function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; req
             provider="p1"
             reasoning={opts.reasoning}
             requestGateway={opts.requestGateway as never}
+            speedMode={opts.speedMode}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -77,9 +83,14 @@ describe('ModelEditSubmenu no-session guard', () => {
   it('param fast: records explicit off in the draft but skips the gateway without a session', () => {
     const requestGateway = vi.fn().mockResolvedValue({})
     setCurrentFastMode(true)
-    renderSubmenu({ fastControl: { kind: 'param', on: true }, reasoning: false, requestGateway })
+    renderSubmenu({
+      fastControl: { kind: 'param', on: true },
+      reasoning: false,
+      requestGateway,
+      speedMode: 'priority'
+    })
 
-    fireEvent.click(screen.getByRole('switch'))
+    fireEvent.click(screen.getByRole('radio', { name: 'Normal' }))
 
     expect(getModelPreset('p1', 'm1').fast).toBe(false)
     expect($currentFastMode.get()).toBe(false)
@@ -105,8 +116,19 @@ describe('ModelEditSubmenu no-session guard', () => {
     $activeSessionId.set('sess1')
     renderSubmenu({ fastControl: { kind: 'param', on: false }, reasoning: false, requestGateway })
 
-    fireEvent.click(screen.getByRole('switch'))
+    fireEvent.click(screen.getByRole('radio', { name: 'Fast' }))
 
     expect(requestGateway).toHaveBeenCalledWith('config.set', { key: 'fast', session_id: 'sess1', value: 'fast' })
+  })
+
+  it('param fast: preserves auto as an exact session policy', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    $activeSessionId.set('sess1')
+    renderSubmenu({ fastControl: { kind: 'param', on: false }, reasoning: false, requestGateway })
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Auto' }))
+
+    expect(getModelPreset('p1', 'm1')).toMatchObject({ fast: false, serviceTier: 'auto' })
+    expect(requestGateway).toHaveBeenCalledWith('config.set', { key: 'fast', session_id: 'sess1', value: 'auto' })
   })
 })

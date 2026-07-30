@@ -259,16 +259,17 @@ describe('ModelSettings', () => {
     )
   })
 
-  it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
+  it('writes the selected profile default speed policy', async () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    const fastSwitch = await screen.findByRole('switch')
-    fireEvent.click(fastSwitch)
+    const speedSelect = (await screen.findAllByRole('combobox')).at(-1)!
+    fireEvent.click(speedSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'Auto' }))
 
     await waitFor(() =>
       expect(saveHermesConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'fast' }) })
+        expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'auto' }) })
       )
     )
   })

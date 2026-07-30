@@ -79,6 +79,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const view = useSessionView()
   const activeSessionId = useStore(view.$runtimeId)
   const currentFastMode = useStore(view.$fast)
+  const currentServiceTier = useStore(view.$serviceTier)
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
   const currentReasoningEffort = useStore(view.$reasoningEffort)
@@ -181,7 +182,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     await applyModelPreset(
       {
         effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
-        fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
+        fast: variantFast ? (preset.fast ?? false) : undefined,
+        serviceTier: (caps?.fast ?? false)
+          ? (preset.serviceTier ?? (preset.fast ? 'priority' : ''))
+          : undefined
       },
       {
         failMessage: t.shell.modelOptions.updateFailed,
@@ -422,6 +426,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                     const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
                     const effEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
                     const effFast = isCurrent ? currentFastMode : (preset.fast ?? false)
+                    const effServiceTier = isCurrent
+                      ? currentServiceTier || (currentFastMode ? 'priority' : '')
+                      : (preset.serviceTier ?? (preset.fast ? 'priority' : ''))
 
                     const fastControl = resolveFastControl(
                       activeId ?? family.id,
@@ -431,7 +438,13 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                     )
 
                     const meta = [
-                      fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
+                      fastControl.kind !== 'none' && effServiceTier
+                        ? effServiceTier === 'priority'
+                          ? copy.fast
+                          : effServiceTier
+                        : fastControl.kind === 'variant' && fastControl.on
+                          ? copy.fast
+                          : null,
                       (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
                     ]
                       .filter(Boolean)
@@ -482,6 +495,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                           provider={group.provider.slug}
                           reasoning={caps?.reasoning ?? true}
                           requestGateway={requestGateway}
+                          speedMode={effServiceTier}
                         />
                       </DropdownMenuSub>
                     )

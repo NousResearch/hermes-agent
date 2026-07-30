@@ -1,60 +1,101 @@
-"""Cached images from passive Telegram group context."""
+"""Bounded replay of cached images from passive Telegram group context."""
 
-from typing import Any, Dict, List, Optional
+import logging
+from pathlib import Path
 
-# Cap on cached observed-group images re-attached to a later addressed turn.
-# Observed context accumulates for the whole session, so without a bound a busy
-# group would re-upload every photo it has ever seen on every single reply.
+logger = logging.getLogger("gateway.run")
 _MAX_OBSERVED_IMAGE_ATTACHMENTS = 4
 
 
-def _collect_observed_image_paths(
-    history: Optional[List[Dict[str, Any]]],
-    limit: int = _MAX_OBSERVED_IMAGE_ATTACHMENTS,
-) -> List[str]:
-    """Cached image paths from the *trailing* observed rows, oldest first.
-
-    Scoped to observed chatter that arrived since the last real exchange, so a
-    photo is attached on the turn that follows it and not re-uploaded on every
-    later reply — the text note continues to carry it in context after that.
-
-    Only rows written by the observe path carry ``media_urls``; transcripts
-    written before that field existed yield nothing and keep their text note,
-    so this is a no-op on existing sessions.
-    """
+def observed_image_content(text: str, urls: list[str], types: list[str]) -> str | list[dict]:
+    """Keep local image references in content, which survives SQLite transcript persistence."""
     from agent.image_routing import _IMAGE_EXTS
 
-    trailing: List[Dict[str, Any]] = []
-    for msg in reversed(history or []):
-        if not isinstance(msg, dict):
+    parts = [{"type": "text", "text": text}]
+    for i, path in enumerate(urls):
+        mime = types[i] if i < len(types) else ""
+        if (mime.startswith("image/") if mime else str(path).lower().endswith(_IMAGE_EXTS)):
+            parts.append({"type": "image_url", "image_url": {"url": str(path)}})
+    return parts if len(parts) > 1 else text
+
+
+def observed_text(content):
+    """Observed pixels are attached only to the next turn, never historical replay."""
+    if isinstance(content, list):
+        return "\n".join(
+            part.get("text", "") for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return content
+
+
+def _observed_tail(history):
+    tail = []
+    for message in reversed(history or []):
+        if not isinstance(message, dict) or message.get("role") in {"session_meta", "system"}:
             continue
-        role = msg.get("role")
-        if role in {"session_meta", "system"}:
-            continue
-        if not msg.get("observed"):
+        if not message.get("observed"):
             break
-        trailing.append(msg)
-    trailing.reverse()
+        tail.append(message)
+    return list(reversed(tail))
 
-    paths: List[str] = []
-    for msg in trailing:
-        if msg.get("role") != "user":
+
+def _cached_image_path(raw) -> str | None:
+    """Only files in this profile's image cache may be promoted into an API attachment."""
+    if not isinstance(raw, str) or not Path(raw).is_absolute():
+        return None
+    from gateway.platforms.base import get_image_cache_dir
+    from hermes_constants import get_hermes_home
+
+    try:
+        path = Path(raw).resolve()
+        roots = (get_image_cache_dir(), Path(get_hermes_home()) / "image_cache")
+        if path.is_file() and any(path.is_relative_to(root.resolve()) for root in roots):
+            return str(path)
+    except (OSError, ValueError):
+        logger.debug("Invalid observed image cache path", exc_info=True)
+    return None
+
+
+def collect_observed_image_paths(history) -> list[str]:
+    """Most recent unique cached images in trailing observed rows, oldest first."""
+    paths = []
+    for message in _observed_tail(history):
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, list):
             continue
-        urls = msg.get("media_urls") or []
-        types = msg.get("media_types") or []
-        for i, path in enumerate(urls):
-            if not path:
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
                 continue
-            # Trust the recorded MIME; fall back to the extension only when the
-            # observe path could not determine one, mirroring
-            # ``_event_media_is_image`` for live events.
-            mime = str(types[i]) if i < len(types) else ""
-            if mime:
-                if not mime.startswith("image/"):
-                    continue
-            elif not str(path).lower().endswith(_IMAGE_EXTS):
-                continue
-            paths.append(str(path))
-    return paths[-limit:] if limit and len(paths) > limit else paths
+            ref = part.get("image_url")
+            path = _cached_image_path(ref.get("url")) if isinstance(ref, dict) else None
+            if path:
+                if path in paths:
+                    paths.remove(path)
+                paths.append(path)
+    return paths[-_MAX_OBSERVED_IMAGE_ATTACHMENTS:]
 
 
+async def history_with_observed_tail(runner, history, source):
+    """Agent results omit observed rows; reload photos that arrived during the active turn."""
+    from gateway.config import Platform
+
+    if source is None or source.platform != Platform.TELEGRAM or source.chat_type != "group":
+        return history
+    try:
+        store = runner.async_session_store
+        entry = await store.get_or_create_session(source)
+        persisted = await store.load_transcript(entry.session_id)
+    except Exception:
+        logger.debug("Observed-tail reload failed; using agent history", exc_info=True)
+        return history
+    return list(history) + _observed_tail(persisted)
+
+
+_TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
+def uses_telegram_observed_group_context(channel_prompt: str | None) -> bool:
+    """Return True for Telegram group turns that may include observed chatter.
+
+    Observed rows must not replay as ordinary user turns, or a weak wake word makes old chatter look like work.
+    """
+    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)

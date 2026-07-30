@@ -235,10 +235,15 @@ def test_ledger_records_files_independently(tmp_path, monkeypatch):
     }
 
 
-def test_state_write_failure_reports_remote_upload(tmp_path, monkeypatch, caplog):
+def test_state_write_failure_reconciles_remote_upload_on_retry(
+    tmp_path, monkeypatch, caplog
+):
     memory_dir = tmp_path / "memories"
     _write_memory_files(memory_dir, "MEMORY.md")
     manager, remote = _manager(tmp_path, monkeypatch)
+    remote.messages.side_effect = lambda **kwargs: (
+        [MagicMock()] if remote.upload_file.call_count else []
+    )
 
     with patch(
         "plugins.memory.honcho.session.atomic_json_write",
@@ -246,5 +251,29 @@ def test_state_write_failure_reports_remote_upload(tmp_path, monkeypatch, caplog
     ):
         assert manager.migrate_memory_files("cli:test", str(memory_dir)) is True
 
+    assert manager.migrate_memory_files("cli:test", str(memory_dir)) is False
     assert _uploaded_names(remote) == ["consolidated_memory.md"]
     assert "Failed to record Honcho migration" in caplog.text
+
+    upload_metadata = remote.upload_file.call_args.kwargs["metadata"]
+    retry_filter = remote.messages.call_args_list[1].kwargs["filters"]
+    assert retry_filter["metadata"]["migration_id"] == upload_metadata["migration_id"]
+
+    state = json.loads(
+        (tmp_path / "state" / "honcho_migration.json").read_text(encoding="utf-8")
+    )
+    source = next(iter(next(iter(state["targets"].values()))["sources"].values()))
+    assert source["files"] == {"MEMORY.md": True}
+
+
+def test_remote_reconciliation_failure_does_not_risk_duplicate_upload(
+    tmp_path, monkeypatch, caplog
+):
+    memory_dir = tmp_path / "memories"
+    _write_memory_files(memory_dir, "MEMORY.md")
+    manager, remote = _manager(tmp_path, monkeypatch)
+    remote.messages.side_effect = RuntimeError("remote unavailable")
+
+    assert manager.migrate_memory_files("cli:test", str(memory_dir)) is False
+    remote.upload_file.assert_not_called()
+    assert "skipping upload" in caplog.text

@@ -1071,6 +1071,52 @@ class HonchoSessionManager:
                 if not content:
                     continue
 
+                migration_id = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "target": target_key,
+                            "source": source_key,
+                            "filename": filename,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                try:
+                    remote_messages = honcho_session.messages(
+                        filters={
+                            "metadata": {
+                                "source": "local_memory",
+                                "migration_id": migration_id,
+                            }
+                        },
+                        page=1,
+                        size=1,
+                    )
+                    already_uploaded = len(remote_messages) > 0
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to reconcile Honcho migration for %s; skipping upload: %s",
+                        filename,
+                        exc,
+                    )
+                    continue
+
+                if already_uploaded:
+                    completed_files[filename] = True
+                    try:
+                        atomic_json_write(state_path, state, mode=0o600, sort_keys=True)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to record reconciled Honcho migration for %s: %s",
+                            filename,
+                            exc,
+                        )
+                        break
+                    logger.info("Reconciled prior Honcho migration for %s", filename)
+                    continue
+
                 wrapped = (
                     f"<prior_memory_file>\n"
                     f"<context>\n"
@@ -1090,6 +1136,7 @@ class HonchoSessionManager:
                             "source": "local_memory",
                             "original_file": filename,
                             "target_peer": target_kind,
+                            "migration_id": migration_id,
                         },
                     )
                 except Exception as exc:

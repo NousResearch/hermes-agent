@@ -1416,6 +1416,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const error = status === 'success' ? '' : toolErrorText(part, resultRecord)
   // Over-budget memory refusals stay amber — don't claim "Saved".
   const memoryMissed = part.toolName === 'memory' && part.result !== undefined && status !== 'success'
+
   const baseTitle =
     part.result === undefined
       ? meta.pending

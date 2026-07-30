@@ -146,20 +146,21 @@ def test_complete_task_without_claim_lock_preserves_legacy_behavior(
         assert task.result == "done"
 
 
-def test_complete_task_accepts_matching_claim_lock_on_running_task(
-    kanban_home: Path,
+@pytest.mark.parametrize("status", ["running", "ready", "blocked"])
+def test_complete_task_accepts_matching_claim_lock_on_completable_status(
+    kanban_home: Path, status: str
 ) -> None:
-    """The happy path of the fenced branch: right lock, completable status.
+    """The happy path of the fenced branch: right lock, every completable status.
 
-    The two tests above only pin what the fence *rejects*. Without this one a
-    predicate that rejected everything — or that dropped a legitimate status
-    from the IN list — would still pass the suite while breaking every worker
-    that completes its own claimed task.
+    The rejection tests only pin what the fence rejects. Parametrized over the
+    full IN list because a single positive case (say ``running``) would stay
+    green if the predicate silently dropped ``ready`` or ``blocked``.
     """
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="owned work", assignee="worker")
         claimed = kb.claim_task(conn, task_id, claimer="worker:current")
         assert claimed is not None
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
         conn.commit()
 
         assert kb.complete_task(

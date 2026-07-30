@@ -6,9 +6,53 @@ are rebound onto server.py's globals at install time — see method_ctx.py.
 
 from .method_ctx import HandlerRegistry
 
+import types
+
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
+
+
+def _pending_reaction_notes(session: dict) -> str:
+    """Note block describing reactions the user added since the last turn, or "".
+
+    Applied to the MODEL INPUT only (``run_message``, beside the
+    speech-interrupted note) — never to the text that gets persisted. Prefixing
+    the persisted prompt bakes scaffolding into the transcript, which every
+    surface then renders as a garbled user message on reload. Each reaction is
+    announced once — the row is stamped ``seen`` on read.
+    """
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return ""
+
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return ""
+            pending = db.take_unseen_reactions(session_key, author="user")
+    except Exception:
+        logger.debug("Failed to read pending reactions", exc_info=True)
+        return ""
+
+    if not pending:
+        return ""
+
+    notes = []
+    for entry in pending:
+        snippet = (entry.get("text") or "").strip().replace("\n", " ")
+        if len(snippet) > 120:
+            snippet = snippet[:120] + "…"
+        emoji = entry.get("emoji") or ""
+        whose = "their own" if entry.get("role") == "user" else "your"
+        if snippet:
+            notes.append(f'[The user reacted {emoji} to {whose} message: "{snippet}"]')
+        else:
+            # A row with no plain text (attachment-only, or a tool-call-only
+            # assistant turn) — an empty quote reads worse than no quote.
+            notes.append(f"[The user reacted {emoji} to {whose} earlier message]")
+
+    return "\n".join(notes)
 
 
 @method("prompt.submit")
@@ -833,3 +877,13 @@ def _(rid, params: dict) -> dict:
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)
+    # Module-level helpers aren't @method handlers, so install() doesn't see
+    # them — but server.py's run path calls this one (run_message enrichment,
+    # beside the speech-interrupted note). Rebind and publish it the same way.
+    server._pending_reaction_notes = types.FunctionType(
+        _pending_reaction_notes.__code__,
+        vars(server),
+        _pending_reaction_notes.__name__,
+        _pending_reaction_notes.__defaults__,
+        _pending_reaction_notes.__closure__,
+    )

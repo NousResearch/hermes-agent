@@ -6655,6 +6655,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
+        # Durable row identity, stamped by _rows_to_conversation. The renderer's
+        # own message ids are ephemeral (timestamp+index derived, and a
+        # different shape for live vs rehydrated vs optimistic rows), so
+        # anything that addresses a specific persisted message later — message
+        # reactions — needs this instead.
+        if m.get("_row_id") is not None:
+            msg["row_id"] = m["_row_id"]
         if role == "user":
             invocation = _skill_scaffold_projection(content_text)
             if invocation:
@@ -9131,6 +9138,17 @@ def _run_prompt_submit(
                     run_message = f"{SPEECH_INTERRUPTED_NOTE}\n\n{run_message}"
                 elif isinstance(run_message, list):
                     run_message = [{"type": "text", "text": SPEECH_INTERRUPTED_NOTE}, *run_message]
+
+            # Reactions the user added since the last turn ride the MODEL INPUT
+            # only (same enrichment channel as the speech-interrupted note);
+            # persist_user_message below stays the clean prompt, so no
+            # scaffolding reaches the transcript. Cache-safe: annotating the
+            # NEW turn never rewrites an already-sent message.
+            if reaction_notes := _pending_reaction_notes(session):
+                if isinstance(run_message, str):
+                    run_message = f"{reaction_notes}\n\n{run_message}"
+                elif isinstance(run_message, list):
+                    run_message = [{"type": "text", "text": reaction_notes}, *run_message]
 
             def _stream(delta):
                 with session["history_lock"]:

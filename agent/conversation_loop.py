@@ -1445,6 +1445,12 @@ def run_conversation(
             api_msg.pop("display_kind", None)
             api_msg.pop("display_metadata", None)
 
+            # Durable row identity stamped by _rows_to_conversation so the
+            # desktop can address a specific persisted message (reactions).
+            # Bookkeeping, never a provider field — only the chat-completions
+            # transport strips underscore keys, so drop it centrally here.
+            api_msg.pop("_row_id", None)
+
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
             # with target="user_message" (the default).  Both are

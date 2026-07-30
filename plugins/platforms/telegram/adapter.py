@@ -581,6 +581,11 @@ _POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
+# Telegram transcodes an uploaded video before it answers sendVideo, so the
+# wait for the response is unrelated to how fast the bytes went out and
+# routinely exceeds the 20s read timeout the rest of the Bot API is tuned for.
+# Only media sends take this longer budget.
+_MEDIA_SEND_READ_TIMEOUT = 180.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
     "telegram_polling_generation", default=None
 )
@@ -3664,6 +3669,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+                # Not a duplicate of write_timeout: PTB routes any request
+                # carrying files to media_write_timeout instead, so the line
+                # above never applied to an upload and every upload was pinned
+                # to PTB's own 20s default.
+                "media_write_timeout": _env_float(
+                    "HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 300.0
+                ),
             }
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
@@ -7196,6 +7208,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "video": f,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },

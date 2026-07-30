@@ -16,6 +16,7 @@ import {
   DropdownMenuSub,
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
+import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -212,9 +213,38 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
+  // Enter in the search field commits the FIRST match — the VS Code pattern
+  // ("so Enter works without pressing DownArrow first"): ⌘⇧M → "grok" → Enter
+  // is the whole switch. Radix highlights nothing until an arrow key, so
+  // without this Enter would dead-end. Arrow-selected rows keep their own
+  // Enter (focus has left the input by then).
+  const commitFirstMatch = () => {
+    const group = groups[0]
+    const family = group?.families[0]
+
+    if (!family) {
+      return
+    }
+
+    void selectFamily(family, group.provider)
+    closeMenu()
+  }
+
   return (
     <>
-      <DropdownMenuSearch aria-label={copy.search} onValueChange={setSearch} placeholder={copy.search} value={search} />
+      <DropdownMenuSearch
+        aria-label={copy.search}
+        onKeyDown={event => {
+          if (event.key === 'Enter' && normalize(search)) {
+            event.preventDefault()
+            event.stopPropagation()
+            commitFirstMatch()
+          }
+        }}
+        onValueChange={setSearch}
+        placeholder={copy.search}
+        value={search}
+      />
 
       <DropdownMenuSeparator className="mx-0" />
 
@@ -258,7 +288,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                   }}
                   textValue=""
                 >
-                  <span className="truncate">{group.provider.name}</span>
+                  <span className="truncate">
+                    <HighlightMatches query={search} text={group.provider.name} />
+                  </span>
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
                     open={!collapsed}
@@ -332,7 +364,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                           }}
                         >
                           <span className="min-w-0 flex-1 truncate">
-                            {name}
+                            <HighlightMatches query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
                           {isCurrent ? (
@@ -452,9 +484,11 @@ function groupModels(
 
     // Always include the active model — but keep every row in the provider's
     // stable curated order (filter `allFamilies`, never reorder), so selecting
-    // a model can't shuffle the list.
+    // a model can't shuffle the list. While SEARCHING, the pin is skipped: a
+    // query means "show me matches", and a pinned non-match sitting above them
+    // reads like the top result (type "grok", see the current Fable first).
     const activeId =
-      provider.slug === current.provider && current.model
+      !q && provider.slug === current.provider && current.model
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 

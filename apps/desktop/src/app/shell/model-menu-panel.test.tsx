@@ -144,6 +144,65 @@ describe('ModelMenuPanel current selection', () => {
   })
 })
 
+describe('ModelMenuPanel search', () => {
+  // The pinned current model must NOT ride along on a query it doesn't match:
+  // it reads like the top result, so Enter/click picks the wrong model (the
+  // "type grok, get fable" bug). Every surveyed picker (VS Code, Zed, Open
+  // WebUI, Cherry Studio) drops the pin while filtering.
+  // Highlighted labels are split across <mark> nodes, so single-text-node
+  // queries miss them — match on the row span's composed textContent.
+  const rowWithText = (content: ReturnType<typeof renderPanel>['content'], pattern: RegExp) =>
+    content.queryByText((_, element) => element?.tagName === 'SPAN' && pattern.test(element.textContent ?? ''))
+
+  it('hides the non-matching current model while a query is active', async () => {
+    $currentProvider.set('deepseek')
+    $currentModel.set('deepseek-v4-pro')
+    const { content } = renderPanel()
+
+    await content.findByText(/Deepseek V4 Pro/i)
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+    })
+    expect(rowWithText(content, /Deepseek V4 Pro/i)).toBeNull()
+  })
+
+  it('Enter in the search field commits the first match', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+    })
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    // First matching family of the first (alphabetical) matching provider.
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({ model: 'gemini-3.1-pro', provider: 'google', sessionId: 'runtime-1' })
+    })
+  })
+
+  it('Enter with no matches is a no-op (menu stays put, nothing selected)', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'zzz-no-such-model' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+})
+
 describe('ModelMenuPanel provider collapse', () => {
   it('shows all provider models by default (none collapsed)', async () => {
     const { content } = renderPanel()
@@ -205,9 +264,15 @@ describe('ModelMenuPanel provider collapse', () => {
     expect(input).not.toBeNull()
     fireEvent.change(input, { target: { value: 'deepseek' } })
 
-    // Should show models — search bypasses collapse
+    // Should show models — search bypasses collapse. The matched letters render
+    // inside a <mark>, splitting the label across nodes, so match on the row
+    // span's composed textContent instead of a single text node.
     await vi.waitFor(() => {
-      expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+      expect(
+        content.queryByText(
+          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('Deepseek V4 Pro')
+        )
+      ).not.toBeNull()
     })
   })
 

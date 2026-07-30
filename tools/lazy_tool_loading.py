@@ -26,6 +26,18 @@ Integration with ``tool_search``:
   Since lazy already compacts everything, tool_search's deferral of
   MCP/plugin tools becomes redundant (they're already compact).  This is
   correct — the two features compose cleanly.
+
+Integration with dynamic schemas:
+  Both eager and lazy modes share the same canonical schema construction
+  path in ``model_tools._compute_tool_definitions`` — registry lookup,
+  execute_code sandbox scoping, discord intent filtering,
+  browser_navigate cross-ref stripping, and schema sanitization all run
+  identically.  Lazy mode then compacts the result to ``{name,
+  description}`` summaries.  When the model calls
+  ``request_tool_schema``, the handler rebuilds the full (uncompacted)
+  schema list via ``get_tool_definitions(skip_lazy_compaction=True)``
+  and serves the dynamically-correct schema from there — never from the
+  static registry.
 """
 
 from __future__ import annotations
@@ -108,14 +120,48 @@ def request_tool_schema_tool_def() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Compaction helper
+# ---------------------------------------------------------------------------
+
+
+def compact_tool_defs(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compact a list of full tool definitions to {name, description} only.
+
+    Preserves the outer ``{type, function}`` shape.  The ``parameters`` block
+    is dropped from every entry, saving ~90% of the per-tool token cost.
+
+    Called from ``model_tools._compute_tool_definitions`` *after* dynamic
+    schema processing (execute_code sandbox scoping, discord intent
+    filtering, browser_navigate cross-ref stripping, schema sanitization)
+    so the compact summaries reflect the dynamically-correct descriptions.
+    """
+    compacted = []
+    for td in tool_defs:
+        fn = td.get("function") or {}
+        name = fn.get("name", "")
+        if not name or name == REQUEST_TOOL_SCHEMA_NAME:
+            # Skip any pre-existing bridge entry to avoid duplicates.
+            continue
+        compacted.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": fn.get("description", ""),
+            },
+        })
+    return compacted
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
-# ----------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 def dispatch_request_tool_schema(
     args: Dict[str, Any],
     *,
     tool_names_in_scope: Optional[Set[str]] = None,
+    full_tool_defs: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Execute the ``request_tool_schema`` bridge tool.
 
@@ -127,6 +173,13 @@ def dispatch_request_tool_schema(
         tool_names_in_scope: If provided, restrict to these tool names.
             Prevents a session with a restricted toolset from loading
             schemas for out-of-scope tools.
+        full_tool_defs: The full, dynamically-correct tool definitions
+            for the current session (as returned by
+            ``get_tool_definitions(skip_lazy_compaction=True)``).
+            When provided, the schema is served from here — ensuring the
+            model sees the same dynamic schema (e.g. execute_code with
+            only enabled sandbox tools) that eager mode would produce.
+            When None, falls back to the static registry entry.
     """
     name = str(args.get("name") or "").strip()
     if not name:
@@ -137,6 +190,24 @@ def dispatch_request_tool_schema(
             "error": f"Tool '{name}' is not available in this session.",
         }, ensure_ascii=False)
 
+    # Prefer the dynamically-correct schema from full_tool_defs.
+    if full_tool_defs is not None:
+        for td in full_tool_defs:
+            fn = td.get("function") or {}
+            if fn.get("name") == name:
+                return json.dumps(
+                    {"tool_schema": td},
+                    ensure_ascii=False,
+                )
+        # Not found in the session's full defs — it's either out of scope
+        # or doesn't exist.  The scope check above already handled the
+        # out-of-scope case, so this is a genuine not-found.
+        return json.dumps({
+            "error": f"Tool '{name}' not found. Check the spelling against the tools list.",
+        }, ensure_ascii=False)
+
+    # Fallback: static registry lookup (used only by direct unit tests
+    # that don't pass full_tool_defs).
     from tools.registry import registry
     entry = registry.get_entry(name)
     if entry is None:
@@ -144,8 +215,6 @@ def dispatch_request_tool_schema(
             "error": f"Tool '{name}' not found. Check the spelling against the tools list.",
         }, ensure_ascii=False)
 
-    # Build the full OpenAI-format definition, mirroring
-    # registry.get_definitions() output shape.
     schema_with_name = {**entry.schema, "name": entry.name}
     if entry.dynamic_schema_overrides is not None:
         try:

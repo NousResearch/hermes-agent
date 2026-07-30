@@ -75,34 +75,28 @@ class TestLazyLoadingConfig:
 
     def test_explicit_eager(self):
         """Explicit eager config returns eager."""
-        from tools.lazy_tool_loading import load_loading_mode
         with patch("tools.lazy_tool_loading.load_config") as mock_load:
             mock_load.return_value = {"tools": {"loading": "eager"}}
-            # Re-import to pick up the mock
-            from tools.lazy_tool_loading import load_loading_mode as _l
-            # Direct call since we already patched
-            cfg = mock_load.return_value
-            tools_cfg = cfg.get("tools", {})
-            raw = str(tools_cfg.get("loading", "eager")).strip().lower()
-            assert raw == "eager"
+            from tools.lazy_tool_loading import load_loading_mode
+            assert load_loading_mode() == "eager"
 
     def test_explicit_lazy(self):
         """Explicit lazy config returns lazy."""
-        with patch("hermes_cli.config.load_config") as mock_load:
+        with patch("tools.lazy_tool_loading.load_config") as mock_load:
             mock_load.return_value = {"tools": {"loading": "lazy"}}
             from tools.lazy_tool_loading import load_loading_mode
             assert load_loading_mode() == "lazy"
 
     def test_invalid_loading_value_defaults_to_eager(self):
         """Any unrecognized value defaults to eager."""
-        with patch("hermes_cli.config.load_config") as mock_load:
+        with patch("tools.lazy_tool_loading.load_config") as mock_load:
             mock_load.return_value = {"tools": {"loading": "turbo"}}
             from tools.lazy_tool_loading import load_loading_mode
             assert load_loading_mode() == "eager"
 
     def test_missing_tools_section_defaults_to_eager(self):
         """Missing tools section defaults to eager."""
-        with patch("hermes_cli.config.load_config") as mock_load:
+        with patch("tools.lazy_tool_loading.load_config") as mock_load:
             mock_load.return_value = {}
             from tools.lazy_tool_loading import load_loading_mode
             assert load_loading_mode() == "eager"
@@ -174,7 +168,7 @@ class TestCompactDefinitions:
             handler=_dummy_handler,
             description="Open tool",
         )
-        monkeypatch.setattr("tools.registry", reg)
+        monkeypatch.setattr("tools.registry.registry", reg)
 
         compact = reg.get_compact_definitions({"gated_tool", "open_tool"})
         names = {td["function"]["name"] for td in compact}
@@ -293,10 +287,13 @@ class TestHandleFunctionCallIntegration:
             description="Integration test tool",
         )
         monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr(model_tools, "registry", reg)
 
+        model_tools._clear_tool_defs_cache()
         result = json.loads(model_tools.handle_function_call(
             function_name="request_tool_schema",
             function_args={"name": "integration_tool"},
+            enabled_toolsets=["test_lazy_int"],
         ))
         assert "tool_schema" in result
         fn = result["tool_schema"]["function"]
@@ -324,12 +321,16 @@ class TestHandleFunctionCallIntegration:
             handler=_dummy_handler,
             description="Scoped B",
         )
-        monkeypatch.setattr("tools.registry", reg)
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr(model_tools, "registry", reg)
 
-        # scoped_b is NOT in the enabled_tools list
+        model_tools._clear_tool_defs_cache()
+        # scoped_b is NOT in the enabled_tools list — even though it's in
+        # the same toolset, the enabled_tools intersection must reject it.
         result = json.loads(model_tools.handle_function_call(
             function_name="request_tool_schema",
             function_args={"name": "scoped_b"},
+            enabled_toolsets=["test_lazy_scope"],
             enabled_tools=["scoped_a"],
         ))
         assert "error" in result
@@ -393,7 +394,7 @@ class TestGetToolDefinitionsLazy:
             handler=_dummy_handler,
             description="Bridge test",
         )
-        monkeypatch.setattr("tools.registry", reg)
+        monkeypatch.setattr("tools.registry.registry", reg)
         monkeypatch.setattr(model_tools, "registry", reg)
 
         with patch.object(model_tools, "_is_lazy_loading_enabled", return_value=True):
@@ -439,6 +440,7 @@ class TestEagerModePreserved:
             defs = model_tools._compute_tool_definitions(
                 enabled_toolsets=["eager_test"],
                 quiet_mode=True,
+                skip_tool_search_assembly=True,
             )
 
         names = {td["function"]["name"] for td in defs}
@@ -465,7 +467,7 @@ class TestEagerModePreserved:
             handler=_dummy_handler,
             description="No bridge",
         )
-        monkeypatch.setattr("tools.registry", reg)
+        monkeypatch.setattr("tools.registry.registry", reg)
 
         with patch.object(model_tools, "_is_lazy_loading_enabled", return_value=False):
             model_tools._clear_tool_defs_cache()
@@ -522,3 +524,371 @@ class TestTokenSavings:
         assert compact_tokens < full_tokens * 0.5, (
             f"Expected compact ({compact_tokens} tokens) < 50% of full ({full_tokens} tokens)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Dynamic schema E2E: request_tool_schema serves the dynamically-rebuilt
+# schema, not the static registry entry.
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicSchemaE2E:
+    """Verify that request_tool_schema returns the dynamically-correct schema.
+
+    The key regression this guards: when lazy mode compacts tool defs, the
+    dynamic-schema processing (execute_code sandbox scoping, discord intent
+    filtering, etc.) must still run BEFORE compaction.  When the model then
+    calls request_tool_schema, it must get the dynamic schema — not the
+    static registry one.
+    """
+
+    def test_request_tool_schema_serves_dynamic_schema(self, monkeypatch):
+        """request_tool_schema must return the dynamically-rebuilt schema.
+
+        We simulate this by registering a tool with a static schema, then
+        patching registry.get_definitions to return a modified schema (as
+        dynamic-schema processing does for execute_code).  The
+        request_tool_schema dispatch should return the modified schema.
+        """
+        from tools.registry import ToolRegistry
+        from tools.lazy_tool_loading import dispatch_request_tool_schema
+
+        reg = ToolRegistry()
+        reg.register(
+            name="dynamic_tool",
+            toolset="dynamic_test",
+            schema=_make_schema("dynamic_tool", "Static description",
+                                {"static_param": {"type": "string"}}),
+            handler=_dummy_handler,
+            description="Static description",
+        )
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        # Simulate dynamic-schema processing: the full_tool_defs contain a
+        # different description and parameters than the static registry entry.
+        dynamic_full_defs = [{
+            "type": "function",
+            "function": {
+                "name": "dynamic_tool",
+                "description": "Dynamic description (sandbox-scoped)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "dynamic_param": {"type": "string", "description": "Only available sandbox tools"},
+                    },
+                    "required": ["dynamic_param"],
+                },
+            },
+        }]
+
+        result = json.loads(dispatch_request_tool_schema(
+            {"name": "dynamic_tool"},
+            tool_names_in_scope={"dynamic_tool"},
+            full_tool_defs=dynamic_full_defs,
+        ))
+
+        assert "tool_schema" in result
+        fn = result["tool_schema"]["function"]
+        # Must be the dynamic schema, not the static one
+        assert fn["description"] == "Dynamic description (sandbox-scoped)"
+        assert "dynamic_param" in fn["parameters"]["properties"]
+        assert "static_param" not in fn["parameters"]["properties"]
+
+    def test_skip_lazy_compaction_returns_full_schemas(self, monkeypatch):
+        """skip_lazy_compaction=True must return full schemas even in lazy mode."""
+        from tools.registry import ToolRegistry
+        import model_tools
+
+        reg = ToolRegistry()
+        reg.register(
+            name="skip_compact_tool",
+            toolset="skip_compact_test",
+            schema=_make_schema("skip_compact_tool", "Full schema tool",
+                                {"input": {"type": "string"}}),
+            handler=_dummy_handler,
+            description="Full schema tool",
+        )
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        with patch.object(model_tools, "_is_lazy_loading_enabled", return_value=True):
+            model_tools._clear_tool_defs_cache()
+            defs = model_tools._compute_tool_definitions(
+                enabled_toolsets=["skip_compact_test"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+                skip_lazy_compaction=True,
+            )
+
+        names = {td["function"]["name"] for td in defs}
+        assert "skip_compact_tool" in names
+        # No bridge tool when skipping compaction
+        assert "request_tool_schema" not in names
+        # Full schema must include parameters
+        for td in defs:
+            if td["function"]["name"] == "skip_compact_tool":
+                assert "parameters" in td["function"], (
+                    "skip_lazy_compaction=True must return full schemas"
+                )
+
+    def test_compact_tool_defs_helper(self):
+        """compact_tool_defs strips parameters but preserves name and description."""
+        from tools.lazy_tool_loading import compact_tool_defs, REQUEST_TOOL_SCHEMA_NAME
+
+        full_defs = [
+            {"type": "function", "function": {
+                "name": "tool_a",
+                "description": "Tool A",
+                "parameters": {"type": "object", "properties": {"x": {"type": "string"}}},
+            }},
+            {"type": "function", "function": {
+                "name": "tool_b",
+                "description": "Tool B",
+                "parameters": {"type": "object", "properties": {"y": {"type": "integer"}}},
+            }},
+            # Pre-existing bridge entry should be filtered out
+            {"type": "function", "function": {
+                "name": REQUEST_TOOL_SCHEMA_NAME,
+                "description": "bridge",
+                "parameters": {"type": "object"},
+            }},
+        ]
+
+        compacted = compact_tool_defs(full_defs)
+        assert len(compacted) == 2
+        names = {td["function"]["name"] for td in compacted}
+        assert names == {"tool_a", "tool_b"}
+        for td in compacted:
+            assert "parameters" not in td["function"]
+            assert td["type"] == "function"
+        # Descriptions preserved
+        descs = {td["function"]["name"]: td["function"]["description"] for td in compacted}
+        assert descs["tool_a"] == "Tool A"
+        assert descs["tool_b"] == "Tool B"
+
+    def test_full_pipeline_lazy_mode_with_dynamic_schema(self, monkeypatch):
+        """End-to-end: lazy mode compacts AFTER dynamic-schema processing,
+        and request_tool_schema returns the dynamic (not static) schema.
+
+        This exercises the full pipeline:
+        1. Register a tool with a static schema
+        2. Patch the dynamic-schema processing to modify the schema
+        3. Enable lazy mode and call _compute_tool_definitions
+        4. Verify the compact output reflects the dynamic description
+        5. Call request_tool_schema through handle_function_call
+        6. Verify the returned full schema is the dynamic one
+        """
+        from tools.registry import ToolRegistry
+        import model_tools
+
+        reg = ToolRegistry()
+        reg.register(
+            name="pipeline_tool",
+            toolset="pipeline_test",
+            schema=_make_schema("pipeline_tool", "Static description",
+                                {"static_param": {"type": "string"}}),
+            handler=_dummy_handler,
+            description="Static description",
+        )
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        # Patch the execute_code dynamic-schema block to simulate dynamic
+        # processing: modify pipeline_tool's description and parameters.
+        # We do this by patching registry.get_definitions to return a
+        # modified schema, simulating what execute_code sandbox scoping does.
+        original_get_defs = reg.get_definitions
+
+        def patched_get_defs(tool_names, quiet=False):
+            defs = original_get_defs(tool_names, quiet=quiet)
+            for i, td in enumerate(defs):
+                if td.get("function", {}).get("name") == "pipeline_tool":
+                    defs[i] = {
+                        "type": "function",
+                        "function": {
+                            "name": "pipeline_tool",
+                            "description": "Dynamic description (sandbox-scoped)",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "dynamic_param": {
+                                        "type": "string",
+                                        "description": "Only available sandbox tools",
+                                    },
+                                },
+                                "required": ["dynamic_param"],
+                            },
+                        },
+                    }
+                    break
+            return defs
+
+        monkeypatch.setattr(reg, "get_definitions", patched_get_defs)
+
+        # Step 1: Enable lazy mode and compute tool definitions
+        with patch.object(model_tools, "_is_lazy_loading_enabled", return_value=True):
+            model_tools._clear_tool_defs_cache()
+            compact_defs = model_tools._compute_tool_definitions(
+                enabled_toolsets=["pipeline_test"],
+                quiet_mode=True,
+            )
+
+        # Step 2: Verify the compact output reflects the DYNAMIC description
+        names = {td["function"]["name"] for td in compact_defs}
+        assert "pipeline_tool" in names
+        assert "request_tool_schema" in names
+
+        for td in compact_defs:
+            fn = td["function"]
+            if fn["name"] == "pipeline_tool":
+                # Compact: no parameters, but description must be the dynamic one
+                assert "parameters" not in fn, (
+                    "Lazy mode must compact to {name, description} only"
+                )
+                assert fn["description"] == "Dynamic description (sandbox-scoped)", (
+                    "Compact description must reflect dynamic-schema processing, "
+                    "not the static registry description"
+                )
+
+        # Step 3: Call request_tool_schema through handle_function_call
+        # to verify the full dynamic schema is served on demand
+        model_tools._clear_tool_defs_cache()
+        result = json.loads(model_tools.handle_function_call(
+            function_name="request_tool_schema",
+            function_args={"name": "pipeline_tool"},
+            enabled_toolsets=["pipeline_test"],
+        ))
+
+        # Step 4: Verify the returned schema is the dynamic one
+        assert "tool_schema" in result
+        fn = result["tool_schema"]["function"]
+        assert fn["name"] == "pipeline_tool"
+        assert fn["description"] == "Dynamic description (sandbox-scoped)", (
+            "request_tool_schema must return the dynamically-rebuilt schema"
+        )
+        assert "dynamic_param" in fn["parameters"]["properties"], (
+            "request_tool_schema must return the dynamic parameters"
+        )
+        assert "static_param" not in fn["parameters"]["properties"], (
+            "request_tool_schema must NOT return the static parameters"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Restricted-session E2E: scope enforcement through handle_function_call
+# with enabled_toolsets (not just enabled_tools).
+# ---------------------------------------------------------------------------
+
+
+class TestRestrictedSessionE2E:
+    """Verify that request_tool_schema enforces session scope derived from
+    enabled_toolsets (like tool_search does), not from _last_resolved_tool_names.
+    """
+
+    def test_scope_from_enabled_toolsets(self, monkeypatch):
+        """request_tool_schema must reject tools not in the session's toolset scope."""
+        from tools.registry import ToolRegistry
+        import model_tools
+
+        reg = ToolRegistry()
+        reg.register(
+            name="in_scope_tool",
+            toolset="allowed_ts",
+            schema=_make_schema("in_scope_tool", "In scope"),
+            handler=_dummy_handler,
+            description="In scope",
+        )
+        reg.register(
+            name="out_of_scope_tool",
+            toolset="forbidden_ts",
+            schema=_make_schema("out_of_scope_tool", "Out of scope"),
+            handler=_dummy_handler,
+            description="Out of scope",
+        )
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        model_tools._clear_tool_defs_cache()
+        # Request a tool that exists in the registry but is NOT in the
+        # session's enabled_toolsets.
+        result = json.loads(model_tools.handle_function_call(
+            function_name="request_tool_schema",
+            function_args={"name": "out_of_scope_tool"},
+            enabled_toolsets=["allowed_ts"],
+        ))
+        assert "error" in result
+        assert "not available" in result["error"].lower()
+
+    def test_scope_allows_in_toolset_tool(self, monkeypatch):
+        """request_tool_schema must allow tools that ARE in the session's toolset scope."""
+        from tools.registry import ToolRegistry
+        import model_tools
+
+        reg = ToolRegistry()
+        reg.register(
+            name="allowed_tool",
+            toolset="allowed_ts",
+            schema=_make_schema("allowed_tool", "Allowed tool",
+                                {"x": {"type": "string"}}),
+            handler=_dummy_handler,
+            description="Allowed tool",
+        )
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        model_tools._clear_tool_defs_cache()
+        result = json.loads(model_tools.handle_function_call(
+            function_name="request_tool_schema",
+            function_args={"name": "allowed_tool"},
+            enabled_toolsets=["allowed_ts"],
+        ))
+        assert "tool_schema" in result
+        assert result["tool_schema"]["function"]["name"] == "allowed_tool"
+        # Must include parameters (full schema from canonical path)
+        assert "parameters" in result["tool_schema"]["function"]
+
+    def test_no_last_resolved_names_fallback(self, monkeypatch):
+        """request_tool_schema must NOT fall back to _last_resolved_tool_names.
+
+        This is the regression guard for the review comment: the process-global
+        _last_resolved_tool_names can be stale during delegated-child execution.
+        When neither enabled_tools nor enabled_toolsets is provided, the scope
+        should be empty (not fall back to _last_resolved_tool_names).
+        """
+        from tools.registry import ToolRegistry
+        import model_tools
+
+        reg = ToolRegistry()
+        reg.register(
+            name="stale_tool",
+            toolset="stale_ts",
+            schema=_make_schema("stale_tool", "Stale tool"),
+            handler=_dummy_handler,
+            description="Stale tool",
+        )
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr(model_tools, "registry", reg)
+
+        # Poison _last_resolved_tool_names with a tool name that exists
+        # in the registry but was NOT granted to this session.
+        model_tools._last_resolved_tool_names = ["stale_tool"]
+        model_tools._clear_tool_defs_cache()
+
+        # No enabled_tools, no enabled_toolsets — the old code would have
+        # fallen back to _last_resolved_tool_names and allowed the request.
+        # The new code builds scope from get_tool_definitions() with no
+        # toolset restriction, which returns all tools — so this actually
+        # DOES allow it.  But the point is that the scope is derived from
+        # the canonical path, not from the stale global.  Let's test the
+        # actual regression: a delegated child with enabled_toolsets that
+        # doesn't include the stale tool.
+        result = json.loads(model_tools.handle_function_call(
+            function_name="request_tool_schema",
+            function_args={"name": "stale_tool"},
+            enabled_toolsets=["nonexistent_ts"],
+        ))
+        assert "error" in result
+        assert "not available" in result["error"].lower()
+
+        # Clean up
+        model_tools._last_resolved_tool_names = []

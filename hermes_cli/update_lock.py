@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -199,6 +200,66 @@ class UpdateLock:
         self.acquired = False
         self.holder: UpdateHolder | None = None
 
+    def _ancestor_pids(self) -> set[int]:
+        """Return PIDs of this process's ancestor chain (Windows, best-effort).
+
+        The Tauri updater spawns ``hermes.exe`` (venv shim) → ``python.exe``,
+        so the marker owner (updater's PID) can be two levels up. Walk the
+        chain via ``wmic`` and return every ancestor PID we can find.
+        """
+        pids: set[int] = set()
+        if os.name != "nt":
+            return pids
+        try:
+            current = os.getpid()
+            for _ in range(4):  # up to great-grandparent
+                result = subprocess.run(
+                    [
+                        "wmic",
+                        "process",
+                        "where",
+                        f"processid={current}",
+                        "get",
+                        "parentprocessid",
+                        "/format:csv",
+                    ],
+                    capture_output=True,
+                    timeout=5,
+                )
+                # wmic on Chinese Windows outputs GBK (CP936); decode raw bytes
+                raw = result.stdout
+                if not raw:
+                    break
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    try:
+                        text = raw.decode("gbk")
+                    except UnicodeDecodeError:
+                        text = raw.decode("utf-8", errors="replace")
+                lines = [l.strip() for l in text.splitlines() if l.strip()]
+                # CSV format: Node,ParentProcessId
+                # First line is header, second line is data
+                if len(lines) >= 2:
+                    cols = lines[1].split(",")
+                    if len(cols) >= 2:
+                        ppid_str = cols[1].strip().strip('"')
+                        if ppid_str.isdigit():
+                            ppid = int(ppid_str)
+                            if ppid <= 0 or ppid in pids:
+                                break
+                            pids.add(ppid)
+                            current = ppid
+                        else:
+                            break
+                    else:
+                        break
+                else:
+                    break
+            return pids
+        except Exception:
+            return pids
+
     def acquire(self) -> bool:
         """Claim the lock. Returns False (and sets ``holder``) if it's taken.
 
@@ -206,10 +267,20 @@ class UpdateLock:
         orchestrating parent (the Tauri updater spawning `hermes update` as a
         stage): we run under ITS claim rather than refusing or re-writing the
         marker, and ``release`` leaves the parent's marker untouched.
+
+        On Windows the env-var handoff sometimes fails (the venv shim's
+        subprocess may not inherit ``HERMES_UPDATE_HANDOFF_PID``).  As a
+        fallback we also check whether the marker's PID is in our own
+        ancestor chain — if the Tauri updater holds the lock and we are its
+        descendant (venv shim → python), it is our handoff partner.
         """
         existing = read_live_update(path=self.path)
         if existing is not None:
             if existing.pid == _handoff_pid():
+                return True
+            # Windows fallback: env-var handoff sometimes fails; check
+            # if the marker owner is our parent/grandparent (the updater).
+            if os.name == "nt" and existing.pid in self._ancestor_pids():
                 return True
             self.holder = existing
             return False

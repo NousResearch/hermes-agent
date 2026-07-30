@@ -179,6 +179,12 @@ HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
 | `pre_tool_call` | Start a `tool` child observation with sanitized `args`. |
 | `post_tool_call` | Close the tool observation with sanitized `result`. `read_file` payloads get summarized (head + tail + omitted-line count) so a huge file read stays under `HERMES_LANGFUSE_MAX_CHARS`. |
 
+Auxiliary generations include their outer session/task/turn correlation,
+`auxiliary_task`, stable `auxiliary_call_id`, unique request ID, retry ordinal,
+and attempt reason. One generation represents one Hermes retry or provider
+fallback; an internal streamed-to-plain negotiation can occur within that
+single attempt.
+
 Session grouping keys off the Hermes session ID (or task ID for sub-agents) via `langfuse.propagate_attributes`, so everything in a single `hermes chat` session lives under one Langfuse session.
 
 **Verify:**

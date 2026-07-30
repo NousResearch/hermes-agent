@@ -1812,6 +1812,7 @@ class MoAChatCompletions:
         )
         _agg_response = call_llm(
             task="moa_aggregator",
+            _skip_auxiliary_observers=True,
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,

@@ -23,7 +23,9 @@ PLUGIN_DIR = REPO_ROOT / "plugins" / "observability" / "langfuse"
 class TestManifest:
 
     def test_manifest_fields(self):
-        data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
+        data = yaml.safe_load(
+            (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8")
+        )
         assert data["name"] == "langfuse"
         assert data["version"]
         # All hooks the plugin implements.
@@ -270,6 +272,7 @@ class TestAuxiliaryRequestLifecycle:
             "task_id": "title_generation",
             "session_id": "session-1",
             "turn_id": "aux-call-1",
+            "platform": "gateway",
             "api_request_id": api_request_id,
             "api_call_count": attempt_index + 1,
             "request_kind": "auxiliary",
@@ -313,7 +316,7 @@ class TestAuxiliaryRequestLifecycle:
         assert generation.kwargs["name"] == "Auxiliary title_generation attempt 1"
         assert generation.kwargs["metadata"] == {
             "provider": "openrouter",
-            "platform": "",
+            "platform": "gateway",
             "api_mode": "chat_completions",
             "base_url": "https://openrouter.ai/api/v1",
             "request_kind": "auxiliary",
@@ -359,6 +362,7 @@ class TestAuxiliaryRequestLifecycle:
         assert secret not in serialized_updates
         assert "Authorization: Bearer ***" in serialized_updates
         assert generation.updates[0]["metadata"]["status"] == "error"
+        assert generation.updates[0]["metadata"]["platform"] == "gateway"
         assert generation.updates[0]["metadata"]["status_code"] == 429
         assert generation.end_count == 1
         assert client.roots[0].end_count == 1
@@ -395,6 +399,55 @@ class TestAuxiliaryRequestLifecycle:
             "session-1::aux-call-1",
         ]
         assert [root.children[0].end_count for root in client.roots] == [1, 1]
+        assert [root.end_count for root in client.roots] == [1, 1]
+        assert plugin._TRACE_STATE == {}
+
+    def test_concurrent_auxiliary_calls_are_correlated_independently(self, monkeypatch):
+        plugin, client = self._setup(monkeypatch)
+        first = self._event(
+            "request-first",
+            attempt_index=0,
+            attempt_reason="initial",
+        )
+        second = {
+            **self._event(
+                "request-second",
+                attempt_index=0,
+                attempt_reason="initial",
+            ),
+            "turn_id": "aux-call-2",
+            "auxiliary_call_id": "aux-call-2",
+        }
+
+        plugin.on_pre_llm_request(**first, request_messages=[])
+        plugin.on_pre_llm_request(**second, request_messages=[])
+        assert len(plugin._TRACE_STATE) == 2
+
+        plugin.on_post_llm_call(
+            **second,
+            response={
+                "assistant_message": {
+                    "role": "assistant",
+                    "content": "second",
+                }
+            },
+        )
+        plugin.on_post_llm_call(
+            **first,
+            response={
+                "assistant_message": {
+                    "role": "assistant",
+                    "content": "first",
+                }
+            },
+        )
+
+        assert client.trace_seeds == [
+            "session-1::aux-call-1",
+            "session-1::aux-call-2",
+        ]
+        assert client.roots[0].children[0].updates[0]["output"]["content"] == "first"
+        assert client.roots[1].children[0].updates[0]["output"]["content"] == "second"
         assert [root.end_count for root in client.roots] == [1, 1]
         assert plugin._TRACE_STATE == {}
 

@@ -1201,6 +1201,7 @@ def on_api_request_error(
     *,
     task_id: str = "",
     session_id: str = "",
+    platform: str = "",
     provider: str = "",
     base_url: str = "",
     api_mode: str = "",
@@ -1240,7 +1241,7 @@ def on_api_request_error(
     safe_error = _sanitize_error_metadata(error or {})
     metadata = _generation_metadata(
         provider=provider,
-        platform="",
+        platform=platform,
         api_mode=api_mode,
         base_url=base_url,
         request_kind=request_kind,

@@ -676,28 +676,36 @@ include retries, provider fallbacks, and auxiliary tasks such as compression,
 vision, title generation, and session search.
 
 Each `pre_api_request` has exactly one matching `post_api_request` or
-`api_request_error`. Correlate them with the opaque `api_request_id`. Auxiliary
-retries share an `auxiliary_call_id` and receive distinct `api_request_id`
-values.
+`api_request_error`. Auxiliary retries share an `auxiliary_call_id` and receive
+distinct `api_request_id` values. Main-loop retries retain one
+`api_request_id`; use `retry_count` on pre/error events plus event order to
+distinguish those attempts. Hermes dispatches these events through the shared
+lifecycle layer, so first-party observers run before enabled compatibility
+plugins.
+
+One auxiliary lifecycle event represents one Hermes retry or provider-fallback
+attempt. Progress-aware stream negotiation inside `_create_with_progress` may
+try a streamed request and then its built-in plain fallback within that same
+event.
 
 Common fields include:
 
 | Parameter | Description |
 |-----------|-------------|
 | `request_kind` | `"auxiliary"` for side-model work; omitted on legacy/main events |
-| `api_request_id` | Unique identifier for one physical provider attempt |
+| `api_request_id` | Unique per auxiliary attempt; retained across retries of one main-loop API call |
 | `auxiliary_call_id` | Stable identifier grouping retries/fallbacks for one auxiliary call |
 | `auxiliary_task` | Task such as `compression`, `vision`, or `title_generation` |
 | `attempt_index` | Zero-based physical-attempt index within the auxiliary call |
+| `retry_count` | Zero-based retry ordinal on main pre/error and auxiliary lifecycle events |
 | `attempt_reason` | Why this attempt ran, such as `initial`, a retry, or a fallback |
-| `session_id` | Ambient session when the auxiliary call runs inside a conversation |
+| `session_id`, `task_id`, `turn_id`, `platform` | Correlation inherited from the active outer turn; bounded standalone fallbacks are used outside a turn |
 | `provider`, `model`, `base_url`, `api_mode` | Actual route used for this attempt |
 | `request`, `response`, `usage`, `error` | Bounded, redacted lifecycle payloads |
 
-Hermes' built-in `call_llm(stream=True)` path is currently used only by the
-MoA acting aggregator. Its raw stream is consumed by the outer main loop,
-whose request lifecycle already represents that provider attempt, so Hermes
-does not emit a duplicate auxiliary lifecycle for `moa_aggregator`. MoA
+The MoA acting aggregator runs inside the outer main-loop request lifecycle, so
+that call explicitly suppresses a duplicate auxiliary lifecycle whether it is
+streaming or non-streaming. The one-shot `/moa <prompt>` aggregator and MoA
 reference-model calls remain observable as auxiliary attempts. A future
 standalone streaming auxiliary caller must add terminal-event handling before
 it can make the same lifecycle guarantee.

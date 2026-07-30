@@ -1,6 +1,8 @@
+import asyncio
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,7 +30,7 @@ def _response(content="ok", model="served-model", usage=None):
 def _capture_hooks(monkeypatch):
     events = []
     monkeypatch.setattr(
-        "hermes_cli.plugins.has_hook",
+        "hermes_cli.lifecycle.has_hook",
         lambda name: name in {
             "pre_api_request",
             "post_api_request",
@@ -36,7 +38,7 @@ def _capture_hooks(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "hermes_cli.plugins.invoke_hook",
+        "hermes_cli.lifecycle.invoke_hook",
         lambda name, **kwargs: events.append((name, kwargs)) or [],
     )
     return events
@@ -84,7 +86,7 @@ def test_auxiliary_success_pairs_ids_and_propagates_session(monkeypatch):
     ]
     pre = events[0][1]
     post = events[1][1]
-    uuid.UUID(pre["auxiliary_call_id"])
+    assert pre["auxiliary_call_id"].startswith("aux-")
     uuid.UUID(pre["api_request_id"])
     assert pre["auxiliary_call_id"] == post["auxiliary_call_id"]
     assert pre["api_request_id"] == post["api_request_id"]
@@ -98,6 +100,90 @@ def test_auxiliary_success_pairs_ids_and_propagates_session(monkeypatch):
     assert pre["base_url"] == "https://openrouter.ai/api/v1"
     assert pre["api_mode"] == "chat_completions"
     session_db.record_auxiliary_usage.assert_called_once()
+
+
+def test_concurrent_auxiliary_calls_keep_observer_ids_isolated(monkeypatch):
+    barrier = Barrier(2)
+
+    def create(**kwargs):
+        barrier.wait(timeout=5)
+        return _response(content=kwargs["messages"][0]["content"])
+
+    client = MagicMock()
+    client.base_url = "https://openrouter.ai/api/v1"
+    client.chat.completions.create.side_effect = create
+    _patch_sync_route(monkeypatch, client)
+    events = _capture_hooks(monkeypatch)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda content: auxiliary_client.call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": content}],
+                ),
+                ("first", "second"),
+            )
+        )
+
+    assert {result.choices[0].message.content for result in results} == {
+        "first",
+        "second",
+    }
+    calls = {}
+    for name, event in events:
+        calls.setdefault(event["auxiliary_call_id"], []).append((name, event))
+    assert len(calls) == 2
+    api_request_ids = set()
+    for call_events in calls.values():
+        assert [name for name, _ in call_events] == [
+            "pre_api_request",
+            "post_api_request",
+        ]
+        pre = call_events[0][1]
+        post = call_events[1][1]
+        assert pre["api_request_id"] == post["api_request_id"]
+        api_request_ids.add(pre["api_request_id"])
+    assert len(api_request_ids) == 2
+
+
+def test_auxiliary_attempt_reuses_active_turn_correlation(monkeypatch):
+    client = MagicMock()
+    client.base_url = "https://openrouter.ai/api/v1"
+    client.chat.completions.create.return_value = _response()
+    _patch_sync_route(monkeypatch, client)
+    events = _capture_hooks(monkeypatch)
+    turn = SimpleNamespace(
+        lease=SimpleNamespace(session_id="outer-session", platform="gateway"),
+        task_id="outer-task",
+        turn_id="outer-turn",
+    )
+    monkeypatch.setattr("agent.relay_runtime.active_turn", lambda: turn)
+    monkeypatch.setattr(
+        "agent.relay_llm.execute_current",
+        lambda request, callback, **_: callback(request),
+    )
+    monkeypatch.setattr("agent.relay_llm.complete_logical_call", lambda *_, **__: None)
+
+    auxiliary_client.call_llm(
+        task="title_generation",
+        messages=[{"role": "user", "content": "title this"}],
+    )
+
+    pre = events[0][1]
+    assert {
+        "session_id": pre["session_id"],
+        "task_id": pre["task_id"],
+        "turn_id": pre["turn_id"],
+        "platform": pre["platform"],
+        "auxiliary_task": pre["auxiliary_task"],
+    } == {
+        "session_id": "outer-session",
+        "task_id": "outer-task",
+        "turn_id": "outer-turn",
+        "platform": "gateway",
+        "auxiliary_task": "title_generation",
+    }
 
 
 def test_auxiliary_retry_emits_error_before_next_pre(monkeypatch):
@@ -132,7 +218,9 @@ def test_auxiliary_retry_emits_error_before_next_pre(monkeypatch):
         for event in (first_pre, first_error, second_pre, second_post)
     } == {first_pre["auxiliary_call_id"]}
     assert first_pre["attempt_reason"] == "initial"
+    assert first_pre["retry_count"] == 0
     assert second_pre["attempt_index"] == 1
+    assert second_pre["retry_count"] == 1
     assert second_pre["attempt_reason"] == "retry:transient_transport"
 
 
@@ -232,9 +320,9 @@ def test_auxiliary_observers_are_fail_open(monkeypatch):
     client.base_url = "https://openrouter.ai/api/v1"
     client.chat.completions.create.return_value = _response()
     _patch_sync_route(monkeypatch, client)
-    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _: True)
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _: True)
     monkeypatch.setattr(
-        "hermes_cli.plugins.invoke_hook",
+        "hermes_cli.lifecycle.invoke_hook",
         MagicMock(side_effect=RuntimeError("observer failed")),
     )
 
@@ -251,7 +339,7 @@ def test_auxiliary_payload_serialization_is_fail_open(monkeypatch):
     client.base_url = "https://openrouter.ai/api/v1"
     client.chat.completions.create.return_value = _response()
     _patch_sync_route(monkeypatch, client)
-    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _: True)
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _: True)
     monkeypatch.setattr(
         "agent.api_observer.api_request_payload_for_hook",
         MagicMock(side_effect=RuntimeError("serialization failed")),
@@ -295,9 +383,9 @@ def test_auxiliary_no_listener_skips_payload_work(monkeypatch):
     client.base_url = "https://openrouter.ai/api/v1"
     client.chat.completions.create.return_value = _response()
     _patch_sync_route(monkeypatch, client)
-    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _: False)
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _: False)
     invoke_hook = MagicMock()
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke_hook)
     monkeypatch.setattr(
         "agent.api_observer.api_request_payload_for_hook",
         MagicMock(side_effect=AssertionError("payload should not be built")),
@@ -312,16 +400,48 @@ def test_auxiliary_no_listener_skips_payload_work(monkeypatch):
     invoke_hook.assert_not_called()
 
 
-def test_auxiliary_observers_discover_plugins_before_checking_hooks(monkeypatch):
+def test_auxiliary_observers_check_lifecycle_dispatch(monkeypatch):
     discover_plugins = MagicMock()
+    has_hook = MagicMock(return_value=False)
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", discover_plugins)
-    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _: False)
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", has_hook)
 
     assert auxiliary_client._auxiliary_observers_enabled("compression") is False
     discover_plugins.assert_called_once_with()
+    assert has_hook.call_count == 3
 
 
-def test_moa_aggregator_uses_main_request_observers_only(monkeypatch):
+def test_auxiliary_observer_discovery_exposes_plugin_hooks(monkeypatch):
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginContext, PluginManifest, PluginManager
+
+    manager = PluginManager()
+    context = PluginContext(PluginManifest(name="observer"), manager)
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    monkeypatch.setattr(
+        plugins,
+        "discover_plugins",
+        lambda: context.register_hook("pre_api_request", lambda **_: None),
+    )
+
+    assert auxiliary_client._auxiliary_observers_enabled("compression") is True
+    assert manager.has_hook("pre_api_request")
+
+
+def test_plugin_discovery_failure_preserves_first_party_observers(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.plugins.discover_plugins",
+        MagicMock(side_effect=RuntimeError("discovery failed")),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.has_hook",
+        lambda name: name == "pre_api_request",
+    )
+
+    assert auxiliary_client._auxiliary_observers_enabled("compression") is True
+
+
+def test_one_shot_moa_aggregator_emits_auxiliary_observers(monkeypatch):
     client = MagicMock()
     client.base_url = "https://openrouter.ai/api/v1"
     client.chat.completions.create.return_value = _response()
@@ -331,6 +451,26 @@ def test_moa_aggregator_uses_main_request_observers_only(monkeypatch):
     result = auxiliary_client.call_llm(
         task="moa_aggregator",
         messages=[{"role": "user", "content": "synthesize"}],
+    )
+
+    assert result.choices[0].message.content == "ok"
+    assert [name for name, _ in events] == [
+        "pre_api_request",
+        "post_api_request",
+    ]
+
+
+def test_acting_moa_aggregator_uses_main_request_observers_only(monkeypatch):
+    client = MagicMock()
+    client.base_url = "https://openrouter.ai/api/v1"
+    client.chat.completions.create.return_value = _response()
+    _patch_sync_route(monkeypatch, client)
+    events = _capture_hooks(monkeypatch)
+
+    result = auxiliary_client.call_llm(
+        task="moa_aggregator",
+        messages=[{"role": "user", "content": "synthesize"}],
+        _skip_auxiliary_observers=True,
     )
 
     assert result.choices[0].message.content == "ok"
@@ -385,6 +525,36 @@ def test_auxiliary_payloads_are_bounded(monkeypatch):
     assert events[0][1]["request"]["_truncated"] is True
 
 
+def test_sync_attempt_forwards_progress_create_through_relay(monkeypatch):
+    client = MagicMock()
+    client.base_url = "https://stream-only.example/v1"
+    _patch_sync_route(monkeypatch, client, provider="custom")
+    _capture_hooks(monkeypatch)
+    response = _response()
+    create_with_progress = MagicMock(return_value=response)
+    relay_attempts = []
+
+    def execute_current(request, callback, **kwargs):
+        relay_attempts.append(kwargs)
+        return callback(request)
+
+    monkeypatch.setattr(auxiliary_client, "_create_with_progress", create_with_progress)
+    monkeypatch.setattr(auxiliary_client, "_provider_requires_stream", lambda *_: True)
+    monkeypatch.setattr("agent.relay_llm.execute_current", execute_current)
+    monkeypatch.setattr("agent.relay_llm.complete_logical_call", lambda *_, **__: None)
+
+    result = auxiliary_client.call_llm(
+        task="compression",
+        messages=[{"role": "user", "content": "summarize"}],
+    )
+
+    assert result is response
+    assert len(relay_attempts) == 1
+    create_with_progress.assert_called_once()
+    assert create_with_progress.call_args.kwargs["force_stream"] is True
+    client.chat.completions.create.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_async_auxiliary_attempt_uses_same_pairing_contract(monkeypatch):
     client = MagicMock()
@@ -414,6 +584,101 @@ async def test_async_auxiliary_attempt_uses_same_pairing_contract(monkeypatch):
     ]
     assert events[0][1]["api_request_id"] == events[1][1]["api_request_id"]
     assert events[0][1]["provider"] == "copilot"
+
+
+def test_sync_cancellation_closes_observer_attempt(monkeypatch):
+    client = MagicMock()
+    client.base_url = "https://openrouter.ai/api/v1"
+    client.chat.completions.create.side_effect = KeyboardInterrupt
+    _patch_sync_route(monkeypatch, client)
+    events = _capture_hooks(monkeypatch)
+
+    with pytest.raises(KeyboardInterrupt):
+        auxiliary_client.call_llm(
+            task="title_generation",
+            messages=[{"role": "user", "content": "title this"}],
+        )
+
+    assert [name for name, _ in events] == [
+        "pre_api_request",
+        "api_request_error",
+    ]
+    assert events[0][1]["api_request_id"] == events[1][1]["api_request_id"]
+    assert events[1][1]["error"]["type"] == "KeyboardInterrupt"
+
+
+@pytest.mark.asyncio
+async def test_async_cancellation_closes_observer_attempt(monkeypatch):
+    client = MagicMock()
+    client.base_url = "https://api.githubcopilot.com"
+    client.chat.completions.create = AsyncMock(side_effect=asyncio.CancelledError)
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_resolve_task_provider_model",
+        lambda *args, **kwargs: ("auto", "gpt-5", None, None, None),
+    )
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_get_cached_client",
+        lambda *args, **kwargs: (client, "gpt-5"),
+    )
+    events = _capture_hooks(monkeypatch)
+
+    with pytest.raises(asyncio.CancelledError):
+        await auxiliary_client.async_call_llm(
+            task="skills_hub",
+            messages=[{"role": "user", "content": "find skill"}],
+        )
+
+    assert [name for name, _ in events] == [
+        "pre_api_request",
+        "api_request_error",
+    ]
+    assert events[0][1]["api_request_id"] == events[1][1]["api_request_id"]
+    assert events[1][1]["error"]["type"] == "CancelledError"
+
+
+@pytest.mark.asyncio
+async def test_async_attempt_forwards_forced_stream_create_through_relay(monkeypatch):
+    client = MagicMock()
+    client.base_url = "https://stream-only.example/v1"
+    client.chat.completions.create = AsyncMock()
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_resolve_task_provider_model",
+        lambda *args, **kwargs: ("custom", "stream-model", None, None, None),
+    )
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_get_cached_client",
+        lambda *args, **kwargs: (client, "stream-model"),
+    )
+    _capture_hooks(monkeypatch)
+    response = _response()
+    create_with_stream = AsyncMock(return_value=response)
+    relay_attempts = []
+
+    async def execute_current_async(request, callback, **kwargs):
+        relay_attempts.append(kwargs)
+        return await callback(request)
+
+    monkeypatch.setattr(auxiliary_client, "_provider_requires_stream", lambda *_: True)
+    monkeypatch.setattr(auxiliary_client, "_acreate_with_stream", create_with_stream)
+    monkeypatch.setattr(
+        "agent.relay_llm.execute_current_async",
+        execute_current_async,
+    )
+    monkeypatch.setattr("agent.relay_llm.complete_logical_call", lambda *_, **__: None)
+
+    result = await auxiliary_client.async_call_llm(
+        task="compression",
+        messages=[{"role": "user", "content": "summarize"}],
+    )
+
+    assert result is response
+    assert len(relay_attempts) == 1
+    create_with_stream.assert_awaited_once()
+    client.chat.completions.create.assert_not_awaited()
 
 
 def test_auxiliary_session_context_propagates_to_worker_thread(monkeypatch):

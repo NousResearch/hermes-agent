@@ -4893,13 +4893,20 @@ def run_conversation(
                 # image parts and retry once instead of routing through the
                 # shrink path above. See issue #69078.
                 if classified.reason == FailoverReason.image_corrupt:
-                    _imgs_removed = _strip_images_from_messages(messages)
+                    # Strip ONLY the per-call payload copy. api_messages rows
+                    # are shallow copies of canonical history, and the strip
+                    # replaces msg["content"] rather than mutating the shared
+                    # parts list — so canonical messages keep their images.
+                    # A transient provider rejection must not permanently
+                    # erase history (#69104 sweeper review; the copy-on-write
+                    # contract from e762a5a473).
+                    _imgs_removed = False
                     if isinstance(api_messages, list):
-                        _imgs_removed = _strip_images_from_messages(api_messages) or _imgs_removed
+                        _imgs_removed = _strip_images_from_messages(api_messages)
                     if _imgs_removed:
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Provider rejected a corrupted image — "
-                            f"stripped images from history and retrying...",
+                            f"stripped images from the retry payload and retrying...",
                             force=True,
                         )
                         continue

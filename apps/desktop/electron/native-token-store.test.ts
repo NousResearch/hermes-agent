@@ -357,3 +357,67 @@ test('an encrypt that returns null is refused rather than blanking the stored en
   // ...and the original token set still loads, refresh token intact.
   assert.deepEqual(loadNativeTokenSet(GATEWAY, createFakeDisk(before).io), TOKENS)
 })
+
+// --- credential redaction in logs ---
+//
+// normalizeRemoteBaseUrl() strips query/fragment/trailing slashes but not
+// userinfo, so a configured gateway URL can carry `user:password@` into this
+// store. It must stay intact as the store KEY and never reach a log line.
+
+const CRED_GATEWAY = 'https://alice:supersecret@gw.example.com/hermes'
+
+test('a decryption failure logs the gateway host and path but not its credentials', () => {
+  const first = createFakeDisk()
+
+  persistNativeTokenSet(CRED_GATEWAY, TOKENS, first.io)
+
+  const before = first.fileText()
+  const locked = createFakeDisk(before, { decrypt: () => '' })
+
+  assert.equal(loadNativeTokenSet(CRED_GATEWAY, locked.io), null)
+  // Still identifies which gateway failed...
+  assert.match(locked.logs[0], /failed to decrypt stored tokens for https:\/\/gw\.example\.com\/hermes/)
+  assert.match(locked.logs[0], /keeping stored entry for retry/)
+  // ...without the userinfo.
+  assert.doesNotMatch(locked.logs[0], /alice/)
+  assert.doesNotMatch(locked.logs[0], /supersecret/)
+  // Redaction is log-only: the entry stays under the credential-bearing key.
+  assert.ok(JSON.parse(locked.fileText()!)[CRED_GATEWAY])
+  assert.equal(locked.fileText(), before)
+})
+
+test('a parsing failure logs the gateway host and path but not its credentials', () => {
+  const disk = createFakeDisk(JSON.stringify({ [CRED_GATEWAY]: { encoding: 'safeStorage', value: 'bm90LWpzb24=' } }))
+
+  assert.equal(loadNativeTokenSet(CRED_GATEWAY, disk.io), null)
+  assert.match(disk.logs[0], /failed to load stored tokens for https:\/\/gw\.example\.com\/hermes/)
+  assert.doesNotMatch(disk.logs[0], /alice/)
+  assert.doesNotMatch(disk.logs[0], /supersecret/)
+})
+
+test('the credential-bearing base URL stays the exact store key', () => {
+  const first = createFakeDisk()
+
+  persistNativeTokenSet(CRED_GATEWAY, TOKENS, first.io)
+
+  assert.deepEqual(Object.keys(JSON.parse(first.fileText()!)), [CRED_GATEWAY])
+  // The original key still round-trips a full set after a restart.
+  assert.deepEqual(loadNativeTokenSet(CRED_GATEWAY, createFakeDisk(first.fileText()).io), TOKENS)
+  // The redacted form is a log string, never a lookup key.
+  assert.equal(loadNativeTokenSet('https://gw.example.com/hermes', createFakeDisk(first.fileText()).io), null)
+})
+
+test('an unparseable gateway URL logs a fixed placeholder rather than the raw value', () => {
+  // A space makes this unparseable by URL, so redaction cannot fall back to
+  // echoing the input — that would leak the very credentials it guards.
+  const invalid = 'ht tp://alice:supersecret@gw.example.com'
+
+  const disk = createFakeDisk(JSON.stringify({ [invalid]: { encoding: 'safeStorage', value: 'AAAA' } }), {
+    decrypt: () => ''
+  })
+
+  assert.equal(loadNativeTokenSet(invalid, disk.io), null)
+  assert.match(disk.logs[0], /<invalid gateway URL>/)
+  assert.doesNotMatch(disk.logs[0], /alice/)
+  assert.doesNotMatch(disk.logs[0], /supersecret/)
+})

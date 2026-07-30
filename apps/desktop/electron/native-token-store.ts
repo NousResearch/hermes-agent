@@ -67,6 +67,31 @@ function readStore(io: NativeTokenStoreIo): Record<string, any> {
 }
 
 /**
+ * A gateway URL safe to write into a log line.
+ *
+ * normalizeRemoteBaseUrl() strips query, fragment, and trailing slashes but
+ * NOT userinfo, so a configured gateway can legitimately carry
+ * `user:password@` all the way down to this store. Interpolating that into a
+ * failure log would spill the credentials into the desktop log file, so drop
+ * the userinfo and keep only what makes the line useful — scheme, host, port,
+ * path. A value URL cannot parse never falls back to the raw input: echoing it
+ * is the exact leak this guards against.
+ */
+function redactGatewayUrl(baseUrl: string): string {
+  try {
+    const parsed = new URL(baseUrl)
+
+    parsed.username = ''
+    parsed.password = ''
+
+    // `host` already carries a non-default port.
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`
+  } catch {
+    return '<invalid gateway URL>'
+  }
+}
+
+/**
  * Write (or, with `tokens === null`, drop) one gateway's token set, merging
  * into whatever other gateways are already stored.
  */
@@ -108,6 +133,7 @@ export function persistNativeTokenSet(baseUrl: string, tokens: NativeTokenSet | 
  * does not parse — never a partially-populated set.
  */
 export function loadNativeTokenSet(baseUrl: string, io: NativeTokenStoreIo): NativeTokenSet | null {
+  // The UNREDACTED url is the store key — redaction is for logs only.
   const secret = readStore(io)[baseUrl]
 
   if (!secret) {
@@ -120,7 +146,9 @@ export function loadNativeTokenSet(baseUrl: string, io: NativeTokenStoreIo): Nat
     if (!plaintext) {
       // A keychain that is merely locked/unavailable right now must not cost
       // the user their refresh token — leave the entry for the next attempt.
-      io.rememberLog?.(`[native-oauth] failed to decrypt stored tokens for ${baseUrl}; keeping stored entry for retry`)
+      io.rememberLog?.(
+        `[native-oauth] failed to decrypt stored tokens for ${redactGatewayUrl(baseUrl)}; keeping stored entry for retry`
+      )
 
       return null
     }
@@ -130,7 +158,7 @@ export function loadNativeTokenSet(baseUrl: string, io: NativeTokenStoreIo): Nat
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
 
-    io.rememberLog?.(`[native-oauth] failed to load stored tokens for ${baseUrl}: ${detail}`)
+    io.rememberLog?.(`[native-oauth] failed to load stored tokens for ${redactGatewayUrl(baseUrl)}: ${detail}`)
 
     return null
   }

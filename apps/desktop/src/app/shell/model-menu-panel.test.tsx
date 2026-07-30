@@ -1,10 +1,16 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort
+} from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -46,6 +52,10 @@ beforeEach(() => {
   $currentModel.set('')
   $currentProvider.set('')
   $collapsedProviders.set([])
+  // Reasoning/fast atoms are global; reset them so the reasoning-effort badge
+  // suite (which sets its own) can't bleed into the other suites.
+  $currentReasoningEffort.set('')
+  $currentFastMode.set(false)
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
 
@@ -270,5 +280,59 @@ describe('ModelMenuPanel provider collapse', () => {
 
     expect($collapsedProviders.get()).toContain('google')
     expect($collapsedProviders.get()).toContain('deepseek')
+  })
+})
+
+describe('ModelMenuPanel reasoning-effort badge', () => {
+  // Regression for #51833: the reasoning effort must render as its own badge,
+  // distinct from the model name, so "High" doesn't read as part of a
+  // differently-named model. Pre-session (global) selection marks the row
+  // "current" from the sticky composer stores, so the effort resolves live.
+  const setDashscopeSession = (reasoning: boolean) => {
+    $activeSessionId.set(null)
+    $currentModel.set('qwen3.7-max')
+    $currentProvider.set('dashscope')
+    $currentReasoningEffort.set('high')
+    $currentFastMode.set(false)
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'qwen3.7-max',
+      provider: 'dashscope',
+      providers: [
+        {
+          name: 'DashScope',
+          slug: 'dashscope',
+          models: ['qwen3.7-max'],
+          authenticated: true,
+          capabilities: { 'qwen3.7-max': { reasoning, fast: false } }
+        }
+      ]
+    })
+  }
+
+  it('renders the reasoning effort as a separate badge, not appended to the name', async () => {
+    setDashscopeSession(true)
+    renderPanel()
+
+    const name = await screen.findByText('Qwen3.7 Max')
+    const badge = await screen.findByText('High')
+
+    // The effort lives in its own element — the name node never absorbs it.
+    expect(name).not.toBe(badge)
+    expect(name.contains(badge)).toBe(false)
+    expect(name.textContent).toBe('Qwen3.7 Max')
+
+    // …and it carries distinct badge styling (bordered chip), not plain inline
+    // tertiary text bleeding into the model name.
+    expect(badge.className).toContain('border')
+    expect(badge.className).toContain('rounded-sm')
+  })
+
+  it('drops the effort badge entirely when the model has no reasoning support', async () => {
+    setDashscopeSession(false)
+    renderPanel()
+
+    await screen.findByText('Qwen3.7 Max')
+    await waitFor(() => expect(screen.queryByText('High')).toBeNull())
+    expect(screen.queryByText('Med')).toBeNull()
   })
 })

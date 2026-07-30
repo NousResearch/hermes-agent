@@ -37,6 +37,28 @@ def _patch_supervisor(monkeypatch, supervisor):
     return registry
 
 
+def _trust_supervisor_page(monkeypatch, url, frame_id="TOP", task_id="test-task"):
+    """Record a navigation AND bind the supervisor page identity for the gate.
+
+    The eval fast path requires both: the daemon's last navigated URL and the
+    supervisor top-frame id captured at that navigation (URL equality alone
+    cannot establish page identity — two targets can show the same URL).
+    """
+    import tools.browser_tool as bt
+
+    monkeypatch.setitem(bt._last_navigated_urls, task_id, url)
+    monkeypatch.setitem(bt._page_bound_frame_ids, task_id, frame_id)
+
+
+def _snap_with_page(url, frame_id="TOP"):
+    snap = MagicMock()
+    snap.frame_tree = {
+        "top": {"frame_id": frame_id, "url": url},
+        "children": [],
+    }
+    return snap
+
+
 class TestBrowserEvalSupervisorPath:
     """The supervisor fast path replaces the agent-browser subprocess hop."""
 
@@ -44,12 +66,14 @@ class TestBrowserEvalSupervisorPath:
         import tools.browser_tool as bt
 
         sup = MagicMock()
+        sup.snapshot.return_value = _snap_with_page("https://example.com/page")
         sup.evaluate_runtime.return_value = {
             "ok": True,
             "result": 42,
             "result_type": "number",
         }
         _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
         # If the subprocess path is hit we want a loud failure.
         monkeypatch.setattr(
             bt, "_run_browser_command",
@@ -67,12 +91,14 @@ class TestBrowserEvalSupervisorPath:
         import tools.browser_tool as bt
 
         sup = MagicMock()
+        sup.snapshot.return_value = _snap_with_page("https://example.com/page")
         sup.evaluate_runtime.return_value = {
             "ok": True,
             "result": '{"a": 1, "b": [2, 3]}',
             "result_type": "string",
         }
         _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
             bt, "_run_browser_command",
             lambda *a, **kw: pytest.fail("subprocess path must not run"),
@@ -121,20 +147,16 @@ class TestSupervisorDaemonPageSplit:
     never see the page the agent-browser daemon navigated — its evals
     "succeed" against its own about:blank and return empty/wrong results
     (#32685 family). On plain Chrome the daemon may be driving a different
-    tab. ``_supervisor_page_matches_daemon`` compares the supervisor's live
-    top-frame URL with the last navigated URL and sends mismatches down the
-    always-correct subprocess path.
+    tab. ``_supervisor_page_matches_daemon`` requires the supervisor's top
+    frame to still be the one bound at the last navigation AND to show the
+    last navigated URL; anything less goes down the always-correct
+    subprocess path.
     """
 
     @staticmethod
-    def _sup_with_page(url, result="WRONG-BROWSER-RESULT"):
+    def _sup_with_page(url, result="WRONG-BROWSER-RESULT", frame_id="TOP"):
         sup = MagicMock()
-        snap = MagicMock()
-        snap.frame_tree = {
-            "top": {"frame_id": "TOP", "url": url},
-            "children": [],
-        }
-        sup.snapshot.return_value = snap
+        sup.snapshot.return_value = _snap_with_page(url, frame_id=frame_id)
         sup.evaluate_runtime.return_value = {
             "ok": True,
             "result": result,
@@ -149,9 +171,7 @@ class TestSupervisorDaemonPageSplit:
 
         sup = self._sup_with_page("about:blank", result="")
         _patch_supervisor(monkeypatch, sup)
-        monkeypatch.setitem(
-            bt._last_navigated_urls, "test-task", "https://example.com/page"
-        )
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
             bt,
             "_run_browser_command",
@@ -170,9 +190,7 @@ class TestSupervisorDaemonPageSplit:
 
         sup = self._sup_with_page("https://example.com/page", result="fast")
         _patch_supervisor(monkeypatch, sup)
-        monkeypatch.setitem(
-            bt._last_navigated_urls, "test-task", "https://example.com/page"
-        )
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
             bt,
             "_run_browser_command",
@@ -190,9 +208,7 @@ class TestSupervisorDaemonPageSplit:
 
         sup = self._sup_with_page("https://example.com/page#section-2", result="fast")
         _patch_supervisor(monkeypatch, sup)
-        monkeypatch.setitem(
-            bt._last_navigated_urls, "test-task", "https://example.com/page"
-        )
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
             bt,
             "_run_browser_command",
@@ -202,22 +218,104 @@ class TestSupervisorDaemonPageSplit:
         out = json.loads(bt._browser_eval("document.title"))
         assert out["method"] == "cdp_supervisor"
 
-    def test_no_recorded_navigation_keeps_fast_path(self, monkeypatch):
-        """No browser_navigate yet (e.g. /browser connect-then-eval) → nothing
-        has diverged; legacy fast-path behaviour is preserved."""
+    def test_no_recorded_navigation_falls_back_to_subprocess(self, monkeypatch):
+        """No browser_navigate yet (e.g. /browser connect-then-eval) → no
+        page identity can be established, so the fast path is not trusted:
+        the supervisor may be attached to a page the daemon never drove."""
         import tools.browser_tool as bt
 
         sup = self._sup_with_page("about:blank", result="legacy")
         _patch_supervisor(monkeypatch, sup)
         bt._last_navigated_urls.pop("test-task", None)
+        bt._page_bound_frame_ids.pop("test-task", None)
         monkeypatch.setattr(
             bt,
             "_run_browser_command",
-            lambda *a, **kw: pytest.fail("subprocess must not run pre-navigation"),
+            lambda *a, **kw: {"success": True, "data": {"result": "SUBPROCESS-RESULT"}},
         )
 
         out = json.loads(bt._browser_eval("1 + 1"))
-        assert out["method"] == "cdp_supervisor"
+        assert out["result"] == "SUBPROCESS-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_same_url_different_target_falls_back(self, monkeypatch):
+        """Reviewer scenario: two CDP page targets can show the SAME URL.
+
+        The supervisor's top frame is a different target than the one bound
+        at navigation time — a URL match alone must not re-establish trust,
+        the eval must come from the subprocess path (daemon's page)."""
+        import tools.browser_tool as bt
+
+        url = "https://example.com/page"
+        sup = self._sup_with_page(url, frame_id="OTHER-TARGET")
+        _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, url, frame_id="BOUND-AT-NAVIGATE")
+        monkeypatch.setattr(
+            bt,
+            "_run_browser_command",
+            lambda *a, **kw: {"success": True, "data": {"result": "DAEMON-RESULT"}},
+        )
+
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "DAEMON-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_matching_url_without_bound_identity_falls_back(self, monkeypatch):
+        """URL equality with no identity bound at navigate time is not
+        sufficient: if the supervisor wasn't provably watching the daemon's
+        page when the URL was recorded, the fast path stays down."""
+        import tools.browser_tool as bt
+
+        url = "https://example.com/page"
+        sup = self._sup_with_page(url)
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", url)
+        monkeypatch.delitem(bt._page_bound_frame_ids, "test-task", raising=False)
+        monkeypatch.setattr(
+            bt,
+            "_run_browser_command",
+            lambda *a, **kw: {"success": True, "data": {"result": "DAEMON-RESULT"}},
+        )
+
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "DAEMON-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_navigate_binds_identity_when_supervisor_shows_landing_url(
+        self, monkeypatch
+    ):
+        """_record_daemon_url captures the supervisor's top-frame id when its
+        URL matches the fresh post-navigation URL — the one moment the two
+        provably coincide — and that binding enables the fast path."""
+        import tools.browser_tool as bt
+
+        url = "https://example.com/page"
+        sup = self._sup_with_page(url, result="fast", frame_id="PAGE-TARGET")
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setattr(bt, "_last_navigated_urls", {})
+        monkeypatch.setattr(bt, "_page_bound_frame_ids", {})
+
+        bt._record_daemon_url("test-task", url)
+        assert bt._page_bound_frame_ids.get("test-task") == "PAGE-TARGET"
+        assert bt._supervisor_page_matches_daemon("test-task", sup) is True
+
+    def test_navigate_does_not_bind_identity_on_url_mismatch(self, monkeypatch):
+        """Browserless shape: the supervisor's private browser sits on
+        about:blank while the daemon lands elsewhere — no identity is bound
+        and the gate never trusts the fast path for the session."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page("about:blank", frame_id="PRIVATE-BROWSER")
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setattr(bt, "_last_navigated_urls", {})
+        monkeypatch.setattr(bt, "_page_bound_frame_ids", {})
+
+        bt._record_daemon_url("test-task", "https://example.com/page")
+        assert "test-task" not in bt._page_bound_frame_ids
+        assert bt._supervisor_page_matches_daemon("test-task", sup) is False
 
     def test_unreadable_supervisor_state_falls_through(self, monkeypatch):
         """snapshot() blowing up must fail toward the subprocess path."""
@@ -227,9 +325,7 @@ class TestSupervisorDaemonPageSplit:
         sup.snapshot.side_effect = RuntimeError("ws closed")
         sup.evaluate_runtime.return_value = {"ok": True, "result": "wrong"}
         _patch_supervisor(monkeypatch, sup)
-        monkeypatch.setitem(
-            bt._last_navigated_urls, "test-task", "https://example.com/page"
-        )
+        _trust_supervisor_page(monkeypatch, "https://example.com/page")
         monkeypatch.setattr(
             bt,
             "_run_browser_command",
@@ -267,14 +363,13 @@ class TestPageDivergenceAfterInteractions:
         # the behavioral failure instead of a fixture AttributeError.
         monkeypatch.setattr(bt, "_page_maybe_diverged", set(), raising=False)
         monkeypatch.setattr(bt, "_last_navigated_urls", {})
+        monkeypatch.setattr(bt, "_page_bound_frame_ids", {}, raising=False)
         monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda *a, **kw: False)
 
     @staticmethod
     def _sup_with_page(url, result="WRONG-TAB-RESULT"):
         sup = MagicMock()
-        snap = MagicMock()
-        snap.frame_tree = {"top": {"frame_id": "TOP", "url": url}, "children": []}
-        sup.snapshot.return_value = snap
+        sup.snapshot.return_value = _snap_with_page(url)
         sup.evaluate_runtime.return_value = {
             "ok": True,
             "result": result,
@@ -299,6 +394,7 @@ class TestPageDivergenceAfterInteractions:
         sup = self._sup_with_page(self.URL)
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
         monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
             "click": {"success": True},
             "eval": {"success": True, "data": {"result": "NEW-TAB-RESULT"}},
@@ -318,6 +414,7 @@ class TestPageDivergenceAfterInteractions:
         sup = self._sup_with_page(self.URL)
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
         monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
             "press": {"success": True},
             "eval": {"success": True, "data": {"result": "POST-SUBMIT-RESULT"}},
@@ -336,6 +433,7 @@ class TestPageDivergenceAfterInteractions:
         sup = self._sup_with_page(self.URL, result="fast")
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
         monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
             "press": {"success": True},
         }))
@@ -352,6 +450,7 @@ class TestPageDivergenceAfterInteractions:
         sup = self._sup_with_page(self.URL, result="fast")
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
         monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
             "click": {"success": False, "error": "no such ref"},
         }))
@@ -370,6 +469,7 @@ class TestPageDivergenceAfterInteractions:
         sup = self._sup_with_page(landing, result="fast")
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
         monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
             "click": {"success": True},
             "back": {"success": True, "data": {"url": landing}},
@@ -388,6 +488,7 @@ class TestPageDivergenceAfterInteractions:
         sup = self._sup_with_page(self.URL)
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setitem(bt._last_navigated_urls, "test-task", self.URL)
+        monkeypatch.setitem(bt._page_bound_frame_ids, "test-task", "TOP")
         monkeypatch.setattr(bt, "_run_browser_command", self._command_mux({
             "back": {"success": True, "data": {}},
             "eval": {"success": True, "data": {"result": "SUBPROCESS-RESULT"}},
@@ -400,11 +501,14 @@ class TestPageDivergenceAfterInteractions:
 
     def test_record_daemon_url_clears_divergence(self, monkeypatch):
         """_record_daemon_url is what navigate/back call on success — it must
-        clear the mark so a fresh navigation restores the fast path."""
+        clear the mark (and re-bind the page identity, since the supervisor
+        is showing the landing URL) so a fresh navigation restores the fast
+        path."""
         import tools.browser_tool as bt
 
         bt._page_maybe_diverged.add("test-task")
         sup = self._sup_with_page(self.URL)
+        _patch_supervisor(monkeypatch, sup)
         assert bt._supervisor_page_matches_daemon("test-task", sup) is False
 
         bt._record_daemon_url("test-task", self.URL)

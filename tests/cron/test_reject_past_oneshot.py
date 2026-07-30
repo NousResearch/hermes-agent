@@ -81,6 +81,16 @@ class TestRejectPastOneshotOnUpdate:
         assert updated is not None
         assert updated["next_run_at"] is not None
 
+    def test_update_past_oneshot_while_paused_rejected(self, tmp_cron_dir):
+        """Regression: updating a PAUSED job's schedule to a past one-shot
+        must also be rejected. Without this guard, resume_job() would
+        later compute None for next_run_at — silently dead."""
+        from cron.jobs import pause_job
+        job = create_job(prompt="test", schedule="1h", name="pausable")
+        pause_job(job["id"])
+        with pytest.raises(ValueError, match="has already passed"):
+            update_job(job["id"], {"schedule": "2020-01-01T09:00:00"})
+
 
 class TestComputeNextRunReturnsNoneForPastOneshot:
     """Document the underlying behavior that the guard relies on:

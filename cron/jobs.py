@@ -791,15 +791,20 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 "schedule_display",
                 updated_schedule.get("display", updated.get("schedule_display")),
             )
+            # PATCH: reject past one-shot schedules on update, even when paused.
+            # If we skip the check for paused jobs, a caller can set a past
+            # one-shot schedule, and resume_job() will later compute None for
+            # next_run_at — silently dead, the exact state this guard prevents.
+            _updated_next = compute_next_run(updated_schedule)
+            if _updated_next is None and updated_schedule.get("kind") == "once":
+                raise ValueError(
+                    f"One-shot schedule '{updated_schedule.get('display')}' "
+                    f"has already passed — the job would never fire. "
+                    f"Use a relative offset like '30m' or '2h' instead."
+                )
+            # Only assign next_run_at if the job is not paused; paused jobs
+            # get their next_run_at recomputed on resume.
             if updated.get("state") != "paused":
-                # PATCH: reject past one-shot schedules on update too.
-                _updated_next = compute_next_run(updated_schedule)
-                if _updated_next is None and updated_schedule.get("kind") == "once":
-                    raise ValueError(
-                        f"One-shot schedule '{updated_schedule.get('display')}' "
-                        f"has already passed — the job would never fire. "
-                        f"Use a relative offset like '30m' or '2h' instead."
-                    )
                 updated["next_run_at"] = _updated_next
 
         if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):

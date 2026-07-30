@@ -1,6 +1,7 @@
 """Tests for cron job context_from feature (issue #5439 Option C)."""
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -120,18 +121,20 @@ class TestBuildJobPromptContextFrom:
     def test_corrupt_new_structured_run_falls_back_to_older_committed_run(
         self, cron_env
     ):
-        import time
-
         from cron.jobs import OUTPUT_DIR, create_job, save_job_output
         from cron.scheduler import _build_job_prompt
 
         source = create_job(prompt="Find news", schedule="every 1h")
         save_job_output(source["id"], "older wrapper", response="older exact")
-        time.sleep(0.01)
         output_dir = OUTPUT_DIR / source["id"]
+        older = next(output_dir.glob("*.md"))
         corrupt = output_dir / "newer.run.md"
         corrupt.write_text("must never be parsed as legacy", encoding="utf-8")
         corrupt.with_suffix(".response.json").write_text("{bad", encoding="utf-8")
+        older_mtime = 1_000_000_000
+        newer_mtime = older_mtime + 10
+        os.utime(older, (older_mtime, older_mtime))
+        os.utime(corrupt, (newer_mtime, newer_mtime))
         consumer = create_job(
             prompt="Summarize",
             schedule="every 2h",

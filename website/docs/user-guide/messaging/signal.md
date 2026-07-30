@@ -141,6 +141,44 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
 
+### Sharing One Signal Account Across Profiles
+
+Multiple Hermes profiles can use the same Signal account through the same or
+separate signal-cli HTTP daemons when each profile owns a distinct set of
+groups. Enable the safety mode in each participating profile's `config.yaml`:
+
+```yaml
+signal:
+  shared_account_group_only: true
+```
+
+Each profile must also set `SIGNAL_GROUP_ALLOWED_USERS` to an explicit,
+non-empty list of group IDs. The wildcard `*` is rejected in this mode. Group
+assignments must be disjoint: startup fails if another shared profile already
+holds a configured group.
+
+In `shared_account_group_only` mode:
+
+- an account-specific scoped lock serializes shared and normal startup, rejecting
+  mixed listeners in either startup order while allowing shared profiles with
+  disjoint group sets;
+- machine-wide generic scoped-lock markers ensure only one live profile can own
+  each group; graceful shutdown removes them, and a later startup recovers
+  markers left stale by a process exit or crash;
+- direct messages and Note to Self are ignored before agent dispatch;
+- allowlisted group messages still work, including group messages sent from
+  the account owner's phone that arrive as `syncMessage.sentMessage`;
+- other synchronized events remain filtered normally.
+
+All participating gateway processes must be upgraded to a version that supports
+this option before enabling it. Stop legacy Signal gateways during migration
+rather than running a mixed-version rolling upgrade. Normal mode retains the
+legacy account-wide `signal-phone` lock, and shared mode refuses to start while
+that legacy lock is already present.
+
+Outside this opt-in mode, Signal remains account-exclusive and its DM/Note to
+Self behavior is unchanged.
+
 ---
 
 ## Features

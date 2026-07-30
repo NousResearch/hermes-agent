@@ -44,7 +44,7 @@ from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import spawn_bash_with_kill_on_exit, windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -1142,7 +1142,11 @@ class ProcessRegistry:
                     _systemd_run_user_scope_available(),
                 )
 
-        proc = subprocess.Popen(
+        # Route through the kill-on-exit job wrapper: this background shell
+        # was the one local spawn site NOT covered by the job object, so on
+        # Windows its whole tree outlived Hermes (#69076 sweeper review).
+        # start_new_session stays for POSIX; the wrapper is the Windows leg.
+        proc = spawn_bash_with_kill_on_exit(lambda: subprocess.Popen(
             spawn_argv,
             text=True,
             cwd=session.cwd,
@@ -1154,7 +1158,7 @@ class ProcessRegistry:
             stdin=subprocess.DEVNULL,
             start_new_session=popen_start_new_session,
             **_popen_kwargs,
-        )
+        ))
 
         session.process = proc
         session.pid = proc.pid

@@ -1,11 +1,18 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $desktopBoot } from '@/store/boot'
-import { $gatewayState } from '@/store/session'
+import type * as BootStore from '@/store/boot'
+import { $desktopBoot, completeDesktopBoot } from '@/store/boot'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { useGatewayBoot } from './use-gateway-boot'
+
+vi.mock('@/store/boot', async importOriginal => {
+  const actual = await importOriginal<typeof BootStore>()
+
+  return { ...actual, completeDesktopBoot: vi.fn(actual.completeDesktopBoot) }
+})
 
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
 // bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
@@ -121,14 +128,21 @@ function fakeDesktop() {
 
 function Harness({
   beforeConnectionSwitch = () => undefined,
+  onConnectionReady = () => undefined,
+  refreshHermesConfig = async () => undefined,
   refreshSessions
-}: { beforeConnectionSwitch?: () => void; refreshSessions?: () => Promise<void> } = {}) {
+}: {
+  beforeConnectionSwitch?: () => void
+  onConnectionReady?: (connection: Parameters<Parameters<typeof useGatewayBoot>[0]['onConnectionReady']>[0]) => void
+  refreshHermesConfig?: () => Promise<void>
+  refreshSessions?: () => Promise<void>
+} = {}) {
   useGatewayBoot({
     beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
-    onConnectionReady: () => undefined,
+    onConnectionReady,
     onGatewayReady: () => undefined,
-    refreshHermesConfig: async () => undefined,
+    refreshHermesConfig,
     refreshSessions: refreshSessions ?? (async () => undefined)
   })
 
@@ -167,6 +181,7 @@ beforeEach(() => {
     timestamp: Date.now(),
     visible: true
   })
+  vi.mocked(completeDesktopBoot).mockClear()
 })
 
 afterEach(() => {
@@ -203,6 +218,16 @@ async function advanceBackoff() {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000)
   })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+
+  const promise = new Promise<T>(next => {
+    resolve = next
+  })
+
+  return { promise, resolve }
 }
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
@@ -450,6 +475,156 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
     expect(FakeWebSocket.instances.length).toBeGreaterThan(attemptsAtEscalation)
+  })
+
+  it('BOOT GENERATION: a boot connection released after a completed soft switch cannot commit stale state', async () => {
+    const desktop = fakeDesktop()
+
+    const staleBootConnection = {
+      authMode: 'token' as const,
+      baseUrl: 'https://stale.example.com',
+      profile: 'stale-boot',
+      token: 'stale',
+      wsUrl: 'wss://stale.example.com/api/ws?token=stale'
+    }
+
+    const switchConnection = {
+      authMode: 'token' as const,
+      baseUrl: 'https://switch.example.com',
+      profile: 'switch-owned',
+      token: 'switch',
+      wsUrl: 'wss://switch.example.com/api/ws?token=switch'
+    }
+
+    const pendingBootConnection = deferred<typeof staleBootConnection>()
+
+    desktop.getConnection = vi
+      .fn()
+      .mockImplementationOnce(() => pendingBootConnection.promise)
+      .mockResolvedValue(switchConnection) as unknown as typeof desktop.getConnection
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    const onConnectionReady = vi.fn()
+    const refreshHermesConfig = vi.fn(async () => undefined)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    render(
+      <Harness
+        onConnectionReady={onConnectionReady}
+        refreshHermesConfig={refreshHermesConfig}
+        refreshSessions={refreshSessions}
+      />
+    )
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect(connectionApplied).not.toBeNull()
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+
+    expect($connection.get()).toEqual(switchConnection)
+    expect(onConnectionReady).toHaveBeenCalledTimes(1)
+    expect(refreshHermesConfig).toHaveBeenCalledTimes(1)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+    expect(completeDesktopBoot).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pendingBootConnection.resolve(staleBootConnection)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect($connection.get()).toEqual(switchConnection)
+    expect(onConnectionReady).toHaveBeenCalledTimes(1)
+    expect(refreshHermesConfig).toHaveBeenCalledTimes(1)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+    expect(completeDesktopBoot).toHaveBeenCalledTimes(1)
+  })
+
+  it('BOOT GENERATION: a switch at the hydration boundary suppresses stale store effects and completion', async () => {
+    const desktop = fakeDesktop()
+    const bootConnection = await desktop.getConnection()
+
+    const switchConnection = {
+      authMode: 'token' as const,
+      baseUrl: 'https://switch.example.com',
+      profile: 'switch-owned',
+      token: 'switch',
+      wsUrl: 'wss://switch.example.com/api/ws?token=switch'
+    }
+
+    desktop.getConnection = vi
+      .fn()
+      .mockResolvedValueOnce(bootConnection)
+      .mockResolvedValue(switchConnection) as unknown as typeof desktop.getConnection
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    const refreshHermesConfig = vi.fn(async () => undefined)
+    const refreshSessions = vi.fn(async () => undefined)
+    let switchStarted = false
+
+    const unsubscribe = $desktopBoot.subscribe(state => {
+      if (!switchStarted && state.phase === 'renderer.config') {
+        switchStarted = true
+        connectionApplied?.()
+      }
+    })
+
+    try {
+      render(<Harness refreshHermesConfig={refreshHermesConfig} refreshSessions={refreshSessions} />)
+      await flushAsync()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+
+      expect(switchStarted).toBe(true)
+      expect($connection.get()).toEqual(switchConnection)
+      expect(refreshHermesConfig).toHaveBeenCalledTimes(1)
+      expect(refreshSessions).toHaveBeenCalledTimes(1)
+      expect(completeDesktopBoot).toHaveBeenCalledTimes(1)
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it('BOOT GENERATION: a retry timer captured before a failed soft switch cannot restart boot afterward', async () => {
+    const desktop = fakeDesktop()
+    const conn = await desktop.getConnection()
+
+    desktop.getConnection = vi
+      .fn()
+      .mockResolvedValueOnce(conn)
+      .mockRejectedValueOnce(new Error('switch failed'))
+      .mockResolvedValue(conn) as unknown as typeof desktop.getConnection
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    // Model a timer callback that was already queued when softSwitch tried to
+    // clear it. Its fire-time generation check is the durable ownership gate
+    // after $gatewaySwitching returns to false.
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout').mockImplementation(() => undefined)
+
+    try {
+      FakeWebSocket.mode = 'fail'
+      render(<Harness />)
+      await flushAsync()
+
+      expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+      expect($desktopBoot.get().error).toBeNull()
+
+      act(() => connectionApplied?.())
+      await flushAsync()
+
+      expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+      expect($desktopBoot.get().error).toBe('switch failed')
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+      })
+
+      expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    } finally {
+      clearTimeoutSpy.mockRestore()
+    }
   })
 
   it('BOOT FIX: a pending boot retry does not re-dial after a soft gateway switch', async () => {

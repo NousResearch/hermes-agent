@@ -88,6 +88,7 @@ export function useGatewayBoot({
 
   useEffect(() => {
     let cancelled = false
+    let bootGeneration = 0
     const desktop = window.hermesDesktop
 
     const publish = (next: HermesConnection | null) => {
@@ -235,25 +236,43 @@ export function useGatewayBoot({
     // resumes are no-op swaps and reconnects target the right backend.
     // Best-effort: a missing preference means "default". Shared by boot + soft
     // switch.
-    async function adoptPrimaryProfile() {
+    async function adoptPrimaryProfile(shouldCommit: () => boolean = () => true) {
       try {
         const pref = await desktop.profile?.get?.()
         const profileKey = (pref?.profile ?? '').trim() || 'default'
+
+        if (!shouldCommit()) {
+          return
+        }
+
         $activeGatewayProfile.set(profileKey)
         setPrimaryGateway(gateway, profileKey)
         void ensureGatewayForProfile(profileKey)
       } catch {
+        if (!shouldCommit()) {
+          return
+        }
+
         $activeGatewayProfile.set('default')
       }
     }
 
     // Seed the working dir from the backend default on a fresh view (nothing
     // open yet). Shared by boot + soft switch.
-    async function seedDefaultCwd() {
+    async function seedDefaultCwd(shouldCommit: () => boolean = () => true) {
+      if (!shouldCommit()) {
+        return
+      }
+
       await ensureDefaultWorkspaceCwd()
+
+      if (!shouldCommit()) {
+        return
+      }
+
       const remoteDefault = await desktopDefaultCwd().catch(() => null)
 
-      if (remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
+      if (shouldCommit() && remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
         setCurrentCwd(remoteDefault.cwd)
         setCurrentBranch(remoteDefault.branch || '')
       }
@@ -266,6 +285,7 @@ export function useGatewayBoot({
         return
       }
 
+      bootGeneration += 1
       $gatewaySwitching.set(true)
       clearReconnectTimer()
       reconnectAttempt = 0
@@ -492,8 +512,10 @@ export function useGatewayBoot({
       }
     }
 
-    const scheduleBootRetry = () => {
-      if (cancelled || bootRetryTimer !== null || $gatewaySwitching.get()) {
+    const bootIsStale = (gen: number) => gen !== bootGeneration || cancelled
+
+    const scheduleBootRetry = (gen: number) => {
+      if (bootIsStale(gen) || bootRetryTimer !== null || $gatewaySwitching.get()) {
         return
       }
 
@@ -508,7 +530,7 @@ export function useGatewayBoot({
         // this, boot() re-enters while a switch is dialing — gateway.connect()
         // short-circuits on the 'connecting' state without awaiting the new
         // socket, so wsOpen would go true before that dial actually opens.
-        if (cancelled || bootCompleted || $gatewaySwitching.get()) {
+        if (gen !== bootGeneration || cancelled || bootCompleted || $gatewaySwitching.get()) {
           return
         }
 
@@ -517,6 +539,7 @@ export function useGatewayBoot({
     }
 
     async function boot() {
+      const gen = ++bootGeneration
       // Only the WS connect step (mint URL + open socket) is retry-eligible.
       // desktop.getConnection() already ran its own wait/backoff in the main
       // process (see waitForHermes above), so a failure there is terminal, not
@@ -530,11 +553,11 @@ export function useGatewayBoot({
       try {
         const conn = await desktop.getConnection()
 
-        if (cancelled) {
+        reachedConnectPhase = true
+
+        if (bootIsStale(gen)) {
           return
         }
-
-        reachedConnectPhase = true
 
         // Skip the progress ping once the recovery overlay is up: applyDesktopBootProgress
         // treats a step's implicit running:true as "boot is healthy again" and
@@ -550,26 +573,45 @@ export function useGatewayBoot({
           })
         }
 
+        if (bootIsStale(gen)) {
+          return
+        }
+
         publish(conn)
+
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
         // connecting with a dead ticket. Auth rejection asks for sign-in;
         // connectivity failures remain retryable.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-        await gateway.connect(wsUrl)
-        wsOpen = true
 
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
+
+        await gateway.connect(wsUrl)
+
+        if (bootIsStale(gen)) {
+          return
+        }
+
+        wsOpen = true
 
         // Profile adoption must land first: refreshSessions scopes its fetch by
         // $profileScope ← $activeGatewayProfile. The remaining three fetches
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile()
+        if (bootIsStale(gen)) {
+          return
+        }
+
+        await adoptPrimaryProfile(() => !bootIsStale(gen))
+
+        if (bootIsStale(gen)) {
+          return
+        }
 
         setDesktopBootStep({
           phase: 'renderer.config',
@@ -577,28 +619,40 @@ export function useGatewayBoot({
           progress: 97
         })
 
+        const runStoreEffect = async (effect: () => Promise<void>) => {
+          if (bootIsStale(gen)) {
+            return
+          }
+
+          await effect()
+        }
+
         await Promise.all([
-          seedDefaultCwd(),
-          callbacksRef.current.refreshHermesConfig(),
+          runStoreEffect(() => seedDefaultCwd(() => !bootIsStale(gen))),
+          runStoreEffect(() => callbacksRef.current.refreshHermesConfig()),
           // Session-list population is never boot-fatal. The gateway WS is
           // already open by this point — a failed sidebar fetch (transient
           // blip, or an endpoint the fallback couldn't cover) must leave the
           // app usable with an empty sidebar (the reconnect/turn refreshes
           // retry it), not brick boot behind the "Hermes couldn't start"
           // overlay. Matches the reconnect + softSwitch call sites.
-          callbacksRef.current.refreshSessions().catch(() => {
-            setSessionsLoading(false)
-          })
+          runStoreEffect(() =>
+            callbacksRef.current.refreshSessions().catch(() => {
+              if (!bootIsStale(gen)) {
+                setSessionsLoading(false)
+              }
+            })
+          )
         ])
 
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
 
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
 
@@ -623,7 +677,7 @@ export function useGatewayBoot({
             setSessionsLoading(false)
           }
 
-          scheduleBootRetry()
+          scheduleBootRetry(gen)
 
           return
         }

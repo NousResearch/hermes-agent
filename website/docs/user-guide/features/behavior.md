@@ -1,6 +1,6 @@
 # Behavioral Analysis (`/behavior`)
 
-Understand **how** you build with AI, not just how much. `/behavior` analyzes your session history and produces a behavioral profile: 5-axis numeric scores and 15 personality-driven insight cards.
+Understand **how** you build with AI, not just how much. `/behavior` analyzes your session history and produces a behavioral profile: 5-axis numeric scores and 23 personality-driven insight cards.
 
 This is the qualitative complement to `/insights` (which shows quantitative stats like tokens, cost, and tool usage).
 
@@ -44,10 +44,17 @@ Each axis is scored 1-10 with a one-line rationale:
 | Product Thinking | Do you plan features, prioritize, and think about user value? |
 | Planning | Do you plan before acting or jump straight in? |
 
-### 15 Insight Cards
+### 23 Insight Cards
+
+**LLM-powered narrative cards (4):**
 
 - **Archetype** — "The Orchestrator", "The Architect", "The Speed Runner", etc.
 - **Agent relationship** — "Like a design partner", "Like a power tool", etc.
+- **Growth edge** — Recommendation targeting your lowest-scoring axis
+- **Biggest crash out** — Your worst crash-out message with context
+
+**Deterministic signal-based cards (19):**
+
 - **Prompt style** — Length distribution, percentage under 10 words
 - **Go-to prompts** — Your most-repeated short prompts
 - **Politeness** — Thank-yous and pleases count
@@ -59,8 +66,14 @@ Each axis is scored 1-10 with a one-line rationale:
 - **Longest agent run** — Your longest single session
 - **Cryptic prompt** — Short, typo-filled, late-night messages
 - **Planning habits** — What percentage of sessions start with a plan
-- **Growth edge** — Recommendation targeting your lowest-scoring axis
-- **Biggest crash out** — Your worst crash-out message with context
+- **Skill mastery** — Which skills you load most and how often
+- **Memory hygiene** — How actively you manage and reference memory
+- **Autonomy level** — How much you let agents run vs steering every step
+- **Cross-session memory** — How often you reference prior sessions
+- **Tool orchestration** — Diversity and combination of tools used
+- **Model effectiveness** — Which models produce your best outcomes
+- **Skill ROI** — Which skills correlate with longer sessions
+- **Session abandonment** — How often sessions end mid-task
 
 ## Score Persistence
 

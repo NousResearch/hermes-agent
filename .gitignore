@@ -1,6 +1,8 @@
 .DS_Store
 /venv/
 /venv.old/
+/venv.stale.runtime-*/
+/.hermes-runtime/
 /_pycache/
 *.pyc*
 __pycache__/
@@ -44,7 +46,10 @@ run_datagen_sonnet.sh
 source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
-node_modules/
+# No trailing slash: also matches node_modules SYMLINKS (worktrees often
+# symlink node_modules to the main checkout; the dir-only pattern let one
+# slip into a commit and break `npm ci` on CI with ENOTDIR).
+node_modules
 browser-use/
 agent-browser/
 # Private keys
@@ -175,6 +180,11 @@ apps/desktop/demo/
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+#
+# Spelling variants are listed because a single `infographic/` pattern was
+# sidestepped by an `infograficos/` directory (#70552). .gitignore is only
+# the first line of defence and cannot stop `git add -f` at all — the
+# infographic-check CI job is what actually enforces this.
 infographic/
 infographics/
 infograficos/
@@ -184,6 +194,7 @@ native/fts5_cjk/*.so
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete
+
 # Behavioral analysis output
 graphify-out/
 DESIGN.md

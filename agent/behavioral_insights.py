@@ -2,7 +2,7 @@
 Behavioral Insights Engine for Hermes Agent.
 
 Analyzes historical session data from the SQLite state database to produce a
-behavioral profile — 5-axis numeric scores and 15 personality-driven insight
+behavioral profile — 5-axis numeric scores and 23 personality-driven insight
 cards describing HOW the user works with their AI agents (not just how much).
 
 This is the qualitative complement to ``agent/insights.py`` (which is purely
@@ -12,7 +12,7 @@ computation → ``format_terminal()`` / ``format_gateway()``.
 
 Architecture (3 layers):
 
-1. **Signal extraction** (pure Python + SQL, zero token cost) — 18 signal
+1. **Signal extraction** (pure Python + SQL, zero token cost) — 27 signal
    extractors covering prompt patterns, steering, crash-outs, planning,
    tool usage, timing, and model preference.
 2. **LLM scoring + narrative cards** (uses user's configured model) — 5-axis
@@ -199,8 +199,8 @@ class BehavioralAnalyzer:
     ``sqlite3`` connection) to query session and message data, following the
     same pattern as :class:`agent.insights.InsightsEngine`.
 
-    The analyzer extracts 18 behavioral signals from user messages and
-    session metadata, then produces 5-axis scores and 15 insight cards.
+    The analyzer extracts 27 behavioral signals from user messages and
+    session metadata, then produces 5-axis scores and 23 insight cards.
     When the LLM is available, scores and 4 narrative cards come from a
     single bounded LLM call.  When it fails, heuristic scores and
     signal-only cards are used instead (graceful degradation).
@@ -417,7 +417,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
     ) -> Dict[str, Any]:
         """Generate a complete behavioral profile.
 
-        This is the main entry point.  It extracts all 18 signals,
+        This is the main entry point.  It extracts all 27 signals,
         optionally calls the LLM for scoring + narrative cards, persists
         scores to the database, and returns a report dict suitable for
         :meth:`format_terminal` / :meth:`format_gateway`.
@@ -484,10 +484,10 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         source: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Extract all 18 behavioral signals from the database.
+        """Extract all 27 behavioral signals from the database.
 
         This is the core of Layer 1.  It fetches sessions and messages,
-        then calls each of the 18 signal extractor methods.  Each
+        then calls each of the 27 signal extractor methods.  Each
         extractor returns a dict that is merged into the final signals
         dict.
 
@@ -498,7 +498,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
                 leaks on multi-user gateways).
 
         Returns:
-            A dict containing all 18 signal categories plus aggregate
+            A dict containing all 27 signal categories plus aggregate
             counts (``total_sessions``, ``total_user_messages``).
         """
         sessions = self._get_sessions(cutoff, source, user_id)
@@ -2701,13 +2701,13 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
     # =================================================================
 
     def _build_deterministic_cards(self, signals: Dict[str, Any]) -> Dict[str, Any]:
-        """Build all 11 deterministic insight cards from signals.
+        """Build all 19 deterministic insight cards from signals.
 
         These cards require no LLM — they're computed directly from
         the extracted signal data.
 
         Returns:
-            A dict with 11 card entries (each a dict with title + body).
+            A dict with 19 card entries (each a dict with title + body).
         """
         cards: Dict[str, Any] = {}
 
@@ -3246,7 +3246,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         """Format the behavioral profile for terminal display (CLI).
 
         Renders the full report with box-drawing header, bar-chart
-        scores, and all 15 insight cards.
+        scores, and all 23 insight cards.
 
         Args:
             report: The report dict from :meth:`generate`.
@@ -3384,7 +3384,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
     def format_gateway(self, report: Dict[str, Any]) -> str:
         """Format the behavioral profile for gateway/messaging (Telegram/Discord).
 
-        Compact markdown format: scores inline, all 15 cards, bold labels.
+        Compact markdown format: scores inline, all 23 cards, bold labels.
 
         Args:
             report: The report dict from :meth:`generate`.

@@ -792,6 +792,97 @@ export interface Translations {
         saving: string
         cancel: string
       }
+      state: {
+        notice: {
+          loggedOut: { title: string; message: string; action: string }
+          noCard: { title: string; message: string; action: string }
+        }
+        paymentMethod: {
+          title: string
+          description: string
+          addAction: string
+          updateAction: string
+        }
+        buyCredits: {
+          description: string
+        }
+        autoRefill: {
+          title: string
+          genericDescription: string
+          offPill: string
+          enabledPill: string
+          notAvailablePill: string
+          manageCaption: string
+          turnOnCaption: string
+          chargesDescription: (reloadTo: string, threshold: string) => string
+          distinctCardCaption: (cardLabel: string) => string
+          distinctCardFallback: string
+          reconcileAction: string
+        }
+        usage: {
+          subscriptionCredits: {
+            title: string
+            barLabel: string
+            captionResets: (date: string) => string
+            valueOf: (remaining: string, monthly: string) => string
+            valueOver: (remaining: string, monthly: string, over: string) => string
+          }
+          topupCredits: {
+            title: string
+            caption: string
+          }
+          monthlyCap: {
+            title: string
+            barLabel: string
+            captionDefault: string
+            captionSpending: string
+            valueUsed: (spent: string, limit: string) => string
+          }
+        }
+        planCard: {
+          freeTier: string
+          chooseAction: string
+          adjustPlanAction: string
+          unavailableCaption: string
+          downgradeCaption: (tierName: string, when: string) => string
+          cancellationCaption: (when: string) => string
+          renewsCaption: (date: string) => string
+          noSubscriptionCaption: string
+        }
+      }
+      errors: {
+        consentRequired: { title: string; message: string }
+        insufficientScope: { title: string; message: string }
+        remoteSpendingRevoked: {
+          title: string
+          messageByAdmin: string
+          messageBySelf: string
+        }
+        sessionRevoked: { title: string; message: string }
+        cliBillingDisabled: { title: string; message: string }
+        roleRequired: { title: string; message: string }
+        idempotencyConflict: { title: string; message: string }
+        noPaymentMethod: { title: string; message: string }
+        orgAccessDenied: { title: string; message: string }
+        monthlyCapExceeded: {
+          title: string
+          messageReached: string
+          messageHeadroom: (remaining: string) => string
+        }
+        rateLimited: {
+          title: string
+          message: (mins: string) => string
+        }
+        stripeUnavailable: {
+          title: string
+          message: (mins: string) => string
+        }
+        upgradeCapExceeded: { title: string; message: string }
+        endpointUnavailable: { title: string; message: string }
+        timeout: { title: string; message: string }
+        transport: { title: string; message: string }
+        default: { title: string; message: string }
+      }
     }
     providers: {
       connectAccount: string

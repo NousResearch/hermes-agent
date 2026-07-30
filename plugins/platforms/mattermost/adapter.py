@@ -197,11 +197,14 @@ class MattermostAdapter(BasePlatformAdapter):
             base["file_ids"] = file_ids
         payload = _with_mentions_disabled(base)
         if self._reply_mode == "thread":
-            # root_id from reply_to, else metadata["thread_id"]/["root_id"], resolved to the true thread root.
-            candidate = reply_to or (
-                isinstance(metadata, dict) and (metadata.get("thread_id") or metadata.get("root_id")))
-            if candidate:
-                payload["root_id"] = await self._resolve_root_id(str(candidate))
+            metadata_root_id = (metadata.get("thread_id") or metadata.get("root_id")) if isinstance(metadata, dict) else None
+            if reply_to:
+                if metadata_root_id and metadata_root_id == reply_to:
+                    payload["root_id"] = str(metadata_root_id)
+                else:
+                    payload["root_id"] = await self._resolve_root_id(str(reply_to)) or str(metadata_root_id or reply_to)
+            elif metadata_root_id:
+                payload["root_id"] = str(metadata_root_id)
         return await self._post_preserving_thread(chat_id, payload, metadata)
 
     async def _post_with_file(self, chat_id: str, file_id: str, caption: Optional[str], reply_to: Optional[str],
@@ -263,12 +266,28 @@ class MattermostAdapter(BasePlatformAdapter):
             await self._session.close()
         logger.info("Mattermost: disconnected")
 
-    async def _resolve_root_id(self, post_id: str) -> str:
-        """Resolve a post_id to its thread root_id (a reply's own ID causes "Invalid RootId parameter")."""
+    async def _resolve_root_id(self, post_id: str) -> Optional[str]:
+        """Resolve a post ID to its Mattermost thread root.
+
+        Mattermost requires root_id to be the *root* post of a thread.
+        If the post is a reply (has its own root_id), we must use that
+        root_id instead.  Using a reply's own ID as root_id causes
+        "Invalid RootId parameter" errors. Successful lookups are cached;
+        failures are not, because an empty response may be transient.
+        """
         if not post_id:
             return post_id
+        cached = getattr(self, "_thread_root_cache", None)
+        if cached is None:
+            cached = self._thread_root_cache = {}
+        if post_id in cached:
+            return cached[post_id]
         data = await self._api_get(f"posts/{post_id}")
-        return data["root_id"] if data and data.get("root_id") else post_id
+        if not data:
+            return None
+        resolved = data.get("root_id") or post_id
+        cached[post_id] = resolved
+        return resolved
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
@@ -292,7 +311,10 @@ class MattermostAdapter(BasePlatformAdapter):
     # --- Optional overrides ---
 
     async def send_typing(self, chat_id: str, metadata: _Metadata = None) -> None:
-        await self._api_post(f"users/{self._bot_user_id}/typing", {"channel_id": chat_id})
+        payload: Dict[str, Any] = {"channel_id": chat_id}
+        if self._reply_mode == "thread" and metadata and metadata.get("thread_id"):
+            payload["parent_id"] = metadata["thread_id"]
+        await self._api_post(f"users/{self._bot_user_id}/typing", payload)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         payload = _with_mentions_disabled({"message": self.format_message(content)})

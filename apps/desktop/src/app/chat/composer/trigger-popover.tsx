@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { COMPLETION_DRAWER_BELOW_CLASS, COMPLETION_DRAWER_CLASS, CompletionDrawerEmpty } from './completion-drawer'
+import type { DirectiveScope } from './text-utils'
 
 const AT_ICON_BY_TYPE: Record<string, string> = {
   diff: 'diff',
@@ -55,6 +56,20 @@ interface ComposerTriggerPopoverProps {
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
   placement?: 'bottom' | 'top'
+  /** The `@kind:` browse the list is filtered to, when there is one. Rendered
+   *  as a header so the scope reads as the mode it is — the raw `@folder:` in
+   *  the editor otherwise looks like syntax the user has to finish by hand. */
+  scope?: DirectiveScope
+}
+
+/** What each scope is actually browsing, for the popover header. */
+const SCOPE_LABEL: Record<DirectiveScope, string> = {
+  file: 'Files',
+  folder: 'Folders',
+  git: 'Git',
+  image: 'Images',
+  tool: 'Tools',
+  url: 'URL'
 }
 
 export function ComposerTriggerPopover({
@@ -64,7 +79,8 @@ export function ComposerTriggerPopover({
   loading,
   onHover,
   onPick,
-  placement = 'top'
+  placement = 'top',
+  scope
 }: ComposerTriggerPopoverProps) {
   const { t } = useI18n()
   const copy = t.composer
@@ -80,6 +96,11 @@ export function ComposerTriggerPopover({
       onMouseDown={event => event.preventDefault()}
       role="listbox"
     >
+      {scope && (
+        <div className="select-none px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
+          {SCOPE_LABEL[scope]}
+        </div>
+      )}
       {items.length === 0 ? (
         loading ? (
           <div className="flex items-center gap-2 px-2 py-1.5 text-(--ui-text-tertiary)">

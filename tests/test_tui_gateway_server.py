@@ -10041,6 +10041,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
+    own_key = resp["result"]["stored_session_id"]
     assert build_entered.wait(timeout=1.0), "deferred build did not start"
 
     # Wait until the (deferred) build thread has actually entered
@@ -10069,7 +10070,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
 
     # Give the build thread a moment to run through its finally.
     for _ in range(100):
-        if unregistered_keys:
+        if own_key in unregistered_keys:
             break
         import time
 
@@ -10080,12 +10081,15 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
         f"in slash.exec) — created_workers={created_workers}"
     )
     # Notify may be unregistered by both session.close (unconditional)
-    # and the orphan-cleanup path; the key guarantee is that the build
-    # thread does at least one unregister call (any prior close
-    # already popped the callback; the duplicate is a no-op).
-    assert len(unregistered_keys) >= 1, (
+    # and the orphan-cleanup path; the key guarantee is that THIS session's
+    # key gets unregistered (any prior close already popped the callback; the
+    # duplicate is a no-op). Match on our own key, not the global count: the
+    # registry is process-wide and a leaked _build thread from another
+    # session.create test can append a foreign key here and falsely satisfy
+    # a bare `>= 1`.
+    assert own_key in unregistered_keys, (
         f"orphan notify registration was not unregistered — "
-        f"unregistered_keys={unregistered_keys}"
+        f"{own_key} not in unregistered_keys={unregistered_keys}"
     )
 
 

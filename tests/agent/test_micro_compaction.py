@@ -164,6 +164,54 @@ class TestMicroCompaction:
                 "cursor must sit just past the marker in the spliced list"
             )
 
+    def test_resume_does_not_destroy_the_accumulated_summary(self):
+        """A resumed session must not throw away compacted history.
+
+        The rolling summary lives in memory; a resumed process starts with an
+        empty one while the marker holding every previous exchange is still in
+        the transcript. Superseding on that first pass would replace the whole
+        history with a summary of one exchange.
+        """
+        msgs = _conversation(exchanges=10)
+        first = _compressor(summary="IMPORTANT HISTORY: decisions and paths")
+        for _ in range(3):
+            msgs = first._micro_compact(msgs)
+        assert any("IMPORTANT HISTORY" in m["content"] for m in _summary_markers(msgs))
+
+        # Fresh compressor over the same transcript = resume.
+        resumed = _compressor(summary="MERGED: history plus newest exchange")
+        assert resumed._micro_compact_rolling_summary == ""
+        result = resumed._micro_compact(msgs)
+
+        markers = _summary_markers(result)
+        assert len(markers) == 1
+        assert "MERGED" in markers[0]["content"]
+
+    def test_resume_keeps_the_old_marker_when_rehydration_fails(self):
+        """If the prior summary can't be recovered, it must not be dropped."""
+        msgs = _conversation(exchanges=10)
+        first = _compressor(summary="IMPORTANT HISTORY: decisions and paths")
+        for _ in range(3):
+            msgs = first._micro_compact(msgs)
+
+        resumed = _compressor(summary="BRAND NEW SUMMARY")
+        resumed._rolling_summary_from_marker = staticmethod(lambda _c: "")
+        result = resumed._micro_compact(msgs)
+
+        markers = _summary_markers(result)
+        assert len(markers) == 2, "must retain the un-carried history"
+        assert any("IMPORTANT HISTORY" in m["content"] for m in markers)
+
+    def test_rolling_summary_round_trips_through_a_marker(self):
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = "decisions: use the existing helper"
+        msgs = _conversation(exchanges=6)
+        result = cc._micro_compact(msgs)
+        marker = _summary_markers(result)[0]
+
+        assert (cc._rolling_summary_from_marker(marker["content"])
+                == cc._micro_compact_rolling_summary)
+
     def test_short_conversation_is_untouched(self):
         cc = _compressor()
         messages = [

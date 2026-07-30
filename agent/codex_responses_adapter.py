@@ -593,6 +593,10 @@ def _chat_messages_to_responses_input(
                         if not normalized_content_parts:
                             continue
 
+                        if is_azure_foundry:
+                            for _cpart in normalized_content_parts:
+                                _cpart.setdefault("annotations", [])
+
                         replay_item = {
                             "type": "message",
                             "role": "assistant",
@@ -617,6 +621,9 @@ def _chat_messages_to_responses_input(
                 if replayed_message_items > 0:
                     pass
                 elif content_parts:
+                    if is_azure_foundry:
+                        for _cpart in content_parts:
+                            _cpart.setdefault("annotations", [])
                     items.append({"role": "assistant", "content": content_parts})
                 elif content_text.strip():
                     items.append({"role": "assistant", "content": content_text})
@@ -869,6 +876,9 @@ def _preflight_codex_input_items(
                 if not isinstance(text, str):
                     text = str(text)
                 normalized_content.append({"type": "output_text", "text": sanitize_text(text)})
+            if is_azure_foundry:
+                for _cpart in normalized_content:
+                    _cpart.setdefault("annotations", [])
             if not normalized_content:
                 raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
             normalized_item: Dict[str, Any] = {
@@ -938,6 +948,9 @@ def _preflight_codex_input_items(
                         raise ValueError(
                             f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."
                         )
+                if is_azure_foundry and role == "assistant":
+                    for _cpart in validated:
+                        _cpart.setdefault("annotations", [])
                 normalized.append({"role": role, "content": validated})
                 continue
             if not isinstance(content, str):

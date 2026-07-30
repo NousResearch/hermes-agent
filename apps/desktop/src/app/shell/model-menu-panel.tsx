@@ -263,9 +263,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     ? kbRows.length > 0
       ? 0
       : -1
-    : kbRows.findIndex(
-        row => row.key === currentKey || (row.kind === 'family' && row.family.fastId === optionsModel)
-      )
+    : kbRows.findIndex(row => row.key === currentKey || (row.kind === 'family' && row.family.fastId === optionsModel))
 
   const kbIndex = kbOverride !== null && kbOverride < kbRows.length ? kbOverride : autoIndex
   const kbActiveKey = searchFocused && kbIndex >= 0 ? kbRows[kbIndex].key : null

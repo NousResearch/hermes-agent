@@ -736,6 +736,10 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         return resp.json()["fields"][key]["options"]
 
+    def test_schema_provider_options_include_nvidia_speech(self):
+        assert "nvidia" in self._schema_provider_options("tts.provider")
+        assert "nvidia" in self._schema_provider_options("stt.provider")
+
 
 
 
@@ -3516,5 +3520,4 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
-
 

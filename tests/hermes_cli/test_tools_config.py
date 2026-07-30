@@ -29,6 +29,15 @@ from hermes_cli.tools_config import (
 )
 
 
+def test_tts_provider_catalog_includes_nvidia():
+    provider = next(
+        item
+        for item in TOOL_CATEGORIES["tts"]["providers"]
+        if item.get("tts_provider") == "nvidia"
+    )
+    assert [entry["key"] for entry in provider["env_vars"]] == ["NVIDIA_API_KEY"]
+
+
 
 
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
@@ -551,5 +560,4 @@ def _fake_features(*, logged_in: bool, paid: bool = True):
 # reporting ready/needs_setup honestly. agent_browser (local browser) must
 # track the FULL local install (CLI + Chromium), the cloud-provider hook
 # ("browserbase") only the CLI, and camofox its npm package.
-
 

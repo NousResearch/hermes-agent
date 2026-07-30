@@ -85,6 +85,7 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
@@ -115,6 +116,15 @@ class TestGetProviderFallbackPriority:
     def test_unknown_provider_passed_through(self):
         from tools.transcription_tools import _get_provider
         assert _get_provider({"provider": "custom-endpoint"}) == "custom-endpoint"
+
+    def test_explicit_nvidia_uses_shared_secret_resolver(self):
+        from tools.transcription_tools import _get_provider
+
+        with patch(
+            "tools.transcription_tools._resolve_provider_key",
+            return_value="nvapi-profile-secret",
+        ):
+            assert _get_provider({"provider": "nvidia"}) == "nvidia"
 
 # ============================================================================
 # Explicit provider config respected  (GH-1774)

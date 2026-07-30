@@ -405,8 +405,9 @@ class TestSystemPromptMemoryMode:
         # The volatile tier still contains the timestamp line, but must NOT
         # contain the memory block.
         assert "SHOULD_NOT_APPEAR" not in parts["volatile"]
-        # Sanity check: the timestamp line *is* present.
-        assert "Conversation started:" in parts["volatile"]
+        # Sanity check: current volatile runtime metadata remains present.
+        # Timestamp placement is upstream-owned and may be cached elsewhere.
+        assert "Platform: cli" in parts["volatile"]
 
     def test_full_mode_includes_memory_blocks(self):
         """build_system_prompt_parts with _memory_mode='full' includes memory."""
@@ -416,3 +417,79 @@ class TestSystemPromptMemoryMode:
         )
         parts = self._call_build_with_patches(agent)
         assert "MEMORY CONTENT HERE" in parts["volatile"]
+
+
+# ── Regression: DELEGATE_BLOCKED_TOOLS no longer blocks memory ─────────────
+
+
+class TestDelegateBlockedTools:
+    """Regression: DELEGATE_BLOCKED_TOOLS must not include 'memory'."""
+
+    def test_memory_not_in_blocked_tools(self):
+        """memory is removed from DELEGATE_BLOCKED_TOOLS; memory_mode controls access."""
+        from tools.delegate_tool import DELEGATE_BLOCKED_TOOLS
+        assert "memory" not in DELEGATE_BLOCKED_TOOLS, (
+            "DELEGATE_BLOCKED_TOOLS must not contain 'memory' — "
+            "memory_mode (on_demand/full/off) now controls sub-agent memory access"
+        )
+
+
+# ── Regression: External memory provider gated on memory_mode ───────────────
+
+
+class TestExternalProviderMemoryMode:
+    """External memory provider system prompt block respects memory_mode."""
+
+    def test_on_demand_skips_external_provider_block(self):
+        """External provider content is not injected when _memory_mode='on_demand'."""
+        agent = TestSystemPromptMemoryMode._make_minimal_agent("on_demand")
+        # Wire a mock _memory_manager that would produce content
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = "EXTERNAL_PROVIDER_CONTENT"
+
+        parts = TestSystemPromptMemoryMode._call_build_with_patches(agent)
+        assert "EXTERNAL_PROVIDER_CONTENT" not in parts["volatile"], (
+            "External provider block must be skipped for on_demand mode"
+        )
+
+    def test_full_mode_includes_external_provider_block(self):
+        """External provider content IS injected when _memory_mode='full'."""
+        agent = TestSystemPromptMemoryMode._make_minimal_agent("full")
+        agent._memory_store.format_for_system_prompt.return_value = "MEM"
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = "EXTERNAL_PROVIDER_CONTENT"
+
+        parts = TestSystemPromptMemoryMode._call_build_with_patches(agent)
+        assert "EXTERNAL_PROVIDER_CONTENT" in parts["volatile"], (
+            "External provider block must be included for full mode"
+        )
+
+    def test_off_mode_skips_external_provider_block(self):
+        """External provider content is not injected when _memory_mode='off'."""
+        agent = TestSystemPromptMemoryMode._make_minimal_agent("off")
+        # In real code, _memory_store is None for off mode (agent_init gates creation)
+        agent._memory_enabled = False
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = "EXTERNAL_PROVIDER_CONTENT"
+
+        parts = TestSystemPromptMemoryMode._call_build_with_patches(agent)
+        assert "EXTERNAL_PROVIDER_CONTENT" not in parts["volatile"], (
+            "External provider block must be skipped for off mode"
+        )
+
+
+# ── Regression: DELEGATE_TASK_SCHEMA exposes memory_mode ────────────────────
+
+
+class TestDelegateSchemaMemoryMode:
+    """DELEGATE_TASK_SCHEMA must include memory_mode in its parameters."""
+
+    def test_schema_has_memory_mode(self):
+        """The schema exposes memory_mode as an enum parameter."""
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        assert "memory_mode" in props, (
+            "DELEGATE_TASK_SCHEMA must expose memory_mode parameter"
+        )
+        assert props["memory_mode"]["type"] == "string"
+        assert set(props["memory_mode"]["enum"]) == {"full", "on_demand", "off"}

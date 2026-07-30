@@ -791,9 +791,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 volatile_parts.append(user_block)
 
     # External memory provider system prompt block (additive to built-in).
-    # Skipped for on_demand mode — sub-agents should access provider tools
-    # without the provider's content injected into their system prompt.
-    if agent._memory_manager and getattr(agent, "_memory_mode", "full") != "on_demand":
+    # Skipped for on_demand and off modes — sub-agents should access provider
+    # tools without the provider's content injected into their system prompt.
+    if agent._memory_manager and getattr(agent, "_memory_mode", "full") not in ("on_demand", "off"):
         try:
             _ext_mem_block = agent._memory_manager.build_system_prompt()
             if _ext_mem_block:

@@ -831,6 +831,11 @@ export const en: Translations = {
       moaNewPresetPlaceholder: 'new preset',
       moaAddPreset: 'Add preset',
       moaDefault: 'Default:',
+      moaReferenceToggle: (enabled, index) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
+      moaReferenceTitle: index => `Reference ${index}`,
+      moaRemove: 'Remove',
+      moaAddReference: 'Add reference model',
+      moaAggregator: 'Aggregator',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },

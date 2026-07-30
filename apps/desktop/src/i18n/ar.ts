@@ -781,6 +781,11 @@ export const ar = defineLocale({
       moaNewPresetPlaceholder: 'إعداد جديد',
       moaAddPreset: 'إضافة إعداد',
       moaDefault: 'الافتراضي:',
+      moaReferenceToggle: (enabled, index) => `${enabled ? 'تعطيل' : 'تفعيل'} المرجع ${index}`,
+      moaReferenceTitle: index => `المرجع ${index}`,
+      moaRemove: 'إزالة',
+      moaAddReference: 'إضافة نموذج مرجعي',
+      moaAggregator: 'المُجمِّع',
       tasks: {
         vision: {
           label: 'الرؤية',

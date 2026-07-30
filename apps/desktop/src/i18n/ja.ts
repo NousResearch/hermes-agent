@@ -871,6 +871,11 @@ export const ja = defineLocale({
       moaNewPresetPlaceholder: '新しいプリセット',
       moaAddPreset: 'プリセットを追加',
       moaDefault: 'デフォルト:',
+      moaReferenceToggle: (enabled, index) => `参照 ${index} を${enabled ? '無効化' : '有効化'}`,
+      moaReferenceTitle: index => `参照 ${index}`,
+      moaRemove: '削除',
+      moaAddReference: '参照モデルを追加',
+      moaAggregator: 'アグリゲーター',
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },
         web_extract: { label: 'ウェブ抽出', hint: 'ページの要約' },

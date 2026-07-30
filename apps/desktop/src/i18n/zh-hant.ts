@@ -843,6 +843,11 @@ export const zhHant = defineLocale({
       moaNewPresetPlaceholder: '新預設',
       moaAddPreset: '新增預設',
       moaDefault: '預設：',
+      moaReferenceToggle: (enabled, index) => `${enabled ? '停用' : '啟用'}參考 ${index}`,
+      moaReferenceTitle: index => `參考 ${index}`,
+      moaRemove: '移除',
+      moaAddReference: '新增參考模型',
+      moaAggregator: '匯總器',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         web_extract: { label: '網頁擷取', hint: '頁面摘要' },

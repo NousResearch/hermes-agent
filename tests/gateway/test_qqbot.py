@@ -146,6 +146,136 @@ class TestQQGroupSenderAttribution:
         assert "群昵称=Alice Group" in event.source.user_name
 
 
+class TestQQFullGroupMessages:
+    class FakeSessionStore:
+        def __init__(self):
+            self.entries = []
+
+        def get_or_create_session(self, source):
+            self.source = source
+            return SimpleNamespace(session_id="session-1")
+
+        def append_to_transcript(self, session_id, entry):
+            self.entries.append((session_id, entry))
+
+    def _make(self, tmp_path):
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(
+            _make_config(
+                app_id="bot-app",
+                client_secret="secret",
+                group_policy="allowlist",
+                group_allow_from=["group-1"],
+                group_sessions_per_user=False,
+                observe_unmentioned_group_messages=True,
+                identity_store_path=str(tmp_path / "identities.json"),
+            )
+        )
+        adapter._process_attachments = mock.AsyncMock(return_value={
+            "image_urls": [],
+            "image_media_types": [],
+            "voice_transcripts": [],
+            "attachment_info": "",
+        })
+        adapter._process_quoted_context = mock.AsyncMock(return_value={
+            "quote_block": "",
+            "image_urls": [],
+            "image_media_types": [],
+        })
+        adapter.handle_message = mock.AsyncMock()
+        adapter._session_store = self.FakeSessionStore()
+        return adapter
+
+    @staticmethod
+    def _payload(msg_id="msg-1", mentions=None):
+        return {
+            "id": msg_id,
+            "group_openid": "group-1",
+            "content": "ordinary group chatter",
+            "timestamp": "2026-07-30T17:00:00+08:00",
+            "author": {"member_openid": "member-1", "username": "Alice"},
+            "mentions": mentions or [],
+        }
+
+    def test_dispatch_accepts_group_message_create(self, tmp_path):
+        adapter = self._make(tmp_path)
+        adapter._on_message = mock.Mock(return_value=mock.MagicMock())
+        with mock.patch("asyncio.create_task") as create_task:
+            adapter._dispatch_payload({
+                "op": 0,
+                "t": "GROUP_MESSAGE_CREATE",
+                "s": 1,
+                "d": self._payload(),
+            })
+
+        adapter._on_message.assert_called_once_with(
+            "GROUP_MESSAGE_CREATE",
+            self._payload(),
+        )
+        create_task.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_full_message_is_observed_without_agent(self, tmp_path):
+        adapter = self._make(tmp_path)
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", self._payload())
+
+        adapter.handle_message.assert_not_awaited()
+        assert len(adapter._session_store.entries) == 1
+        session_id, entry = adapter._session_store.entries[0]
+        assert session_id == "session-1"
+        assert entry["observed"] is True
+        assert entry["message_id"] == "msg-1"
+        assert "QQ sender id=" in entry["content"]
+        assert "群昵称=Alice" in entry["content"]
+        assert entry["content"].endswith("ordinary group chatter")
+
+    @pytest.mark.asyncio
+    async def test_full_message_from_non_allowlisted_group_is_not_saved(self, tmp_path):
+        adapter = self._make(tmp_path)
+        payload = self._payload()
+        payload["group_openid"] = "group-2"
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+
+        adapter.handle_message.assert_not_awaited()
+        assert adapter._session_store.entries == []
+
+    @pytest.mark.asyncio
+    async def test_bot_mention_dispatches_agent_instead_of_observing(self, tmp_path):
+        adapter = self._make(tmp_path)
+        adapter._bot_openids = {"bot-openid"}
+        payload = self._payload(mentions=[{"id": "bot-openid", "bot": True}])
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+
+        adapter.handle_message.assert_awaited_once()
+        assert adapter._session_store.entries == []
+        event = adapter.handle_message.await_args.args[0]
+        assert "observed QQ group context" in event.channel_prompt
+
+    @pytest.mark.asyncio
+    async def test_mentioning_another_bot_remains_passive(self, tmp_path):
+        adapter = self._make(tmp_path)
+        adapter._bot_openids = {"our-bot-openid"}
+        payload = self._payload(mentions=[{"id": "other-bot-openid", "bot": True}])
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+
+        adapter.handle_message.assert_not_awaited()
+        assert len(adapter._session_store.entries) == 1
+        assert adapter._session_store.entries[0][1]["observed"] is True
+
+    def test_addressed_duplicate_upgrades_prior_observation(self, tmp_path):
+        adapter = self._make(tmp_path)
+
+        assert adapter._is_duplicate("msg-1", mode="observed") is False
+        assert adapter._is_duplicate("msg-1", mode="observed") is True
+        assert adapter._is_duplicate("msg-1", mode="addressed") is False
+        assert adapter._is_duplicate("msg-1", mode="addressed") is True
+
+
 # ---------------------------------------------------------------------------
 # _coerce_list
 # ---------------------------------------------------------------------------

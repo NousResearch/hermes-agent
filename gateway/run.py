@@ -1069,7 +1069,12 @@ def _build_replay_entry(
 
 
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
-_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
+_QQ_OBSERVED_CONTEXT_PROMPT_MARKER = "observed QQ group context"
+_OBSERVED_GROUP_CONTEXT_PROMPT_MARKERS = (
+    _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER,
+    _QQ_OBSERVED_CONTEXT_PROMPT_MARKER,
+)
+_OBSERVED_GROUP_CONTEXT_HEADER = "[Observed group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
 
 
@@ -1085,6 +1090,14 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     """
 
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+
+
+def _uses_observed_group_context(channel_prompt: Optional[str]) -> bool:
+    """Return True when a platform marks prior group chatter as context-only."""
+    return bool(
+        channel_prompt
+        and any(marker in channel_prompt for marker in _OBSERVED_GROUP_CONTEXT_PROMPT_MARKERS)
+    )
 
 
 def _csv_or_list_to_set(raw: Any) -> set[str]:
@@ -1162,7 +1175,7 @@ def _build_gateway_agent_history(
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
-    Observed Telegram group rows are returned as API-only context for the
+    Observed group rows are returned as API-only context for the
     current addressed message instead of being replayed as normal prior user
     turns.  Keeping that context out of ``conversation_history`` avoids
     consecutive-user repair merging it with the live user turn and then hiding
@@ -1181,7 +1194,7 @@ def _build_gateway_agent_history(
     _msg_tz = _get_msg_tz()
     agent_history: List[Dict[str, Any]] = []
     observed_group_context: List[str] = []
-    separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
+    separate_observed_context = _uses_observed_group_context(channel_prompt)
 
     for msg in history or []:
         role = msg.get("role")

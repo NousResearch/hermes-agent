@@ -311,7 +311,7 @@ def test_dangling_symlink_listing_returns_partial_entry(forced_files_client):
 
     link = root / "broken"
     try:
-        link.symlink_to("ghost")
+        link.symlink_to("ghost")  # relative — stays inside root so security check passes
     except OSError:
         pytest.skip("filesystem does not support symlinks")
 
@@ -324,6 +324,7 @@ def test_dangling_symlink_listing_returns_partial_entry(forced_files_client):
 
     entry = broken[0]
     assert entry["is_directory"] is False
-    assert entry["size"] == 5
+    # Broken symlink still has valid lstat metadata (size = target name length)
+    assert entry["size"] == 5  # "ghost" is 5 chars
     assert entry["mtime"] is not None
     assert entry["mime_type"] is not None

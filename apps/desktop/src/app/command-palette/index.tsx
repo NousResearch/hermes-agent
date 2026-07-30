@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Dialog as DialogPrimitive } from 'radix-ui'
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
@@ -235,6 +235,70 @@ const rankGroups = (groups: PaletteGroup[], search: string): PaletteGroup[] => {
 // theme lists under both Light and Dark). The id suffix disambiguates.
 const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.id}`
 
+const EMPTY_GROUPS: PaletteGroup[] = []
+
+// Backstop only. The palette normally retires on the content's real
+// `animationend`, so the CSS owns the close duration; this just guarantees the
+// body can't stay mounted forever somewhere animations never run (jsdom,
+// `animation: none`). Deliberately longer than any plausible exit so it never
+// races the real signal and truncates the fade.
+const EXIT_FALLBACK_MS = 1000
+
+/**
+ * The palette's row list, split out so an OPENING palette paints before it
+ * renders rows. This component mounts with the portal, so `useDeferredValue`'s
+ * initial value applies per open: the first commit is the frame + input
+ * (instant), and the several-hundred-row list arrives in an interruptible
+ * follow-up render. Opening ⌘K must never wait on building the list.
+ */
+const PaletteGroups = memo(function PaletteGroups({
+  bindings,
+  groups,
+  modHeld,
+  noResultsLabel,
+  onSelectItem,
+  onSelectMods,
+  search
+}: {
+  bindings: Record<string, string[]>
+  groups: PaletteGroup[]
+  modHeld: boolean
+  noResultsLabel: string
+  onSelectItem: (item: PaletteItem) => void
+  onSelectMods: (event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => void
+  search: string
+}) {
+  const deferred = useDeferredValue(groups, EMPTY_GROUPS)
+  // While the rows are still catching up, an empty list means "not rendered
+  // yet", not "nothing matched" — don't flash the empty state on open.
+  const pending = deferred !== groups
+
+  return (
+    <>
+      {/* Filtering happens in rankGroups, so cmdk's own CommandEmpty
+          (keyed to its internal filter count) would never fire. */}
+      {deferred.length === 0 && !pending && (
+        <div className="py-6 text-center text-sm text-muted-foreground">{noResultsLabel}</div>
+      )}
+      {deferred.map((group, index) => (
+        <CommandGroup className={HUD_HEADING} heading={group.heading} key={group.heading ?? `palette-group-${index}`}>
+          {group.items.map(item => (
+            <PaletteRow
+              bindings={bindings}
+              item={item}
+              key={item.id}
+              modHeld={modHeld}
+              onSelectItem={onSelectItem}
+              onSelectMods={onSelectMods}
+              search={search}
+            />
+          ))}
+        </CommandGroup>
+      ))}
+    </>
+  )
+})
+
 const PaletteRow = memo(function PaletteRow({
   bindings,
   item,
@@ -277,7 +341,9 @@ const PaletteRow = memo(function PaletteRow({
         )}
       </span>
       {item.detail && <span className="truncate text-muted-foreground/80">{item.detail}</span>}
-      {combo && <KbdCombo className={cn('ml-auto', modPreview ? 'opacity-90' : 'opacity-55')} combo={combo} size="sm" />}
+      {combo && (
+        <KbdCombo className={cn('ml-auto', modPreview ? 'opacity-90' : 'opacity-55')} combo={combo} size="sm" />
+      )}
       {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />}
       {item.active && <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />}
     </CommandItem>
@@ -375,9 +441,68 @@ function themeSupportsMode(name: string, target: 'light' | 'dark'): boolean {
   return target === 'dark' ? luminance(background) <= 0.5 : luminance(background) > 0.5
 }
 
+/**
+ * ⌘K is an overlay that is stateful to itself: pressing it must open a frame
+ * immediately, and must not be held up by whatever else the shell is doing. So
+ * the mounted cost of a CLOSED palette is one store subscription and nothing
+ * else.
+ *
+ * Everything expensive — a dozen store subscriptions (connection, update
+ * status/apply, keybinds, worktrees, projects, theme, i18n), three server
+ * queries, and the group builders that assemble a few hundred rows — lives in
+ * `CommandPaletteBody`, which only exists while the palette is on screen.
+ * Before this split those hooks ran on every render of the always-mounted
+ * component: an in-flight update rewrote `$updateApply` per progress line and
+ * rebuilt the entire row set each time, for a surface nobody could see.
+ *
+ * `mounted` lags `open` by the close animation rather than tracking it exactly.
+ * Unmounting the body the instant `open` flips false would rip the content out
+ * of the tree before Radix could play `data-[state=closed]`, so the overlay
+ * would vanish instead of closing. The body reports its own exit via
+ * `onExited` (the content's real `animationend`), so nothing here has to know
+ * how long that animation is — the CSS owns the duration.
+ *
+ * The `openCount` key remounts the body per open, which is what lets local
+ * search/sub-page state reset without a close effect.
+ */
 export function CommandPalette() {
-  const { t } = useI18n()
   const open = useStore($commandPaletteOpen)
+  const [mounted, setMounted] = useState(open)
+  const [openCount, setOpenCount] = useState(0)
+
+  const retire = useCallback(() => {
+    // Only retire the body if the palette is still closed — a reopen mid-fade
+    // must not unmount the fresh instance.
+    if (!$commandPaletteOpen.get()) {
+      setMounted(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (open) {
+      setOpenCount(count => count + 1)
+      setMounted(true)
+
+      return
+    }
+
+    // Safety net for environments where the exit animation never runs (jsdom,
+    // `animation: none`), so the body can't be stranded mounted. The real
+    // unmount is `onExited` below; whichever fires first wins.
+    const timer = setTimeout(retire, EXIT_FALLBACK_MS)
+
+    return () => clearTimeout(timer)
+  }, [open, retire])
+
+  return (
+    <DialogPrimitive.Root onOpenChange={setCommandPaletteOpen} open={open}>
+      {mounted && <CommandPaletteBody key={openCount} onExited={retire} />}
+    </DialogPrimitive.Root>
+  )
+}
+
+function CommandPaletteBody({ onExited }: { onExited: () => void }) {
+  const { t } = useI18n()
   const pendingPage = useStore($commandPalettePage)
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
@@ -439,12 +564,6 @@ export function CommandPalette() {
   const [modHeld, setModHeld] = useState(false)
 
   useEffect(() => {
-    if (!open) {
-      setModHeld(false)
-
-      return
-    }
-
     const sync = (event: KeyboardEvent) => setModHeld(event.metaKey || event.ctrlKey)
     const clear = () => setModHeld(false)
 
@@ -457,26 +576,25 @@ export function CommandPalette() {
       window.removeEventListener('keyup', sync, { capture: true })
       window.removeEventListener('blur', clear)
     }
-  }, [open])
+  }, [])
 
-  // Server-backed sources for the type-to-search groups, fetched lazily while
-  // the palette is open. react-query handles caching/dedup/staleness.
+  // Server-backed sources for the type-to-search groups. This component only
+  // exists while the palette is open, so the queries are inherently lazy — no
+  // `enabled` gate needed. react-query handles caching/dedup/staleness, so a
+  // reopen paints from cache and revalidates in the background.
   const configQuery = useQuery({
     queryKey: ['command-palette', 'config'],
-    queryFn: getHermesConfigRecord,
-    enabled: open
+    queryFn: getHermesConfigRecord
   })
 
   const sessionsQuery = useQuery({
     queryKey: ['command-palette', 'sessions'],
-    queryFn: () => listAllProfileSessions(200, 1, 'exclude'),
-    enabled: open
+    queryFn: () => listAllProfileSessions(200, 1, 'exclude')
   })
 
   const archivedQuery = useQuery({
     queryKey: ['command-palette', 'archived'],
-    queryFn: () => listAllProfileSessions(200, 0, 'only'),
-    enabled: open
+    queryFn: () => listAllProfileSessions(200, 0, 'only')
   })
 
   const mcpServers = useMemo(() => {
@@ -490,21 +608,16 @@ export function CommandPalette() {
   const sessions = useMemo(() => (sessionsQuery.data?.sessions ?? []).map(toSessionEntry), [sessionsQuery.data])
   const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
 
-  // Reset the query/sub-page on close so it reopens clean.
-  useEffect(() => {
-    if (!open) {
-      setSearch('')
-      setPage(null)
-    }
-  }, [open])
+  // Search/sub-page are local to a mount, and this component remounts per open
+  // (keyed by open count), so each open starts clean without a reset effect.
 
   // Deep-link into a nested page (e.g. `/pet list` → pets picker).
   useEffect(() => {
-    if (open && pendingPage) {
+    if (pendingPage) {
       setPage(pendingPage)
       $commandPalettePage.set(null)
     }
-  }, [open, pendingPage])
+  }, [pendingPage])
 
   const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
 
@@ -1099,102 +1212,92 @@ export function CommandPalette() {
   }
 
   return (
-    <DialogPrimitive.Root onOpenChange={setCommandPaletteOpen} open={open}>
-      <DialogPrimitive.Portal>
-        {/* Transparent overlay: keeps click-away + focus trap, but no dim/blur. */}
-        <DialogPrimitive.Overlay className="fixed inset-0 z-(--z-over-modal)" />
-        <DialogPrimitive.Content
-          aria-describedby={undefined}
-          className={cn(
-            HUD_POSITION,
-            HUD_SURFACE,
-            'z-(--z-over-modal-content) w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
+    <DialogPrimitive.Portal>
+      {/* Transparent overlay: keeps click-away + focus trap, but no dim/blur. */}
+      <DialogPrimitive.Overlay className="fixed inset-0 z-(--z-over-modal)" />
+      <DialogPrimitive.Content
+        aria-describedby={undefined}
+        className={cn(
+          HUD_POSITION,
+          HUD_SURFACE,
+          'z-(--z-over-modal-content) w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
+        )}
+        // The close animation finishing is what retires this whole subtree —
+        // the CSS owns the duration, not a hardcoded timer. Guarded on the
+        // content itself (descendants animate too) and on the closed state, so
+        // an OPEN animation never unmounts the palette we just opened.
+        onAnimationEnd={event => {
+          if (event.target === event.currentTarget && event.currentTarget.dataset.state === 'closed') {
+            onExited()
+          }
+        }}
+      >
+        <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
+        <Command className="bg-transparent" loop shouldFilter={false}>
+          {activePage && (
+            <button
+              className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+              onClick={goBack}
+              type="button"
+            >
+              <ChevronLeft className="size-3.5" />
+              <span>{t.commandCenter.back}</span>
+              <span className="text-muted-foreground/50">/</span>
+              <span className="font-medium text-foreground">{activePage.title}</span>
+            </button>
           )}
-        >
-          <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
-          <Command className="bg-transparent" loop shouldFilter={false}>
-            {activePage && (
-              <button
-                className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-                onClick={goBack}
-                type="button"
-              >
-                <ChevronLeft className="size-3.5" />
-                <span>{t.commandCenter.back}</span>
-                <span className="text-muted-foreground/50">/</span>
-                <span className="font-medium text-foreground">{activePage.title}</span>
-              </button>
+          <CommandInput
+            className={HUD_TEXT}
+            onKeyDown={event => {
+              // Capture modifiers before cmdk's Enter fires onSelect (which
+              // swipes the inviting MouseEvent and hands us nothing).
+              noteSelectMods(event)
+
+              if (!activePage) {
+                return
+              }
+
+              // In a submenu: Esc and empty-input Backspace step back out
+              // instead of closing the whole palette.
+              if (event.key === 'Escape' || (event.key === 'Backspace' && search === '')) {
+                event.preventDefault()
+                event.stopPropagation()
+                goBack()
+
+                return
+              }
+            }}
+            onValueChange={setSearch}
+            placeholder={placeholder}
+            right={page === 'pets' ? <PetInlineToggle /> : undefined}
+            value={search}
+          />
+          <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
+            {/* Server-driven pages render their own list; the rest show groups. */}
+            {page === 'pets' ? (
+              <PetPalettePage
+                onGenerate={() => {
+                  closeCommandPalette()
+                  openPetGenerate()
+                }}
+                search={search}
+              />
+            ) : page === 'install-theme' ? (
+              <MarketplaceThemePage onPickTheme={setTheme} search={search} />
+            ) : (
+              <PaletteGroups
+                bindings={bindings}
+                groups={visibleGroups}
+                modHeld={modHeld}
+                noResultsLabel={t.commandCenter.noResults}
+                onSelectItem={handleSelect}
+                onSelectMods={noteSelectMods}
+                search={search}
+              />
             )}
-            <CommandInput
-              className={HUD_TEXT}
-              onKeyDown={event => {
-                // Capture modifiers before cmdk's Enter fires onSelect (which
-                // swipes the inviting MouseEvent and hands us nothing).
-                noteSelectMods(event)
-
-                if (!activePage) {
-                  return
-                }
-
-                // In a submenu: Esc and empty-input Backspace step back out
-                // instead of closing the whole palette.
-                if (event.key === 'Escape' || (event.key === 'Backspace' && search === '')) {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  goBack()
-
-                  return
-                }
-              }}
-              onValueChange={setSearch}
-              placeholder={placeholder}
-              right={page === 'pets' ? <PetInlineToggle /> : undefined}
-              value={search}
-            />
-            <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
-              {/* Server-driven pages render their own list; the rest show groups. */}
-              {page === 'pets' ? (
-                <PetPalettePage
-                  onGenerate={() => {
-                    closeCommandPalette()
-                    openPetGenerate()
-                  }}
-                  search={search}
-                />
-              ) : page === 'install-theme' ? (
-                <MarketplaceThemePage onPickTheme={setTheme} search={search} />
-              ) : (
-                <>
-                  {/* Filtering happens in rankGroups, so cmdk's own CommandEmpty
-                      (keyed to its internal filter count) would never fire. */}
-                  {visibleGroups.length === 0 && (
-                    <div className="py-6 text-center text-sm text-muted-foreground">{t.commandCenter.noResults}</div>
-                  )}
-                  {visibleGroups.map((group, index) => (
-                    <CommandGroup
-                      className={HUD_HEADING}
-                      heading={group.heading}
-                      key={group.heading ?? `palette-group-${index}`}
-                    >
-                      {group.items.map(item => (
-                        <PaletteRow
-                          bindings={bindings}
-                          item={item}
-                          key={item.id}
-                          modHeld={modHeld}
-                          onSelectItem={handleSelect}
-                          onSelectMods={noteSelectMods}
-                          search={search}
-                        />
-                      ))}
-                    </CommandGroup>
-                  ))}
-                </>
-              )}
-            </CommandList>
-          </Command>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
+          </CommandList>
+        </Command>
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Portal>
   )
 }

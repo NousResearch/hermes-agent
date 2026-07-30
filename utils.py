@@ -424,11 +424,27 @@ def _apply_yaml_diff(doc: Any, before: Any, after: Any) -> None:
             doc[key] = _rt_safe_scalar(new_value)
 
 
+class RoundTripUnsupportedError(ValueError):
+    """The round-trip writer cannot represent this document.
+
+    Only parser/dependency failures use this exception, allowing callers to
+    fall back to a plain dump. Filesystem and atomic-write failures propagate.
+    """
+
+
 def atomic_roundtrip_yaml_apply(path: Union[str, Path], before: Any, after: Any) -> None:
     """Persist a computed mapping while preserving formatting on unchanged paths."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    yaml_rt, doc = _roundtrip_load(path)
+    try:
+        from ruamel.yaml.error import YAMLError
+        yaml_rt, doc = _roundtrip_load(path)
+    except ImportError as exc:
+        raise RoundTripUnsupportedError(f"ruamel.yaml unavailable: {exc}") from exc
+    except YAMLError as exc:
+        raise RoundTripUnsupportedError(
+            f"round-trip parser rejected {path.name}: {exc}"
+        ) from exc
     _apply_yaml_diff(doc, before if isinstance(before, dict) else {}, after)
     _roundtrip_dump(path, yaml_rt, doc)
 

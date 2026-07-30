@@ -1023,3 +1023,33 @@ class TestCommentPreservation:
         import yaml as _yaml
         data = _yaml.safe_load(text)
         assert "backend" not in (data.get("terminal") or {})
+
+    def test_write_failure_propagates_instead_of_stripping_comments(
+        self, _isolated_hermes_home, monkeypatch
+    ):
+        """Sweeper ask on the salvage PR: only round-trip *parser* rejection
+        may fall back to the plain (comment-stripping) dump. A genuine write
+        failure (temp file, fsync, atomic replace) must propagate — falling
+        through would turn a failed write into a "successful" rewrite that
+        destroys the user's comments."""
+        import utils as utils_module
+
+        self._seed(_isolated_hermes_home)
+        original = _read_config(_isolated_hermes_home)
+
+        real_replace = utils_module.atomic_replace
+        calls = {"n": 0}
+
+        def first_call_explodes(tmp_path, path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("simulated atomic-replace failure")
+            return real_replace(tmp_path, path)  # a fallback dump would succeed
+
+        monkeypatch.setattr(utils_module, "atomic_replace", first_call_explodes)
+        import pytest as _pytest
+        with _pytest.raises(OSError, match="simulated atomic-replace failure"):
+            set_config_value("terminal.backend", "ssh")
+
+        # File untouched: no plain-dump fallback happened, comments intact.
+        assert _read_config(_isolated_hermes_home) == original

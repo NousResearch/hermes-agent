@@ -1,5 +1,5 @@
-import { type FC, useMemo } from 'react'
 import { useStore } from '@nanostores/react'
+import { type FC, useMemo } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { deriveChangedFiles } from '@/components/assistant-ui/thread/changed-files'

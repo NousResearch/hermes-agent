@@ -3454,11 +3454,11 @@ def _write_user_config(
     if before is None:
         atomic_yaml_write(config_path, user_config, sort_keys=False)
         return
-    from utils import atomic_roundtrip_yaml_apply
+    from utils import RoundTripUnsupportedError, atomic_roundtrip_yaml_apply
 
     try:
         atomic_roundtrip_yaml_apply(config_path, before, user_config)
-    except Exception:
+    except RoundTripUnsupportedError:
         atomic_yaml_write(config_path, user_config, sort_keys=False)
 
 

@@ -134,9 +134,17 @@ struct MarkerOwner {
     age_secs: u64,
 }
 
-/// Read the marker and report a live owner, if any. `None` for every "no live
-/// update" case — absent, unreadable, malformed, dead pid, past the ceiling —
-/// matching `readLiveUpdateMarker` in the Electron gate. Never panics.
+/// Read the marker and report a live *foreign* owner, if any. `None` for every
+/// "no live update" case — absent, unreadable, malformed, dead pid, past the
+/// ceiling, or a marker whose pid is **this** process — matching
+/// `readLiveUpdateMarker` in the Electron gate. Never panics.
+///
+/// Self-PID is treated as non-ownership on purpose (#74761): since #50238 the
+/// desktop pre-writes this marker with the spawned updater's pid before the
+/// updater reaches `acquire`. Without the exclusion, `acquire` sees a live
+/// owner that is itself and aborts ("Another Hermes update is already
+/// running"), then the desktop relaunches and retries forever. A foreign live
+/// pid (e.g. a dashboard-spawned `hermes update`) still blocks.
 fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
     let raw = std::fs::read_to_string(path).ok()?;
     let mut lines = raw.lines();
@@ -148,6 +156,11 @@ fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
         .unwrap_or(0);
     let age_secs = now.saturating_sub(started_at);
     if age_secs > UPDATE_MARKER_MAX_AGE_SECS || !pid_is_alive(pid) {
+        return None;
+    }
+    // Desktop `writeUpdateMarker(hermesHome, child.pid)` races ahead of us;
+    // adopt that pre-claim rather than refusing our own marker.
+    if pid == std::process::id() {
         return None;
     }
     Some(MarkerOwner { pid, age_secs })
@@ -1312,27 +1325,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Spawn a short-lived sibling process whose pid stands in for a foreign
+    /// updater. Same-process double-acquire no longer models contention: since
+    /// #74761 `live_marker_owner` treats our own pid as adoptable (desktop
+    /// pre-writes it), so a second acquire in *this* process would succeed.
+    fn spawn_foreign_holder() -> std::process::Child {
+        #[cfg(windows)]
+        {
+            std::process::Command::new("timeout")
+                .args(["/t", "30", "/nobreak"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn foreign marker holder")
+        }
+        #[cfg(not(windows))]
+        {
+            std::process::Command::new("sleep")
+                .arg("30")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn foreign marker holder")
+        }
+    }
+
     #[test]
     fn acquire_refuses_while_a_live_updater_owns_the_marker() {
         let dir = unique_tmp_dir("marker-contended");
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join(".hermes-update-in-progress");
 
-        // A live updater (us) holds it. A second updater must NOT clobber the
-        // marker and run concurrently over the same checkout — that race is
-        // what let a dashboard `hermes update` and install-mode bootstrap
-        // mutate one tree at once.
-        let held = UpdateMarkerGuard::acquire(marker.clone())
-            .unwrap_or_else(|_| panic!("first acquire must succeed"));
+        // A live *foreign* updater holds it. We must NOT clobber the marker and
+        // run concurrently over the same checkout — that race is what let a
+        // dashboard `hermes update` and install-mode bootstrap mutate one tree
+        // at once. Own-pid markers are adoptable (#74761), so the foreign pid
+        // must be a real sibling process.
+        let mut foreign = spawn_foreign_holder();
+        let foreign_pid = foreign.id();
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        std::fs::write(&marker, format!("{foreign_pid}\n{started_at}")).unwrap();
+
         let owner = UpdateMarkerGuard::acquire(marker.clone())
             .err()
-            .expect("second acquire must be refused while the first is live");
-        assert_eq!(owner.pid, std::process::id());
+            .expect("acquire must be refused while a foreign updater is live");
+        assert_eq!(owner.pid, foreign_pid);
 
         // The refused guard must not delete the live owner's marker.
         assert!(marker.exists(), "refused acquire must leave the marker intact");
-        drop(held);
-        assert!(!marker.exists(), "the real owner still cleans up on drop");
+        let _ = foreign.kill();
+        let _ = foreign.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

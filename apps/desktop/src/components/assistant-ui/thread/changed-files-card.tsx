@@ -1,5 +1,7 @@
+import { useStore } from '@nanostores/react'
 import { type FC, useMemo } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { deriveChangedFiles } from '@/components/assistant-ui/thread/changed-files'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { DiffCount } from '@/components/ui/diff-count'
@@ -20,6 +22,11 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
   const { t } = useI18n()
   const copy = t.assistant.thread
   const files = useMemo(() => deriveChangedFiles(parts), [parts])
+  // Review THIS surface's repo: a tile transcript pins the pane to the tile's
+  // worktree; the primary passes null (follow the active session, as before).
+  const view = useSessionView()
+  const viewCwd = useStore(view.$cwd)
+  const scopeCwd = view.kind === 'primary' ? null : viewCwd || null
 
   if (files.length === 0) {
     return null
@@ -34,7 +41,7 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
         <span className="min-w-0 flex-1 truncate text-(--ui-text-primary)">{copy.filesChanged(files.length)}</span>
         <button
           className="shrink-0 cursor-pointer text-(--ui-text-tertiary) transition-colors hover:text-(--ui-text-primary)"
-          onClick={revealReview}
+          onClick={() => revealReview(scopeCwd)}
           type="button"
         >
           {copy.reviewChanges}
@@ -45,7 +52,7 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
           <button
             className="row-hover -mx-1.5 flex items-center gap-2 rounded-md px-1.5 py-1 text-left"
             key={file.path}
-            onClick={() => void openReviewForPath(file.path)}
+            onClick={() => void openReviewForPath(file.path, scopeCwd)}
             title={file.path}
             type="button"
           >

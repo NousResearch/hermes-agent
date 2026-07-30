@@ -394,26 +394,32 @@ def _browser_cdp_via_supervisor(
 
 def _browser_cdp_target_via_supervisor(
     task_id: str,
-    target_id: str,
+    target_id: Optional[str],
     method: str,
     params: Optional[Dict[str, Any]],
     timeout: float,
 ) -> Optional[str]:
-    """Route a target-scoped CDP call through a live supervisor session.
+    """Route a CDP call through the task's live supervisor connection.
 
-    When the requested ``target_id`` is already attached to the task's CDP
-    supervisor (the top-level page from ``browser_snapshot``'s
-    ``page_target_id``, an OOPIF frame, or an auto-attached child target),
-    dispatch ``method`` over the supervisor's persistent WebSocket instead
-    of opening a fresh stateless connection.  This is what makes multi-step
-    ``Target.getTargets`` → ``target_id`` workflows work on Browserless-style
-    backends that spawn a private browser per CDP connection (#32685) — a
-    fresh connection there can never see targets that belong to the
-    supervisor's browser.
+    Two shapes, one WebSocket:
 
-    Returns ``None`` when no live supervisor tracks the target so the caller
-    falls back to the legacy stateless attach flow (plain Chrome shares
-    targets across connections, so statelessness keeps working there).
+    * ``target_id`` set — dispatch ``method`` on the supervisor session
+      already attached to that target (the top-level page from
+      ``browser_snapshot``'s ``page_target_id``, an OOPIF frame, or an
+      auto-attached child target).
+    * ``target_id`` ``None`` — dispatch ``method`` as a browser-level
+      command (no ``sessionId``) on the same connection. Discovery calls
+      like ``Target.getTargets`` MUST ride the supervisor's WebSocket too:
+      Browserless-style backends spawn a private browser per CDP
+      connection (#32685), so a stateless discovery call would enumerate a
+      *different* browser than the one a follow-up
+      ``target_id``-routed call executes in.
+
+    Returns ``None`` when routing isn't possible — no live supervisor for
+    the task, or a ``target_id`` the supervisor has no session for — so the
+    caller falls back to the legacy stateless attach flow (plain Chrome
+    shares targets across connections, so statelessness keeps working
+    there).
     """
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
@@ -424,9 +430,11 @@ def _browser_cdp_target_via_supervisor(
     if supervisor is None:
         return None
 
-    session_id = supervisor.resolve_target_session(target_id)
-    if not session_id:
-        return None
+    session_id: Optional[str] = None
+    if target_id:
+        session_id = supervisor.resolve_target_session(target_id)
+        if not session_id:
+            return None
 
     loop = supervisor._loop  # type: ignore[attr-defined]
     if loop is None or not loop.is_running():
@@ -459,12 +467,16 @@ def _browser_cdp_target_via_supervisor(
     payload: Dict[str, Any] = {
         "success": True,
         "method": method,
-        "target_id": target_id,
-        "session_id": session_id,
+        # Lets callers (and tests) see the call rode the supervisor's
+        # persistent connection rather than a stateless one.
+        "connection": "supervisor",
         # Same force-redaction boundary as the stateless payload below —
         # supervisor routing must not become the unredacted sibling path.
         "result": _redact_cdp_output(result_msg.get("result", {})),
     }
+    if target_id:
+        payload["target_id"] = target_id
+        payload["session_id"] = session_id
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -575,21 +587,27 @@ def browser_cdp(
         safe_timeout = 30.0
     safe_timeout = max(1.0, min(safe_timeout, 300.0))
 
-    # --- Reuse the live supervisor session for known target ids ----------
-    # Runs after validation and the private-page guard above so target
+    # --- Reuse the live supervisor connection when one exists ------------
+    # Runs after validation and the private-page guard above so supervisor
     # routing cannot become the sibling bypass for either (the frame_id
-    # route follows the same boundary).  Falls through to the stateless
-    # attach when no live supervisor tracks this target.
-    if target_id:
-        routed = _browser_cdp_target_via_supervisor(
-            task_id=effective_task_id,
-            target_id=target_id,
-            method=method,
-            params=call_params,
-            timeout=safe_timeout,
-        )
-        if routed is not None:
-            return routed
+    # route follows the same boundary).  Covers both shapes: target-scoped
+    # calls ride the supervisor session attached to that target, and
+    # browser-level calls (no target_id — e.g. Target.getTargets
+    # discovery) ride the same WebSocket as browser commands, so a
+    # discovery → target_id chain observes ONE browser even on
+    # Browserless-style backends that give every connection a private
+    # browser.  Falls through to the stateless attach when there is no
+    # live supervisor (plain Chrome shares targets across connections) or
+    # the supervisor has no session for a requested target.
+    routed = _browser_cdp_target_via_supervisor(
+        task_id=effective_task_id,
+        target_id=target_id,
+        method=method,
+        params=call_params,
+        timeout=safe_timeout,
+    )
+    if routed is not None:
+        return routed
 
     try:
         result = _run_async(

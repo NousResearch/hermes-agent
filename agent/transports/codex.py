@@ -153,7 +153,7 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
-def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_responses: bool) -> tuple[Any, dict[str, str]]:
+def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_responses: bool, model: str) -> tuple[Any, dict[str, str]]:
     """Apply provider-reserved tool-name aliasing; returns ``(tools, {alias: original})`` for THIS request.
 
     xAI: a client ``web_search`` collides with Grok's native search — native mode
@@ -172,6 +172,25 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
                 {**t, "name": _XAI_CLIENT_WEB_SEARCH_ALIAS} if is_client_web_search(t) else t for t in response_tools
             ]
             wire_aliases[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
+    # Swap only an already-enabled search capability, on supported model/endpoint pairs.
+    # GPT-5+: Codex or GitHub Copilot. Grok: GitHub Copilot only.
+    if not is_xai_responses and response_tools:
+        model_stem = (model or "").lower().rsplit("/", 1)[-1]
+        is_github_responses = params.get("is_github_responses") is True
+        is_codex_backend = params.get("is_codex_backend") is True
+        swap_native = False
+        if model_stem.startswith("grok-") and is_github_responses:
+            swap_native = True
+        elif model_stem.startswith("gpt-"):
+            try:
+                major = int(model_stem.split("-")[1].split(".")[0])
+            except (IndexError, ValueError):
+                major = 0
+            if major >= 5 and (is_github_responses or is_codex_backend):
+                swap_native = True
+        if swap_native and any(is_client_web_search(t) for t in response_tools):
+            response_tools = [t for t in response_tools if not is_client_web_search(t)] + [{"type": "web_search"}]
+
     # OpenCode Responses backends reserve web_search / search_files as function names (HTTP 400 "custom
     # function name 'X' is reserved", #85589). Alias them on the wire; normalize_response maps them back.
     if response_tools and _is_opencode_responses_backend(params):
@@ -500,7 +519,7 @@ class ResponsesApiTransport(ProviderTransport):
         native_compaction_active = _native_compaction_active(context_management)
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
-        response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses)
+        response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses, model)
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant

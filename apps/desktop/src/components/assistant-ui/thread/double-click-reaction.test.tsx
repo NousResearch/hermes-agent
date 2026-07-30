@@ -4,11 +4,13 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { Thread } from '.'
+import type * as ReactionsStore from '@/store/reactions'
+import { $reactionsEnabled } from '@/store/reactions-enabled'
+import { $localReactions } from '@/store/reactions-local'
+
 import { isTapbackDoubleClick } from './use-message-reactions'
 
-import { $localReactions } from '@/store/reactions-local'
-import { $reactionsEnabled } from '@/store/reactions-enabled'
+import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 
@@ -29,7 +31,7 @@ Element.prototype.scrollTo = function scrollTo() {}
 // The gesture persists through the gateway; this suite is about the local
 // paint, which is what the user actually sees on the click.
 vi.mock('@/store/reactions', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/store/reactions')>()),
+  ...(await importOriginal<typeof ReactionsStore>()),
   toggleMessageReaction: vi.fn(async () => {})
 }))
 

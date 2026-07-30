@@ -123,6 +123,7 @@ export function useTapbackDoubleClick(
         reactions?: MessageReaction[]
         rowId?: number
       }
+
       const reactions = custom.reactions ?? EMPTY_REACTIONS
 
       // Same toggle semantics as the picker: a second double-click retracts.

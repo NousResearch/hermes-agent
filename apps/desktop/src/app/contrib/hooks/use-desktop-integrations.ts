@@ -5,6 +5,7 @@ import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
 import { $activeGatewayProfile } from '@/store/profile'
+import { openFolderAsProject } from '@/store/projects'
 import {
   $sessions,
   getRememberedRoute,
@@ -186,6 +187,13 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [navigate])
+
+  // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => void openFolderAsProject())
+
+    return () => unsubscribe?.()
+  }, [])
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {

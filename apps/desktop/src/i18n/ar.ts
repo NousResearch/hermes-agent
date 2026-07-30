@@ -220,6 +220,7 @@ export const ar = defineLocale({
       'session.focusSearch': 'البحث في الجلسات',
       'session.togglePin': 'تثبيت / إلغاء تثبيت الجلسة الحالية',
       'workspace.newWorktree': 'worktree جديد',
+      'workspace.openFolder': 'فتح مجلد كمشروع',
       'composer.focus': 'التركيز على المحرّر',
       'composer.modelPicker': 'فتح منتقي النموذج',
       'composer.voice': 'بدء / إيقاف المحادثة الصوتية',

@@ -361,20 +361,18 @@ def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
 
 
 def _normalize_cli_args(raw_args: Optional[List[Any]]) -> List[str]:
-    """Normalize CLI-provided stdio args, dropping only exact empty placeholders.
+    """Normalize CLI-provided stdio args, preserving argv passthrough.
 
-    This intentionally preserves whitespace-only entries (``[" "]``) because
-    ``--args`` is direct command-argv passthrough and whitespace can be a
-    meaningful shell argument. Only the synthetic ``[""]`` placeholder that
-    ``argparse nargs="*"`` produces for ``--args ""`` is dropped.
+    ``--args`` is declared with ``argparse.REMAINDER`` (``mcp.py:55``). When a
+    user passes ``--args ""`` argparse produces a single-element list ``[""]``,
+    which is a synthetic placeholder with no real argv meaning. That exact
+    placeholder is dropped; every other entry — including whitespace-only
+    strings and mixed vectors like ``["", "real"]`` — is preserved as-is.
     """
-    normalized: List[str] = []
-    for item in raw_args or []:
-        text = str(item or "")
-        if not text:
-            continue
-        normalized.append(text)
-    return normalized
+    args = raw_args or []
+    if args == [""]:
+        return []
+    return [str(item or "") for item in args]
 
 
 def _apply_mcp_preset(

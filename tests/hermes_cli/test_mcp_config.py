@@ -236,7 +236,8 @@ class TestMcpAdd:
 
         def mock_probe(name, config, **kw):
             assert config["command"] == "npx"
-            # Args may be absent (when only "" was passed) or contain " " (when " " was passed)
+            # Args may be absent (when only "" was passed), preserved mixed
+            # (when ["", "real"] was passed), or contain " " alone.
             return []
 
         monkeypatch.setattr(
@@ -269,7 +270,8 @@ class TestMcpAdd:
         assert srv["command"] == "npx"
         assert srv["args"] == [" "], f"whitespace-only argv must be preserved, got {srv['args']!r}"
 
-        # Case 3: mixed ["", "real", " "] -> only the "" is dropped
+        # Case 3: mixed ["", "real", " "] -> only that exact [""] placeholder is dropped.
+        # Mixed vectors pass through unchanged because the raw list is not equal to [""]
         cmd_mcp_add(_make_args(
             name="mixed",
             mcp_command="npx",
@@ -278,7 +280,7 @@ class TestMcpAdd:
         capsys.readouterr()
         srv = load_config()["mcp_servers"]["mixed"]
         assert srv["command"] == "npx"
-        assert srv["args"] == ["real", " "], f"only empty must be dropped, got {srv['args']!r}"
+        assert srv["args"] == ["", "real", " "], f"mixed argv must be preserved unchanged, got {srv['args']!r}"
 
     def test_add_connection_failure_save_disabled(
         self, tmp_path, capsys, monkeypatch

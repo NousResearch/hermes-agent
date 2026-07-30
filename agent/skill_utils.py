@@ -456,10 +456,40 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
 
 
 def _normalize_string_set(values) -> Set[str]:
+    """Parse a disabled-skill config value into a set of skill names.
+
+    Handles three forms produced by different config paths:
+
+    * A YAML list (e.g. ``feishu: [airtable, architecture]``) — iterated
+      directly.
+    * A single skill name written as a scalar (``disabled: my-skill`` or
+      ``hermes config set skills.disabled my-skill``) — treated as one
+      element.
+    * A **multi-line string** produced when ``hermes config set`` writes a
+      list value into the YAML file (the tool serialises the whole list as a
+      YAML block scalar, e.g.
+      ``cli: "- airtable\\n- architecture\\n..."``).  These are split on
+      newlines and the leading ``- `` is stripped from each line, so
+      individual skill names are recognised instead of the whole block being
+      treated as one opaque entry.
+    """
     if values is None:
         return set()
     if isinstance(values, str):
-        values = [values]
+        # Multi-line block scalar from `hermes config set` → split by line
+        if "\n" in values:
+            items: list[str] = []
+            for line in values.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    items.append(stripped[2:])
+                elif stripped.startswith("-"):
+                    items.append(stripped[1:])
+                elif stripped:
+                    items.append(stripped)
+            values = items
+        else:
+            values = [values]
     return {str(v).strip() for v in values if str(v).strip()}
 
 

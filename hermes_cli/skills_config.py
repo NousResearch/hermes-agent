@@ -30,11 +30,28 @@ def _normalize_skill_names(values) -> Set[str]:
     Mirrors ``agent.skill_utils._normalize_string_set``: ``None`` (YAML null)
     means empty, a bare scalar (``disabled: my-skill``) means a single-item
     list — NOT a set of its characters (#13026).
+
+    Also handles multi-line YAML block scalars produced by ``hermes config
+    set`` for list values (e.g. ``"- airtable\\n- architecture\\n..."``),
+    splitting on newlines and stripping ``- `` prefixes.
     """
     if values is None:
         return set()
     if isinstance(values, str):
-        values = [values]
+        # Multi-line block scalar from `hermes config set` → split by line
+        if "\n" in values:
+            items: list[str] = []
+            for line in values.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    items.append(stripped[2:])
+                elif stripped.startswith("-"):
+                    items.append(stripped[1:])
+                elif stripped:
+                    items.append(stripped)
+            values = items
+        else:
+            values = [values]
     try:
         return {str(v).strip() for v in values if str(v).strip()}
     except TypeError:

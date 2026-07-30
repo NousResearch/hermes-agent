@@ -7,7 +7,7 @@
  * plain-text round-trip.
  */
 import {
-  DIRECTIVE_CHIP_CLASS,
+  directiveChipClass,
   directiveIconElement,
   directiveIconSvg,
   formatRefValue,
@@ -60,7 +60,7 @@ export function refChipHtml(kind: string, rawValue: string, displayLabel?: strin
 
   const label = displayLabel || refChipLabel(kind, id)
 
-  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
+  return `<span contenteditable="false" title="${escapeHtml(id)}" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${directiveChipClass(kind)}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(label)}</span></span>`
 }
 
 export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
@@ -74,7 +74,7 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   chip.dataset.refText = text
   chip.dataset.refId = id
   chip.dataset.refKind = kind
-  chip.className = DIRECTIVE_CHIP_CLASS
+  chip.className = directiveChipClass(kind)
   label.className = 'truncate'
   label.textContent = displayLabel || refChipLabel(kind, id)
   chip.append(directiveIconElement(kind), label)

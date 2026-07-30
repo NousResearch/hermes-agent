@@ -251,6 +251,21 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     return _resolve_config(config)
 
 
+def _sanitize_mcp_probe_error(exc: object, config: dict) -> str:
+    """Redact known patterns and exact per-server env-file values from errors."""
+    from tools.mcp_tool_config import _load_mcp_server_env
+    from tools.mcp_tool_errors import _sanitize_error
+
+    message = _sanitize_error(str(exc))
+    secret_values = _load_mcp_server_env(config).values()
+    for value in sorted(secret_values, key=len, reverse=True):
+        # Avoid replacing short/common fragments that would make diagnostics
+        # unreadable; credentials should never be this short in practice.
+        if len(value) >= 4:
+            message = message.replace(value, "[REDACTED]")
+    return message
+
+
 def _probe_single_server(
     name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
 ) -> List[Tuple[str, str]]:
@@ -269,6 +284,9 @@ def _probe_single_server(
     from tools.mcp_tool_common import _parse_boolish
 
     config = _resolve_mcp_server_config(config)
+    resolved_issues = validate_mcp_server_entry(name, config)
+    if resolved_issues:
+        raise ValueError("; ".join(resolved_issues))
     if connect_timeout is None:
         try:
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
@@ -484,7 +502,7 @@ def cmd_mcp_add(args):
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {_sanitize_mcp_probe_error(exc, server_config)}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
             if _save_mcp_server(name, server_config):
@@ -608,7 +626,10 @@ def cmd_mcp_test(args):
     try:
         tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): {exc}")
+        _error(
+            f"Connection failed ({(time.monotonic() - start) * 1000:.0f}ms): "
+            f"{_sanitize_mcp_probe_error(exc, cfg)}"
+        )
         return
     _success(f"Connected ({(time.monotonic() - start) * 1000:.0f}ms)")
     _success(f"Tools discovered: {len(tools)}")
@@ -690,7 +711,10 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
         except Exception:
             humanized = None
-        _error(f"Authentication failed: {humanized or exc}")
+        _error(
+            "Authentication failed: "
+            f"{_sanitize_mcp_probe_error(humanized or exc, server_config)}"
+        )
         return False
 
 
@@ -785,7 +809,7 @@ def cmd_mcp_configure(args):
     try:
         all_tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"Failed to connect: {_sanitize_mcp_probe_error(exc, cfg)}")
         return
     if not all_tools:
         _warning("Server reports no tools.")

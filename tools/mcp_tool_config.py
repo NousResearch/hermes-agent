@@ -380,6 +380,8 @@ def _load_mcp_config() -> Dict[str, dict]:
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
+        # Interpolation can turn placeholders into blocked command/argument shapes.
+        safe_servers = _filter_suspicious_mcp_servers(safe_servers)
         _portable_mcp_servers(safe_servers)
         return safe_servers
     except Exception as exc:

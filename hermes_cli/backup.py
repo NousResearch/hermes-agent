@@ -11,6 +11,7 @@ HERMES_HOME root.
 import json
 import logging
 import os
+import platform
 import shlex
 import shutil
 import sqlite3
@@ -580,7 +581,7 @@ def copy_db_and_verify(src: Path, dst: Path) -> bool:
 # Backup
 # ---------------------------------------------------------------------------
 
-def format_restore_hint_path(path: Path) -> str:
+def format_restore_hint_path(path, system: Optional[str] = None) -> str:
     """Render ``path`` as ONE shell argument for a ``hermes import`` hint.
 
     The restore hints are printed to be copy-pasted verbatim, but ``hermes
@@ -593,16 +594,22 @@ def format_restore_hint_path(path: Path) -> str:
     or a pre-update snapshot.
 
     Quoting is host-specific, so mirror the convention already used by
-    ``hermes_cli.browser_connect.manual_chrome_debug_command``:
-    ``subprocess.list2cmdline`` (CreateProcess rules) on Windows,
+    ``hermes_cli.browser_connect.manual_chrome_debug_command`` -- including
+    its injectable ``system`` argument, which lets both branches be tested on
+    one host: ``subprocess.list2cmdline`` (CreateProcess rules) on Windows,
     ``shlex.quote`` (POSIX shell rules) everywhere else.  Both are no-ops for
     paths that need no escaping, so the ordinary case is unchanged.
+
+    Branching on ``platform.system()`` rather than ``os.name`` is deliberate:
+    ``os.name`` is what ``pathlib`` dispatches on, so a test that overrode it
+    could not construct a path at all.
 
     Callers pass the path they want printed; this helper only quotes it and
     never resolves or rewrites it.
     """
+    system = system or platform.system()
     text = str(path)
-    if os.name == "nt":
+    if system == "Windows":
         return subprocess.list2cmdline([text])
     return shlex.quote(text)
 

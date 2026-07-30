@@ -5,7 +5,7 @@ import os
 import sqlite3
 import zipfile
 from argparse import Namespace
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -501,46 +501,67 @@ class TestFormatRestoreHintPath:
     quoting rules are pinned once here.  Expected strings are literal, not
     recomputed from ``shlex``/``subprocess``, so a wrong quoting function
     cannot make these pass.
+
+    The host is selected with the function's own ``system`` argument, mirroring
+    ``browser_connect.manual_chrome_debug_command``.  Note this is NOT
+    incidental: overriding a global such as ``os.name`` to fake a host would
+    make ``pathlib`` try to build a ``WindowsPath`` on a POSIX runner and raise
+    ``NotImplementedError``, so the Windows cases also use ``PureWindowsPath``,
+    which is constructible anywhere.
     """
 
-    def test_posix_leaves_a_plain_path_untouched(self, monkeypatch):
+    def test_posix_leaves_a_plain_path_untouched(self):
         from hermes_cli.backup import format_restore_hint_path
-        monkeypatch.setattr(os, "name", "posix")
         assert format_restore_hint_path(
-            Path("/home/me/.hermes/backups/pre-update-1.zip")
+            PurePosixPath("/home/me/.hermes/backups/pre-update-1.zip"), system="Linux"
         ) == "/home/me/.hermes/backups/pre-update-1.zip"
 
-    def test_posix_quotes_spaces(self, monkeypatch):
+    def test_posix_quotes_spaces(self):
         from hermes_cli.backup import format_restore_hint_path
-        monkeypatch.setattr(os, "name", "posix")
         assert format_restore_hint_path(
-            Path("/home/me/My Backups/hermes-backup.zip")
+            PurePosixPath("/home/me/My Backups/hermes-backup.zip"), system="Darwin"
         ) == "'/home/me/My Backups/hermes-backup.zip'"
 
-    def test_posix_neutralizes_shell_metacharacters(self, monkeypatch):
+    def test_posix_neutralizes_shell_metacharacters(self):
         """A path is data, never something the shell should get to evaluate."""
         from hermes_cli.backup import format_restore_hint_path
-        monkeypatch.setattr(os, "name", "posix")
         assert format_restore_hint_path(
-            Path("/tmp/back$up;rm/x.zip")
+            PurePosixPath("/tmp/back$up;rm/x.zip"), system="Linux"
         ) == "'/tmp/back$up;rm/x.zip'"
 
-    def test_windows_uses_createprocess_quoting(self, monkeypatch):
+    def test_windows_uses_createprocess_quoting(self):
         """``shlex.quote`` would emit POSIX single quotes, which cmd.exe treats
-        as literal characters — Windows needs ``list2cmdline``'s double quotes.
+        as literal characters -- Windows needs ``list2cmdline``'s double quotes.
         """
         from hermes_cli.backup import format_restore_hint_path
-        monkeypatch.setattr(os, "name", "nt")
         assert format_restore_hint_path(
-            Path(r"C:\Users\Me\My Backups\hermes-backup.zip")
+            PureWindowsPath(r"C:\Users\Me\My Backups\hermes-backup.zip"),
+            system="Windows",
         ) == r'"C:\Users\Me\My Backups\hermes-backup.zip"'
 
-    def test_windows_leaves_a_plain_path_untouched(self, monkeypatch):
+    def test_windows_leaves_a_plain_path_untouched(self):
         from hermes_cli.backup import format_restore_hint_path
-        monkeypatch.setattr(os, "name", "nt")
         assert format_restore_hint_path(
-            Path(r"C:\hermes\backups\pre-update-1.zip")
+            PureWindowsPath(r"C:\hermes\backups\pre-update-1.zip"), system="Windows"
         ) == r"C:\hermes\backups\pre-update-1.zip"
+
+    def test_defaults_to_the_running_host(self, monkeypatch):
+        """The default path really consults ``platform.system()`` -- the
+        explicit-argument tests above would all still pass if the parameter
+        were ignored on the production call sites.
+        """
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import format_restore_hint_path
+
+        monkeypatch.setattr(backup_mod.platform, "system", lambda: "Windows")
+        assert format_restore_hint_path(
+            PureWindowsPath(r"C:\My Backups\x.zip")
+        ) == r'"C:\My Backups\x.zip"'
+
+        monkeypatch.setattr(backup_mod.platform, "system", lambda: "Linux")
+        assert format_restore_hint_path(
+            PurePosixPath("/tmp/My Backups/x.zip")
+        ) == "'/tmp/My Backups/x.zip'"
 
 
 class TestValidation:

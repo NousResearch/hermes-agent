@@ -895,6 +895,17 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
     // a frozen stage, and users cancel a healthy update. Force line-by-line
     // output instead.
     envs.push(("PYTHONUNBUFFERED".to_string(), OsString::from("1")));
+    // We hold the update-in-progress marker for this whole run, and the
+    // `hermes update` child claims that SAME lock (hermes_cli/update_lock.py).
+    // Name our pid so the child recognizes the live holder as its own
+    // orchestrator and runs under our claim — without this every GUI update
+    // refuses its parent's marker with exit 2 ("Hermes is still running")
+    // and no number of retries can ever succeed. Keep the variable name in
+    // sync with HANDOFF_PID_ENV in hermes_cli/update_lock.py.
+    envs.push((
+        "HERMES_UPDATE_HANDOFF_PID".to_string(),
+        OsString::from(std::process::id().to_string()),
+    ));
     if let Some(path) = path_with_prepended_entries(&[
         hermes_home.join("node").join("bin"),
         venv_bin_dir(install_root),
@@ -1215,6 +1226,17 @@ mod tests {
             envs.iter()
                 .any(|(k, v)| k == "PYTHONUNBUFFERED" && v.to_str() == Some("1")),
             "update children must run unbuffered so long steps stream to the live log"
+        );
+    }
+
+    #[test]
+    fn update_child_env_names_our_pid_for_the_lock_handoff() {
+        let envs = update_child_env(Path::new("/x/hermes-agent"));
+        assert!(
+            envs.iter().any(|(k, v)| k == "HERMES_UPDATE_HANDOFF_PID"
+                && v.to_str() == Some(std::process::id().to_string().as_str())),
+            "the hermes update child claims the same marker we hold; without our pid \
+             it refuses its own parent's lock and every GUI update dead-ends on exit 2"
         );
     }
 

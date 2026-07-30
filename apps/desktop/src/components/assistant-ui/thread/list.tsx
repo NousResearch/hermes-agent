@@ -130,16 +130,63 @@ export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: 
 // stick-to-bottom lock drifts and the view creeps up over older turns — the
 // "long session eventually shows old responses" glitch.
 //
-// Keep the newest N turns always-rendered so a turn is only ever virtualized
+// Keep the newest turns always-rendered so a turn is only ever virtualized
 // once its layout has settled at its final size (remembered == real → skipping
 // it changes no height). Off-screen OLDER turns still skip, so the dialog/popover
-// recalc win on long transcripts is preserved (that scales with the hundreds of
-// old turns, not this small live tail).
-export const LIVE_TAIL_GROUPS = 6
+// recalc win on long transcripts is preserved.
+//
+// The tail is budgeted in PARTS, not turns, because that is what the cost
+// actually scales with — the same currency as RENDER_BUDGET / FIRST_PAINT_BUDGET.
+// A turn-count tail silently defeats itself on agent transcripts: one tool-heavy
+// turn is 50-200 parts, so a 6-TURN tail exempted the entire visible transcript
+// and nothing virtualized at all. Measured on a 5-tile window (7/3/5/3/2 groups
+// per tile): zero content-visibility containers were active, and every Radix
+// overlay open paid the full ~610ms whole-document recalc that #66470 fixed.
+//
+// 40 parts ≈ the 1-2 turns a viewport shows after scroll-to-bottom (the same
+// reasoning as FIRST_PAINT_BUDGET=20, doubled so a turn that grows mid-stream
+// doesn't fall out of the tail as it settles).
+export const LIVE_TAIL_PARTS = 40
+// Floor: always exempt at least this many turns regardless of weight, so a
+// transcript of very heavy turns still keeps the streaming one unvirtualized.
+export const LIVE_TAIL_MIN_GROUPS = 2
+// Ceiling: never exempt more than this many turns, however light they are. On a
+// long transcript of tiny turns a parts-only budget would walk back further
+// than the old turn-count tail did and virtualize LESS — this keeps the new
+// policy a strict improvement on every shape.
+export const LIVE_TAIL_MAX_GROUPS = 6
 
-/** True when a visible group is old enough to virtualize (outside the live tail). */
-export function isVirtualizedGroup(indexInVisible: number, visibleCount: number, liveTail = LIVE_TAIL_GROUPS): boolean {
-  return indexInVisible < visibleCount - liveTail
+/**
+ * Index of the newest group that still virtualizes — everything at or after it
+ * is the live tail and stays rendered. Walks newest-first accumulating parts,
+ * so the tail covers a viewport's worth of content rather than a fixed number
+ * of turns, clamped to [MIN, MAX] turns. Computed once per render, not per row.
+ */
+export function liveTailStart(
+  groups: readonly MessageGroup[],
+  tailParts = LIVE_TAIL_PARTS,
+  minGroups = LIVE_TAIL_MIN_GROUPS,
+  maxGroups = LIVE_TAIL_MAX_GROUPS
+): number {
+  let parts = 0
+  let start = groups.length
+
+  for (let i = groups.length - 1; i >= 0; i--) {
+    parts += groups[i]?.weight ?? 1
+    start = i
+
+    if (parts > tailParts) {
+      break
+    }
+  }
+
+  // Clamp the tail to [minGroups, maxGroups] turns: the floor keeps the live
+  // turn rendered when turns are huge, the ceiling stops a tail of tiny turns
+  // from sprawling past what the old turn-count policy rendered.
+  const floor = Math.max(0, groups.length - minGroups)
+  const ceiling = Math.max(0, groups.length - maxGroups)
+
+  return Math.min(floor, Math.max(ceiling, start))
 }
 
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
@@ -278,6 +325,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
+
+  // Where the always-rendered live tail begins. Derived from the WEIGHTED
+  // groups (parts, not turns) so the tail is a viewport's worth of content —
+  // see liveTailStart. Computed once here rather than per row.
+  const tailStart = useMemo(
+    () => liveTailStart(hiddenCount > 0 ? weightedGroups.slice(hiddenCount) : weightedGroups),
+    [weightedGroups, hiddenCount]
+  )
+
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.
@@ -436,12 +492,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         // The live tail (newest turns) is exempt: virtualizing a turn
         // whose final size hasn't been remembered yet snaps it to a stale
         // height when it scrolls off, drifting stick-to-bottom up over old
-        // turns. See isVirtualizedGroup.
+        // turns. See liveTailStart.
         <div
           className={cn(
             'flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)',
-            isVirtualizedGroup(indexInVisible, visibleGroups.length) &&
-              '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
+            indexInVisible < tailStart && '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
           )}
           key={group.id}
         >
@@ -461,7 +516,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           </MessageRenderBoundary>
         </div>
       )),
-    [visibleGroups, components, structuralSignature]
+    [visibleGroups, components, structuralSignature, tailStart]
   )
 
   return (

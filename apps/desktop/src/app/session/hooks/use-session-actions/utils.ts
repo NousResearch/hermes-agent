@@ -100,16 +100,8 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = [
-  'id',
-  'role',
-  'pending',
-  'error',
-  'hidden',
-  'branchGroupId',
-  'interim',
-  'reactions'
-] as const
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim', 'reactions'] as const
+
 const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts', 'rowId'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
@@ -193,10 +185,7 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
 
   return (
     aList.length === bList.length &&
-    aList.every(
-      (reaction, index) =>
-        reaction.emoji === bList[index].emoji && reaction.author === bList[index].author
-    )
+    aList.every((reaction, index) => reaction.emoji === bList[index].emoji && reaction.author === bList[index].author)
   )
 }
 

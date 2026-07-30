@@ -100,6 +100,57 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_parentless_dependency_wait_not_auto_promoted(kanban_home: Path) -> None:
+    """Regression for the rapid re-dispatch loop (t_cb67c890).
+
+    A parentless worker that calls ``kanban_block(kind="dependency")`` lands
+    in ``todo`` with ``block_kind='dependency'`` and no parent links.
+    ``recompute_ready`` treated ``all([])`` as vacuously true and promoted
+    it on the very next dispatch tick, respawning the worker which would
+    block again — six blocked runs, four in ~4 minutes.  The fix parks a
+    dependency-wait task with no parents in ``todo`` until a parent link is
+    added or the task is explicitly unblocked.
+    """
+    with kb.connect_closing() as conn:
+        tid = _running_task(conn, title="parentless dep wait")
+        assert kb.block_task(conn, tid, reason="waiting on X", kind="dependency")
+        t = kb.get_task(conn, tid)
+        assert t.status == "todo"
+        assert t.block_kind == "dependency"
+
+        # Simulate multiple dispatcher ticks — must NOT promote.
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, (
+                "parentless dependency-wait must not auto-promote "
+                "(would respawn immediately and loop)"
+            )
+            assert kb.get_task(conn, tid).status == "todo"
+
+
+def test_parentless_dependency_wait_promotes_after_link(kanban_home: Path) -> None:
+    """A parentless dependency-wait that later gets a parent link must
+    resume normal parent-gated promotion once that parent completes."""
+    with kb.connect_closing() as conn:
+        child = _running_task(conn, title="child")
+        kb.block_task(conn, child, reason="waiting", kind="dependency")
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Still no promotion before a parent exists.
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Add a parent and complete it.
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        kb.link_tasks(conn, parent_id=parent, child_id=child)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+        kb.claim_task(conn, parent, claimer="worker")
+        kb.complete_task(conn, parent, result="done")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, child).status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # Completion resets loop memory
 # ---------------------------------------------------------------------------

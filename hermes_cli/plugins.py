@@ -201,6 +201,9 @@ VALID_HOOKS: Set[str] = {
     #                              kanban_complete (or a CLI/manual complete).
     #   - kanban_task_blocked   -> the WORKER process (worker-initiated block)
     #                              or whichever process drove the block.
+    #   - kanban_task_crashed / kanban_task_timed_out /
+    #     kanban_task_auto_blocked -> the DISPATCHER process after it records
+    #                                 the worker failure / breaker transition.
     # A plugin that needs to observe every transition centrally should hook in
     # the dispatcher; one that needs per-task in-session context should hook in
     # the worker.
@@ -209,9 +212,15 @@ VALID_HOOKS: Set[str] = {
     #   run_id: int | None, profile_name: str.
     # kanban_task_completed adds: summary: str | None.
     # kanban_task_blocked adds:   reason: str | None.
+    # Failure hooks add: outcome: str, error: str, error_fingerprint: str,
+    #   consecutive_failures: int, failure_limit: int, workspace: str | None,
+    #   status: str. kanban_task_auto_blocked also adds trigger_outcome: str.
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    "kanban_task_crashed",
+    "kanban_task_timed_out",
+    "kanban_task_auto_blocked",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

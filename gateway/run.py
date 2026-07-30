@@ -17253,7 +17253,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _media_adapter:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
-                            history_media_paths=_collect_history_media_paths(history),
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -18354,7 +18353,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
-        history_media_paths: Optional[set] = None,
     ) -> None:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
@@ -18386,15 +18384,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-            # Deduplicate against media already delivered in prior turns —
-            # the model may echo a previous turn's MEDIA: tag in a later
-            # response; without this guard the same file is re-sent.
-            if history_media_paths:
-                media_files = [
-                    (path, is_voice)
-                    for path, is_voice in media_files
-                    if path not in history_media_paths
-                ]
+            # Do NOT deduplicate explicit MEDIA tags against prior turns here
+            # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
+            # a MEDIA: directive in the final streamed reply is the model
+            # deliberately attaching a file — including a user-requested
+            # resend. Stale auto-appended tags are deduped upstream in
+            # _collect_auto_append_media_tags with history_media_paths.
+            # Mirrors the same filter removal on the non-streaming path in
+            # gateway/platforms/base.py.
             # Strip image URLs from the cleaned text for parity with the
             # non-streaming chain, but do NOT run extract_local_files here:
             # post-stream delivery is explicit-only (#20834). Bare local paths

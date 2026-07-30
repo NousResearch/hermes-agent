@@ -171,6 +171,22 @@ def _run_repair_install(specs: list[str], project_root: Path) -> bool:
     return True
 
 
+def _pytest_owns_live_checkout(root: Path) -> bool:
+    """True when running under pytest AND ``root`` is this module's own
+    checkout — the one whose venv is executing the suite right now.
+
+    Lifecycle tests spawn real subprocesses that import ``hermes_cli.main``
+    with recovery armed; ``PYTEST_CURRENT_TEST`` rides the inherited env into
+    those children. Without this guard, a genuinely-broken dev venv gets a
+    REAL ``ensurepip`` + ``pip install --force-reinstall`` from inside a
+    running test suite. Tests that sandbox ``project_root`` to a tmp_path are
+    unaffected (same posture as ``managed_scope._under_pytest``)."""
+    return (
+        "PYTEST_CURRENT_TEST" in os.environ
+        and root == Path(__file__).resolve().parent.parent
+    )
+
+
 def recover_if_needed(
     project_root: Path | None = None,
     argv: list[str] | None = None,
@@ -193,6 +209,8 @@ def recover_if_needed(
         if "update" in args:
             return
         root = _project_root() if project_root is None else project_root
+        if _pytest_owns_live_checkout(root):
+            return
         core_marker = root / ".update-incomplete"
         lazy_marker = root / ".lazy-refresh-incomplete"
         if not core_marker.exists() and not lazy_marker.exists():

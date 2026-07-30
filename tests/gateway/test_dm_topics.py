@@ -20,30 +20,24 @@ import pytest
 from gateway.config import PlatformConfig
 
 
-def _ensure_telegram_mock():
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-
-    # Register telegram.constants as a separate module mock so that
-    # ``from telegram.constants import ChatType`` resolves to our mock
-    # with string-valued members (not auto-generated MagicMocks).
-    constants_mod = MagicMock()
-    constants_mod.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    constants_mod.ChatType.GROUP = "group"
-    constants_mod.ChatType.SUPERGROUP = "supergroup"
-    constants_mod.ChatType.CHANNEL = "channel"
-    constants_mod.ChatType.PRIVATE = "private"
-
-    sys.modules["telegram"] = telegram_mod
-    sys.modules["telegram.ext"] = telegram_mod.ext
-    sys.modules["telegram.constants"] = constants_mod
-    sys.modules["telegram.request"] = telegram_mod.request
-
-    # Force reimport so the adapter picks up the mock ChatType.
-    sys.modules.pop("plugins.platforms.telegram.adapter", None)
-
+# Use the shared, comprehensive telegram mock from conftest instead of a
+# file-local one. The previous local installer differed from every other
+# telegram test's stub in two ways — it registered a SEPARATE string-valued
+# ``telegram.constants`` module (others register the root mock, so ParseMode
+# members stay auto-generated MagicMock attributes) and its ``telegram.error``
+# was a bare MagicMock (conftest defines real exception subclasses with PTB's
+# hierarchy) — and it installed UNCONDITIONALLY (no real-library guard).
+# Because it also force-reimported the adapter, the divergent stub leaked into
+# sys.modules for the rest of the session: every later telegram test that
+# asserts ParseMode repr or isinstance against telegram.error classes failed
+# order-dependently in full runs while passing in isolation.
+from tests.gateway.conftest import _ensure_telegram_mock  # noqa: E402
 
 _ensure_telegram_mock()
+# Force reimport so the adapter binds to whatever sys.modules now holds
+# (the shared mock, or the real library when it is installed) rather than a
+# stub an earlier test file may have bound it to.
+sys.modules.pop("plugins.platforms.telegram.adapter", None)
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 

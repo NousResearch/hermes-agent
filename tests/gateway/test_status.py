@@ -248,6 +248,15 @@ class TestGatewayRuntimeStatus:
             ), cmdline
 
 
+    def test_command_line_belongs_to_profile_normalizes_separators(self):
+        """A Windows argv renders HERMES_HOME with backslashes while the
+        profile's Path may carry forward slashes (and, on Windows, vice
+        versa).  The separator difference must not defeat the match."""
+        home = Path("c:/opt/data/profiles/coder")
+        cmdline = r"hermes_home=c:\opt\data\profiles\coder hermes gateway run --replace"
+        assert status._command_line_belongs_to_profile(cmdline, home) is True
+
+
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

@@ -33,6 +33,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_dispatch_helpers import (
+    _attach_delegate_correlation_metadata,
     _is_destructive_command,
     _is_multimodal_tool_result,
     _multimodal_text_summary,
@@ -1352,6 +1353,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         blocked = False
         is_error = True
         progress_function_name = name
+        correlation_function_result = None
         # A worker can finish and write results[i] in the window between the
         # deadline snapshot (timed_out_indices, taken from not_done) and this
         # loop. Prefer that real result over a fabricated timeout message — the
@@ -1411,6 +1413,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             name = function_name
             args = function_args
             progress_function_name = function_name
+            correlation_function_result = function_result
             if _parse_error is not None:
                 _emit_terminal_post_tool_call(
                     agent,
@@ -1455,6 +1458,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
                 logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
 
+        if correlation_function_result is None:
+            correlation_function_result = function_result
         agent._current_tool = None
         _status_suffix = " (error)" if is_error else ""
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
@@ -1491,6 +1496,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             _tool_content,
             tc.id,
             effect_disposition=effect_disposition,
+        )
+        _attach_delegate_correlation_metadata(
+            tool_message,
+            name=name,
+            content=correlation_function_result,
+            tool_call_id=tc.id,
         )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
@@ -2146,6 +2157,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
+        correlation_function_result = function_result
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -2241,6 +2253,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        _attach_delegate_correlation_metadata(
+            tool_message,
+            name=function_name,
+            content=correlation_function_result,
+            tool_call_id=tool_call.id,
+        )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(

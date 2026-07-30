@@ -1322,11 +1322,12 @@ class TestDelegateEventEnum(unittest.TestCase):
         cb("subagent.start", preview="starting")
         cb("_thinking", preview="thinking")
         cb("tool.started", tool_name="terminal", preview="pwd")
+        cb("subagent_progress", tool_name="nested progress")
         cb("subagent.text", preview="answer")
         cb("subagent.complete", preview="done", status="completed")
         cb._flush()
 
-        self.assertGreaterEqual(parent.tool_progress_callback.call_count, 5)
+        self.assertGreaterEqual(parent.tool_progress_callback.call_count, 6)
         for call in parent.tool_progress_callback.call_args_list:
             self.assertEqual(
                 call.kwargs.get("parent_tool_call_id"),

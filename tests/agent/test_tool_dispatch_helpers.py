@@ -8,9 +8,12 @@ NOT a regex scan — it's an unconditional architectural mark on every result
 from a known-untrusted source.
 """
 
+import json
+
 import pytest
 
 from agent.tool_dispatch_helpers import (
+    _attach_delegate_correlation_metadata,
     _extract_file_mutation_targets,
     _is_untrusted_tool,
     _maybe_wrap_untrusted,
@@ -192,6 +195,87 @@ class TestMakeToolResultMessage:
 
         assert SAMPLE_LONG_TEXT in msg["content"]
         assert "_tool_output_risk" not in msg
+
+
+class TestDelegateCorrelationMetadata:
+    def test_copies_valid_correlation_out_of_large_result(self):
+        result = json.dumps(
+            {
+                "results": [{"summary": "x" * 150_000}],
+                "parent_tool_call_id": "call-parent-1",
+                "children": [
+                    {
+                        "task_index": 0,
+                        "subagent_id": "subagent-1",
+                        "child_session_id": "child-session-1",
+                    }
+                ],
+            }
+        )
+        message = make_tool_result_message(
+            "delegate_task",
+            "<persisted-output path='/tmp/result.txt' />",
+            "call-parent-1",
+        )
+
+        _attach_delegate_correlation_metadata(
+            message,
+            name="delegate_task",
+            content=result,
+            tool_call_id="call-parent-1",
+        )
+
+        assert message["content"].startswith("<persisted-output")
+        assert message["display_metadata"] == {
+            "delegate_correlation": {
+                "parent_tool_call_id": "call-parent-1",
+                "children": [
+                    {
+                        "task_index": 0,
+                        "child_session_id": "child-session-1",
+                        "subagent_id": "subagent-1",
+                    }
+                ],
+            }
+        }
+
+    @pytest.mark.parametrize(
+        ("payload", "tool_call_id"),
+        [
+            ("not json", "call-parent-1"),
+            (
+                json.dumps(
+                    {
+                        "parent_tool_call_id": "different-call",
+                        "children": [
+                            {"task_index": 0, "child_session_id": "child-session-1"}
+                        ],
+                    }
+                ),
+                "call-parent-1",
+            ),
+            (
+                json.dumps(
+                    {
+                        "parent_tool_call_id": "call-parent-1",
+                        "children": [{"task_index": 0}],
+                    }
+                ),
+                "call-parent-1",
+            ),
+        ],
+    )
+    def test_rejects_untrusted_or_incomplete_correlation(self, payload, tool_call_id):
+        message = make_tool_result_message("delegate_task", "spilled", tool_call_id)
+
+        _attach_delegate_correlation_metadata(
+            message,
+            name="delegate_task",
+            content=payload,
+            tool_call_id=tool_call_id,
+        )
+
+        assert "display_metadata" not in message
 
 
 

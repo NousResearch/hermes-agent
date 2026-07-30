@@ -576,6 +576,79 @@ def make_tool_result_message(
     return message
 
 
+def _attach_delegate_correlation_metadata(
+    message: Dict[str, Any],
+    *,
+    name: str,
+    content: Any,
+    tool_call_id: str,
+) -> Dict[str, Any]:
+    """Persist delegate child identity outside spillable model content.
+
+    ``delegate_task`` returns the provider-call → child-session mapping in its
+    JSON result. Large tool results are replaced with a persisted-output
+    pointer before the canonical message is written, so that trailing mapping
+    can otherwise disappear from session history. Copy only the validated
+    correlation fields into display-only metadata, which the session store
+    round-trips but provider adapters strip from model requests.
+    """
+    if name != "delegate_task" or not isinstance(tool_call_id, str) or not tool_call_id:
+        return message
+
+    if isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            return message
+    elif isinstance(content, dict):
+        payload = content
+    else:
+        return message
+
+    if not isinstance(payload, dict) or payload.get("parent_tool_call_id") != tool_call_id:
+        return message
+
+    raw_children = payload.get("children")
+    if not isinstance(raw_children, list) or not raw_children:
+        return message
+
+    children: List[Dict[str, Any]] = []
+    for raw_child in raw_children:
+        if not isinstance(raw_child, dict):
+            return message
+        task_index = raw_child.get("task_index")
+        child_session_id = raw_child.get("child_session_id")
+        if (
+            not isinstance(task_index, int)
+            or isinstance(task_index, bool)
+            or not isinstance(child_session_id, str)
+            or not child_session_id
+        ):
+            return message
+        child: Dict[str, Any] = {
+            "task_index": task_index,
+            "child_session_id": child_session_id,
+        }
+        subagent_id = raw_child.get("subagent_id")
+        if subagent_id is not None:
+            if not isinstance(subagent_id, str) or not subagent_id:
+                return message
+            child["subagent_id"] = subagent_id
+        children.append(child)
+
+    display_metadata = message.get("display_metadata")
+    if not isinstance(display_metadata, dict):
+        display_metadata = {}
+    else:
+        display_metadata = dict(display_metadata)
+    display_metadata["delegate_correlation"] = {
+        "parent_tool_call_id": tool_call_id,
+        "children": children,
+    }
+    message["display_metadata"] = display_metadata
+    return message
+
+
 # Tools whose results carry attacker-controllable content.  Wrapping their
 # string output in ``<untrusted_tool_result>`` delimiters tells the model the
 # payload is data, not instructions — the architectural piece of the
@@ -728,5 +801,6 @@ __all__ = [
     "_extract_landed_file_mutation_paths",
     "_extract_error_preview",
     "_trajectory_normalize_msg",
+    "_attach_delegate_correlation_metadata",
     "make_tool_result_message",
 ]

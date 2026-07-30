@@ -8,8 +8,8 @@ import {
   $repoStatusLoading,
   _resetCodingStatusForTests,
   refreshAllRepoStatuses,
-  registerRepoStatusCwd,
   refreshRepoStatus,
+  registerRepoStatusCwd,
   repoStatusForCwd
 } from './coding-status'
 import { $currentCwd, $selectedStoredSessionId } from './session'

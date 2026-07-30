@@ -252,6 +252,7 @@ describe('view state', () => {
     const review = stubReview({
       list: vi.fn(async () => ({ files: [file('tile.ts')] }))
     })
+
     openReview('/tile-worktree')
     expect($reviewOpen.get()).toBe(true)
     expect($reviewScopeCwd.get()).toBe('/tile-worktree')
@@ -279,6 +280,7 @@ describe('view state', () => {
     const review = stubReview({
       list: vi.fn(async (cwd: string) => ({ files: [file(cwd === '/tile' ? 'tile.ts' : 'main.ts')] }))
     })
+
     openReview('/tile')
     await Promise.resolve()
     await Promise.resolve()

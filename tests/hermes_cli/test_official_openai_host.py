@@ -26,6 +26,9 @@ class TestOfficialHosts:
             "https://eu.api.openai.com/v1",
             "https://US.api.OpenAI.com/v1",  # case-insensitive hostname
             "https://in.api.openai.com/v1",  # future regional variants
+            "https://api.openai.com:443/v1",  # port stripped by hostname parse
+            "https://api.openai.com./v1",  # trailing dot normalized
+            "https://attacker.test@us.api.openai.com/v1",  # userinfo stripped; real host wins
         ],
     )
     def test_official_hosts_match(self, url):
@@ -50,6 +53,8 @@ class TestSpoofRejection:
             # Unrelated hosts.
             "https://openrouter.ai/api/v1",
             "https://api.anthropic.com/v1",
+            # IPv6 literal and empty input.
+            "https://[::1]:8080/v1",
             "",
         ],
     )

@@ -2703,6 +2703,7 @@ export const en: Translations = {
       refresh: 'Refresh',
       moreActions: 'More actions',
       branchNewChat: 'Branch in new chat',
+      react: 'React',
       dismissError: 'Dismiss error',
       readAloudFailed: 'Read aloud failed',
       preparingAudio: 'Preparing audio...',

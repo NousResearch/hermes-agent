@@ -7,6 +7,7 @@ import threading
 from contextvars import Context
 from unittest.mock import patch
 
+import gateway.session_context as session_context
 from gateway.session_context import get_session_env, set_current_session_id
 from tools.code_execution_tool import execute_code
 from tools.env_passthrough import register_env_passthrough
@@ -95,3 +96,40 @@ def test_execute_code_prefers_request_context_over_global_session_mirror():
     result = results.get_nowait()
     assert result["status"] == "success", result
     assert result["output"].strip() == "session-A"
+
+
+def test_execute_code_strips_foreign_global_when_engaged_session_id_is_unset():
+    """Strip a foreign global session ID from an unbound task's child process.
+
+    A fresh ``Context`` keeps ``_SESSION_ID`` at ``_UNSET`` while the process
+    is marked engaged and ``os.environ`` carries another session's ID.
+    Explicit passthrough makes that value eligible for the child, so this
+    exercises the ``_inject_session_context_env`` guard: the real local
+    ``execute_code`` child must receive no session ID and print ``MISSING``.
+    """
+    context = Context()
+
+    with (
+        patch.dict(os.environ, {"HERMES_SESSION_ID": "foreign-session"}),
+        patch.object(session_context, "_session_context_engaged", True),
+        patch("tools.approval.check_execute_code_guard", return_value={"approved": True}),
+        patch("tools.terminal_tool._docker_has_host_access", return_value=False),
+        patch("tools.terminal_tool._get_env_config", return_value={"env_type": "local"}),
+        patch(
+            "tools.code_execution_tool._load_config",
+            return_value={"timeout": 15, "max_tool_calls": 50},
+        ),
+    ):
+        assert context.run(session_context.session_context_engaged) is True
+        assert context.run(session_context._SESSION_ID.get) is session_context._UNSET
+        context.run(register_env_passthrough, ["HERMES_SESSION_ID"])
+        raw_result = context.run(
+            execute_code,
+            'import os\nprint(os.environ.get("HERMES_SESSION_ID", "MISSING"))',
+            task_id="session-context-unset-regression",
+            enabled_tools=[],
+        )
+
+    result = json.loads(raw_result)
+    assert result["status"] == "success", result
+    assert result["output"].strip() == "MISSING"

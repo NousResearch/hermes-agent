@@ -54,7 +54,11 @@ CONTINUATION_RE = re.compile(
     r"|got\s+it"
     r"|sounds?\s+good"
     r"|makes?\s+sense"
-    r"|(?:and|also|but|so|then|what|how|why|when|where|which)\b.{0,80}"
+    # Only conjunction-style openers ("and also", "but what about") are safe
+    # continuations; "what/how/why/when/where/which" at the start of a sentence
+    # are almost always new-topic questions and must reach the classifier.
+    r"|(?:and|also|but|so|then)\b.{0,80}"
+    r"|(?:what|how|why)\s+about\b.{0,60}"
     r")\s*[.!?]?\s*$",
     re.IGNORECASE,
 )
@@ -125,11 +129,18 @@ def _load_meta() -> Dict[str, Any]:
 
 
 def _save_meta(data: Dict[str, Any]) -> None:
-    """Persist hook state to meta.yaml using an atomic write (temp + os.replace)."""
+    """Persist hook state to meta.yaml using an atomic write (temp + os.replace).
+
+    The temp file is created in META_FILE.parent (not HOOK_DIR) so that
+    os.replace is guaranteed to be atomic — both paths must be on the same
+    filesystem for a cross-file atomic rename.
+    """
     try:
         content = yaml.safe_dump(data, default_flow_style=False, allow_unicode=True)
+        target = Path(META_FILE)
+        target.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(HOOK_DIR), prefix=".meta_tmp_", suffix=".yaml"
+            dir=str(target.parent), prefix=".meta_tmp_", suffix=".yaml"
         )
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
@@ -420,14 +431,18 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
     # ------------------------------------------------------------------
     # Classify
     # ------------------------------------------------------------------
-    target_role = _classify_message(
-        message=message,
-        current_role=current_role,
-        history=history,
-        roles=roles,
-        aux_cfg=aux_cfg,
-        config=config,
-    )
+    try:
+        target_role = _classify_message(
+            message=message,
+            current_role=current_role,
+            history=history,
+            roles=roles,
+            aux_cfg=aux_cfg,
+            config=config,
+        )
+    except Exception:
+        logger.warning("[multi-role-router] Classification failed; staying put.", exc_info=True)
+        return None
 
     logger.debug(
         "[multi-role-router] message=%r current_role=%s target_role=%s",
@@ -436,41 +451,49 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
         target_role,
     )
 
-    # Record the current session under the current_role so future switches
-    # can find it again.  We do this before any potential redirect.
-    sessions: Dict[str, str] = meta.setdefault("sessions", {})
-    if current_session_id:
-        sessions[current_role] = current_session_id
-
     # ------------------------------------------------------------------
-    # Decide
+    # Decide — mutate + save under lock to prevent concurrent interleaving.
+    # _META_LOCK serialises threads within this process; if hook instances
+    # run in separate processes, a filesystem lock would be needed instead.
     # ------------------------------------------------------------------
-    if target_role == current_role:
-        # No switch needed — save current session mapping and pass through
-        _save_meta(meta)
-        return None
+    with _META_LOCK:
+        # Reload meta inside the lock so we act on the freshest state
+        # (another thread may have saved between our initial load and here).
+        meta = _load_meta()
+        sessions: Dict[str, str] = meta.setdefault("sessions", {})
+        # Record the current session under the current_role so future
+        # switches can find it again.  Done before any potential redirect.
+        if current_session_id:
+            sessions[current_role] = current_session_id
 
-    target_session_id = sessions.get(target_role, "")
+        if target_role == current_role:
+            # No switch needed — save current session mapping and pass through
+            _save_meta(meta)
+            return None
 
-    if not target_session_id:
-        # No existing session for this role — let the gateway create a new one
-        # by updating our bookkeeping to reflect the impending role change
-        # without redirecting (the gateway's normal session-creation path runs).
+        target_session_id = sessions.get(target_role, "")
+
+        if not target_session_id:
+            # No existing session for this role — let the gateway create a new
+            # one by updating our bookkeeping to reflect the impending role
+            # change without redirecting (the gateway's normal session-creation
+            # path runs).  The NEXT message will find this role in meta.yaml
+            # and, once a session_id is established, route correctly.
+            meta["current_role"] = target_role
+            _save_meta(meta)
+            logger.info(
+                "[multi-role-router] New role '%s' — no prior session, gateway will create one.",
+                target_role,
+            )
+            return None
+
+        if target_session_id == current_session_id:
+            _save_meta(meta)
+            return None
+
+        # Switch!
         meta["current_role"] = target_role
         _save_meta(meta)
-        logger.info(
-            "[multi-role-router] New role '%s' — no prior session, gateway will create one.",
-            target_role,
-        )
-        return None
-
-    if target_session_id == current_session_id:
-        _save_meta(meta)
-        return None
-
-    # Switch!
-    meta["current_role"] = target_role
-    _save_meta(meta)
 
     logger.info(
         "[multi-role-router] Switching %s → %s (session %s → %s)",

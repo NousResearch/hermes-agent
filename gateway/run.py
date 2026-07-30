@@ -21604,6 +21604,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_entry = _switched
                 break
 
+        # ── Agent-cache isolation limitation (pre-route hooks) ────────
+        # NOTE: build_session_context() and _set_session_env() (above, at
+        # the "Build session context" block) run BEFORE this pre-route hook
+        # fires, so the session context and tool-session environment are
+        # already stamped with the *original* session_entry.  Swapping
+        # session_entry here via switch_session updates the session for
+        # history loading and transcript writes but does NOT evict the
+        # cached AIAgent from _agent_cache — the agent carries the old
+        # session's system-prompt and context_prompt, and will be reused
+        # on the next turn for the new session key.
+        #
+        # For comparison, /resume (slash_commands.py:4430-4442) calls
+        # switch_session *then* immediately builds a fresh turn context,
+        # so it never reuses a stale cached agent.
+        #
+        # Full agent-cache isolation for hook-driven switches would require
+        # moving this emit_collect block (or the build_session_context call)
+        # to an earlier point in the flow, which is a larger gateway
+        # restructuring out of scope for this PR.  Hooks that need true
+        # session isolation (separate system prompts per worker profile)
+        # should use separate routing keys so each key gets its own cache
+        # slot, rather than relying on same-key session swaps.
+
         # ── Turn lease (#64934) ────────────────────────────────────────
         # Session resolution is FINAL here (get_or_create → async-delegation
         # pinning → topic tip-walk switch_session are all above). Serialize

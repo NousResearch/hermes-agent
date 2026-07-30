@@ -415,15 +415,11 @@ def _sanitize_mcp_probe_error(exc: object, config: dict) -> str:
     from tools.mcp_tool_errors import _sanitize_error
 
     # Upstream's generic pattern redactor (headers, bare schemes, force=True)
-    # runs first; the exact env-file values below cover what patterns cannot.
-    message = redact_mcp_probe_text(_sanitize_error(str(exc)))
-    secret_values = _load_mcp_server_env(config).values()
-    for value in sorted(secret_values, key=len, reverse=True):
-        # Avoid replacing short/common fragments that would make diagnostics
-        # unreadable; credentials should never be this short in practice.
-        if len(value) >= 4:
-            message = message.replace(value, "[REDACTED]")
-    return message
+    # wraps the pattern+exact-value sanitizer.
+    return redact_mcp_probe_text(_sanitize_error(
+        str(exc),
+        _load_mcp_server_env(config).values(),
+    ))
 
 
 def _probe_single_server(

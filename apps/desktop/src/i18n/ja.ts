@@ -2533,6 +2533,7 @@ export const ja = defineLocale({
       refresh: '更新',
       moreActions: 'その他のアクション',
       branchNewChat: '新しいチャットでブランチ',
+      react: 'リアクション',
       dismissError: 'エラーを閉じる',
       readAloudFailed: '読み上げに失敗しました',
       preparingAudio: '音声を準備中...',

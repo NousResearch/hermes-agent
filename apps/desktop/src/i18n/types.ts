@@ -2301,6 +2301,7 @@ export interface Translations {
       refresh: string
       moreActions: string
       branchNewChat: string
+      react: string
       dismissError: string
       readAloudFailed: string
       preparingAudio: string

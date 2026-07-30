@@ -1,6 +1,10 @@
 import { atom } from 'nanostores'
 
-import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import {
+  liveSessionProjectId,
+  NO_PROJECT_ID,
+  type SidebarProjectTree
+} from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
 import { getHermesConfig, type HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -146,8 +150,8 @@ export function enterProject(id: string): void {
   $projectScope.set(id)
 
   // Only explicit, persisted projects (ids are `p_<hex>`) become active. Auto
-  // projects (ids are filesystem paths) and the "No project" bucket have no
-  // durable row to pin, so they're view-scope only.
+  // projects (ids are filesystem paths) and the Home bucket have no durable row
+  // to pin, so they're view-scope only.
   if (id.startsWith('p_')) {
     void setActiveProject(id).catch(() => undefined)
   }
@@ -165,6 +169,12 @@ export function exitProjectScope(): void {
 // so a bare new chat shows no branch.
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
+
+  // Inside Home, "no folder" is the point: a new chat must stay detached rather
+  // than silently attaching to the configured default dir and leaving Home.
+  if (scope === NO_PROJECT_ID) {
+    return ''
+  }
 
   if (scope !== ALL_PROJECTS) {
     const project = $projectTree.get().find(node => node.id === scope)
@@ -211,8 +221,8 @@ export function projectIdForCwd(cwd: string): null | string {
 // match), or null when the cwd sits in no named project. The status bar reads
 // this to label the workspace by project instead of the bare cwd leaf. We skip
 // auto-projects (a repo root promoted with no projects.db row) and the synthetic
-// "No project" bucket on purpose: those have no human name, so their sessions
-// keep the cwd-leaf label — matching the backend `_project_info_for_cwd`, which
+// Home bucket on purpose: those have no human name, so their sessions keep the
+// cwd-leaf label — matching the backend `_project_info_for_cwd`, which
 // only resolves projects.db rows, so the desktop and TUI name the same session
 // identically without threading a second per-session copy through session.info.
 export function projectNameForCwd(cwd: string): null | string {

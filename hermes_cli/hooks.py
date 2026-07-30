@@ -149,7 +149,17 @@ _DEFAULT_PAYLOADS = {
         "changed_paths": ["src/app.tsx"],
     },
     "on_session_start": {"session_id": "test-session"},
-    "on_session_end": {"session_id": "test-session"},
+    "on_session_end": {
+        "session_id": "test-session",
+        "task_id": "test-task",
+        "turn_id": "test-turn",
+        "completed": True,
+        "failed": False,
+        "interrupted": False,
+        "turn_exit_reason": "text_response(stop)",
+        "model": "gpt-4",
+        "platform": "cli",
+    },
     "on_session_finalize": {"session_id": "test-session"},
     "on_session_reset": {"session_id": "test-session"},
     "pre_api_request": {
@@ -189,6 +199,18 @@ _DEFAULT_PAYLOADS = {
         "child_role": None,
         "child_summary": "Synthetic summary for hooks test",
         "child_status": "completed",
+        "tool_call_history": [
+            {
+                "tool_name": "write_file",
+                "tool_input": {
+                    "argument_keys": ["content", "path"],
+                    "targets": {"path": "/tmp/report.txt"},
+                },
+                "input_bytes": 128,
+                "output_bytes": 32,
+                "status": "ok",
+            }
+        ],
         "duration_ms": 1234,
     },
 }

@@ -1,7 +1,9 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
+import { $gateway } from '@/store/gateway'
 
 import { useComposerSubmit } from './use-composer-submit'
 
@@ -182,5 +184,82 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
     )
+  })
+})
+
+describe('useComposerSubmit with a clarify parked on the session', () => {
+  const gatewayRequest = vi.fn(async () => ({ ok: true }))
+
+  const parkClarify = (sessionId: string) => {
+    $clarifyRequests.set({
+      [sessionId]: { requestId: `req-${sessionId}`, question: 'which one?', choices: ['a', 'b'], sessionId }
+    })
+    $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
+  }
+
+  afterEach(() => {
+    cleanup()
+    gatewayRequest.mockClear()
+    $clarifyRequests.set({})
+    $gateway.set(null)
+    vi.restoreAllMocks()
+  })
+
+  it('skips the question and still sends the typed message on an idle session', async () => {
+    parkClarify('runtime-session')
+    const { hook, onSubmit } = renderSubmitHook({ text: 'actually do this instead' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', {
+        request_id: 'req-runtime-session',
+        answer: ''
+      })
+    )
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
+    )
+    expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
+  })
+
+  it('skips the question before steering a busy turn', async () => {
+    parkClarify('runtime-session')
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'change course' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', { request_id: 'req-runtime-session', answer: '' })
+  })
+
+  it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {
+    parkClarify('runtime-session')
+    const { hook, onCancel } = renderSubmitHook({ busy: true })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(gatewayRequest).not.toHaveBeenCalled()
+    expect($clarifyRequests.get()['runtime-session']).toBeDefined()
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it("leaves another session's question alone", async () => {
+    parkClarify('other-session')
+    const { hook, onSubmit } = renderSubmitHook({ text: 'unrelated message' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect(gatewayRequest).not.toHaveBeenCalled()
+    expect($clarifyRequests.get()['other-session']).toBeDefined()
   })
 })

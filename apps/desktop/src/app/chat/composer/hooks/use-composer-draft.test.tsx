@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
 
 import type { QueueEditState } from '../composer-utils'
+import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerDraft } from './use-composer-draft'
 
@@ -12,8 +14,7 @@ const mockComposerApi = { setText: vi.fn() }
 
 vi.mock('@assistant-ui/react', () => ({
   useAui: () => ({ composer: () => mockComposerApi }),
-  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) =>
-    selector({ composer: { text: '' } }),
+  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) => selector({ composer: { text: '' } }),
   useComposerRuntime: () => ({
     getState: () => ({ text: '' }),
     subscribe: () => () => undefined
@@ -60,11 +61,7 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     const snapshots: ComposerAttachment[][] = []
 
     const { rerender } = render(
-      <ProbeHarness
-        activeQueueSessionKey="session-A"
-        onLayoutSnapshot={s => snapshots.push(s)}
-        sessionId="session-A"
-      />
+      <ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={s => snapshots.push(s)} sessionId="session-A" />
     )
 
     // Mount loads session A's stashed attachment into the (module-level) main
@@ -98,18 +95,24 @@ describe('useComposerDraft — rehydrate diagnostic log stays redacted', () => {
 
   it('logs counts/kinds/scope on restore but never the raw url, refText, or label', () => {
     const secretUrl = 'https://secret.example.com/private-workspace-path'
+
     const attachment: ComposerAttachment = {
       id: 'url-secret',
       kind: 'url',
       label: 'do-not-leak-label',
       refText: `@url:${secretUrl}`
     }
+
     stashSessionDraft('session-secret', '', [attachment])
 
     const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
 
     render(
-      <ProbeHarness activeQueueSessionKey="session-secret" onLayoutSnapshot={() => undefined} sessionId="session-secret" />
+      <ProbeHarness
+        activeQueueSessionKey="session-secret"
+        onLayoutSnapshot={() => undefined}
+        sessionId="session-secret"
+      />
     )
 
     const rehydrateCalls = debugSpy.mock.calls.filter(call => call[0] === '[composer-rehydrate]')
@@ -125,5 +128,50 @@ describe('useComposerDraft — rehydrate diagnostic log stays redacted', () => {
       attachmentKinds: ['url'],
       scope: 'session-secret'
     })
+  })
+})
+
+describe('useComposerDraft — a closing composer hands the focus-bus key back', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    markActiveComposer('main')
+  })
+
+  function renderScoped(target: ComposerTarget) {
+    const scope: ComposerScope = { ...MAIN_COMPOSER_SCOPE, target }
+
+    return render(
+      <ComposerScopeProvider value={scope}>
+        <ProbeHarness
+          activeQueueSessionKey="session-tile"
+          onLayoutSnapshot={() => undefined}
+          sessionId="session-tile"
+        />
+      </ComposerScopeProvider>
+    )
+  }
+
+  it('stops `active` resolving to a session tile once the tile unmounts', () => {
+    const { unmount } = renderScoped('tile:abc')
+
+    // Mounting claims the bus for this tile — the leak precondition.
+    expect(getActiveComposer()).toBe('tile:abc')
+
+    unmount()
+
+    expect(getActiveComposer()).toBe('main')
+  })
+
+  it('leaves the key alone when another composer claimed it before this one unmounted', () => {
+    const { unmount } = renderScoped('tile:abc')
+    expect(getActiveComposer()).toBe('tile:abc')
+
+    // The user clicks into a second tile, which claims the bus.
+    markActiveComposer('tile:other')
+
+    unmount()
+
+    expect(getActiveComposer()).toBe('tile:other')
   })
 })

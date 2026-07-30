@@ -24,6 +24,8 @@
  *    MutationObserver burst), but `$messages` was still set twice.
  *
  * The test passes when bursts === 1 AND reconciles === 0.
+ * The sidebar "+" keeps the session warm in another tab. Its reactivation
+ * follows the same contract: one additive paint and zero reconciles.
  *
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
@@ -43,6 +45,11 @@ import { startMockServer } from './mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 
 const SESSION_TITLE = 'E2E Warm Resume Jitter Test'
+
+// Inactive tabs stay mounted under a data-pane-hidden ancestor. Match the
+// renderer's keep-alive visibility policy instead of relying on DOM order.
+const SURFACE = '[data-composer-target]:not([data-pane-hidden] [data-composer-target])'
+const ALL_SURFACES = '[data-composer-target]'
 /** 32 messages (16 user/assistant pairs) — enough DOM churn for detection. */
 const MESSAGE_COUNT = 32
 /** Seeded PRNG so the generated content is deterministic across runs. */
@@ -154,15 +161,29 @@ test.afterAll(async () => {
  *   after the initial paint, catching key-based reconciles that don't
  *   add/remove nodes.
  */
-async function installRenderCounter(page: import('@playwright/test').Page): Promise<void> {
-  await page.evaluate(() => {
-    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+async function installRenderCounter(
+  page: import('@playwright/test').Page,
+  transcriptText?: string,
+): Promise<void> {
+  await page.evaluate(([visibleSelector, allSelector, expected]: [string, string, string | undefined]) => {
+    const surfaces = [...document.querySelectorAll(expected ? allSelector : visibleSelector)]
+    const surface = expected
+      ? surfaces.find(candidate =>
+          (candidate.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
+        )
+      : surfaces.at(-1)
+    const viewport = surface?.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) {
       throw new Error('Thread viewport not found before warm resume')
     }
 
     const state = { bursts: 0, mutations: 0, timeline: [] as number[], stopped: false, reconciles: 0 }
-    ;(window as unknown as { __RENDER_COUNT__: typeof state }).__RENDER_COUNT__ = state
+    const debugWindow = window as unknown as {
+      __RENDER_COUNT__: typeof state
+      __RENDER_VIEWPORT__: Element
+    }
+    debugWindow.__RENDER_COUNT__ = state
+    debugWindow.__RENDER_VIEWPORT__ = viewport
 
     let currentBatch = 0
     let flushTimer: ReturnType<typeof setTimeout> | null = null
@@ -224,7 +245,53 @@ async function installRenderCounter(page: import('@playwright/test').Page): Prom
         hasMessages = true
       }
     }, 2)
-  })
+  }, [SURFACE, ALL_SURFACES, transcriptText] as [string, string, string | undefined])
+}
+
+/** Wait until the ACTIVE chat surface's transcript contains `text`. */
+async function waitForActiveTranscriptText(
+  page: import('@playwright/test').Page,
+  text: string,
+  timeout = 30_000,
+): Promise<void> {
+  await page.waitForFunction(
+    ([expected, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const active = surfaces[surfaces.length - 1]
+
+      return (active?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected)
+    },
+    [text, SURFACE] as [string, string],
+    { timeout },
+  )
+}
+
+async function waitForActiveTranscriptWithoutText(
+  page: import('@playwright/test').Page,
+  text: string,
+): Promise<void> {
+  await page.waitForFunction(
+    ([expected, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const active = surfaces[surfaces.length - 1]
+
+      return !(active?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected)
+    },
+    [text, SURFACE] as [string, string],
+    { timeout: 15_000 },
+  )
+}
+
+/** Replace the primary surface with a draft while retaining its warm cache. */
+async function openFreshDraft(page: import('@playwright/test').Page, priorText: string): Promise<void> {
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+N' : 'Control+N')
+  await waitForActiveTranscriptWithoutText(page, priorText)
+}
+
+/** Stack an empty tab while leaving the current transcript mounted and warm. */
+async function openNewSessionTab(page: import('@playwright/test').Page, priorText: string): Promise<void> {
+  await page.locator('[data-slot="sidebar"] button[aria-label="New session"]').first().click()
+  await waitForActiveTranscriptWithoutText(page, priorText)
 }
 
 /** Stop the render counter and return the recorded burst/reconcile counts. */
@@ -245,6 +312,30 @@ async function readRenderCount(page: import('@playwright/test').Page): Promise<{
   })
 }
 
+async function observedViewportIsActive(page: import('@playwright/test').Page): Promise<boolean> {
+  return page.evaluate((surfaceSelector: string) => {
+    const surfaces = document.querySelectorAll(surfaceSelector)
+    const activeViewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
+    const observedViewport = (window as unknown as { __RENDER_VIEWPORT__?: Element }).__RENDER_VIEWPORT__
+
+    return activeViewport === observedViewport
+  }, SURFACE)
+}
+
+/** A kept-alive tab must become visible without rebuilding its transcript. */
+function assertNoRepaint(result: { bursts: number; mutations: number; timeline: number[]; reconciles: number } | null): void {
+  expect(result, 'MutationObserver should have recorded render data').toBeTruthy()
+  expect(
+    result!.bursts,
+    `Expected no additive render bursts for a kept-alive tab, but got ${result!.bursts}. ` +
+      `Mutation timeline: ${JSON.stringify(result!.timeline)}.`,
+  ).toBe(0)
+  expect(
+    result!.reconciles,
+    `Expected no transcript reconciles for a kept-alive tab, but got ${result!.reconciles}.`,
+  ).toBe(0)
+}
+
 /** Assert the render counter shows exactly one paint with no re-renders. */
 function assertNoJitter(result: { bursts: number; mutations: number; timeline: number[]; reconciles: number } | null): void {
   expect(result, 'MutationObserver should have recorded render data').toBeTruthy()
@@ -261,7 +352,7 @@ function assertNoJitter(result: { bursts: number; mutations: number; timeline: n
   ).toBe(0)
 }
 
-test('warm-route resume paints transcript exactly once (no jitter)', async ({}, testInfo) => {
+test('tab reactivation preserves the mounted transcript without repainting', async ({}, testInfo) => {
   const page = fixture!.page
 
   // Wait for the sidebar to populate with our seeded session.
@@ -277,63 +368,29 @@ test('warm-route resume paints transcript exactly once (no jitter)', async ({}, 
 
   // Wait for the transcript to appear — the first user message text confirms
   // the cold-path prefetch painted.
-  await page.waitForFunction(
-    (text: string) =>
-      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
-      false,
-    FIRST_USER_MSG,
-    { timeout: 30_000 },
-  )
+  await waitForActiveTranscriptText(page, FIRST_USER_MSG)
 
   // Wait for the session to fully settle (cold-path RPC + reconciliation).
   await page.waitForTimeout(2_000)
 
-  // Step 2: Navigate away to a new chat — this does NOT evict the warm cache.
-  const newSessionButton = page
-    .locator('[data-slot="sidebar"] button[aria-label="New session"]')
-    .first()
-  await newSessionButton.click()
-
-  // Wait for the new-chat empty state.
-  await page.waitForFunction(
-    (firstMsg: string) => {
-      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-      if (!viewport) return false
-      const text = viewport.textContent ?? ''
-      return !text.includes(firstMsg)
-    },
-    FIRST_USER_MSG,
-    { timeout: 15_000 },
-  )
-
+  // Stack a new tab, then observe the seeded transcript while it is hidden.
+  // Installing after the switch isolates reactivation from mutations caused
+  // while the new tab was being created.
+  await openNewSessionTab(page, FIRST_USER_MSG)
   await page.waitForTimeout(500)
+  await installRenderCounter(page, FIRST_USER_MSG)
 
-  // Step 3: Install render counter, click back (warm resume), wait, assert.
-  await installRenderCounter(page)
+  // Step 3: Click back and verify the same kept-alive viewport becomes active
+  // without rebuilding or reconciling its transcript.
   await sessionRow.click()
 
-  await page.waitForFunction(
-    (text: string) =>
-      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
-      false,
-    FIRST_USER_MSG,
-    { timeout: 30_000 },
-  )
-
-  // Wait for at least 1 burst, then settle.
-  await page.waitForFunction(
-    () => {
-      const w = window as unknown as { __RENDER_COUNT__?: { bursts: number } }
-      return Boolean(w.__RENDER_COUNT__ && w.__RENDER_COUNT__.bursts > 0)
-    },
-    undefined,
-    { timeout: 10_000 },
-  )
+  await waitForActiveTranscriptText(page, FIRST_USER_MSG)
   await page.waitForTimeout(2_000)
+  expect(await observedViewportIsActive(page), 'Reactivation should reveal the observed kept-alive viewport').toBe(true)
 
   const result = await readRenderCount(page)
   await page.screenshot({ path: testInfo.outputPath('warm-resume-idle.png') })
-  assertNoJitter(result)
+  assertNoRepaint(result)
 })
 
 test('warm-route resume after background inference completes (no jitter)', async ({}, testInfo) => {
@@ -354,13 +411,7 @@ test('warm-route resume after background inference completes (no jitter)', async
 
   // Step 1: Cold resume — populate the warm cache.
   await sessionRow.click()
-  await page.waitForFunction(
-    (text: string) =>
-      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
-      false,
-    FIRST_USER_MSG,
-    { timeout: 30_000 },
-  )
+  await waitForActiveTranscriptText(page, FIRST_USER_MSG)
   await page.waitForTimeout(2_000)
 
   // Step 2: Send a message — triggers inference via the mock server.
@@ -373,34 +424,15 @@ test('warm-route resume after background inference completes (no jitter)', async
   // Wait for the mock response to appear in the transcript, confirming
   // the turn completed and message.complete fired (which updates the warm
   // cache via updateSessionState).
-  await page.waitForFunction(
-    () => {
-      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-      return viewport?.textContent?.includes('mock inference server') ?? false
-    },
-    undefined,
-    { timeout: 60_000 },
-  )
+  await waitForActiveTranscriptText(page, 'mock inference server', 60_000)
   // Extra settle for message.complete → updateSessionState → cache write.
   await page.waitForTimeout(2_000)
 
   // Verify the prompt was received by the mock server.
   expect(mock.receivedPrompts).toContain(PROMPT)
 
-  // Step 3: Navigate away — the warm cache retains the updated messages.
-  const newSessionButton = page
-    .locator('[data-slot="sidebar"] button[aria-label="New session"]')
-    .first()
-  await newSessionButton.click()
-  await page.waitForFunction(
-    (prompt: string) => {
-      const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-      if (!viewport) return false
-      return !(viewport.textContent ?? '').includes(prompt)
-    },
-    PROMPT,
-    { timeout: 15_000 },
-  )
+  // Step 3: Replace the primary chat; the warm cache retains the updated messages.
+  await openFreshDraft(page, PROMPT)
   await page.waitForTimeout(500)
 
   // Step 4: Install render counter, click back (warm resume), wait, assert.
@@ -409,13 +441,7 @@ test('warm-route resume after background inference completes (no jitter)', async
 
   // Wait for the transcript to reappear — the warm cache should already
   // have the completed turn (updated by message.complete events).
-  await page.waitForFunction(
-    (text: string) =>
-      document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(text) ??
-      false,
-    FIRST_USER_MSG,
-    { timeout: 30_000 },
-  )
+  await waitForActiveTranscriptText(page, FIRST_USER_MSG)
 
   // Wait for at least 1 burst, then settle.
   await page.waitForFunction(

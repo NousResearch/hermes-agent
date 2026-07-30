@@ -2,6 +2,7 @@ import { atom, map } from 'nanostores'
 
 import { getActionStatus, installSkillFromHub, uninstallSkillFromHub, updateSkillsFromHub } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
+import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
@@ -104,6 +105,9 @@ async function runHubAction(key: string, kind: HubActionKind, spawn: () => Promi
     // (un)install adds/removes a skill, so its count/rows must update too.
     void queryClient.invalidateQueries({ queryKey: HUB_SOURCES_KEY })
     void queryClient.invalidateQueries({ queryKey: SKILLS_LIST_KEY })
+    // …and the composer's `/` list, which caches the command catalog for an
+    // hour and would otherwise keep offering the skill we just removed.
+    invalidateSlashCompletions()
   } catch (err) {
     // A profile switch points the next poll at the new backend, which 404s the
     // old action name — that's an abandonment, not a failure, so swallow it

@@ -52,6 +52,33 @@ function installDesktopMock(state: DesktopBootstrapState) {
   return desktop
 }
 
+// Resolve the instant a node commits, via MutationObserver rather than
+// waitFor's polling timer. findBy* only settles on a timer tick, by which
+// point React has already drained its passive effects — that hides any bug
+// living in the window between paint and effect.
+function whenPresent(text: string): Promise<HTMLElement> {
+  return new Promise(resolve => {
+    const existing = screen.queryByText(text)
+
+    if (existing) {
+      resolve(existing)
+
+      return
+    }
+
+    const observer = new MutationObserver(() => {
+      const node = screen.queryByText(text)
+
+      if (node) {
+        observer.disconnect()
+        resolve(node)
+      }
+    })
+
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+  })
+}
+
 beforeEach(() => {
   vi.restoreAllMocks()
 })
@@ -118,6 +145,56 @@ describe('DesktopInstallOverlay first-run setup', () => {
       await screen.findByText('Local installation could not start. Restart Hermes Desktop and try again.')
     ).toBeTruthy()
     expect(install.disabled).toBe(false)
+  })
+
+  it('keeps the local-start error when the first snapshot commits under the click', async () => {
+    const desktop = installDesktopMock(
+      bootstrapState({
+        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
+      })
+    )
+
+    desktop.continueBootstrapLocal = undefined as never
+    render(<DesktopInstallOverlay />)
+
+    // Click the instant the choice paints, before React drains the passive
+    // effect that reacts to the first snapshot. A loaded runner hits this
+    // window by accident; observing the DOM directly hits it every time.
+    const install = (await whenPresent('Install Hermes locally')).closest('button') as HTMLButtonElement
+    fireEvent.click(install)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(screen.queryByText('Local installation could not start. Restart Hermes Desktop and try again.')).toBeTruthy()
+  })
+
+  it('clears a stale local-start error when a repair presents a different root', async () => {
+    const desktop = installDesktopMock(
+      bootstrapState({
+        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
+      })
+    )
+
+    desktop.continueBootstrapLocal = undefined as never
+    render(<DesktopInstallOverlay />)
+
+    fireEvent.click((await screen.findByText('Install Hermes locally')).closest('button') as HTMLButtonElement)
+    expect(
+      await screen.findByText('Local installation could not start. Restart Hermes Desktop and try again.')
+    ).toBeTruthy()
+
+    act(() => {
+      desktop.emitBootstrapEvent({
+        type: 'setup-choice',
+        active: false,
+        platform: 'win32',
+        activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent-repaired'
+      })
+    })
+
+    expect(screen.queryByText('Local installation could not start. Restart Hermes Desktop and try again.')).toBeNull()
   })
 
   it('opens the remote connection form from the first-run choice', async () => {

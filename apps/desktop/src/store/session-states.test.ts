@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ClientSessionState } from '@/app/types'
 import { group, split } from '@/components/pane-shell/tree/model'
+import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
-import { orderTilesByTree, selectionHomesToWorkspace } from '@/store/session-states'
+import {
+  blankDraftTile,
+  focusedSessionNeedsRoute,
+  markSelectionRestore,
+  orderTilesByTree,
+  selectionHomesToWorkspace
+} from '@/store/session-states'
 
 const tile = (storedSessionId: string): SessionTile => ({ storedSessionId })
 const tilePane = (id: string) => `session-tile:${id}`
@@ -42,5 +51,90 @@ describe('selectionHomesToWorkspace', () => {
 
   it('skips homing when the selected id is already an open tile', () => {
     expect(selectionHomesToWorkspace('a', tiles)).toBe(false)
+  })
+})
+
+describe('boot-restore selection homing (⌘R tab persistence)', () => {
+  const mainGroup = () => group(['workspace', tilePane('t')], { active: tilePane('t'), id: 'main' })
+
+  const activePane = () => {
+    const tree = $layoutTree.get()
+
+    return tree?.type === 'group' ? tree.active : null
+  }
+
+  it('a normal selection change fronts the workspace tab over an active tile', () => {
+    $layoutTree.set(mainGroup())
+    $selectedStoredSessionId.set('nav-1')
+
+    expect(activePane()).toBe('workspace')
+  })
+
+  it('markSelectionRestore skips homing exactly once, so the persisted active tab survives a reload', () => {
+    $layoutTree.set(mainGroup())
+    markSelectionRestore()
+    $selectedStoredSessionId.set('boot-1')
+
+    // Boot restore: the tile tab the user reloaded on stays fronted.
+    expect(activePane()).toBe(tilePane('t'))
+
+    // One-shot consumed: the next selection change is a real navigation.
+    $selectedStoredSessionId.set('nav-2')
+    expect(activePane()).toBe('workspace')
+  })
+})
+
+describe('focusedSessionNeedsRoute', () => {
+  it('routes when the session is not on screen', () => {
+    expect(focusedSessionNeedsRoute(null, false)).toBe(true)
+    expect(focusedSessionNeedsRoute(null, true)).toBe(true)
+  })
+
+  it('routes for the ACTIVE main session while a full page covers the workspace', () => {
+    expect(focusedSessionNeedsRoute('main', true)).toBe(true)
+  })
+
+  it('skips the route when the main session is already the visible chat', () => {
+    expect(focusedSessionNeedsRoute('main', false)).toBe(false)
+  })
+
+  it('never routes for a tile — its pane shows the chat on any route', () => {
+    expect(focusedSessionNeedsRoute('tile', true)).toBe(false)
+    expect(focusedSessionNeedsRoute('tile', false)).toBe(false)
+  })
+})
+
+describe('blankDraftTile', () => {
+  const bound = (storedSessionId: string, runtimeId: string): SessionTile => ({ runtimeId, storedSessionId })
+
+  const state = (messages: number, busy = false) =>
+    ({ busy, messages: Array.from({ length: messages }, (_, i) => ({ id: `m${i}` })) }) as ClientSessionState
+
+  it('finds the open tab whose session has no messages', () => {
+    const tiles = [bound('a', 'run-a'), bound('b', 'run-b')]
+    const states = { 'run-a': state(3), 'run-b': state(0) }
+
+    expect(blankDraftTile(tiles, states)).toEqual(tiles[1])
+  })
+
+  it('picks the most recent blank tab when there are several', () => {
+    const tiles = [bound('a', 'run-a'), bound('b', 'run-b')]
+    const states = { 'run-a': state(0), 'run-b': state(0) }
+
+    expect(blankDraftTile(tiles, states)).toEqual(tiles[1])
+  })
+
+  it('leaves a blank-but-busy tab alone — its first turn is already in flight', () => {
+    expect(blankDraftTile([bound('a', 'run-a')], { 'run-a': state(0, true) })).toBeNull()
+  })
+
+  it('treats an unbound or unpublished tile as unknown, not empty', () => {
+    expect(blankDraftTile([tile('a')], {})).toBeNull()
+    expect(blankDraftTile([bound('a', 'run-a')], {})).toBeNull()
+  })
+
+  it('is null when every open tab holds a conversation', () => {
+    expect(blankDraftTile([bound('a', 'run-a')], { 'run-a': state(2) })).toBeNull()
+    expect(blankDraftTile([], {})).toBeNull()
   })
 })

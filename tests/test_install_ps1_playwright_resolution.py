@@ -16,6 +16,7 @@ def test_installer_uses_explicit_playwright_package_fallback() -> None:
     source = INSTALL_PS1.read_text(encoding="ascii")
 
     assert "Resolve-PlaywrightInvocation -InstallDir $InstallDir -NpxExe $npxExe" in source
+    assert '"node_modules/.bin"' in source
     assert '"apps/desktop/node_modules/.bin"' in source
     assert '"--package=playwright"' in source
     assert "& $pwCommand @pwArgs" in source

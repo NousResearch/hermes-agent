@@ -17,7 +17,8 @@ import {
   markActiveComposer,
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
-  onComposerInsertRequest
+  onComposerInsertRequest,
+  releaseActiveComposer
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import { composerPlainText, placeCaretEnd, REF_RE, renderComposerContents } from '../rich-editor'
@@ -153,6 +154,15 @@ export function useComposerDraft({
     }
   }, [focusInput, focusKey, focusRequestId, inputDisabled])
 
+  // The mirror of the `markActiveComposer` above: give the key back when this
+  // composer goes away (a session tile closing, a pane unmounting). Covers both
+  // claim sites for this composer — `focusInput` here and ChatBar's `onFocus` —
+  // since they mark the same scope target. Without it `'active'` keeps
+  // resolving to a dead tile and every routed focus/insert request is dropped.
+  // (Heal-to-visible in focus.ts covers the keep-alive-tab case where the pane
+  // stays mounted behind the front tab; this covers true unmounts.)
+  useEffect(() => () => releaseActiveComposer(target), [target])
+
   useEffect(() => {
     if (inputDisabled) {
       return undefined
@@ -246,6 +256,7 @@ export function useComposerDraft({
   // source otherwise), and (3) schedule the debounced per-session stash.
   // Browsing history / editing a queued prompt suppress the stash so recalled
   // text never clobbers the draft.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const sync = () => {
       const text = composerRuntime.getState().text
@@ -342,6 +353,7 @@ export function useComposerDraft({
   // window (e.g. a fast session switch immediately followed by Enter) would
   // ship A's attachments into B's turn (#59305). useLayoutEffect closes the
   // window by running before paint.
+
   useLayoutEffect(() => {
     // A pending debounce timer from the outgoing session is now stale — its
     // scope was correct when scheduled, but the authoritative stash below
@@ -368,6 +380,7 @@ export function useComposerDraft({
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const flushPendingDraftPersist = () => {
       const scope = draftScopeRef.current
@@ -405,6 +418,7 @@ export function useComposerDraft({
     requestMainFocus,
     sessionIdRef,
     setComposerText,
-    stashAt
+    stashAt,
+    syncDraftFromEditor
   }
 }

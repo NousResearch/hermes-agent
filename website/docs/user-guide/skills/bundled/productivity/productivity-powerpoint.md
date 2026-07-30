@@ -1,7 +1,7 @@
 ---
-title: "Powerpoint — Create, read, edit"
+title: "Powerpoint — Create, read, edit .pptx decks, slides, notes, templates"
 sidebar_label: "Powerpoint"
-description: "Create, read, edit"
+description: "Create, read, edit .pptx decks, slides, notes, templates"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}

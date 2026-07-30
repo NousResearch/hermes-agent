@@ -219,7 +219,15 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     is_shallow = shallow == "true"
 
     try:
-        fetch_args = ["git", "fetch", "origin"]
+        # Scope the fetch to the one branch the behind-count compares against.
+        # An unscoped ``git fetch origin`` transfers every remote head (~1,400
+        # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
+        # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
+        # for the same reason. Modern git updates the ``origin/main`` tracking
+        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
+        # unaffected; the shallow path compares against FETCH_HEAD, which a
+        # scoped fetch also updates.
+        fetch_args = ["git", "fetch", "origin", "main"]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
@@ -292,7 +300,7 @@ def check_for_updates() -> Optional[int]:
     now = time.time()
     try:
         if cache_file.exists():
-            cached = json.loads(cache_file.read_text())
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
@@ -321,7 +329,8 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+            encoding="utf-8",
         )
     except Exception:
         pass

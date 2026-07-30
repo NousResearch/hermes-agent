@@ -219,6 +219,80 @@ function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
 }
 
+const REMOTE_HEADER_NAME_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
+
+const FORBIDDEN_REMOTE_HEADER_NAMES = new Set([
+  'authorization',
+  'connection',
+  'content-length',
+  'content-type',
+  'cookie',
+  'host',
+  'origin',
+  'referer',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'x-hermes-session-token'
+])
+
+function normalizeRemoteHeaders(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {}
+  }
+
+  const out = {}
+
+  for (const [name, secret] of Object.entries(raw)) {
+    const headerName = String(name || '').trim()
+    const lower = headerName.toLowerCase()
+
+    if (!headerName || !REMOTE_HEADER_NAME_RE.test(headerName) || FORBIDDEN_REMOTE_HEADER_NAMES.has(lower)) {
+      continue
+    }
+
+    if (typeof secret === 'string') {
+      const value = secret.trim()
+
+      if (value) {
+        out[headerName] = { encoding: 'plain', value }
+      }
+
+      continue
+    }
+
+    if (secret && typeof secret === 'object') {
+      const encoding = String((secret as any).encoding || '')
+      const value = String((secret as any).value || '')
+
+      if (value && (encoding === 'safeStorage' || encoding === 'plain' || !encoding)) {
+        out[headerName] = { encoding: encoding || 'plain', value }
+      }
+    }
+  }
+
+  return out
+}
+
+function remoteRequestMatchesBaseUrl(requestUrl, baseUrl) {
+  try {
+    const request = new URL(requestUrl)
+    const base = new URL(baseUrl)
+    const basePath = base.pathname.replace(/\/+$/, '')
+    const requestProtocol = request.protocol === 'ws:' ? 'http:' : request.protocol === 'wss:' ? 'https:' : request.protocol
+    const baseProtocol = base.protocol === 'ws:' ? 'http:' : base.protocol === 'wss:' ? 'https:' : base.protocol
+
+    if (requestProtocol !== baseProtocol || request.host !== base.host) {
+      return false
+    }
+
+    return !basePath || request.pathname === basePath || request.pathname.startsWith(`${basePath}/`)
+  } catch {
+    return false
+  }
+}
+
 // True for connection modes that resolve to a REMOTE backend. 'cloud' is a
 // Hermes Cloud connection (cloud-auto-discovery Q3/Q6): it carries a
 // remote-shaped block and reuses the entire remote connect/probe/reconnect
@@ -367,8 +441,8 @@ function hostLabelFromBaseUrl(baseUrl) {
  *
  * The config may carry a `profiles` map keyed by name; an entry counts as an
  * override only with a remote-like `mode` (remote or cloud) and a non-empty
- * `url`. Pure: `token` is the raw stored secret; main.ts decrypts it. Returns
- * `{ url, authMode, token } | null`.
+ * `url`. Pure: `token` and `headers` are raw stored secrets; main.ts decrypts
+ * them. Returns `{ url, authMode, token, headers } | null`.
  */
 function profileRemoteOverride(config, profile) {
   const key = connectionScopeKey(profile)
@@ -384,7 +458,14 @@ function profileRemoteOverride(config, profile) {
     return null
   }
 
-  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
+  const headers = normalizeRemoteHeaders(entry.headers)
+
+  return {
+    url,
+    authMode: normAuthMode(entry.authMode),
+    token: entry.token,
+    ...(Object.keys(headers).length > 0 ? { headers } : {})
+  }
 }
 
 export interface ProfileRouteOptions {
@@ -690,6 +771,8 @@ export {
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeRemoteHeaders,
+  remoteRequestMatchesBaseUrl,
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,

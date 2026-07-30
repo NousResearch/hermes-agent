@@ -5,6 +5,7 @@ import { closeActiveTab } from '@/app/chat/close-tab'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { activateTreeTabSlot, cycleTreeTabInFocusedZone, layoutHasRootSide } from '@/components/pane-shell/tree/store'
+import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
@@ -223,6 +224,24 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'profile.toggleAll': toggleShowAllProfiles,
     'profile.create': requestProfileCreate
   }
+
+  // A keyboard-driven overlay closing hands typing back to the composer: Radix
+  // restores focus to the trigger (a toolbar button for the model pill), so
+  // without this the Enter that committed a model also eats the next keystroke.
+  // Deferred one frame and skipped when something else editable has claimed
+  // focus, because a palette action can legitimately open a dialog or navigate
+  // — the release must never steal focus from the surface it just opened.
+  useEffect(
+    () =>
+      onReleaseTypingFocus(() =>
+        requestAnimationFrame(() => {
+          if (!isEditableTarget(document.activeElement)) {
+            requestComposerFocus('active')
+          }
+        })
+      ),
+    []
+  )
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

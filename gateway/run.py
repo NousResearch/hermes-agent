@@ -6704,7 +6704,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     model = ch.model
                 if ch.provider:
                     runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                        ch.provider
+                        ch.provider, target_model=model
                     )
                     ch_runtime_model = runtime_kwargs.pop("model", None)
                     # Only adopt the provider's bundled model when the override

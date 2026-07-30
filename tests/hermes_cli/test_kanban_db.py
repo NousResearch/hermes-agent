@@ -885,6 +885,15 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
+    # These tests exercise the WAL-attempt path; assume a fixed SQLite so the
+    # WAL-reset vulnerability gate doesn't short-circuit before the pragma.
+    import hermes_state as _hermes_state
+    monkeypatch.setattr(
+        _hermes_state, "is_sqlite_wal_reset_vulnerable",
+        lambda version_info=None: False,
+    )
+    _hermes_state._wal_fallback_warned_paths.clear()
+
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
     hermes_state._wal_fallback_warned_paths.clear()
@@ -898,6 +907,10 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
+        # connect_tracked passes a tracking-augmented factory; drop it and
+        # substitute the double, which connect_tracked re-applies to the
+        # returned instance.
+        kwargs.pop("factory", None)
         return real_connect(
             *args, factory=_WalBlockingConnection, **kwargs
         )
@@ -935,6 +948,11 @@ def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplo
 
     kb._INITIALIZED_PATHS.clear()
     hermes_state._wal_fallback_warned_paths.clear()
+    # Assume a fixed SQLite so the WAL-reset gate doesn't short-circuit.
+    monkeypatch.setattr(
+        hermes_state, "is_sqlite_wal_reset_vulnerable",
+        lambda version_info=None: False,
+    )
 
     real_connect = _sqlite3.connect
 
@@ -945,6 +963,7 @@ def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplo
             return super().execute(sql, *args, **kwargs)
 
     def wal_silent_noop_connect(*args, **kwargs):
+        kwargs.pop("factory", None)
         return real_connect(
             *args, factory=_WalSilentNoOpConnection, **kwargs
         )

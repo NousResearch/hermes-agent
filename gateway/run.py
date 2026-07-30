@@ -1666,23 +1666,11 @@ _hermes_home = get_hermes_home()
 def _consume_clean_shutdown_marker() -> bool:
     """Atomically consume one clean-shutdown marker generation.
 
-    Rename first so a cleanup failure cannot leave reusable evidence that
-    poisons a later startup after a genuinely interrupted shutdown.
+    Rename before inspection so any stat/read failure happens only after the
+    recognized marker name is gone. A failed startup can therefore never lend
+    an older process's clean proof to a later boot.
     """
     marker = _hermes_home / ".clean_shutdown"
-    if not marker.exists():
-        return False
-    try:
-        if marker.stat().st_size != 0:
-            # Non-empty files are invalidation tombstones, never clean proof.
-            try:
-                marker.unlink()
-            except Exception:
-                pass
-            return False
-    except Exception as exc:
-        logger.warning("Failed to inspect .clean_shutdown marker: %s", exc)
-        return False
     consumed = _hermes_home / ".clean_shutdown.consumed"
     try:
         os.replace(marker, consumed)
@@ -1709,14 +1697,28 @@ def _consume_clean_shutdown_marker() -> bool:
                     "Failed to tombstone .clean_shutdown marker: %s",
                     tombstone_exc,
                 )
+                raise RuntimeError(
+                    "Cannot safely invalidate unconsumed .clean_shutdown marker"
+                ) from tombstone_exc
         return False
+
+    clean = False
     try:
-        consumed.unlink()
+        clean = consumed.stat().st_size == 0
+        if not clean:
+            logger.debug("Ignoring non-empty .clean_shutdown invalidation tombstone")
     except Exception as exc:
-        # The recognized marker name is already gone; leftover cleanup is
-        # harmless and the next os.replace() overwrites this path atomically.
-        logger.warning("Failed to remove consumed shutdown marker: %s", exc)
-    return True
+        # The recognized name was already consumed, so inspection failure is
+        # safely one-shot and cannot be reused by a subsequent process.
+        logger.warning("Failed to inspect consumed .clean_shutdown marker: %s", exc)
+    finally:
+        try:
+            consumed.unlink()
+        except Exception as exc:
+            # The recognized marker name is already gone; leftover cleanup is
+            # harmless and the next os.replace() overwrites this path atomically.
+            logger.warning("Failed to remove consumed shutdown marker: %s", exc)
+    return clean
 
 
 def _write_clean_shutdown_marker() -> None:
@@ -9794,20 +9796,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         where a finishing turn could clear its exact marker while shutdown was
         about to interrupt the still-registered agent.
         """
-        if session_key in getattr(self, "_shutdown_resume_pending_keys", set()):
-            logger.debug(
-                "Preserving resume_pending for %s during gateway shutdown",
-                session_key,
-            )
-            return
-        try:
-            await self.async_session_store.clear_resume_pending(session_key)
-        except Exception as _e:
-            logger.debug(
-                "clear_resume_pending failed for %s: %s",
-                session_key,
-                _e,
-            )
+        state = self._session_state(session_key)
+        async with state.persistent.resume_pending_lock:
+            if session_key in getattr(self, "_shutdown_resume_pending_keys", set()):
+                logger.debug(
+                    "Preserving resume_pending for %s during gateway shutdown",
+                    session_key,
+                )
+                return
+            try:
+                await self.async_session_store.clear_resume_pending(session_key)
+            except Exception as _e:
+                logger.debug(
+                    "clear_resume_pending failed for %s: %s",
+                    session_key,
+                    _e,
+                )
 
     async def _run_startup_resume_event(
         self,
@@ -10091,12 +10095,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         agent is already running are skipped regardless, so a session
         scheduled at startup is never resumed a second time.
         """
-        # A clean marker is authoritative: every conversational turn drained.
-        # Even if shutdown could not clear a stale exact flag from storage, do
-        # not synthesize it during this process lifetime.
-        if getattr(self, "_previous_shutdown_clean", False):
-            return 0
-
         window = _auto_continue_freshness_window()
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
@@ -10625,8 +10623,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # process already drained active agents, so sessions aren't stuck.
         # This prevents unwanted auto-resets after `hermes update`,
         # `hermes gateway restart`, or `/restart`.
-        self._previous_shutdown_clean = _consume_clean_shutdown_marker()
-        if self._previous_shutdown_clean:
+        if getattr(self, "_previous_shutdown_clean", False):
             logger.info("Previous gateway exited cleanly — skipping session suspension")
         else:
             try:
@@ -12159,27 +12156,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             timeout = self._restart_drain_timeout
 
+            def _resume_pending_lock_for(session_key: str) -> asyncio.Lock:
+                """Return the SessionState lock, with a legacy-test fallback."""
+                state_getter = getattr(self, "_session_state", None)
+                if callable(state_getter):
+                    return state_getter(session_key).persistent.resume_pending_lock
+                locks = getattr(self, "_resume_pending_locks", None)
+                if locks is None:
+                    locks = {}
+                    self._resume_pending_locks = locks
+                return locks.setdefault(session_key, asyncio.Lock())
+
             # Pre-mark sessions as resume_pending BEFORE the drain wait.
             # If the process is killed by the service manager during the
             # drain, the durable marker is already written so the next
             # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
-            self._shutdown_resume_pending_keys = {
-                _sk
-                for _sk, _agent in list(self._running_agents.items())
-                if _agent is not _AGENT_PENDING_SENTINEL
-            }
+            _reserved_pre_drain_keys: list[str] = []
+            self._shutdown_resume_pending_keys = set()
             for _sk, _agent in list(self._running_agents.items()):
                 if _agent is _AGENT_PENDING_SENTINEL:
                     continue
-                try:
-                    await self.async_session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
-                except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
+                _resume_lock = _resume_pending_lock_for(_sk)
+                async with _resume_lock:
+                    # Reservation and durable mark are one serialized operation
+                    # with successful-turn clearing.  If an older clear already
+                    # owns the lock it finishes first and this newer mark wins;
+                    # otherwise the clear observes the reservation and yields.
+                    self._shutdown_resume_pending_keys.add(_sk)
+                    _reserved_pre_drain_keys.append(_sk)
+                    try:
+                        await self.async_session_store.mark_resume_pending(
+                            _sk,
+                            "restart_timeout" if self._restart_requested else "shutdown_timeout",
+                        )
+                    except Exception as _e:
+                        logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
             _cron_at_start = self._active_cron_job_count()
             _api_at_start = self._active_api_run_count()
@@ -12205,15 +12216,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # even when unrelated cron/API work keeps the overall drain waiting
             # until timeout. Clear its durable pre-drain recovery marker before
             # classifying the work that actually remains.
-            for _sk in _pre_drain_keys:
+            for _sk in _reserved_pre_drain_keys:
                 if _sk not in self._running_agents:
-                    try:
-                        await self.async_session_store.clear_resume_pending(_sk)
-                    except Exception as _e:
-                        logger.debug(
-                            "clear_resume_pending after drain failed for %s: %s",
-                            _sk, _e,
-                        )
+                    _resume_lock = _resume_pending_lock_for(_sk)
+                    async with _resume_lock:
+                        try:
+                            await self.async_session_store.clear_resume_pending(_sk)
+                        except Exception as _e:
+                            logger.debug(
+                                "clear_resume_pending after drain failed for %s: %s",
+                                _sk, _e,
+                            )
+                        finally:
+                            self._shutdown_resume_pending_keys.discard(_sk)
 
             if not timed_out:
                 # Record the clean drain before slower teardown begins. Host
@@ -12267,22 +12282,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     for _sk, _agent in list(self._running_agents.items())
                     if _agent is not _AGENT_PENDING_SENTINEL
                 ]
-                self._shutdown_resume_pending_keys.update(
-                    _sk for _sk, _agent in _interrupted_agents
-                )
                 for _sk, _agent in _interrupted_agents:
-                    try:
-                        _marked = await self.async_session_store.mark_resume_pending(
-                            _sk, _resume_reason
-                        )
-                        if not _marked:
+                    _resume_lock = _resume_pending_lock_for(_sk)
+                    async with _resume_lock:
+                        self._shutdown_resume_pending_keys.add(_sk)
+                        try:
+                            _marked = await self.async_session_store.mark_resume_pending(
+                                _sk, _resume_reason
+                            )
+                            if not _marked:
+                                _resume_mark_failed = True
+                        except Exception as _e:
                             _resume_mark_failed = True
-                    except Exception as _e:
-                        _resume_mark_failed = True
-                        logger.debug(
-                            "mark_resume_pending failed for %s: %s",
-                            _sk, _e,
-                        )
+                            logger.debug(
+                                "mark_resume_pending failed for %s: %s",
+                                _sk, _e,
+                            )
 
                 # Every interrupted chat is now represented by an exact
                 # resume_pending marker. Record that broad crash inference is
@@ -25518,6 +25533,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "PID file race lost to another gateway instance. Exiting."
         )
         return False
+    # Consume the predecessor's one-shot clean proof immediately after this
+    # process owns both gateway identity guards.  Nothing fallible or awaitable
+    # may run first: if this startup crashes, a later boot must not reuse the
+    # old process's proof and misclassify this failed generation as clean.
+    try:
+        runner._previous_shutdown_clean = _consume_clean_shutdown_marker()
+    except BaseException:
+        # Consumption failure is fatal when the recognized marker cannot be
+        # invalidated. Release identity guards explicitly because the atexit
+        # handlers are intentionally not registered until after consumption.
+        remove_pid_file()
+        release_gateway_runtime_lock()
+        raise
+
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 

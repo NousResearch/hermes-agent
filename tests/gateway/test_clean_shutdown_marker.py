@@ -14,6 +14,7 @@ import pytest
 
 
 from gateway.config import GatewayConfig, Platform
+from gateway.run import start_gateway
 from gateway.session import SessionSource, SessionStore
 
 
@@ -121,6 +122,23 @@ class TestCleanShutdownMarker:
         assert (tmp_path / ".clean_shutdown.consumed").exists()
         assert _consume_clean_shutdown_marker() is False
 
+    def test_post_rename_inspection_failure_is_still_one_shot(
+        self, tmp_path, monkeypatch
+    ):
+        """Inspection failure after consume cannot preserve predecessor proof."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.touch()
+
+        from gateway.run import _consume_clean_shutdown_marker
+
+        with patch("pathlib.Path.stat", side_effect=OSError("stat blocked")):
+            assert _consume_clean_shutdown_marker() is False
+
+        assert not marker.exists()
+        assert not (tmp_path / ".clean_shutdown.consumed").exists()
+        assert _consume_clean_shutdown_marker() is False
+
     def test_failed_atomic_consume_invalidates_marker_for_next_boot(
         self, tmp_path, monkeypatch
     ):
@@ -139,6 +157,24 @@ class TestCleanShutdownMarker:
         assert _consume_clean_shutdown_marker() is False
         assert not marker.exists()
 
+    def test_failed_consume_and_invalidation_aborts_startup(
+        self, tmp_path, monkeypatch
+    ):
+        """Startup must fail closed if stale clean proof cannot be invalidated."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.touch()
+
+        from gateway.run import _consume_clean_shutdown_marker
+
+        with patch("gateway.run.os.replace", side_effect=OSError("rename blocked")), patch(
+            "pathlib.Path.unlink", side_effect=OSError("unlink blocked")
+        ), patch("pathlib.Path.write_text", side_effect=OSError("write blocked")):
+            with pytest.raises(RuntimeError, match="Cannot safely invalidate"):
+                _consume_clean_shutdown_marker()
+
+        assert marker.exists(), "the fatal path must not pretend invalidation succeeded"
+
     def test_later_clean_drain_replaces_invalid_tombstone(self, tmp_path, monkeypatch):
         """A stale consume tombstone must not suppress new clean-shutdown proof."""
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
@@ -152,6 +188,51 @@ class TestCleanShutdownMarker:
         assert marker.read_bytes() == b""
         assert _consume_clean_shutdown_marker() is True
         assert not marker.exists()
+
+    @pytest.mark.asyncio
+    async def test_startup_consumes_marker_before_fallible_post_lock_work(
+        self, tmp_path, monkeypatch
+    ):
+        """A startup crash cannot leave its predecessor's proof reusable."""
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        marker = tmp_path / ".clean_shutdown"
+        marker.touch()
+        runner = MagicMock()
+
+        with patch("gateway.code_skew.record_boot_fingerprint"), patch(
+            "gateway.status.get_running_pid", return_value=None
+        ), patch(
+            "gateway.status.acquire_gateway_runtime_lock", return_value=True
+        ), patch(
+            "gateway.status.write_pid_file"
+        ), patch(
+            "gateway.status.release_gateway_runtime_lock"
+        ), patch(
+            "gateway.status.remove_pid_file"
+        ), patch(
+            "tools.skills_sync.sync_skills"
+        ), patch(
+            "hermes_logging.setup_logging"
+        ), patch(
+            "hermes_cli.security_audit_startup.log_startup_security_warnings"
+        ), patch(
+            "gateway.run.GatewayRunner", return_value=runner
+        ), patch(
+            "gateway.run.threading.current_thread", return_value=object()
+        ), patch(
+            "gateway.run.threading.Thread"
+        ), patch(
+            "gateway.run._ensure_windows_gateway_venv_imports",
+            side_effect=RuntimeError("post-lock startup crash"),
+        ):
+            with pytest.raises(RuntimeError, match="post-lock startup crash"):
+                await start_gateway(config=GatewayConfig(), verbosity=None)
+
+        assert runner._previous_shutdown_clean is True
+        assert not marker.exists()
+        from gateway.run import _consume_clean_shutdown_marker
+
+        assert _consume_clean_shutdown_marker() is False
 
     def test_no_marker_triggers_suspension(self, tmp_path, monkeypatch):
         """Without .clean_shutdown marker (crash), suspension should fire."""

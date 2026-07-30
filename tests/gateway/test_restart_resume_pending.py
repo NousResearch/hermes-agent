@@ -601,21 +601,105 @@ async def test_drain_timeout_keeps_crash_fallback_when_exact_mark_fails(
 
 
 @pytest.mark.asyncio
-async def test_turn_completion_cannot_clear_shutdown_reserved_resume_marker():
-    """Close the completion-clear vs timeout-boundary marking race."""
-    runner, _adapter = make_restart_runner()
+async def test_completed_drain_clears_old_marker_when_pre_mark_raises(
+    tmp_path, monkeypatch
+):
+    """Every reserved session is cleaned after drain, even if pre-mark fails."""
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
     session_key = "agent:main:telegram:dm:A"
+    runner._running_agents = {session_key: MagicMock()}
+
+    async_store = MagicMock()
+    async_store._store = runner.session_store
+    async_store.mark_resume_pending = AsyncMock(side_effect=OSError("mark blocked"))
+    async_store.clear_resume_pending = AsyncMock(return_value=True)
+    runner._async_session_store = async_store
+
+    async def finish_during_drain(_timeout):
+        runner._running_agents.pop(session_key)
+        return {}, False
+
+    with patch(
+        "gateway.run.GatewayRunner._drain_active_agents",
+        side_effect=finish_during_drain,
+    ), patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    async_store.mark_resume_pending.assert_awaited_once_with(
+        session_key, "shutdown_timeout"
+    )
+    async_store.clear_resume_pending.assert_awaited_once_with(session_key)
+    assert session_key not in runner._shutdown_resume_pending_keys
+
+
+@pytest.mark.asyncio
+async def test_delayed_old_clear_cannot_delete_newer_shutdown_marker(
+    tmp_path, monkeypatch
+):
+    """Exercise the production completion-clear vs shutdown pre-mark race."""
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    session_key = "agent:main:telegram:dm:A"
+    runner._running_agents = {session_key: MagicMock()}
+
+    pending = False
+    ordering: list[str] = []
+    clear_entered = asyncio.Event()
+    release_clear = asyncio.Event()
+
     session_store = MagicMock()
-    session_store.clear_resume_pending = MagicMock(return_value=True)
     runner.session_store = session_store
-    runner._shutdown_resume_pending_keys = {session_key}
 
-    await runner._clear_resume_pending_after_success(session_key)
-    session_store.clear_resume_pending.assert_not_called()
+    async def delayed_old_clear(key: str) -> bool:
+        nonlocal pending
+        assert key == session_key
+        ordering.append("clear-enter")
+        clear_entered.set()
+        await release_clear.wait()
+        pending = False
+        ordering.append("clear-finish")
+        return True
 
-    runner._shutdown_resume_pending_keys.clear()
-    await runner._clear_resume_pending_after_success(session_key)
-    session_store.clear_resume_pending.assert_called_once_with(session_key)
+    async def mark_new_shutdown(key: str, reason: str) -> bool:
+        nonlocal pending
+        assert key == session_key
+        assert reason == "shutdown_timeout"
+        pending = True
+        ordering.append("mark")
+        return True
+
+    async_store = MagicMock()
+    async_store._store = session_store
+    async_store.clear_resume_pending = AsyncMock(side_effect=delayed_old_clear)
+    async_store.mark_resume_pending = AsyncMock(side_effect=mark_new_shutdown)
+    runner._async_session_store = async_store
+
+    old_clear = asyncio.create_task(
+        runner._clear_resume_pending_after_success(session_key)
+    )
+    await clear_entered.wait()
+
+    with patch(
+        "gateway.run.GatewayRunner._drain_active_agents",
+        new_callable=AsyncMock,
+        return_value=({session_key: runner._running_agents[session_key]}, True),
+    ), patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        stopping = asyncio.create_task(runner.stop())
+        await asyncio.sleep(0)
+        assert ordering == ["clear-enter"]
+        release_clear.set()
+        await old_clear
+        await stopping
+
+    assert pending is True
+    assert ordering == ["clear-enter", "clear-finish", "mark", "mark"]
 
 
 # ---------------------------------------------------------------------------
@@ -624,13 +708,13 @@ async def test_turn_completion_cannot_clear_shutdown_reserved_resume_marker():
 
 
 @pytest.mark.asyncio
-async def test_clean_shutdown_suppresses_stale_exact_resume_marker():
-    """A failed centralized clear cannot replay a turn that drained cleanly."""
+async def test_clean_shutdown_preserves_older_exact_marker_until_adapter_returns():
+    """Clean proof suppresses heuristics, not exact markers from older drains."""
     runner, adapter = make_restart_runner()
     runner._previous_shutdown_clean = True
-    source = make_restart_source(chat_id="completed-chat")
+    source = make_restart_source(chat_id="older-interrupted-chat")
     pending_entry = SessionEntry(
-        session_key="agent:main:telegram:dm:completed-chat",
+        session_key="agent:main:telegram:dm:older-interrupted-chat",
         session_id="sid",
         created_at=datetime.now(),
         updated_at=datetime.now(),
@@ -639,15 +723,23 @@ async def test_clean_shutdown_suppresses_stale_exact_resume_marker():
         chat_type="dm",
         resume_pending=True,
         resume_reason="shutdown_timeout",
-        last_resume_marked_at=datetime.now(),
+        last_resume_marked_at=datetime.now() - timedelta(minutes=5),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
+    runner.adapters = {}
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_tasks = []
 
     assert runner._schedule_resume_pending_sessions() == 0
     await asyncio.sleep(0)
     adapter.handle_message.assert_not_called()
     assert pending_entry.resume_pending is True
+
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    assert runner._schedule_resume_pending_sessions(Platform.TELEGRAM) == 1
+    await asyncio.gather(*runner._startup_restore_tasks)
+    adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio

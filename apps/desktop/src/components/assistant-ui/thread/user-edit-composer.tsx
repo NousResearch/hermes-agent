@@ -164,7 +164,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       const next = `${base}${sep}${value}`
 
       draftRef.current = next
-      aui.composer().setText(next)
+      aui.composer.setText(next)
 
       const editor = editorRef.current
 
@@ -229,7 +229,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       if (nextDraft !== draftRef.current) {
         draftRef.current = nextDraft
-        aui.composer().setText(nextDraft)
+        aui.composer.setText(nextDraft)
       }
 
       return nextDraft
@@ -337,7 +337,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       const finish = () => {
         draftRef.current = composerPlainText(editor)
-        aui.composer().setText(draftRef.current)
+        aui.composer.setText(draftRef.current)
         requestEditFocus()
         starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
       }
@@ -380,7 +380,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       rememberInitialDraft()
       const nextDraft = composerPlainText(editor)
       draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+      aui.composer.setText(nextDraft)
       requestEditFocus()
 
       return true
@@ -580,7 +580,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     // and leave revert as the only way out (#49903 is the same unguarded-core
     // hazard on the main composer).
     try {
-      aui.composer().send()
+      aui.composer.send()
     } catch {
       setSubmitting(false)
     }
@@ -623,7 +623,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         // down (a send/cancel raced this timer), cancel() throws "Composer is
         // not available" as an uncaught renderer error. Nothing to cancel then.
         try {
-          aui.composer().cancel()
+          aui.composer.cancel()
         } catch {
           // Composer core already gone — the edit is closing anyway.
         }
@@ -689,7 +689,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     if (event.key === 'Escape') {
       event.preventDefault()
-      aui.composer().cancel()
+      aui.composer.cancel()
 
       return
     }

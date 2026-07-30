@@ -41,7 +41,8 @@
   "overrides": {
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
-    "protobufjs": "^8.7.1"
+    "protobufjs": "^8.7.1",
+    "brace-expansion": "5.0.8"
   },
   "engines": {
     "node": ">=20.0.0"

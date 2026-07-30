@@ -1678,7 +1678,9 @@ def get_custom_provider_extra_headers(
         entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
-        return normalize_extra_headers(entry.get("extra_headers"))
+        headers = normalize_extra_headers(entry.get("extra_headers"))
+        if headers:
+            return headers
     return {}
 
 

@@ -186,12 +186,20 @@ class MattermostAdapter(BasePlatformAdapter):
         """Resolve the Mattermost root_id from reply_to or metadata."""
         if self._reply_mode != "thread":
             return None
-        candidate = reply_to
-        if not candidate and isinstance(metadata, dict):
-            candidate = metadata.get("thread_id") or metadata.get("root_id")
-        if not candidate:
-            return None
-        return await self._resolve_root_id(str(candidate))
+        metadata_root_id = None
+        if isinstance(metadata, dict):
+            metadata_root_id = metadata.get("thread_id") or metadata.get("root_id")
+        if reply_to:
+            if metadata_root_id and metadata_root_id == reply_to:
+                return str(metadata_root_id)
+            resolved = await self._resolve_root_id(str(reply_to))
+            if resolved:
+                return resolved
+            return str(metadata_root_id or reply_to)
+        if metadata_root_id:
+            # Gateway thread metadata already identifies the root post.
+            return str(metadata_root_id)
+        return None
 
     def _last_post_failure_is_broken_thread_root(self) -> bool:
         """Return True only for clear invalid/missing Mattermost thread roots."""
@@ -341,21 +349,28 @@ class MattermostAdapter(BasePlatformAdapter):
         logger.info("Mattermost: disconnected")
 
 
-    async def _resolve_root_id(self, post_id: str) -> str:
-        """Resolve a post_id to the thread root_id for Mattermost.
+    async def _resolve_root_id(self, post_id: str) -> Optional[str]:
+        """Resolve a post ID to its Mattermost thread root.
 
         Mattermost requires root_id to be the *root* post of a thread.
         If the post is a reply (has its own root_id), we must use that
         root_id instead.  Using a reply's own ID as root_id causes
-        "Invalid RootId parameter" errors.
+        "Invalid RootId parameter" errors. Successful lookups are cached;
+        failures are not, because an empty response may be transient.
         """
         if not post_id:
             return post_id
-        # Check if this post has a root_id (meaning it's a reply)
+        cached = getattr(self, "_thread_root_cache", None)
+        if cached is None:
+            cached = self._thread_root_cache = {}
+        if post_id in cached:
+            return cached[post_id]
         data = await self._api_get(f"posts/{post_id}")
-        if data and data.get("root_id"):
-            return data["root_id"]
-        return post_id
+        if not data:
+            return None
+        resolved = data.get("root_id") or post_id
+        cached[post_id] = resolved
+        return resolved
 
     async def send(
         self,
@@ -406,10 +421,17 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator."""
+        """Send a typing indicator in the active Mattermost thread."""
+        payload: Dict[str, Any] = {"channel_id": chat_id}
+        if (
+            self._reply_mode == "thread"
+            and metadata
+            and metadata.get("thread_id")
+        ):
+            payload["parent_id"] = metadata["thread_id"]
         await self._api_post(
             f"users/{self._bot_user_id}/typing",
-            {"channel_id": chat_id},
+            payload,
         )
 
     async def edit_message(

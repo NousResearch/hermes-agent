@@ -10180,6 +10180,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         offset: int = 0,
         latest: bool = False,
         after_id: Optional[int] = None,
+        topic_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -10226,12 +10227,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             active_clause = " AND (active = 1 OR compacted = 1)"
         else:
             active_clause = " AND active = 1"
+        topic_clause = " AND topic_id = ?" if topic_id is not None else ""
         keyset_clause = " AND id > ?" if after_id is not None else ""
         sql = (
             "SELECT * FROM messages WHERE session_id = ?"
-            f"{active_clause}{keyset_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
+            f"{active_clause}{topic_clause}{keyset_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
         )
         params: list = [session_id]
+        if topic_id is not None:
+            params.append(topic_id)
         if after_id is not None:
             params.append(after_id)
         if include_compacted:
@@ -10245,9 +10249,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # then apply paging.
             with self._read_ctx() as conn:
                 cursor = conn.execute(
-                    "SELECT * FROM messages WHERE session_id = ?" + active_clause
+                    "SELECT * FROM messages WHERE session_id = ?" + active_clause + topic_clause
                     + " ORDER BY id ASC",
-                    [session_id],
+                    [session_id] + ([topic_id] if topic_id is not None else []),
                 )
                 all_rows = cursor.fetchall()
             seen: dict = {}

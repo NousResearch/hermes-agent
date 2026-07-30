@@ -256,14 +256,10 @@ def _sanitize_mcp_probe_error(exc: object, config: dict) -> str:
     from tools.mcp_tool_config import _load_mcp_server_env
     from tools.mcp_tool_errors import _sanitize_error
 
-    message = _sanitize_error(str(exc))
-    secret_values = _load_mcp_server_env(config).values()
-    for value in sorted(secret_values, key=len, reverse=True):
-        # Avoid replacing short/common fragments that would make diagnostics
-        # unreadable; credentials should never be this short in practice.
-        if len(value) >= 4:
-            message = message.replace(value, "[REDACTED]")
-    return message
+    return _sanitize_error(
+        str(exc),
+        _load_mcp_server_env(config).values(),
+    )
 
 
 def _probe_single_server(

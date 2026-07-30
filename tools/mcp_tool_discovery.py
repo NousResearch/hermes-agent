@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from tools.mcp_tool_common import _core, _parse_boolish, _sanitize_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -107,9 +107,9 @@ def _resolve_server_lazy(name: str, config: dict) -> bool:
     return _parse_boolish(config.get("lazy", False), default=False)
 
 
-def _note_connect_failure(name: str, exc: BaseException) -> str:
+def _note_connect_failure(name: str, exc: BaseException, redaction_values=()) -> str:
     """Record a failed connect (under ``_lock``): error text for status, cooldown stamp."""
-    message = _errors._format_connect_error(exc)
+    message = _errors._format_connect_error(exc, redaction_values)
     with _core._lock:
         _core._server_connecting.discard(name)
         _core._server_connect_errors[name] = message
@@ -302,7 +302,10 @@ async def _discover_all(new_servers: Dict[str, dict]) -> None:
     for name, result in zip(new_servers, results):
         if isinstance(result, BaseException):
             command = new_servers.get(name, {}).get("command")
-            message = _note_connect_failure(name, result)
+            redaction_values = tuple(_config._load_mcp_server_env(new_servers.get(name, {})).values())
+            message = _note_connect_failure(name, result, redaction_values)
+            if command:
+                command = _sanitize_error(str(command), redaction_values)
             logger.warning("Failed to connect to MCP server '%s'%s: %s",
                            name, f" (command={command})" if command else "", message)
         else:

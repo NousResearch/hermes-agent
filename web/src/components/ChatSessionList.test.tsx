@@ -158,4 +158,41 @@ describe('ChatSessionList', () => {
     expect(getSessions).toHaveBeenCalledTimes(2)
     expect(container.textContent).toContain('Newly created session')
   })
+
+  it('waits for the Chat tab to become active before loading or polling', async () => {
+    getSessions
+      .mockResolvedValueOnce(response('first', 'First session'))
+      .mockResolvedValueOnce(response('second', 'Newly created session'))
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ChatSessionList activeSessionId={null} isActive={false} />
+        </MemoryRouter>
+      )
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+    expect(getSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ChatSessionList activeSessionId={null} isActive />
+        </MemoryRouter>
+      )
+    })
+
+    expect(getSessions).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toContain('First session')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    expect(getSessions).toHaveBeenCalledTimes(2)
+    expect(container.textContent).toContain('Newly created session')
+  })
 })

@@ -24,6 +24,7 @@ import {
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
+import { useEmojiCompletions } from '@/app/chat/composer/hooks/use-emoji-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
 import {
   dragHasAttachments,
@@ -112,6 +113,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
   const slash = useSlashCompletions({ gateway })
+  const emoji = useEmojiCompletions()
 
   // This is the one composer that routinely unmounts, so it is where the focus
   // bus leaks: confirming or cancelling an edit tears the composer down while
@@ -282,7 +284,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }, [])
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
-    trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
+    trigger?.kind === '@'
+      ? at.adapter
+      : trigger?.kind === '/'
+        ? slash.adapter
+        : trigger?.kind === ':'
+          ? emoji.adapter
+          : null
 
   useEffect(() => {
     if (!trigger || !triggerAdapter?.search) {
@@ -298,7 +306,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     setTriggerActive(idx => Math.min(idx, Math.max(0, triggerItems.length - 1)))
   }, [triggerItems.length])
 
-  const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
+  const triggerLoading =
+    trigger?.kind === '@'
+      ? at.loading
+      : trigger?.kind === '/'
+        ? slash.loading
+        : trigger?.kind === ':'
+          ? emoji.loading
+          : false
 
   const replaceTriggerWithChip = useCallback(
     (item: Unstable_TriggerItem) => {

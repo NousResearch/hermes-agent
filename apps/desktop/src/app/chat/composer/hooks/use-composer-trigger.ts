@@ -30,6 +30,8 @@ interface UseComposerTriggerOptions {
   at: CompletionSource
   draftRef: MutableRefObject<string>
   editorRef: RefObject<HTMLDivElement | null>
+  /** `:joy` emoji completions — inserts the emoji character, never a chip. */
+  emoji?: CompletionSource
   /** Bank the pre-commit state so a popover pick is a single undo step. */
   recordUndoPoint?: () => void
   requestMainFocus: () => void
@@ -50,6 +52,7 @@ export function useComposerTrigger({
   at,
   draftRef,
   editorRef,
+  emoji,
   recordUndoPoint,
   requestMainFocus,
   setComposerText,
@@ -91,7 +94,7 @@ export function useComposerTrigger({
     // is present do we pay the cost of the full walk + DOM range work.
     const rawText = editor.textContent ?? ''
 
-    if (!rawText.includes('@') && !rawText.includes('/')) {
+    if (!rawText.includes('@') && !rawText.includes('/') && !rawText.includes(':')) {
       if (trigger) {
         setTrigger(null)
         resetTriggerActive()
@@ -128,7 +131,13 @@ export function useComposerTrigger({
   }, [editorRef, resetTriggerActive, trigger])
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
-    trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
+    trigger?.kind === '@'
+      ? at.adapter
+      : trigger?.kind === '/'
+        ? slash.adapter
+        : trigger?.kind === ':'
+          ? (emoji?.adapter ?? null)
+          : null
 
   useEffect(() => {
     if (!trigger || !triggerAdapter?.search) {
@@ -146,7 +155,14 @@ export function useComposerTrigger({
     setTriggerItems(trigger.inline ? items.filter(isSkillItem) : items)
   }, [trigger, triggerAdapter])
 
-  const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
+  const triggerLoading =
+    trigger?.kind === '@'
+      ? at.loading
+      : trigger?.kind === '/'
+        ? slash.loading
+        : trigger?.kind === ':'
+          ? (emoji?.loading ?? false)
+          : false
 
   // Suppress the "No matches" empty state once a slash command is past its name:
   // a no-arg command has nothing to offer, and a fully-typed arg commits on

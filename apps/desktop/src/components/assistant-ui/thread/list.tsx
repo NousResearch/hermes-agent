@@ -325,6 +325,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
+
   // Where the always-rendered live tail begins. Derived from the WEIGHTED
   // groups (parts, not turns) so the tail is a viewport's worth of content —
   // see liveTailStart. Computed once here rather than per row.
@@ -332,6 +333,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     () => liveTailStart(hiddenCount > 0 ? weightedGroups.slice(hiddenCount) : weightedGroups),
     [weightedGroups, hiddenCount]
   )
+
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.

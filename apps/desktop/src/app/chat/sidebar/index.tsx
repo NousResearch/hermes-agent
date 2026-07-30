@@ -46,6 +46,7 @@ import {
   $sidebarSessionOrderManual,
   $sidebarWorkspaceOrderIds,
   $sidebarWorkspaceParentOrderIds,
+  filterVisibleProjects,
   pinSession,
   SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
@@ -609,11 +610,8 @@ export function ChatSidebar({
       return []
     }
 
-    const dismissed = new Set(dismissedAutoProjects)
-
     const sorted = sortProjectsForOverview(
-      projectTree
-        .filter(node => !(node.isAuto && dismissed.has(node.id)))
+      filterVisibleProjects(projectTree, dismissedAutoProjects)
         .map(project =>
           excludeProjectSessions(
             {

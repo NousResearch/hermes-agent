@@ -68,6 +68,7 @@ import {
   setCommandPaletteOpen
 } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
+import { $dismissedAutoProjectIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
 import { $connection } from '@/store/session'
@@ -519,6 +520,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
   const projectTree = useStore($projectTree)
+  const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
   const navigate = useNavigate()
   const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
@@ -719,7 +721,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           label: cc.openFolder,
           run: () => void openFolderAsProject()
         },
-        ...projectTree.map(project => ({
+        ...filterVisibleProjects(projectTree, dismissedAutoProjects).map(project => ({
           comboHint: 'mod+enter',
           icon: codiconIcon(project.icon || (project.isNoProject ? 'home' : 'folder-library')),
           id: `project-${project.id}`,
@@ -940,7 +942,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // live state through `detail()`, so the groups must rebuild after a select
     // that kept the palette open — eslint only sees an unused dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contributedItems, go, projectTree, selectTick, settingsSectionLabel, t, updateVersionLabel])
+  }, [contributedItems, dismissedAutoProjects, go, projectTree, selectTick, settingsSectionLabel, t, updateVersionLabel])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the

@@ -5833,7 +5833,7 @@ def _request_lazy_reconnect(server_name: str, server: MCPServerTask) -> bool:
         logger.warning(
             "MCP server '%s': lazy reconnect after stdio recycle failed: %s",
             server_name,
-            _sanitize_error(_exc_str(exc), server._redaction_values),
+            _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
         )
         return False
 
@@ -6060,7 +6060,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     _truncate_mcp_text_result(
                         error_text or "MCP tool returned an error"
                     ),
-                    server._redaction_values,
+                    getattr(server, "_redaction_values", ()),
                 ))
 
             # Collect text from content blocks. MCP tool results can also
@@ -6210,11 +6210,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 "MCP tool %s/%s call failed: %s",
                 server_name,
                 tool_name,
-                _sanitize_error(_exc_str(exc), server._redaction_values),
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
                 f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
-                server._redaction_values,
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -6272,11 +6272,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/list_resources failed: %s",
                 server_name,
-                _sanitize_error(_exc_str(exc), server._redaction_values),
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
                 f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
-                server._redaction_values,
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -6336,11 +6336,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/read_resource failed: %s",
                 server_name,
-                _sanitize_error(_exc_str(exc), server._redaction_values),
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
                 f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
-                server._redaction_values,
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -6400,11 +6400,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/list_prompts failed: %s",
                 server_name,
-                _sanitize_error(_exc_str(exc), server._redaction_values),
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
                 f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
-                server._redaction_values,
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler
@@ -6468,11 +6468,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             logger.error(
                 "MCP %s/get_prompt failed: %s",
                 server_name,
-                _sanitize_error(_exc_str(exc), server._redaction_values),
+                _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())),
             )
             return tool_error(_sanitize_error(
                 f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
-                server._redaction_values,
+                getattr(server, "_redaction_values", ()),
             ))
 
     return _handler

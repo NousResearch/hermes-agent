@@ -646,8 +646,10 @@ export type TreeSide = 'left' | 'right'
 export const $collapsedTreeSides = atom<ReadonlySet<TreeSide>>(new Set())
 
 // Side visibility is DERIVED from an app store (the binding owns persistence
-// + button state); reveals flow back through its setter so they never
-// disagree with the flag.
+// + button state). Reveals un-collapse the column directly instead of writing
+// back through the setter — the right side's store IS the file tree's toggle,
+// so a neighbour's reveal must not press it. Layout reset still reopens every
+// side through its setter, because there the toggles SHOULD move.
 const sideOpeners: Partial<Record<TreeSide, (open: boolean) => void>> = {}
 
 export function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
@@ -772,14 +774,12 @@ export function revealTreePane(paneId: string) {
   const side = treeSideOfPane(paneId)
 
   if (side && $collapsedTreeSides.get().has(side)) {
-    const open = sideOpeners[side]
-
-    // Through the bound store when there is one, so the toggle stays truthful.
-    if (open) {
-      open(true)
-    } else {
-      setTreeSideCollapsed(side, false)
-    }
+    // Un-collapse the COLUMN, never the side's bound store: on the right that
+    // store is ⌘J / $fileBrowserOpen, i.e. the file tree's own toggle. Routing
+    // a reveal through it dragged the tree open behind every neighbour that
+    // shares the column — open the diff (⌘G) and the file tree appeared too.
+    // The tree opens only when the user opens it.
+    setTreeSideCollapsed(side, false)
   }
 
   const hiddenNow = $hiddenTreePanes.get()

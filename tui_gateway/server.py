@@ -4294,6 +4294,44 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         )
 
 
+def _apply_pending_model_switch(sid: str, session: dict) -> None:
+    """Apply a model switch queued while a turn was running.
+
+    ``config.set model`` on a busy session doesn't mutate the live agent (the
+    worker thread is reading model/client mid-request); it stashes the pick in
+    ``session["pending_model_switch"]``.  This runs on the TURN thread at turn
+    start — before the first model call, nothing in flight — so the in-place
+    swap (client rebuild, the slow part) is safe here.  A failed switch keeps
+    the current model and never blocks the turn, matching
+    ``_sync_agent_model_with_config``.
+    """
+    pending = session.pop("pending_model_switch", None)
+    if not pending or session.get("agent") is None:
+        return
+    try:
+        result = _apply_model_switch(
+            sid,
+            session,
+            pending["raw"],
+            confirm_expensive_model=bool(pending.get("confirm_expensive_model")),
+        )
+        # A queued pick is a deliberate user action; honour the expensive-model
+        # confirm by NOT applying it silently — surface the warning and drop the
+        # switch rather than spend on a pricey model the user never confirmed.
+        if result.get("confirm_required"):
+            _emit(
+                "error",
+                sid,
+                {"message": result.get("confirm_message") or result.get("warning") or ""},
+            )
+    except Exception as e:
+        _emit(
+            "error",
+            sid,
+            {"message": f"Could not switch model: {e}"},
+        )
+
+
 class CompressionLockHeld(Exception):
     """Raised by _compress_session_history when compression skipped due
     to a concurrent lock on the session's compression_locks row."""
@@ -8989,6 +9027,11 @@ def _run_prompt_submit(
             # (#29923 review defect). Any config.yaml change is adopted on
             # the NEXT turn, after the finally-restore below.
             if not one_turn_restore:
+                # A model picked mid-turn was queued (not applied in-place) —
+                # apply it now, on the turn thread before the first model call,
+                # so this turn runs on the model the user chose. Runs before the
+                # config sync so an explicit pick wins over a config.yaml change.
+                _apply_pending_model_switch(sid, session)
                 _sync_agent_model_with_config(sid, session)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
@@ -9956,22 +9999,41 @@ def _(rid, params: dict) -> dict:
             if not value:
                 return _err(rid, 4002, "model value required")
             if session:
-                # Reject during an in-flight turn.  agent.switch_model()
-                # mutates self.model / self.provider / self.base_url /
-                # self.client in place; the worker thread running
-                # agent.run_conversation is reading those on every
-                # iteration.  A mid-turn swap can send an HTTP request
-                # with the new base_url but old model (or vice versa),
-                # producing 400/404s the user never asked for.  Parity
-                # with the gateway's running-agent /model guard.
-                if session.get("running"):
-                    return _err(
-                        rid,
-                        4009,
-                        "session busy — /interrupt the current turn before switching models",
-                    )
                 from hermes_cli.model_switch import parse_model_switch_args
 
+                # A live swap can't run in-place while a turn streams:
+                # agent.switch_model() mutates self.model / self.provider /
+                # self.base_url / self.client, and the worker thread running
+                # agent.run_conversation reads those every iteration — a
+                # mid-turn swap can fire an HTTP request with the new base_url
+                # but old model (400/404s).  So instead of rejecting the pick
+                # (the old 4009), stash it and apply it at the NEXT turn start
+                # (_apply_pending_model_switch), where nothing is in flight.
+                # The user gets to pick, keep typing, and send the next turn on
+                # the new model without waiting for the swap or interrupting.
+                if session.get("running"):
+                    try:
+                        pending_model = parse_model_switch_args(value).model_input
+                    except Exception:
+                        pending_model = str(value)
+                    session["pending_model_switch"] = {
+                        "raw": value,
+                        "confirm_expensive_model": bool(
+                            params.get("confirm_expensive_model", False)
+                        ),
+                    }
+                    return _ok(
+                        rid,
+                        {
+                            "key": key,
+                            "value": pending_model,
+                            "warning": "",
+                            "confirm_required": False,
+                            "confirm_message": "",
+                            "scope": "session",
+                            "deferred": True,
+                        },
+                    )
                 parsed_flags = parse_model_switch_args(value)
                 explicit_provider = parsed_flags.explicit_provider
                 if session.get("agent") is None and not explicit_provider.strip():

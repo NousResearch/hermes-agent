@@ -684,9 +684,9 @@ class TestSkillViewPrerequisites:
         ["ssh", "daytona", "docker", "singularity", "modal", "vercel_sandbox"],
     )
     def test_remote_backend_becomes_available_after_local_secret_capture(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, backend
     ):
-        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_ENV", backend)
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
         calls = []
 

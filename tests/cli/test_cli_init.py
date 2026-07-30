@@ -398,6 +398,9 @@ class TestRootLevelProviderOverride:
 
         assert cfg["model"]["provider"] == "opencode-go"
 
+    def test_root_base_url_used_as_fallback_when_model_base_url_missing(self, tmp_path, monkeypatch):
+        """Legacy root-level base_url still populates model.base_url in the CLI loader."""
+        import yaml
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

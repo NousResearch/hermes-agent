@@ -7,6 +7,7 @@ Shows the status of all Hermes Agent components.
 import os
 import sys
 import time
+import importlib.util
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 

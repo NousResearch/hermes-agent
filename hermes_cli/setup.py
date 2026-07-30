@@ -12,6 +12,7 @@ Config files are stored in ~/.hermes/ for easy access.
 """
 
 import importlib.util
+import json
 import logging
 import os
 import re

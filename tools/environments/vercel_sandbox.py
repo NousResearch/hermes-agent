@@ -46,6 +46,14 @@ _DEFAULT_CONTAINER_DISK_MB = 51200
 
 def _ensure_vercel_sdk() -> None:
     """Lazy-install vercel SDK on demand. Idempotent."""
+    # The vercel SDK (>=0.7) ships default-on usage telemetry
+    # (vercel-internal-telemetry posts to telemetry.vercel.com). Hermes
+    # policy is no outbound telemetry without explicit user opt-in, so
+    # disable it before the SDK is ever imported. Users who genuinely want
+    # it can re-enable by exporting VERCEL_TELEMETRY_DISABLED=0 after this
+    # module loads — we only set the default, never override an explicit
+    # user value.
+    os.environ.setdefault("VERCEL_TELEMETRY_DISABLED", "1")
     try:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("terminal.vercel", prompt=False)

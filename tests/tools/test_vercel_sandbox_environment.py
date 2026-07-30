@@ -373,8 +373,13 @@ class TestFileSync:
         env.cleanup()
         env.cleanup()
 
-        assert src.read_text() == "remote-token"
-        assert (tmp_path / "new.txt").read_text() == "new-remote"
+        # Credential mounts are upload-only since bcfc7458fa ("fix remote
+        # sync-back credential overwrite"): the sandbox must never rewrite a
+        # host credential file, so token.txt keeps its host content, and the
+        # credential mapping cannot serve as an inference anchor for new
+        # remote files either — new.txt/skip.txt stay remote-only.
+        assert src.read_text() == "host-token"
+        assert not (tmp_path / "new.txt").exists()
         assert not (tmp_path / "skip.txt").exists()
         assert len(sandbox.snapshot_calls) == 1
         assert len(sandbox.stop_calls) == 1  # always stop after snapshot to avoid resource leaks

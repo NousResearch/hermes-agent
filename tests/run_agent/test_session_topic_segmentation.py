@@ -160,10 +160,11 @@ class TestTopicManager:
         result = db.set_active_topic(sid, 999)
         assert result is False
 
-        # Existing topic gets archived, but activation of 999 fails
-        # so no topic is active
+        # Try to activate a non-existent topic — validate-then-archive (#72149 #4):
+        # target doesn't exist, so we bail out without archiving the current
+        # active topic.  "git" stays active.
         topics = db.get_topics(sid)
-        assert topics[0]["state"] == "warm"
+        assert topics[0]["state"] == "active"
 
     def test_update_message_count(self, db):
         sid = "test-db"

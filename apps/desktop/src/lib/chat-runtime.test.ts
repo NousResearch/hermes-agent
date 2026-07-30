@@ -235,4 +235,16 @@ describe('sessionTitle', () => {
     ).toBe('Untitled session')
     expect(isCompactionEnvelopePreview('[CONTEXT SUMMARY]: old')).toBe(true)
   })
+
+  it('treats the generic [CONTEXT COMPACTION] envelope form as a compaction preview', () => {
+    expect(isCompactionEnvelopePreview('[CONTEXT COMPACTION] Earlier turns were compacted.')).toBe(true)
+    expect(
+      sessionTitle(
+        makeSession({
+          title: null,
+          preview: '[CONTEXT COMPACTION] Earlier turns were compacted.',
+        })
+      )
+    ).toBe('Untitled session')
+  })
 })

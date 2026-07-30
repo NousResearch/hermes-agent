@@ -61,9 +61,15 @@ export function createClientSessionState(
   }
 }
 
-/** Internal compaction envelopes must never become user-visible titles (#72452). */
+/**
+ * Internal compaction envelopes must never become user-visible titles (#72452).
+ *
+ * The backend treats any `[CONTEXT COMPACTION` prefix as compressed synthetic
+ * content (see gateway/platforms/api_server.py `_is_compressed_summary_message`),
+ * so match that whole family here rather than only the `— REFERENCE ONLY]` form.
+ */
 const COMPACTION_TITLE_PREFIXES = [
-  '[CONTEXT COMPACTION — REFERENCE ONLY]',
+  '[CONTEXT COMPACTION',
   '[CONTEXT SUMMARY]:',
   '[CONTEXT SUMMARY]',
 ] as const

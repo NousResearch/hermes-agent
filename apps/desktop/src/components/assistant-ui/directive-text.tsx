@@ -13,46 +13,41 @@ import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
+import { referenceStyle } from './reference-kinds'
+
 const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
 
-/** Single source of truth for chip icon glyphs (Tabler outline @ 24×24).
- * Used both by the rendered <DirectiveIcon> and the raw SVG markup the
- * contenteditable composer embeds via `directiveIconSvg`. */
-const ICON_PATHS: Record<HermesRefType, string[]> = {
-  file: [
-    'M14 3v4a1 1 0 0 0 1 1h4',
-    'M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2',
-    'M9 9l1 0',
-    'M9 13l6 0',
-    'M9 17l6 0'
-  ],
-  folder: [
-    'M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2'
-  ],
-  url: [
-    'M9 15l6 -6',
-    'M11 6l.463 -.536a5 5 0 0 1 7.071 7.072l-.534 .464',
-    'M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 0 -7.071l.524 -.463'
-  ],
-  image: [
-    'M15 8h.01',
-    'M3 6a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v12a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3v-12',
-    'M3 16l5 -5c.928 -.893 2.072 -.893 3 0l5 5',
-    'M14 14l1 -1c.928 -.893 2.072 -.893 3 0l3 3'
-  ],
-  tool: ['M7 10h3v-3l-3.5 -3.5a6 6 0 0 1 8 8l6 6a2 2 0 0 1 -3 3l-6 -6a6 6 0 0 1 -8 -8l3.5 3.5'],
-  line: ['M5 9l14 0', 'M5 15l14 0', 'M11 4l-4 16', 'M17 4l-4 16'],
-  terminal: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
-  session: ['M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.414 4.414v7l-6 2v-8.5l-4.48 -4.928a2 2 0 0 1 -.52 -1.345v-2.227']
-}
-
-const ICON_FALLBACK = ['M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0', 'M16 12v1.5a2.5 2.5 0 0 0 5 0v-1.5a9 9 0 1 0 -5.5 8.28']
+/** Icon glyphs come from the shared reference vocabulary, so the popover row
+ *  and the chip can never drift apart. */
+const iconPathsFor = (type: string) => referenceStyle(type).paths
 
 const SVG_ATTRS =
   'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
 
-const iconPathsFor = (type: string) => ICON_PATHS[type as HermesRefType] ?? ICON_FALLBACK
+/**
+ * Shared chip styling — used by the rendered <DirectiveChip> and by the raw
+ * HTML composer chips in `rich-editor.ts`.
+ *
+ * A chip is inline TEXT, not a badge: no background, no padding, no border.
+ * The icon says what kind of thing it is and the color reinforces it, which is
+ * all the signal a reference needs when it's sitting in the middle of a
+ * sentence — a filled pill turns every mention into a UI element the eye has
+ * to step over. Per-kind color comes from REFERENCE_STYLES so a `@file:` reads
+ * the same here as it does in the popover you picked it from.
+ *
+ * Font size is inherited rather than shrunk: a reference is content the user
+ * chose, and rendering it smaller than the words around it reads as a
+ * footnote. With no vertical padding the glyphs sit in the normal line box, so
+ * `align-baseline` is enough — no nudge needed.
+ */
+export const DIRECTIVE_CHIP_CLASS = 'inline-flex max-w-56 items-baseline gap-1 align-baseline font-medium leading-none'
+
+/** Per-kind chip classes: the shared shape plus the kind's own color. */
+export function directiveChipClass(type: string): string {
+  return `${DIRECTIVE_CHIP_CLASS} ${referenceStyle(type).color}`
+}
+
 
 /** SVG markup string for embedding directly in HTML (composer contenteditable). */
 export function directiveIconSvg(type: string) {
@@ -60,12 +55,12 @@ export function directiveIconSvg(type: string) {
     .map(d => `<path d="${d}"/>`)
     .join('')
 
-  return `<svg ${SVG_ATTRS} class="size-3 shrink-0 opacity-80">${inner}</svg>`
+  return `<svg ${SVG_ATTRS} class="size-[0.875em] shrink-0 opacity-80">${inner}</svg>`
 }
 
 function iconElementFromPaths(paths: string[]) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('class', 'size-3 shrink-0 opacity-80')
+  svg.setAttribute('class', 'size-[0.875em] shrink-0 opacity-80')
   svg.setAttribute('fill', 'none')
   svg.setAttribute('stroke', 'currentColor')
   svg.setAttribute('stroke-linecap', 'round')
@@ -87,45 +82,24 @@ export function directiveIconElement(type: string) {
   return iconElementFromPaths(iconPathsFor(type))
 }
 
-/** Per-type slash-command pill styling. The composer inserts these chips when a
- *  command is picked; the kind drives a theme-aware accent so commands, skills,
- *  and themes read distinctly (Cursor-style). */
+/** Slash pills are references too — commands, skills, and themes are just
+ *  three more kinds in the shared vocabulary, so they share the chip shape and
+ *  read their icon + accent from the same table. */
 export type SlashChipKind = 'command' | 'skill' | 'theme'
 
-const SLASH_ICON_PATHS: Record<SlashChipKind, string[]> = {
-  command: ['M5 7l5 5l-5 5', 'M12 19l7 0'],
-  skill: ['M13 3l0 7l6 0l-8 11l0 -7l-6 0l8 -11'],
-  theme: [
-    'M3 21v-4a4 4 0 1 1 4 4h-4',
-    'M21 3a16 16 0 0 0 -12.8 10.2',
-    'M21 3a16 16 0 0 1 -10.2 12.8',
-    'M10.6 9a9 9 0 0 1 4.4 4.4'
-  ]
-}
-
-const SLASH_CHIP_VARIANT: Record<SlashChipKind, string> = {
-  command:
-    'bg-[color-mix(in_srgb,var(--ui-accent)_14%,transparent)] text-[color-mix(in_srgb,var(--ui-accent)_82%,var(--foreground))]',
-  skill:
-    'bg-[color-mix(in_srgb,var(--ui-warm)_18%,transparent)] text-[color-mix(in_srgb,var(--ui-warm)_82%,var(--foreground))]',
-  theme:
-    'bg-[color-mix(in_srgb,var(--ui-accent-secondary)_16%,transparent)] text-[color-mix(in_srgb,var(--ui-accent-secondary)_82%,var(--foreground))]'
-}
-
-export const SLASH_CHIP_BASE_CLASS =
-  'mx-0.5 inline-flex max-w-64 items-center gap-1 rounded px-1.5 py-0.5 align-[-0.12em] text-[0.86em] font-medium leading-none'
+export const SLASH_CHIP_BASE_CLASS = DIRECTIVE_CHIP_CLASS
 
 export function slashChipClass(kind: SlashChipKind): string {
-  return `${SLASH_CHIP_BASE_CLASS} ${SLASH_CHIP_VARIANT[kind]}`
+  return directiveChipClass(kind)
 }
 
 export function slashIconElement(kind: SlashChipKind) {
-  return iconElementFromPaths(SLASH_ICON_PATHS[kind])
+  return iconElementFromPaths(iconPathsFor(kind))
 }
 
 const DirectiveIcon: FC<{ type: string; className?: string }> = ({
   type,
-  className = 'size-3 shrink-0 opacity-80'
+  className = 'size-[0.875em] shrink-0 opacity-80'
 }) => (
   <svg
     className={className}
@@ -142,18 +116,6 @@ const DirectiveIcon: FC<{ type: string; className?: string }> = ({
     ))}
   </svg>
 )
-
-/** Shared chip styling — used by both the rendered <DirectiveChip> and the
- * raw HTML composer chips in `rich-editor.ts`. Neutral subtle wash + plain
- * muted-foreground text so chips read as quiet tags on any bubble color.
- *
- * `align-[-0.12em]` rather than `align-middle`: `middle` centers the pill on
- * the x-height midpoint, which sits above the center of the surrounding text
- * box, so the chip visibly rides low next to the words it's nestled in. The
- * em nudge lands the chip's own text baseline on the line's baseline (measured
- * to within 0.08px) without growing the line box. */
-export const DIRECTIVE_CHIP_CLASS =
-  'mx-0.5 inline-flex max-w-56 items-center gap-1 rounded px-1.5 py-0.5 align-[-0.12em] text-[0.86em] font-normal leading-none bg-[color-mix(in_srgb,currentColor_8%,transparent)] text-muted-foreground'
 
 /**
  * Parses our composer's `@type:value` references into directive segments
@@ -555,20 +517,7 @@ export const SessionRefLink: FC<{
  *  composer's slash pill, so a picked skill stays a chip after send. */
 const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ kind, label, value }) => (
   <span className={slashChipClass(kind)} data-slot="aui_slash-chip" title={value}>
-    <svg
-      className="size-3 shrink-0 opacity-80"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      viewBox="0 0 24 24"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      {SLASH_ICON_PATHS[kind].map(d => (
-        <path d={d} key={d} />
-      ))}
-    </svg>
+    <DirectiveIcon type={kind} />
     <span className="truncate">{label}</span>
   </span>
 )
@@ -589,7 +538,7 @@ const DirectiveChip: FC<{
   )
 
   const props = {
-    className: cn(DIRECTIVE_CHIP_CLASS, onClick && 'cursor-pointer transition-colors hover:text-foreground'),
+    className: cn(directiveChipClass(type), onClick && 'cursor-pointer transition-colors hover:text-foreground'),
     'data-directive-id': id,
     'data-directive-type': type,
     'data-slot': 'aui_directive-chip',

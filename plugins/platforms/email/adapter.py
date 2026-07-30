@@ -32,7 +32,7 @@ from email.mime.base import MIMEBase
 from email.utils import formatdate
 from email import encoders
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -65,6 +65,101 @@ _AUTOMATED_HEADERS = {
 MAX_MESSAGE_LENGTH = 50_000
 
 SMTP_CONNECT_TIMEOUT = 30
+
+# ── SMTP security policy ────────────────────────────────────────────────────
+# EMAIL_SMTP_SECURITY selects how the connection is secured. "auto" (the
+# default) derives the mode from the port: implicit TLS on 465, STARTTLS
+# everywhere else. "starttls" / "implicit_tls" force the mode regardless of
+# port. The setting is read canonically from config.yaml
+# (platforms.email.smtp_security via PlatformConfig.extra); the EMAIL_SMTP_SECURITY
+# env var is kept as a backwards-compatible bridge (see terminal.cwd/TERMINAL_CWD).
+SmtpSecuritySetting = Literal["auto", "starttls", "implicit_tls"]
+SmtpConnectionMode = Literal["starttls", "implicit_tls"]
+
+SMTP_SECURITY_ENV = "EMAIL_SMTP_SECURITY"
+_EXTRA_SMTP_SECURITY_KEY = "smtp_security"  # PlatformConfig.extra key
+
+_CANONICAL_VALUES: tuple = ("auto", "starttls", "implicit_tls")
+_SMTP_SECURITY_ALIASES: dict[str, str] = {
+    "start_tls": "starttls",
+    "start-tls": "starttls",
+    "implicit-tls": "implicit_tls",
+    "smtps": "implicit_tls",
+    "smtp_ssl": "implicit_tls",
+}
+
+
+def normalize_smtp_security(raw_mode: str | None) -> str:
+    """Return the canonical EMAIL_SMTP_SECURITY setting.
+
+    Missing/empty/whitespace -> "auto". Explicit values are matched
+    case-insensitively; only the documented canonical values and aliases are
+    accepted. Ambiguous tokens such as "tls", "ssl", "none", "plain", or
+    "off" are rejected with ``ValueError`` so an operator typo never silently
+    downgrades security.
+    """
+    if raw_mode is None:
+        return "auto"
+    mode = raw_mode.strip().lower()
+    if not mode:
+        return "auto"
+    if mode in _CANONICAL_VALUES:
+        return mode
+    if mode in _SMTP_SECURITY_ALIASES:
+        return _SMTP_SECURITY_ALIASES[mode]
+    raise ValueError(
+        f"Invalid {SMTP_SECURITY_ENV}={raw_mode!r}: expected one of "
+        f"'auto', 'starttls', 'implicit_tls' (or aliases "
+        f"{sorted(_SMTP_SECURITY_ALIASES)})."
+    )
+
+
+def resolve_smtp_security(port: int, raw_mode: str | None = None) -> str:
+    """Resolve EMAIL_SMTP_SECURITY + port into a concrete connection mode.
+
+    Returns ``"implicit_tls"`` or ``"starttls"``. ``"auto"`` (the default when
+    no setting is configured) selects implicit TLS when ``port == 465`` and
+    STARTTLS otherwise. An explicit ``raw_mode`` always wins over the port.
+    """
+    mode = normalize_smtp_security(raw_mode)
+    if mode == "auto":
+        return "implicit_tls" if port == 465 else "starttls"
+    return mode
+
+
+def open_smtp_connection(
+    host: str,
+    port: int,
+    raw_mode: str | None = None,
+    *,
+    timeout: int = SMTP_CONNECT_TIMEOUT,
+    smtp_module=smtplib,
+    context_factory=ssl.create_default_context,
+):
+    """Open an SMTP connection per the shared security policy.
+
+    The configured mode is validated (via ``resolve_smtp_security``) *before*
+    any SMTP object is constructed, so an invalid explicit value never silently
+    falls back or opens a network connection.
+
+    ``implicit_tls`` -> ``smtp_module.SMTP_SSL(host, port, timeout, context)``;
+    otherwise ``smtp_module.SMTP(host, port, timeout)`` followed by
+    ``starttls(context=...)``. If STARTTLS fails the connection is closed and
+    the exception propagates. The returned object is ready for ``login`` /
+    ``send_message`` / ``quit``.
+    """
+    mode = resolve_smtp_security(port, raw_mode)
+    context = context_factory()
+    if mode == "implicit_tls":
+        return smtp_module.SMTP_SSL(host, port, timeout=timeout, context=context)
+    server = smtp_module.SMTP(host, port, timeout=timeout)
+    try:
+        server.starttls(context=context)
+    except Exception:
+        server.quit()
+        raise
+    return server
+
 
 
 def _create_ipv4_connection(
@@ -440,6 +535,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
         self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
+        # SMTP security mode. Canonical source is config.yaml
+        # (platforms.email.smtp_security via extra); EMAIL_SMTP_SECURITY env is
+        # a backwards-compatible bridge. None/"auto" defers to the port.
+        self._smtp_security = (
+            extra.get("smtp_security") or os.getenv("EMAIL_SMTP_SECURITY") or ""
+        ).strip() or None
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
@@ -509,8 +610,11 @@ class EmailAdapter(BasePlatformAdapter):
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
 
-        Port 465 uses implicit TLS (``SMTP_SSL``).  All other ports use
-        ``SMTP`` + ``STARTTLS``.
+        The security mode is resolved via :func:`resolve_smtp_security` from
+        ``smtp_security``/``EMAIL_SMTP_SECURITY`` (defaulting to "auto"). In
+        "auto" mode port 465 uses implicit TLS (``SMTP_SSL``) and all other
+        ports use ``SMTP`` + ``STARTTLS``; an explicit mode always wins over
+        the port.
 
         When the host resolves to an IPv6 address that is unreachable
         (common on networks without IPv6 routing), the default connection can
@@ -518,18 +622,21 @@ class EmailAdapter(BasePlatformAdapter):
         failures through an IPv4-only socket path, without mutating global
         resolver state.  TLS verification errors are not retried.
 
-        Returns a connected SMTP object with TLS established — callers
+        Returns a connected SMTP object with TLS established - callers
         can proceed directly to ``login()``.
         """
         ctx = ssl.create_default_context()
         host = self._smtp_host
         port = self._smtp_port
+        # Validate the configured mode once up front; an invalid explicit value
+        # raises before we open any connection (mirrors open_smtp_connection).
+        mode = resolve_smtp_security(port, self._smtp_security)
 
         def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
             """Attempt one SMTP connection."""
             smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
             smtp_ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
-            if port == 465:
+            if mode == "implicit_tls":
                 return smtp_ssl_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
             smtp = smtp_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT)
             try:
@@ -1198,8 +1305,6 @@ async def _standalone_send(
 ):
     """Out-of-process Email delivery via SMTP (one-shot). Implements the
     standalone_sender_fn contract; replaces the legacy _send_email helper."""
-    import smtplib
-    import ssl as _ssl
     from email.mime.text import MIMEText
     from email.utils import formatdate
 
@@ -1207,6 +1312,9 @@ async def _standalone_send(
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    # Security mode: config.yaml (extra) is canonical, EMAIL_SMTP_SECURITY is a
+    # backwards-compatible bridge. None/"auto" defers to the port.
+    smtp_security = extra.get("smtp_security") or os.getenv("EMAIL_SMTP_SECURITY")
     try:
         smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
     except (ValueError, TypeError):
@@ -1222,11 +1330,12 @@ async def _standalone_send(
         msg["Subject"] = "Hermes Agent"
         msg["Date"] = formatdate(localtime=True)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+        server = open_smtp_connection(smtp_host, smtp_port, smtp_security, timeout=SMTP_CONNECT_TIMEOUT)
+        try:
+            server.login(address, password)
+            server.send_message(msg)
+        finally:
+            server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         try:

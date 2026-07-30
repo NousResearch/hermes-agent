@@ -25,6 +25,10 @@ optional_env:
     description: "SMTP port (default 587)"
     prompt: "SMTP port"
     password: false
+  - name: EMAIL_SMTP_SECURITY
+    description: "SMTP transport security: auto (465=implicit TLS / SMTP_SSL, other ports=STARTTLS), starttls, or implicit_tls. Aliases: start_tls, start-tls, implicit-tls, smtps, smtp_ssl. Canonical setting is platforms.email.smtp_security in config.yaml; this env var is a backward-compatible bridge."
+    prompt: "SMTP security mode (auto/starttls/implicit_tls)"
+    password: false
   - name: EMAIL_IMAP_HOST
     description: "IMAP host for inbound polling (e.g. imap.gmail.com)"
     prompt: "IMAP host"

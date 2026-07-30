@@ -9,8 +9,26 @@ export interface TriggerState {
   inline?: boolean
   kind: '@' | '/' | ':'
   query: string
+  /** The `@kind:` prefix the user scoped the browse to, when there is one. */
+  scope?: DirectiveScope
   tokenLength: number
+  /** `query` minus the `scope:` prefix — the value actually being typed. */
+  value: string
 }
+
+/** Directive kinds the `@` popover can scope a browse to. Mirrors the starter
+ *  rows in use-at-completions and the gateway's `complete.path` prefixes. */
+export const DIRECTIVE_SCOPES = ['file', 'folder', 'url', 'image', 'tool', 'git'] as const
+
+export type DirectiveScope = (typeof DIRECTIVE_SCOPES)[number]
+
+// Picking "attach a folder" types `@folder:` into the editor, and everything
+// after it is the value being browsed. Parsing that prefix off the query is
+// what lets the rest of the composer treat it as the BROWSE MODE it is rather
+// than characters the user has to maintain by hand — Tab-descending has to
+// carry it down, Backspace has to drop it whole, and a chip landing on it has
+// to consume it.
+const AT_SCOPE_RE = new RegExp(`^(${DIRECTIVE_SCOPES.join('|')}):(.*)$`)
 
 // `@` triggers stop at the first whitespace — `@file:path` and `@diff` are
 // single tokens, and a path is part of that token: `@./src/`, `@~/Desktop/`,
@@ -146,6 +164,20 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
   return serializeTextBefore(editor, range.startContainer, range.startOffset)
 }
 
+/** A directive scope the caret is sitting inside (`@url:` with nothing typed
+ *  after it), and how many characters it occupies. A paste or a picked value
+ *  lands INTO that scope: the scope text is consumed rather than left in front
+ *  of the chip as leftover syntax. */
+export function openDirectiveScope(editor: HTMLDivElement): { length: number; scope: DirectiveScope } | null {
+  const trigger = detectTrigger(textBeforeCaret(editor) ?? '')
+
+  if (trigger?.kind !== '@' || !trigger.scope || trigger.value) {
+    return null
+  }
+
+  return { length: trigger.tokenLength, scope: trigger.scope }
+}
+
 export function detectTrigger(textBefore: string): TriggerState | null {
   // An inline `/skill` is a reference dropped into prose, so it carries no args
   // and the whole match is the token the chip replaces. Checked before the
@@ -156,19 +188,28 @@ export function detectTrigger(textBefore: string): TriggerState | null {
   if (inline) {
     const query = inline[2] ?? ''
 
-    return { inline: true, kind: '/', query, tokenLength: 1 + query.length }
+    return { inline: true, kind: '/', query, tokenLength: 1 + query.length, value: query }
   }
 
   const command = SLASH_COMMAND_TRIGGER_RE.exec(textBefore)
 
   if (command) {
-    return { kind: '/', query: command[2], tokenLength: 1 + command[2].length }
+    return { kind: '/', query: command[2], tokenLength: 1 + command[2].length, value: command[2] }
   }
 
   const at = AT_TRIGGER_RE.exec(textBefore)
 
   if (at) {
-    return { kind: '@', query: at[2], tokenLength: 1 + at[2].length }
+    const query = at[2]
+    const scoped = AT_SCOPE_RE.exec(query)
+
+    return {
+      kind: '@',
+      query,
+      ...(scoped ? { scope: scoped[1] as DirectiveScope } : {}),
+      tokenLength: 1 + query.length,
+      value: scoped ? (scoped[2] ?? '') : query
+    }
   }
 
   // After `@` so a directive starter's colon (`@file:`) stays an `@` query.
@@ -177,7 +218,7 @@ export function detectTrigger(textBefore: string): TriggerState | null {
   const emoji = $reactionsEnabled.get() ? EMOJI_TRIGGER_RE.exec(textBefore) : null
 
   if (emoji) {
-    return { kind: ':', query: emoji[2], tokenLength: 1 + emoji[2].length }
+    return { kind: ':', query: emoji[2], tokenLength: 1 + emoji[2].length, value: emoji[2] }
   }
 
   return null

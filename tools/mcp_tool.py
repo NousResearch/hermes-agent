@@ -5065,7 +5065,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     if res_text:
                         error_text += str(res_text)
                 return tool_error(_sanitize_error(
-                    error_text or "MCP tool returned an error"
+                    error_text or "MCP tool returned an error",
+                    server._redaction_values,
                 ))
 
             # Collect text from content blocks. MCP tool results can also
@@ -5172,10 +5173,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             _bump_server_error(server_name)
             logger.error(
                 "MCP tool %s/%s call failed: %s",
-                server_name, tool_name, exc,
+                server_name,
+                tool_name,
+                _sanitize_error(_exc_str(exc), server._redaction_values),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                server._redaction_values,
             ))
 
     return _handler
@@ -5228,10 +5232,13 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             logger.error(
-                "MCP %s/list_resources failed: %s", server_name, exc,
+                "MCP %s/list_resources failed: %s",
+                server_name,
+                _sanitize_error(_exc_str(exc), server._redaction_values),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                server._redaction_values,
             ))
 
     return _handler
@@ -5289,10 +5296,13 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             logger.error(
-                "MCP %s/read_resource failed: %s", server_name, exc,
+                "MCP %s/read_resource failed: %s",
+                server_name,
+                _sanitize_error(_exc_str(exc), server._redaction_values),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                server._redaction_values,
             ))
 
     return _handler
@@ -5350,10 +5360,13 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             logger.error(
-                "MCP %s/list_prompts failed: %s", server_name, exc,
+                "MCP %s/list_prompts failed: %s",
+                server_name,
+                _sanitize_error(_exc_str(exc), server._redaction_values),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                server._redaction_values,
             ))
 
     return _handler
@@ -5415,10 +5428,13 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
             logger.error(
-                "MCP %s/get_prompt failed: %s", server_name, exc,
+                "MCP %s/get_prompt failed: %s",
+                server_name,
+                _sanitize_error(_exc_str(exc), server._redaction_values),
             )
             return tool_error(_sanitize_error(
-                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}",
+                server._redaction_values,
             ))
 
     return _handler

@@ -634,6 +634,85 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_error_result_redacts_server_env_file_value(self, tmp_path):
+        """A reflected server secret never reaches the model in isError content."""
+        import tools.mcp_tool as mcp_tool
+
+        secret = "opaque-value-from-file-7391"
+        env_file = tmp_path / "server.env"
+        env_file.write_text(f"MCP_PRIVATE_TOKEN={secret}\n", encoding="utf-8")
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(
+                f"upstream echoed {secret}", is_error=True
+            )
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        server._redaction_values = tuple(
+            mcp_tool._load_mcp_server_env({"env_file": str(env_file)}).values()
+        )
+        mcp_tool._servers["test_srv"] = server
+
+        try:
+            handler = mcp_tool._make_tool_handler("test_srv", "explode", 120)
+            with self._patch_mcp_loop():
+                result = handler({})
+            assert secret not in result
+            assert "[REDACTED]" in result
+        finally:
+            mcp_tool._servers.pop("test_srv", None)
+
+    @pytest.mark.parametrize(
+        ("operation", "session_method", "args"),
+        [
+            ("tool", "call_tool", {}),
+            ("list_resources", "list_resources", {}),
+            ("read_resource", "read_resource", {"uri": "file:///secret"}),
+            ("list_prompts", "list_prompts", {}),
+            ("get_prompt", "get_prompt", {"name": "secret_prompt"}),
+        ],
+    )
+    def test_handler_exception_redacts_server_env_file_value(
+        self, operation, session_method, args, caplog
+    ):
+        """All normal MCP operation failures redact server values in output and logs."""
+        import tools.mcp_tool as mcp_tool
+
+        secret = "opaque-value-from-file-7391"
+        mock_session = MagicMock()
+        setattr(
+            mock_session,
+            session_method,
+            AsyncMock(side_effect=RuntimeError(f"upstream echoed {secret}")),
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        server._redaction_values = (secret,)
+        mcp_tool._servers["test_srv"] = server
+
+        factories = {
+            "list_resources": mcp_tool._make_list_resources_handler,
+            "read_resource": mcp_tool._make_read_resource_handler,
+            "list_prompts": mcp_tool._make_list_prompts_handler,
+            "get_prompt": mcp_tool._make_get_prompt_handler,
+        }
+        handler = (
+            mcp_tool._make_tool_handler("test_srv", "explode", 120)
+            if operation == "tool"
+            else factories[operation]("test_srv", 120)
+        )
+
+        try:
+            with self._patch_mcp_loop(), caplog.at_level(
+                logging.ERROR, logger="tools.mcp_tool"
+            ):
+                result = handler(args)
+            assert secret not in result
+            assert secret not in caplog.text
+            assert "[REDACTED]" in result
+            assert "[REDACTED]" in caplog.text
+        finally:
+            mcp_tool._servers.pop("test_srv", None)
+            mcp_tool._reset_server_error("test_srv")
 
     def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
         from tools.mcp_tool import _make_tool_handler, _servers

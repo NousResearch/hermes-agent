@@ -40,6 +40,7 @@ class _LimitAgent:
         self._tool_guardrail_halt_decision = None
         self._interrupt_message = None
         self._response_was_previewed = False
+        self._verification_stop_nudges = 0
         self._skill_nudge_interval = 0
         self._iters_since_skill = 0
         self.valid_tool_names = []
@@ -417,3 +418,88 @@ def test_finalize_turn_starts_the_title_upgrade_the_prologue_held_back():
     _finalize(agent, final_response="done", exit_reason="text_response(1)", api_call_count=1)
     assert ran.wait(timeout=5), "deferred title upgrade never started"
     assert agent._deferred_title_upgrade is None
+
+
+def test_short_receipt_after_verification_keeps_the_withheld_answer(monkeypatch):
+    """A receipt reply must not evict the answer a verification gate withheld (#68586).
+
+    Budget is NOT exhausted here, so the pending-restore path above does not apply; the answer
+    survives only because the receipt is merged behind it.
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(budget_remaining=60)
+    agent._verification_stop_nudges = 1
+    withheld = "The full answer. " * 40
+
+    result = _finalize(
+        agent,
+        final_response="Tests pass.",
+        exit_reason="unknown",
+        api_call_count=3,
+        pending_verification_response=withheld,
+    )
+
+    assert result["final_response"] == f"{withheld}\n\n---\nTests pass."
+    assert agent._response_was_previewed is False
+
+
+def test_marking_a_previewed_pending_answer_survives_the_receipt_merge():
+    """The merge must carry the preview flag, or the restored answer is printed twice."""
+    import logging
+
+    from agent.turn_finalizer import _resolve_budget_fallback
+
+    agent = _LimitAgent(budget_remaining=60)
+    agent._verification_stop_nudges = 1
+    withheld = "The full answer. " * 40
+
+    final_response, _reason, preserved, _interrupted = _resolve_budget_fallback(
+        agent,
+        final_response="Tests pass.",
+        api_call_count=3,
+        interrupted=False,
+        failed=False,
+        messages=[],
+        _turn_exit_reason="unknown",
+        _pending_verification_response=withheld,
+        _pending_verification_response_previewed=True,
+        logger=logging.getLogger("test-68586"),
+    )
+
+    assert final_response == f"{withheld}\n\n---\nTests pass."
+    assert agent._response_was_previewed is True
+    assert preserved is True
+
+
+def test_substantive_reply_after_verification_is_left_alone(monkeypatch):
+    """Only a receipt is merged: a reply of its own is the answer."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(budget_remaining=60)
+    agent._verification_stop_nudges = 1
+    reply = "A fresh, complete answer that stands on its own. " * 4
+
+    result = _finalize(
+        agent,
+        final_response=reply,
+        exit_reason="unknown",
+        api_call_count=3,
+        pending_verification_response="stale withheld answer",
+    )
+
+    assert result["final_response"] == reply
+
+
+def test_short_reply_is_left_alone_without_a_verification_nudge(monkeypatch):
+    """No nudge, no withheld answer: a short reply is just a short reply."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(budget_remaining=60)  # no _verification_stop_nudges attribute
+
+    result = _finalize(
+        agent,
+        final_response="Tests pass.",
+        exit_reason="unknown",
+        api_call_count=3,
+        pending_verification_response="The full answer. " * 40,
+    )
+
+    assert result["final_response"] == "Tests pass."

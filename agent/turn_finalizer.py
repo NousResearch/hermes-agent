@@ -167,6 +167,22 @@ def _resolve_budget_fallback(
                 interrupted = True
                 _turn_exit_reason = interrupted_during_api_call_reason(agent)
                 final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
+    # ── Restore the pending answer when verification produced only a receipt ──
+    # When verify-on-stop fired, the composed answer was saved in _pending_verification_response.
+    # The budget-exhausted path above restores it only when the model produced *no* final response.
+    # This path handles the normal case: verification passed, the model replied, but the reply is a
+    # short receipt (e.g. "tests pass") rather than the answer itself. Relative length: a reply under
+    # a quarter of the withheld answer is treated as a receipt and merged behind it.
+    elif (
+        final_response is not None
+        and bool(_pending_verification_response)
+        and getattr(agent, "_verification_stop_nudges", 0) > 0
+        and len(final_response) < len(_pending_verification_response) * 0.25
+    ):
+        final_response = f"{_pending_verification_response}\n\n---\n{final_response}"
+        preserved_verification_fallback = True
+        if _pending_verification_response_previewed:
+            agent._response_was_previewed = True
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete. Only the

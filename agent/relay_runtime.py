@@ -811,6 +811,12 @@ def current_turn() -> RelayTurnContext | None:
     return _CURRENT_TURN.get()
 
 
+def relay_instrumentation_enabled() -> bool:
+    """Return whether this inherited turn may create Relay instrumentation."""
+    turn = current_turn()
+    return turn is None or turn.relay_enabled
+
+
 def active_turn(session_id: str | None = None) -> RelayTurnContext | None:
     """Return a live turn only when it belongs to the active profile/session."""
     turn = current_turn()

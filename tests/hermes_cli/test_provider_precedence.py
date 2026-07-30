@@ -6,9 +6,11 @@ over a stale logged-in OAuth `active_provider` in auth.json. Before the fix,
 explicit choice — e.g. a user OAuth-logged-into Anthropic but with
 OPENAI_API_KEY exported (or model.provider set) got routed to Anthropic.
 """
+import logging
+
 import pytest
 
-from hermes_cli.auth import resolve_provider, AuthError
+from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider, AuthError
 
 
 def _login(monkeypatch, provider_id):
@@ -29,8 +31,16 @@ def _no_aws(monkeypatch):
 
 
 def _clear_provider_env(monkeypatch):
-    for var in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "GLM_API_KEY", "ZAI_API_KEY",
-                "KIMI_API_KEY", "MINIMAX_API_KEY", "HERMES_INFERENCE_PROVIDER"):
+    provider_key_vars = {
+        env_var
+        for provider in PROVIDER_REGISTRY.values()
+        for env_var in provider.api_key_env_vars
+    }
+    for var in provider_key_vars | {
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "HERMES_INFERENCE_PROVIDER",
+    }:
         monkeypatch.delenv(var, raising=False)
 
 
@@ -52,8 +62,6 @@ class TestProviderPrecedence:
 
     def test_config_read_failure_is_warning(self, monkeypatch, caplog):
         """A config read failure must be visible without debug logging enabled."""
-        import logging
-
         _clear_provider_env(monkeypatch)
         _no_aws(monkeypatch)
         monkeypatch.setattr(
@@ -82,6 +90,45 @@ class TestProviderPrecedence:
         assert resolve_provider("auto") == "openrouter"
 
 
+    def test_warns_when_multiple_provider_api_keys_are_detected(
+        self, monkeypatch, caplog
+    ):
+        """Multiple provider keys warn while registry order selects the provider."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _config(monkeypatch, {})
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+        monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+            assert resolve_provider("auto") == "alibaba"
+
+        warning_messages = [
+            record.message
+            for record in caplog.records
+            if "Multiple provider API keys detected" in record.message
+        ]
+        assert len(warning_messages) == 1
+        assert "alibaba (DASHSCOPE_API_KEY)" in warning_messages[0]
+        assert "opencode-go (OPENCODE_GO_API_KEY)" in warning_messages[0]
+
+    def test_shared_provider_api_key_does_not_emit_multi_key_warning(
+        self, monkeypatch, caplog
+    ):
+        """A shared env var is one candidate even when two providers accept it."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _config(monkeypatch, {})
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+            assert resolve_provider("auto") == "alibaba"
+
+        assert not any(
+            "Multiple provider API keys detected" in record.message
+            for record in caplog.records
+        )
+
     def test_oauth_used_as_last_resort(self, monkeypatch):
         """With NO config provider and NO env keys, the logged-in OAuth provider
         is still used (it's the last-resort fallback, not removed)."""
@@ -95,7 +142,6 @@ class TestProviderPrecedence:
     def test_warns_on_silent_oauth_fallthrough(self, monkeypatch, caplog):
         """A populated model dict lacking `provider` that falls through to OAuth
         emits a WARN so the silent override is visible (#29285)."""
-        import logging
         _clear_provider_env(monkeypatch)
         _no_aws(monkeypatch)
         _login(monkeypatch, "anthropic")
@@ -103,7 +149,6 @@ class TestProviderPrecedence:
         with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
             assert resolve_provider("auto") == "anthropic"
         assert any("no `provider` key" in r.message for r in caplog.records)
-
 
     def test_openrouter_pool_beats_stale_oauth(self, monkeypatch):
         """An OpenRouter credential-pool entry (no env var) wins over a logged-in

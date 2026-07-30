@@ -10,8 +10,8 @@ import { queryClient } from '@/lib/query-client'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
-const toggleSkill = vi.fn()
-const toggleToolset = vi.fn()
+const setSkillEnabled = vi.fn()
+const setToolsetEnabled = vi.fn()
 const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
@@ -23,8 +23,8 @@ vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
   getSkills: () => getSkills(),
   getToolsets: () => getToolsets(),
-  toggleSkill: (name: string, enabled: boolean) => toggleSkill(name, enabled),
-  toggleToolset: (name: string, enabled: boolean) => toggleToolset(name, enabled),
+  setSkillEnabled: (name: string, enabled: boolean) => setSkillEnabled(name, enabled),
+  setToolsetEnabled: (name: string, enabled: boolean) => setToolsetEnabled(name, enabled),
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   getUsageAnalytics: (days: number) => getUsageAnalytics(days)
@@ -78,7 +78,7 @@ async function renderSkills() {
 beforeEach(() => {
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
-  toggleToolset.mockResolvedValue({ ok: true, name: 'web', enabled: false })
+  setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
   getUsageAnalytics.mockResolvedValue({ tools: [] })
 })
@@ -101,7 +101,7 @@ describe('SkillsView toolset management', () => {
       fireEvent.click(sw)
     })
 
-    await waitFor(() => expect(toggleToolset).toHaveBeenCalledWith('web', false))
+    await waitFor(() => expect(setToolsetEnabled).toHaveBeenCalledWith('web', false))
   })
 
   it('renders toolset titles without leading emoji', async () => {

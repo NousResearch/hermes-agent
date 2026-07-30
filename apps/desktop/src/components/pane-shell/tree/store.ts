@@ -798,7 +798,7 @@ export function revealTreePane(paneId: string) {
     // just front its tab behind a collapsed rail. Without this, a tool panel
     // (terminal/logs) in a shared zone stays minimized after its toggle opens
     // it: setPaneCollapsed's shared-zone branch calls revealTreePane instead
-    // of toggleTreeGroupMinimized, so the zone never un-minimizes and the
+    // of setTreeGroupMinimized, so the zone never un-minimizes and the
     // pane appears to "close but not open" on ctrl-` / tab click.
     let next = tree
 
@@ -1217,7 +1217,7 @@ export function splitTreeZone(groupId: string, side: RootEdge, movePaneId: strin
   }
 }
 
-export function toggleTreeGroupMinimized(groupId: string, minimized: boolean) {
+export function setTreeGroupMinimized(groupId: string, minimized: boolean) {
   const tree = $layoutTree.get()
 
   if (tree) {
@@ -1256,7 +1256,7 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
 
         activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
       } else {
-        toggleTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
+        setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
       }
     } else if (!collapsed) {
       revealTreePane(paneId)
@@ -1266,7 +1266,7 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
   }
 
   if (Boolean(group.minimized) !== collapsed) {
-    toggleTreeGroupMinimized(group.id, collapsed)
+    setTreeGroupMinimized(group.id, collapsed)
 
     if (!collapsed) {
       revealTreePane(paneId)
@@ -1290,7 +1290,7 @@ export function restoreTreePane(paneId: string) {
     const group = paneGroup(paneId)
 
     if (group?.minimized) {
-      toggleTreeGroupMinimized(group.id, false)
+      setTreeGroupMinimized(group.id, false)
     }
 
     revealTreePane(paneId)
@@ -1301,7 +1301,7 @@ export function restoreTreePane(paneId: string) {
   const group = paneGroup(paneId)
 
   if (group) {
-    toggleTreeGroupMinimized(group.id, false)
+    setTreeGroupMinimized(group.id, false)
     activateTreePane(group.id, paneId)
   }
 }
@@ -1321,7 +1321,7 @@ export function collapseTreePane(paneId: string) {
   const group = paneGroup(paneId)
 
   if (group) {
-    toggleTreeGroupMinimized(group.id, true)
+    setTreeGroupMinimized(group.id, true)
   }
 }
 

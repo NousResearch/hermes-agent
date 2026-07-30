@@ -302,3 +302,28 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+def test_dangling_symlink_listing_returns_partial_entry(forced_files_client):
+    """Regression: broken symlinks caused HTTP 500 in managed files listing
+    because _managed_file_entry called resolved.stat() which follows the
+    link. Must return 200 with nullable metadata for the dangling entry."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    link = root / "broken"
+    try:
+        link.symlink_to("ghost")
+    except OSError:
+        pytest.skip("filesystem does not support symlinks")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+
+    entries = listing.json()["entries"]
+    broken = [e for e in entries if e["name"] == "broken"]
+    assert len(broken) == 1
+
+    entry = broken[0]
+    assert entry["is_directory"] is False
+    assert entry["size"] == 5
+    assert entry["mtime"] is not None
+    assert entry["mime_type"] is not None

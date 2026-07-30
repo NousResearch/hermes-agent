@@ -42,7 +42,9 @@ class TestInstallDependenciesRunner:
     def _run_with_missing_dep(self, tmp_path, which_side_effect, run_behavior=None):
         """Drive _install_dependencies for a plugin that declares one missing
         pip dep, capturing every subprocess.run argv issued by the ladder."""
+        import os
         import sys
+        from unittest.mock import patch as _patch
 
         (tmp_path / "plugin.yaml").write_text(
             "pip_dependencies:\n  - definitely-not-installed-xyz\n", encoding="utf-8"
@@ -55,7 +57,13 @@ class TestInstallDependenciesRunner:
                 return run_behavior(cmd)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+        # The hermetic conftest sets HERMES_DISABLE_LAZY_INSTALLS=1 so no test
+        # can trigger a real mid-run pip install. These tests exercise the
+        # install ladder itself (against a fully mocked subprocess.run), so
+        # they opt back in — the same both-directions override
+        # tests/tools/test_lazy_deps.py uses.
+        with _patch.dict(os.environ, {"HERMES_DISABLE_LAZY_INSTALLS": "0"}), \
+             patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
              patch("hermes_cli.tools_config.shutil.which", side_effect=which_side_effect), \
              patch("hermes_cli.tools_config.subprocess.run", fake_run):
             memory_setup._install_dependencies("x")

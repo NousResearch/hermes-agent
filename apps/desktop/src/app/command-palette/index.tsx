@@ -942,7 +942,16 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // live state through `detail()`, so the groups must rebuild after a select
     // that kept the palette open — eslint only sees an unused dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contributedItems, dismissedAutoProjects, go, projectTree, selectTick, settingsSectionLabel, t, updateVersionLabel])
+  }, [
+    contributedItems,
+    dismissedAutoProjects,
+    go,
+    projectTree,
+    selectTick,
+    settingsSectionLabel,
+    t,
+    updateVersionLabel
+  ])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the

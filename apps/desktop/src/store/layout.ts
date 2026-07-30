@@ -232,6 +232,7 @@ export function filterVisibleProjects<T extends { id: string; isAuto?: boolean }
   }
 
   const dismissed = new Set(dismissedIds)
+
   return projects.filter(project => !(project.isAuto && dismissed.has(project.id)))
 }
 

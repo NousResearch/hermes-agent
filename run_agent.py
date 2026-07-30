@@ -7624,7 +7624,9 @@ class AIAgent:
                 turn_id=relay_turn_id,
                 task_id=effective_task_id,
             )
-            if relay_turn.relay_enabled:
+            # Keep existing tests and external relay-runtime shims that return
+            # a minimal turn object compatible with the new opt-out flag.
+            if getattr(relay_turn, "relay_enabled", True):
                 start_task_run(
                     **task_context,
                     parent_session_id=getattr(self, "_parent_session_id", None) or "",

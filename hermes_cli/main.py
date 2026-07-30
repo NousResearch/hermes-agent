@@ -5039,6 +5039,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _invalidate_update_cache,
     _is_android_python,
     _is_fork,
+    _leftover_pausable_gateway_pids,
     _log_only_write,
     _mark_skip_upstream_prompt,
     _npm_bin_exists,

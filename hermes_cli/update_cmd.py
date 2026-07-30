@@ -2749,6 +2749,52 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
     return found
 
 
+def _leftover_pausable_gateway_pids(
+    matches: list[tuple[int, str, str]],
+) -> list[int] | None:
+    """PIDs from *matches* when every remaining venv holder is a pausable gateway.
+
+    ``_pause_windows_gateways_for_update()`` stops every gateway its discovery
+    finds, but the venv-holder guard downstream sees the process table as it
+    is *now*: a gateway respawned by its supervisor (Scheduled Task, login
+    watchdog) inside the pause→guard window, or one started through a spawn
+    path the discovery does not map, still holds venv ``.pyd`` files and
+    would dead-end the update — an abort pointed at exactly the kind of
+    process the pause machinery exists to stop.
+
+    Holders are classified with the same matcher the Desktop preflight uses
+    to exempt them (``_is_pausable_gateway``), so the preflight's exemption
+    and this guard's tolerance cannot drift apart — matcher drift between
+    two views of the same process table is what produced the launcher/worker
+    dead-end fixed above. The scan captures only a 120-char cmdline prefix,
+    so the live argv is re-read where psutil allows; an unreadable argv
+    falls back to the captured prefix.
+
+    Returns ``None`` when any holder is not a pausable gateway — an operator
+    REPL, a stray script, or the Desktop backend has no pause machinery
+    downstream, and the guard must keep refusing exactly as before.
+    """
+    from hermes_cli._scan_venv_blockers import _is_pausable_gateway
+
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        psutil = None
+
+    pids: list[int] = []
+    for pid, _name, cmdline in matches:
+        argv = cmdline
+        if psutil is not None:
+            try:
+                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+            except Exception:
+                pass
+        if not _is_pausable_gateway(argv):
+            return None
+        pids.append(int(pid))
+    return pids
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -3285,6 +3331,30 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # --force-venv is the explicit escape hatch.
     if _m()._is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            _gateway_holders = _m()._leftover_pausable_gateway_pids(_venv_holders)
+            if _gateway_holders is not None:
+                # Every remaining holder is a gateway the pause machinery
+                # already owns — respawned by its supervisor inside the
+                # pause→guard window, or up through a spawn path discovery
+                # does not map. Stop them and re-check instead of
+                # dead-ending; the post-update resume (and the supervisor
+                # that respawned them) brings gateways back afterwards.
+                from gateway.status import terminate_pid
+
+                print(
+                    f"  ⚠ {len(_gateway_holders)} gateway process(es) still "
+                    "hold the venv after the pause; stopping them"
+                )
+                for _pid in _gateway_holders:
+                    try:
+                        terminate_pid(int(_pid), force=True)
+                    except Exception as exc:
+                        logger.debug(
+                            "Could not stop leftover gateway %s: %s", _pid, exc
+                        )
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
             print(_format_venv_python_holders_message(_venv_holders))
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

@@ -401,6 +401,95 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
     )
 
 
+# ---------------------------------------------------------------------------
+# _leftover_pausable_gateway_pids (the guard-level gateway fallback)
+#
+# The pause stops every gateway discovery finds, but the venv-holder guard
+# sees the process table as it is NOW. A supervisor (Scheduled Task, login
+# watchdog) can respawn a gateway inside the pause→guard window, and some
+# spawn paths never register in discovery at all. Those holders are exactly
+# what the pause machinery exists to stop — the guard nominates them for a
+# stop-and-recheck instead of dead-ending, and refuses the moment any
+# non-gateway holder is present.
+# ---------------------------------------------------------------------------
+
+
+GATEWAY_ARGV = [
+    r"C:\x\venv\Scripts\python.exe",
+    "-m",
+    "hermes_cli.main",
+    "gateway",
+    "run",
+]
+
+
+def _fake_psutil_cmdlines(argv_by_pid):
+    """psutil stand-in serving live argv per pid; unknown pids raise."""
+
+    class FakeProc:
+        def __init__(self, pid):
+            if pid not in argv_by_pid:
+                raise ValueError(f"no such pid {pid}")
+            self._argv = argv_by_pid[pid]
+
+        def cmdline(self):
+            return self._argv
+
+    return types.SimpleNamespace(Process=FakeProc)
+
+
+def test_leftover_holders_that_are_all_gateways_are_nominated(monkeypatch):
+    """Respawned/unmapped gateway holders get stopped, not dead-ended on."""
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        _fake_psutil_cmdlines({300: GATEWAY_ARGV, 301: GATEWAY_ARGV}),
+    )
+    matches = [
+        (300, "python.exe", "truncated..."),
+        (301, "python.exe", "truncated..."),
+    ]
+
+    assert cli_main._leftover_pausable_gateway_pids(matches) == [300, 301]
+
+
+def test_one_non_gateway_holder_keeps_the_hard_refusal(monkeypatch):
+    """A REPL/backend holder means the guard must abort exactly as before."""
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        _fake_psutil_cmdlines(
+            {300: GATEWAY_ARGV, 400: [r"C:\x\venv\Scripts\python.exe", "-i"]}
+        ),
+    )
+    matches = [(300, "python.exe", "..."), (400, "python.exe", "...")]
+
+    assert cli_main._leftover_pausable_gateway_pids(matches) is None
+
+
+def test_unreadable_argv_falls_back_to_the_captured_prefix(monkeypatch):
+    """psutil failure degrades to the scan's captured cmdline, not a crash.
+
+    The captured prefix decides: a gateway invocation still qualifies, and
+    anything else still refuses.
+    """
+    monkeypatch.setitem(sys.modules, "psutil", _fake_psutil_cmdlines({}))
+    gateway_prefix = r"venv\Scripts\python.exe -m hermes_cli.main gateway run"
+
+    assert cli_main._leftover_pausable_gateway_pids(
+        [(300, "python.exe", gateway_prefix)]
+    ) == [300]
+    assert (
+        cli_main._leftover_pausable_gateway_pids(
+            [
+                (300, "python.exe", gateway_prefix),
+                (400, "python.exe", "python.exe -i"),
+            ]
+        )
+        is None
+    )
+
+
 
 
 

@@ -381,6 +381,334 @@ class TestDmClassification:
         assert a._may_reclassify_as_dm(CHANNEL) is False
 
 
+# ── Thread-scoped sessions (NIP-10 thread roots) ─────────────────────────
+#
+# Buzz threads are Nostr kind-9 replies: the buzz CLI emits a lone
+# ["e", <parent>, "", "reply"] tag (observed live), while NIP-10-conformant
+# clients mark the canonical root with ["e", <root>, "", "root"].  The
+# adapter must key sessions on the canonical thread ROOT — never the
+# immediate parent — so sibling threads get separate Hermes contexts and a
+# whole thread (replies-to-replies included) shares one.
+
+THREAD_ROOT = "beef" * 16
+THREAD_PARENT = "cafe" * 16
+THREAD_CHILD = "face" * 16
+LATE_SIBLING = "12" * 32
+MIXED_DESCENDANT = "34" * 32
+SIBLING_ROOT = "dead" * 16
+AGENT_EVENT = "ab" * 32
+
+parse_thread_root = _buzz_mod.parse_thread_root
+
+
+def _thread_event(event_id, channel, *, content, root=None, reply=None,
+                  tags=None, pubkey=OTHER_PUBKEY, created_at=1000):
+    """Kind-9 event with NIP-10 style e-tags (root/reply markers)."""
+    if tags is None:
+        tags = [["h", channel]]
+        if root:
+            tags.append(["e", root, "", "root"])
+        if reply:
+            tags.append(["e", reply, "", "reply"])
+    return {
+        "id": event_id,
+        "pubkey": pubkey,
+        "content": content,
+        "created_at": created_at,
+        "kind": 9,
+        "tags": tags,
+    }
+
+
+class TestParseThreadRoot:
+    """Pure tag parsing: markers, legacy positional shapes, fail-closed."""
+
+    def test_no_e_tags_is_top_level(self):
+        assert parse_thread_root([["h", CHANNEL]]) is None
+        assert parse_thread_root([]) is None
+        assert parse_thread_root(None) is None
+
+    def test_root_marker_wins_over_reply_marker(self):
+        tags = [
+            ["h", CHANNEL],
+            ["e", THREAD_ROOT, "", "root"],
+            ["e", THREAD_PARENT, "", "reply"],
+        ]
+        assert parse_thread_root(tags) == THREAD_ROOT
+
+    def test_lone_reply_marker_references_parent(self):
+        assert parse_thread_root([["e", THREAD_PARENT, "", "reply"]]) == THREAD_PARENT
+
+    def test_legacy_positional_single_e_tag(self):
+        assert parse_thread_root([["e", THREAD_ROOT]]) == THREAD_ROOT
+        assert parse_thread_root([["e", THREAD_ROOT, "wss://relay"]]) == THREAD_ROOT
+        # Author pubkey in the marker slot is a positional shape, not a marker.
+        assert parse_thread_root([["e", THREAD_ROOT, "wss://relay", OTHER_PUBKEY]]) == THREAD_ROOT
+
+    def test_legacy_positional_first_e_tag_is_root(self):
+        tags = [["e", THREAD_ROOT, ""], ["e", THREAD_PARENT, ""]]
+        assert parse_thread_root(tags) == THREAD_ROOT
+
+    def test_mention_markers_do_not_create_threads(self):
+        assert parse_thread_root([["e", THREAD_ROOT, "", "mention"]]) is None
+
+    def test_non_hex_ids_are_ignored(self):
+        assert parse_thread_root([["e", "not-an-event-id", "", "reply"]]) is None
+        assert parse_thread_root([["e", "", "", "root"]]) is None
+
+    def test_conflicting_root_markers_fail_closed(self):
+        tags = [["e", THREAD_ROOT, "", "root"], ["e", SIBLING_ROOT, "", "root"]]
+        assert parse_thread_root(tags) is None
+
+    def test_malformed_tag_shapes_are_ignored(self):
+        assert parse_thread_root(["e", THREAD_ROOT]) is None  # not a list of tags
+        assert parse_thread_root([["e"], "junk", {"e": THREAD_ROOT}, 42]) is None
+        # A malformed sibling entry must not poison a well-formed root marker.
+        tags = [["e"], ["e", "bogus", "", "reply"], ["e", THREAD_ROOT, "", "root"]]
+        assert parse_thread_root(tags) == THREAD_ROOT
+
+
+class TestThreadScopedSessions:
+
+    @pytest.fixture
+    def adapter(self):
+        a = _make_adapter()
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        a._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        return a
+
+    async def _poll_with(self, adapter, channel, *events):
+        cli = _ScriptedCli()
+        cli.script("messages", "get", list(events))
+        adapter._run_cli = cli
+        await adapter._poll_channel(channel)
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_has_no_thread_id(self, adapter):
+        await self._poll_with(
+            adapter, CHANNEL, _event("e1", content="@Chip hello", created_at=10)
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
+        assert adapter._dispatched[0]["thread_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_direct_reply_uses_canonical_root(self, adapter):
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event("r1", CHANNEL, content="@Chip in thread", root=THREAD_ROOT),
+        )
+        assert [d["thread_id"] for d in adapter._dispatched] == [THREAD_ROOT]
+
+    @pytest.mark.asyncio
+    async def test_nested_reply_with_markers_retains_root(self, adapter):
+        """A reply-to-a-reply keys on the root marker, not the parent."""
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event("r2", CHANNEL, content="@Chip deeper",
+                          root=THREAD_ROOT, reply=THREAD_PARENT),
+        )
+        assert [d["thread_id"] for d in adapter._dispatched] == [THREAD_ROOT]
+
+    @pytest.mark.asyncio
+    async def test_reply_only_chain_resolves_to_root_via_observed_history(self, adapter):
+        """buzz-CLI shape (lone "reply" marker per hop): the adapter chains
+        observed events so nested replies still key on the canonical root."""
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event(THREAD_ROOT, CHANNEL, content="thread starts here",
+                          created_at=10),
+            _thread_event(THREAD_PARENT, CHANNEL, content="@Chip first reply",
+                          reply=THREAD_ROOT, created_at=11),
+            _thread_event(THREAD_CHILD, CHANNEL, content="@Chip nested reply",
+                          reply=THREAD_PARENT, created_at=12),
+        )
+        assert [d["thread_id"] for d in adapter._dispatched] == [THREAD_ROOT, THREAD_ROOT]
+
+    @pytest.mark.asyncio
+    async def test_batch_reply_chain_is_parent_first_with_timestamp_ties(self, adapter):
+        """CLI batches may be reverse-ordered with second-level timestamps."""
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event(THREAD_CHILD, CHANNEL, content="@Chip child",
+                          reply=THREAD_PARENT, created_at=10),
+            _thread_event(THREAD_PARENT, CHANNEL, content="@Chip parent",
+                          reply=THREAD_ROOT, created_at=10),
+            _thread_event(THREAD_ROOT, CHANNEL, content="@Chip root",
+                          created_at=10),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == [
+            THREAD_ROOT,
+            THREAD_PARENT,
+            THREAD_CHILD,
+        ]
+        assert [d["thread_id"] for d in adapter._dispatched] == [
+            None,
+            THREAD_ROOT,
+            THREAD_ROOT,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_reply_only_out_of_order_latches_one_stable_scope(self, adapter):
+        """A child can precede its parent on WebSocket delivery.
+
+        The first child must not start under the immediate parent and then
+        split later descendants onto a newly discovered root. Once the parent
+        id becomes a provisional scope, the whole observed chain stays there.
+        """
+        events = [
+            _thread_event(THREAD_CHILD, CHANNEL, content="@Chip child first",
+                          reply=THREAD_PARENT, created_at=10),
+            _thread_event(THREAD_PARENT, CHANNEL, content="@Chip parent late",
+                          reply=THREAD_ROOT, created_at=11),
+            _thread_event(LATE_SIBLING, CHANNEL, content="@Chip sibling later",
+                          reply=THREAD_PARENT, created_at=12),
+            _thread_event(THREAD_ROOT, CHANNEL, content="@Chip root latest",
+                          created_at=13),
+            _thread_event(MIXED_DESCENDANT, CHANNEL, content="@Chip explicit root later",
+                          root=THREAD_ROOT, reply=THREAD_PARENT, created_at=14),
+        ]
+        state = adapter._channel_state[CHANNEL]
+        # WebSocket events call _handle_event one at a time, without batch
+        # dependency ordering.
+        for event in events:
+            await adapter._handle_event(CHANNEL, state, event)
+        assert [d["thread_id"] for d in adapter._dispatched] == [
+            THREAD_PARENT,
+            THREAD_PARENT,
+            THREAD_PARENT,
+            None,
+            THREAD_PARENT,
+        ]
+        roots = adapter._channel_state[CHANNEL]["roots"]
+        assert (
+            roots[THREAD_CHILD]
+            == roots[THREAD_PARENT]
+            == roots[LATE_SIBLING]
+            == roots[MIXED_DESCENDANT]
+        )
+
+    @pytest.mark.asyncio
+    async def test_agent_reply_bridges_the_thread_chain(self, adapter):
+        """A user replying to the AGENT's reply must land in the same thread
+        session: send() records its own event id against the root."""
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event(THREAD_ROOT, CHANNEL, content="@Chip start", created_at=10),
+        )
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": AGENT_EVENT, "message": ""})
+        adapter._run_cli = cli
+        await adapter.send(CHANNEL, "agent answer", reply_to=THREAD_ROOT)
+
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event(THREAD_CHILD, CHANNEL, content="@Chip follow-up",
+                          reply=AGENT_EVENT, created_at=20),
+        )
+        assert adapter._dispatched[-1]["message_id"] == THREAD_CHILD
+        assert adapter._dispatched[-1]["thread_id"] == THREAD_ROOT
+
+    @pytest.mark.asyncio
+    async def test_seed_history_builds_thread_map_without_dispatch(self, adapter):
+        """Restart resilience: seeded history primes the event->root map so
+        the first post-restart reply keys on the true root; seeding itself
+        never dispatches."""
+        cli = _ScriptedCli()
+        cli.script("messages", "get", [
+            _thread_event(THREAD_PARENT, CHANNEL, content="old reply",
+                          reply=THREAD_ROOT, created_at=100),
+            _thread_event(THREAD_ROOT, CHANNEL, content="old root", created_at=100),
+        ])
+        adapter._run_cli = cli
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+        assert adapter._dispatched == []
+
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event(THREAD_CHILD, CHANNEL, content="@Chip resuming",
+                          reply=THREAD_PARENT, created_at=120),
+        )
+        assert [d["thread_id"] for d in adapter._dispatched] == [THREAD_ROOT]
+
+    @pytest.mark.asyncio
+    async def test_malformed_and_unrelated_tags_yield_no_thread(self, adapter):
+        """Bogus e-tags (non-hex, self-referential, mention markers) must
+        fail closed to the plain channel/user session."""
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event("m1", CHANNEL, content="@Chip one",
+                          tags=[["h", CHANNEL], ["e", "not-hex!", "", "reply"]],
+                          created_at=10),
+            _thread_event("m2", CHANNEL, content="@Chip two",
+                          tags=[["h", CHANNEL], ["e", "m2", "", "root"]],
+                          created_at=11),
+            _thread_event(THREAD_CHILD, CHANNEL, content="@Chip three",
+                          tags=[["h", CHANNEL], ["e", THREAD_CHILD, "", "root"]],
+                          created_at=12),
+            _thread_event("m3", CHANNEL, content="@Chip four",
+                          tags=[["h", CHANNEL], ["e", THREAD_ROOT, "", "mention"],
+                                ["p", SELF_PUBKEY]],
+                          created_at=13),
+        )
+        assert [d["thread_id"] for d in adapter._dispatched] == [None, None, None, None]
+
+    @pytest.mark.asyncio
+    async def test_threaded_reply_still_respects_mention_gate(self, adapter):
+        """Channel gating is unchanged: an un-mentioned threaded reply does
+        not dispatch (require_mention default)."""
+        await self._poll_with(
+            adapter, CHANNEL,
+            _thread_event("r1", CHANNEL, content="just thread chatter",
+                          root=THREAD_ROOT),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_dm_replies_thread_and_top_level_dms_do_not(self, adapter):
+        adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        await self._poll_with(
+            adapter, DM_CHANNEL,
+            _thread_event("d1", DM_CHANNEL, content="plain dm", created_at=10),
+            _thread_event("d2", DM_CHANNEL, content="threaded dm",
+                          root=THREAD_ROOT, created_at=11),
+        )
+        assert [(d["chat_type"], d["thread_id"]) for d in adapter._dispatched] == [
+            ("dm", None),
+            ("dm", THREAD_ROOT),
+        ]
+
+    def test_session_keys_isolate_sibling_threads_and_share_a_thread(self):
+        """The gateway invariant this feature exists for: sibling roots get
+        distinct session keys; one root is one shared session for all
+        participants; top-level traffic keeps the per-user channel session."""
+        from gateway.config import Platform
+        from gateway.session import SessionSource, build_session_key
+
+        def src(thread_id=None, user=OTHER_PUBKEY):
+            return SessionSource(
+                platform=Platform("buzz"),
+                chat_id=CHANNEL,
+                chat_type="group",
+                user_id=user,
+                thread_id=thread_id,
+            )
+
+        thread_a = build_session_key(src(THREAD_ROOT))
+        thread_a_other_user = build_session_key(src(THREAD_ROOT, user="b" * 64))
+        thread_b = build_session_key(src(SIBLING_ROOT))
+        top_level = build_session_key(src())
+
+        assert thread_a != thread_b  # sibling threads are isolated
+        assert thread_a == thread_a_other_user  # one thread, one shared session
+        assert top_level not in (thread_a, thread_b)  # channel scope preserved
+
+
 # ── Sending ───────────────────────────────────────────────────────────────
 
 

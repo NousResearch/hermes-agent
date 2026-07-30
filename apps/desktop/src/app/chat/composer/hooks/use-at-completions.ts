@@ -124,6 +124,7 @@ export function useAtCompletions(options: {
         const result = await cachedPathCompletion(cacheKey(query), () =>
           gateway.request<{ items?: CompletionEntry[] }>('complete.path', params)
         )
+
         const items = result.items ?? []
 
         return { items: items.length > 0 ? items : starters, query }

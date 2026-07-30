@@ -282,8 +282,7 @@ export function useComposerTrigger({
     // and a pick must be exactly one undo step.
     recordUndoPoint?.()
 
-    const rebuildAround = (insert: DocumentFragment | string) =>
-      rebuildAroundCaret(editor, trigger.tokenLength, insert)
+    const rebuildAround = (insert: DocumentFragment | string) => rebuildAroundCaret(editor, trigger.tokenLength, insert)
 
     // Action items (e.g. "Browse all sessions…") run a side effect instead of
     // inserting a chip: strip the typed trigger token, then fire the action.

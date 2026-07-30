@@ -23,15 +23,17 @@ function gatewayStub(latencyMs = 40) {
 function setup(latencyMs = 40) {
   const { calls, gateway } = gatewayStub(latencyMs)
 
-  const { result } = renderHook(() =>
-    useAtCompletions({ gateway: gateway as never, sessionId: 's1', cwd: '/repo' })
-  )
+  const { result } = renderHook(() => useAtCompletions({ gateway: gateway as never, sessionId: 's1', cwd: '/repo' }))
 
   return { calls, result }
 }
 
 /** Type a burst of keystrokes `gapMs` apart, like a person. */
-async function type(result: { current: { adapter: { search?: (q: string) => unknown } } }, queries: string[], gapMs: number) {
+async function type(
+  result: { current: { adapter: { search?: (q: string) => unknown } } },
+  queries: string[],
+  gapMs: number
+) {
   for (const q of queries) {
     act(() => {
       result.current.adapter.search?.(q)

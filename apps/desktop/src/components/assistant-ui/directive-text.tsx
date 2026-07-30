@@ -45,7 +45,6 @@ export function refAttrsHtml(kind?: string): string {
   return kind ? `class="ref" data-ref="${referenceKind(kind)}"` : 'class="ref"'
 }
 
-
 /** SVG markup string for embedding directly in HTML (composer contenteditable). */
 export function directiveIconSvg(type: string) {
   const inner = iconPathsFor(type)

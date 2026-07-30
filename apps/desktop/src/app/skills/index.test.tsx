@@ -94,7 +94,8 @@ describe('SkillsView toolset management', () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 
-    const sw = await screen.findByRole('switch', { name: 'Toggle Web Search toolset' })
+    // The switch names the action, so an enabled toolset offers to turn it off.
+    const sw = await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
     expect(sw.getAttribute('aria-checked')).toBe('true')
 
     await act(async () => {
@@ -112,7 +113,7 @@ describe('SkillsView toolset management', () => {
     // The label renders in both the row and the auto-selected detail header, so
     // assert via the switch's (emoji-stripped) accessible name and the absence
     // of the emoji rather than a single-match text lookup.
-    await screen.findByRole('switch', { name: 'Toggle Cron Jobs toolset' })
+    await screen.findByRole('switch', { name: 'Turn Cron Jobs toolset off' })
     expect(screen.queryByText(/⏰/)).toBeNull()
   })
 
@@ -122,7 +123,7 @@ describe('SkillsView toolset management', () => {
     // and renders its config panel directly, which fetches on mount.
     await renderSkills()
 
-    await screen.findByRole('switch', { name: 'Toggle Web Search toolset' })
+    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
     await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledWith('web'))
   })
 

@@ -6335,6 +6335,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_ancestors: bool = False,
         include_inactive: bool = False,
         repair_alternation: bool = False,
+        include_row_ids: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -6381,6 +6382,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             session_id=session_id,
             include_ancestors=include_ancestors,
             repair_alternation=repair_alternation,
+            include_row_ids=include_row_ids,
         )
 
     # Columns every conversation projection decodes. Shared by
@@ -6400,6 +6402,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         include_ancestors: bool,
         repair_alternation: bool,
+        include_row_ids: bool = False,
     ) -> List[Dict[str, Any]]:
         """Decode fetched message rows into the OpenAI conversation format.
 
@@ -6415,10 +6418,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
             # Durable per-message identity for surfaces that need to address a
-            # specific row later (desktop reactions). Underscore-prefixed so
-            # every transport's convert_messages() strips it before the wire —
-            # the established escape hatch for agent-internal bookkeeping.
-            if row["id"] is not None:
+            # specific row later (desktop reactions). OPT-IN: only the gateway
+            # asks for it — every other consumer (ACP restore, export,
+            # inspection) gets the transcript in its historical shape.
+            # Underscore-prefixed so every transport's convert_messages()
+            # strips it before the wire.
+            if include_row_ids and row["id"] is not None:
                 msg["_row_id"] = row["id"]
             # api_content is the byte-fidelity sidecar: the exact string sent
             # to the API when it differed from the clean content. Returned
@@ -6556,12 +6561,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             session_id=session_id,
             include_ancestors=False,
             repair_alternation=True,
+            include_row_ids=True,
         )
         display_history = self._rows_to_conversation(
             rows,
             session_id=session_id,
             include_ancestors=True,
             repair_alternation=False,
+            include_row_ids=True,
         )
         return model_history, display_history
 

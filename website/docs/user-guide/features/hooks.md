@@ -782,54 +782,6 @@ def register(ctx):
 
 ---
 
-### API request lifecycle
-
-`pre_api_request`, `post_api_request`, and `api_request_error` expose each
-physical model-provider attempt. Unlike the turn-level LLM hooks, these events
-include retries, provider fallbacks, and auxiliary tasks such as compression,
-vision, title generation, and session search.
-
-Each `pre_api_request` has exactly one matching `post_api_request` or
-`api_request_error`. Correlate them with the opaque `api_request_id`. Auxiliary
-retries share an `auxiliary_call_id` and receive distinct `api_request_id`
-values.
-
-Common fields include:
-
-| Parameter | Description |
-|-----------|-------------|
-| `request_kind` | `"auxiliary"` for side-model work; omitted on legacy/main events |
-| `api_request_id` | Unique identifier for one physical provider attempt |
-| `auxiliary_call_id` | Stable identifier grouping retries/fallbacks for one auxiliary call |
-| `auxiliary_task` | Task such as `compression`, `vision`, or `title_generation` |
-| `attempt_index` | Zero-based physical-attempt index within the auxiliary call |
-| `attempt_reason` | Why this attempt ran, such as `initial`, a retry, or a fallback |
-| `session_id` | Ambient session when the auxiliary call runs inside a conversation |
-| `provider`, `model`, `base_url`, `api_mode` | Actual route used for this attempt |
-| `request`, `response`, `usage`, `error` | Bounded, redacted lifecycle payloads |
-
-Hermes' built-in `call_llm(stream=True)` path is currently used only by the
-MoA acting aggregator. Its raw stream is consumed by the outer main loop,
-whose request lifecycle already represents that provider attempt, so Hermes
-does not emit a duplicate auxiliary lifecycle for `moa_aggregator`. MoA
-reference-model calls remain observable as auxiliary attempts. A future
-standalone streaming auxiliary caller must add terminal-event handling before
-it can make the same lifecycle guarantee.
-
-```python
-def observe_attempt(request_kind="", api_request_id="", auxiliary_task="", **kwargs):
-    print(request_kind or "main", auxiliary_task, api_request_id)
-
-def register(ctx):
-    ctx.register_hook("pre_api_request", observe_attempt)
-    ctx.register_hook("post_api_request", observe_attempt)
-    ctx.register_hook("api_request_error", observe_attempt)
-```
-
-All three hooks are observers; return values are ignored.
-
----
-
 ### `pre_verify`
 
 Fires **once per turn when the agent edited code**, just before it finishes (after the built-in verify-on-stop guard). This is a user/plugin policy gate: a callback can keep the agent going — run a check, defer it, tidy the diff — instead of letting it stop.
@@ -1560,6 +1512,19 @@ The hook is guarded on a non-empty, non-interrupted response — it will not fir
 
 ### API-request observer hooks
 
+`pre_api_request`, `post_api_request`, and `api_request_error` expose each
+physical model-provider attempt — main-loop calls plus auxiliary tasks such as
+compression, vision, title generation, and session search. Unlike the
+turn-level LLM hooks, these events include retries and provider fallbacks.
+Hermes dispatches them through the shared lifecycle layer, so first-party
+observers run before enabled compatibility plugins.
+
+Each `pre_api_request` has exactly one matching `post_api_request` or
+`api_request_error`. Auxiliary retries share an `auxiliary_call_id` and receive
+distinct `api_request_id` values. Main-loop retries retain one
+`api_request_id`; use `retry_count` on pre/error events plus event order to
+distinguish those attempts.
+
 #### `pre_api_request`
 
 Fires for each provider attempt immediately before sending it. This is observer-only. The legacy `user_message`, `conversation_history`, and `request_messages` fields are raw and intentionally unsanitized for compatibility; new consumers should prefer the sanitized `request` envelope.
@@ -1571,6 +1536,39 @@ Fires after a provider response has been normalized successfully. This is observ
 #### `api_request_error`
 
 Fires for a failed provider attempt with status/retry timing, an `error` object, and sanitized `request`. This is observer-only. Error messages may still contain provider or user data.
+
+#### Auxiliary attempts
+
+One auxiliary lifecycle event represents one Hermes retry or provider-fallback
+attempt. Progress-aware stream negotiation inside `_create_with_progress` may
+try a streamed request and then its built-in plain fallback within that same
+event. Auxiliary-specific fields:
+
+| Parameter | Description |
+|-----------|-------------|
+| `request_kind` | `"auxiliary"` for side-model work; omitted on legacy/main events |
+| `auxiliary_call_id` | Stable identifier grouping retries/fallbacks for one auxiliary call |
+| `auxiliary_task` | Task such as `compression`, `vision`, or `title_generation` |
+| `attempt_index` | Zero-based physical-attempt index within the auxiliary call |
+| `attempt_reason` | Why this attempt ran, such as `initial`, a retry, or a fallback |
+| `session_id`, `task_id`, `turn_id`, `platform` | Correlation inherited from the active outer turn; bounded standalone fallbacks are used outside a turn |
+
+The MoA acting aggregator runs inside the outer main-loop request lifecycle, so
+that call explicitly suppresses a duplicate auxiliary lifecycle whether it is
+streaming or non-streaming. The one-shot `/moa <prompt>` aggregator and MoA
+reference-model calls remain observable as auxiliary attempts. A future
+standalone streaming auxiliary caller must add terminal-event handling before
+it can make the same lifecycle guarantee.
+
+```python
+def observe_attempt(request_kind="", api_request_id="", auxiliary_task="", **kwargs):
+    print(request_kind or "main", auxiliary_task, api_request_id)
+
+def register(ctx):
+    ctx.register_hook("pre_api_request", observe_attempt)
+    ctx.register_hook("post_api_request", observe_attempt)
+    ctx.register_hook("api_request_error", observe_attempt)
+```
 
 ### `on_skill_lifecycle`
 

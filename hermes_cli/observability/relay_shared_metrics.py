@@ -1104,6 +1104,12 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
     """Project one Hermes lifecycle event into the core Relay integration."""
     if not handles_hook(hook_name):
         return
+    if kwargs.get("request_kind") == "auxiliary":
+        # Auxiliary attempts are already counted through their tagged Relay
+        # logical scopes (``hermes.call_role: auxiliary:*``); consuming their
+        # lifecycle events here would double-count routes and fabricate
+        # sessions for standalone auxiliary calls.
+        return
     if not relay_runtime.relay_instrumentation_enabled():
         return
     runtime = _get_runtime()

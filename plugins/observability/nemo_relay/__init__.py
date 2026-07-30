@@ -947,11 +947,6 @@ def _metadata(kwargs: dict[str, Any]) -> dict[str, Any]:
         "provider",
         "model",
         "api_mode",
-        "request_kind",
-        "auxiliary_task",
-        "auxiliary_call_id",
-        "attempt_index",
-        "attempt_reason",
         "status",
         "reason",
     )

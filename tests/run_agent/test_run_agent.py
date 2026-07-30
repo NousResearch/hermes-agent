@@ -3048,11 +3048,11 @@ class TestRunConversation:
         events = []
         secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
         monkeypatch.setattr(
-            "hermes_cli.plugins.has_hook",
+            "hermes_cli.lifecycle.has_hook",
             lambda name: name == "api_request_error",
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             lambda name, **kwargs: events.append((name, kwargs)) or [],
         )
 

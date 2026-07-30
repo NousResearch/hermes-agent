@@ -283,7 +283,17 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
-    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+    # A diagnostic final response does not turn an unsuccessful agent run
+    # into a successful process invocation.  Oneshot is commonly driven by
+    # cron/systemd/other agents, whose only reliable control-plane signal is
+    # the exit status.  Preserve the response on stdout for operators, but
+    # report the existing "agent did not complete cleanly" status even when
+    # the agent managed to explain the failure.
+    if (
+        result.get("failed")
+        or result.get("partial")
+        or result.get("completed") is False
+    ):
         return 2
 
     if not (response or "").strip():

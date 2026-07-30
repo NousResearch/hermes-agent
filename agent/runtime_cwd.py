@@ -58,16 +58,41 @@ def _session_cwd_override() -> str:
 
 
 def resolve_agent_cwd() -> Path:
+    # A remote backend (ssh/docker/…) can expose a logical cwd this local
+    # process cannot traverse — e.g. an SSH worker home at 0750 owned by
+    # another user. Path.is_dir() raises PermissionError there instead of
+    # returning False, which would propagate out of every caller that builds a
+    # system prompt. Treat an unverifiable configured path as authoritative:
+    # the backend, not this process, is the one that has to resolve it.
     override = _session_cwd_override()
     if override:
         p = Path(override).expanduser()
-        if p.is_dir():
+        try:
+            is_dir = p.is_dir()
+        except OSError as exc:
+            logger.debug(
+                "could not validate configured working directory locally; "
+                "preserving logical path %s: %s",
+                override,
+                exc,
+            )
+            return p
+        if is_dir:
             return p
         logger.warning("configured working directory does not exist: %s", override)
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()
-        if p.is_dir():
+        try:
+            is_dir = p.is_dir()
+        except OSError as exc:
+            logger.debug(
+                "could not validate TERMINAL_CWD locally; preserving logical path %s: %s",
+                raw,
+                exc,
+            )
+            return p
+        if is_dir:
             return p
         logger.warning("TERMINAL_CWD does not exist: %s", raw)
     return Path(os.getcwd())
@@ -85,7 +110,17 @@ def resolve_context_cwd() -> Path | None:
     override = _session_cwd_override()
     if override:
         p = Path(override).expanduser()
-        if not p.is_dir():
+        try:
+            is_dir = p.is_dir()
+        except OSError as exc:
+            logger.debug(
+                "could not validate configured working directory locally; "
+                "preserving logical path %s: %s",
+                override,
+                exc,
+            )
+            return p
+        if not is_dir:
             logger.warning("configured working directory does not exist: %s", override)
         else:
             return p
@@ -93,7 +128,16 @@ def resolve_context_cwd() -> Path | None:
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()
-        if not p.is_dir():
+        try:
+            is_dir = p.is_dir()
+        except OSError as exc:
+            logger.debug(
+                "could not validate TERMINAL_CWD locally; preserving logical path %s: %s",
+                raw,
+                exc,
+            )
+            return p
+        if not is_dir:
             logger.warning("TERMINAL_CWD does not exist: %s", raw)
         else:
             return p

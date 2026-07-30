@@ -5,6 +5,7 @@ import importlib
 import logging
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -514,6 +515,30 @@ class TestBuildContextFilesPrompt:
         from agent.prompt_builder import _load_agents_md
 
         assert _load_agents_md(sub) == ""
+
+    def test_permission_denied_project_discovery_still_loads_soul(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text(
+            "REMOTE_CWD_SOUL_MARKER", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        remote_cwd = Path("/home/red-worker/workspace")
+        denied_git = remote_cwd / ".git"
+        original_exists = Path.exists
+
+        def deny_remote_git(path):
+            if path == denied_git:
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", deny_remote_git)
+
+        result = build_context_files_prompt(cwd=str(remote_cwd))
+
+        assert "REMOTE_CWD_SOUL_MARKER" in result
 
     def test_skips_agents_md_in_install_tree_on_fallback(self, monkeypatch, tmp_path):
         # A backend that FALLS BACK into the install tree (cwd=None → getcwd,

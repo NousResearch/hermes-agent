@@ -19,7 +19,9 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def test_complete_task_accepts_matching_claim_lock(kanban_home: Path) -> None:
+def test_complete_task_rejects_matching_claim_lock_in_triage(
+    kanban_home: Path,
+) -> None:
     with kb.connect() as conn:
         task_id = kb.create_task(conn, title="owned work", assignee="worker")
         claimed = kb.claim_task(conn, task_id, claimer="worker:current")
@@ -30,7 +32,7 @@ def test_complete_task_accepts_matching_claim_lock(kanban_home: Path) -> None:
         )
         conn.commit()
 
-        assert kb.complete_task(
+        assert not kb.complete_task(
             conn,
             task_id,
             result="finished",
@@ -39,9 +41,35 @@ def test_complete_task_accepts_matching_claim_lock(kanban_home: Path) -> None:
 
         task = kb.get_task(conn, task_id)
         assert task is not None
-        assert task.status == "done"
-        assert task.result == "finished"
-        assert task.claim_lock is None
+        assert task.status == "triage"
+
+
+def test_complete_task_matching_claim_lock_preserves_non_completable_state(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="human-routed work", assignee="worker")
+        claimed = kb.claim_task(conn, task_id, claimer="worker:current")
+        assert claimed is not None
+        conn.execute(
+            "UPDATE tasks SET status = 'todo' WHERE id = ?",
+            (task_id,),
+        )
+        conn.commit()
+
+        # A matching lock must not bypass the set of completable task states.
+        assert not kb.complete_task(
+            conn,
+            task_id,
+            result="finished",
+            expected_claim_lock="worker:current",
+        )
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "todo"
+        assert task.result is None
+        assert task.claim_lock == "worker:current"
 
 
 def test_complete_task_rejects_stale_claim_lock(kanban_home: Path) -> None:

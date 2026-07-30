@@ -26,7 +26,6 @@
 
 export const COMPOSER_HEIGHT_VAR = '--composer-measured-height'
 export const COMPOSER_SURFACE_HEIGHT_VAR = '--composer-surface-measured-height'
-export const STATUS_STACK_VAR = '--status-stack-measured-height'
 
 /**
  * The surface owning `el`, or null when `el` is detached or outside one.

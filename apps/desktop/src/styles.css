@@ -400,11 +400,11 @@
        to the value the app actually renders at. */
     --radius-scalar: 0.2;
 
-    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
-       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing.
-       These are the defaults; each chat surface re-declares the calc against its own measurements (see below). */
-    --status-stack-measured-height: 0px;
-    --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
+    /* Space under last message vs overlay composer — driven by the measured composer DOCK height (see
+       composer/index.tsx), which covers the micro-action strip, the status stack, the composer, and the
+       underside strip in one number.
+       This is the default; each chat surface re-declares the calc against its own measurement (see below). */
+    --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
@@ -1277,21 +1277,29 @@ text-* variant utilities. */ .btn-arc {
   inherits: true;
 }
 
-[data-slot='composer-root'] {
-  /* +10px width compensates the 5px side padding so the visible surface keeps
-     its exact width/position — the inline padding is just transparent grab space
-     for the peel-out drag, matching the floating composer's 5px platform. */
+/* The dock column owns the composer's width; the composer keeps the 5px
+   transparent grab margin that the peel-out drag needs. +10px width compensates
+   that padding so the visible surface keeps its exact width/position. */
+[data-slot='composer-dock'] {
   width: calc(min(var(--composer-width), calc(100% - 2rem)) + 10px);
-  padding-inline: 5px;
   padding-bottom: var(--composer-shell-pad-block-end);
+}
+
+[data-slot='composer-root'] {
+  width: 100%;
+  padding-inline: 5px;
 }
 
 /* Popped-out (floating) composer: compact width + an even 5px transparent grab
    platform. The higher-specificity selector resets the base rule's padding-bottom
    so the inset is equal on all four sides (not 5px sides / shell-pad bottom). */
-[data-slot='composer-root'][data-popped-out] {
+[data-slot='composer-dock'][data-popped-out] {
   width: var(--composer-popout-width, 24rem);
   max-width: calc(100vw - 1.5rem);
+  padding-bottom: 0;
+}
+
+[data-slot='composer-root'][data-popped-out] {
   padding: 5px;
 }
 
@@ -1733,13 +1741,13 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* Re-declare the clearance calc on every chat surface. `:root` computes it
-   once against the ROOT measurements, so scoping only the inputs would leave
+   once against the ROOT measurement, so scoping only the input would leave
    every thread reading the same substituted value. Redeclaring here makes each
-   surface resolve the calc against its own composer + status-stack heights,
-   falling back to the root defaults until this surface publishes its first
-   measurement. See surface-vars.ts. */
+   surface resolve the calc against its own dock height, falling back to the
+   root default until this surface publishes its first measurement. See
+   surface-vars.ts. */
 [data-chat-surface] {
-  --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
+  --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
 }
 
 /* A live tool run, shown as one line. `ToolRunTicker` stacks the run's rows

@@ -242,6 +242,38 @@ def file_ops(mock_env):
     return ShellFileOperations(mock_env)
 
 
+def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMock:
+    """Mock env whose execute() runs the command in a real subprocess.
+
+    For tests that need the generated shell scripts to actually run
+    (search fallback, atomic-write permissions) instead of being
+    intercepted by a bare MagicMock.  ``include_stderr`` folds stderr
+    into ``output`` for tests that surface shell error text; leave it
+    off for tests that parse structured stdout (e.g. find results).
+    """
+    env = MagicMock()
+    env.cwd = cwd
+
+    def execute(command, **kwargs):
+        completed = subprocess.run(
+            command,
+            shell=True,
+            text=True,
+            capture_output=True,
+            input=kwargs.get("stdin_data"),
+        )
+        output = completed.stdout
+        if include_stderr:
+            output += completed.stderr
+        return {
+            "output": output,
+            "returncode": completed.returncode,
+        }
+
+    env.execute = execute
+    return env
+
+
 class TestShellFileOpsHelpers:
     def test_normalize_read_pagination_clamps_invalid_values(self):
         assert normalize_read_pagination(offset=0, limit=0) == (1, 1)
@@ -393,23 +425,7 @@ class TestSearchPathValidation:
 
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
-        env = MagicMock()
-        env.cwd = "/"
-
-        def execute(command, **kwargs):
-            completed = subprocess.run(
-                command,
-                shell=True,
-                text=True,
-                capture_output=True,
-            )
-            return {
-                "output": completed.stdout,
-                "returncode": completed.returncode,
-            }
-
-        env.execute = execute
-        return env
+        return make_real_subprocess_env("/")
 
     def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
         """Fallback find should include visible files when path is inside hidden root."""
@@ -561,42 +577,41 @@ class _DeletedTestGitBaselineCheck:
 class TestAtomicWriteNewFilePermissions:
     """_atomic_write should apply umask-default perms to new files (not 0600)."""
 
-    def test_new_file_gets_umask_default_permissions(self, tmp_path):
+    @pytest.mark.parametrize("test_umask", [0o022, 0o002, 0o077])
+    def test_new_file_gets_umask_default_permissions(self, tmp_path, test_umask):
         """Newly created file should get umask-computed perms, not mktemp's 0600.
 
         Uses a real subprocess so the shell script actually runs.
         """
-        env = MagicMock()
-        env.cwd = str(tmp_path)
-
-        def execute(command, **kwargs):
-            completed = subprocess.run(
-                command,
-                shell=True,
-                text=True,
-                capture_output=True,
-                input=kwargs.get("stdin_data"),
-            )
-            return {
-                "output": completed.stdout + completed.stderr,
-                "returncode": completed.returncode,
-            }
-
-        env.execute = execute
-        ops = ShellFileOperations(env)
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         dest = tmp_path / "new_file.txt"
         assert not dest.exists()
 
-        result = ops.write_file(str(dest), "test content\n")
-        assert result.error is None, f"write failed: {result.error}"
-        assert dest.exists()
+        old_umask = os.umask(test_umask)
+        try:
+            result = ops.write_file(str(dest), "test content\n")
+        finally:
+            os.umask(old_umask)
 
-        # Compute expected mode: 0666 & ~umask
-        current_umask = os.umask(0)
-        os.umask(current_umask)  # restore
-        expected_mode = 0o666 & ~current_umask
+        assert result.error is None, f"write failed: {result.error}"
+        assert dest.read_text() == "test content\n"
+        expected_mode = 0o666 & ~test_umask
         actual_mode = dest.stat().st_mode & 0o777
         assert actual_mode == expected_mode, (
-            f"Expected mode {expected_mode:04o} (umask {current_umask:04o}), "
+            f"Expected mode {expected_mode:04o} (umask {test_umask:04o}), "
             f"got {actual_mode:04o}"
         )
+
+    def test_overwrite_still_preserves_existing_mode(self, tmp_path):
+        """The new-file branch must not disturb the overwrite path's
+        mode preservation (e.g. an executable script stays 0755)."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        dest = tmp_path / "existing.sh"
+        dest.write_text("#!/bin/sh\n")
+        dest.chmod(0o755)
+
+        result = ops.write_file(str(dest), "#!/bin/sh\necho updated\n")
+
+        assert result.error is None, f"write failed: {result.error}"
+        assert dest.read_text() == "#!/bin/sh\necho updated\n"
+        assert dest.stat().st_mode & 0o777 == 0o755

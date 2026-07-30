@@ -363,7 +363,12 @@ export function useComposerTrigger({
     const chip = slashKind
       ? slashChipElement(serialized, slashKind)
       : directive
-        ? refChipElement(directive[1], directive[2])
+        ? // Carry the picked row's own label into the chip rather than letting
+          // it re-derive one from the value. Upstream's DirectiveNode does the
+          // same (`__label = item.label`), and it's what makes the list and the
+          // chip agree: you get the string you just read, not a second guess at
+          // it. Falls back to the shared deriver for callers with no label.
+          refChipElement(directive[1], directive[2], (item.metadata as { display?: string })?.display || item.label)
         : null
 
     // The trailing space is a convenience for "keep typing after the chip", so

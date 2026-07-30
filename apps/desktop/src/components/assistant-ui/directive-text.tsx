@@ -332,10 +332,18 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
   return segments
 }
 
-/** Display text for a `@kind:value` chip. Shared with the composer's
- *  contenteditable chips so a link reads the same before and after send: the
- *  host leads (scheme and `www.` are noise) and the path rides along for the
- *  chip's `truncate` to cut — a bare hostname can't tell two links apart. */
+/** The single display label for a `@kind:value` reference — used by the `@`
+ *  popover row, the composer chip, and the sent-message chip alike, so a
+ *  reference reads the same everywhere. Upstream keeps one label on the
+ *  directive node and hands it to every consumer verbatim; our wire format
+ *  (`@kind:value`) can't carry a label, so this is the shared deriver that
+ *  holds the same invariant.
+ *
+ *  Paths keep their directory for the reason links keep theirs: a bare
+ *  basename can't tell two references apart (`src`, `index.ts`, `main.tsx`
+ *  repeat all over a repo), and browsing into `apps/desktop/` only to be
+ *  handed a chip reading `desktop` throws away the context you navigated for.
+ *  The chip's `truncate` cuts the overflow. */
 export function refChipLabel(type: string, id: string): string {
   if (type === 'terminal') {
     return id || 'terminal'
@@ -356,9 +364,9 @@ export function refChipLabel(type: string, id: string): string {
     }
   }
 
-  const tail = id.split(/[\\/]/).filter(Boolean).pop()
-
-  return tail || id
+  // `./` is noise the completer emits, not part of the reference. A trailing
+  // slash is kept — it's what distinguishes a folder from a file.
+  return id.replace(/^\.\//, '') || id
 }
 
 function safeEmbeddedImages(text: string) {

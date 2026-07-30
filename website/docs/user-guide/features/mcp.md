@@ -266,6 +266,32 @@ dashboard's own callback URL — so the browser you approve in must run on the
 same machine as the Hermes process. For a remote host, use `hermes mcp login`
 over SSH port-forwarding.
 
+### Per-server env files
+
+Use `env_file` when one MCP server should resolve credentials from a project-
+specific env file instead of the active profile's `~/.hermes/.env`:
+
+```yaml
+mcp_servers:
+  project_api:
+    url: "https://mcp.example.com/mcp"
+    env_file: "/home/user/projects/acme/.env.hermes"
+    headers:
+      Authorization: "Bearer ${ACME_MCP_TOKEN}"
+```
+
+Hermes reads that file into an isolated mapping. It does not add the values to
+`os.environ`, and another MCP server cannot inherit them accidentally. Values
+from `env_file` take precedence when resolving this server's `${VAR}`
+placeholders; explicit literal values already present in `env` or `headers`
+remain unchanged. If the file is missing or unreadable, Hermes logs a warning
+and falls back to the active profile secret scope or process environment.
+
+Relative paths resolve from `TERMINAL_CWD` when it points to a valid directory,
+otherwise from the Hermes process working directory. Prefer an absolute path
+for gateways and cron jobs, where the process working directory may differ
+from an interactive shell.
+
 ### Updating tool selection later
 
 ```bash

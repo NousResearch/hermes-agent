@@ -59,9 +59,14 @@ async def test_shutdown_does_not_terminate_server_that_exits_during_grace(
 ) -> None:
     """Protocol-cooperative exit must complete before any OS signal is sent."""
 
+    class _Stdin:
+        def is_closing(self) -> bool:
+            return False
+
     class GracefulProcess:
         def __init__(self) -> None:
             self.returncode = None
+            self.stdin = _Stdin()
             self.wait_calls = 0
             self.terminate = MagicMock()
             self.kill = MagicMock()
@@ -73,7 +78,9 @@ async def test_shutdown_does_not_terminate_server_that_exits_during_grace(
 
     client = _client(tmp_path)
     process = GracefulProcess()
+    reader_task = asyncio.create_task(asyncio.sleep(60))
     client._proc = process
+    client._reader_task = reader_task
     client._state = "running"
     send_request = AsyncMock(return_value=None)
     send_notification = AsyncMock(return_value=None)

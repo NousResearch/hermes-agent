@@ -859,6 +859,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Modal sandbox mode",
         "options": ["sandbox", "function"],
     },
+    "privacy.share_session_identity": {
+        "type": "boolean",
+        "description": ("Allow Hermes to send platform user and stable chat session identifiers "
+                         "to explicitly configured custom OpenAI-compatible upstreams."),
+        "category": "security",
+    },
     "proxy.enabled": {
         "type": "boolean",
         "description": (

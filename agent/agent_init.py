@@ -1586,6 +1586,17 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    # Privacy opt-in: platform/chat identifiers are never forwarded by default.
+    agent._share_session_identity = False
+    try:
+        _privacy_cfg = _agent_cfg.get("privacy", {})
+        if isinstance(_privacy_cfg, dict):
+            agent._share_session_identity = bool(
+                _privacy_cfg.get("share_session_identity", False)
+            )
+    except Exception:
+        agent._share_session_identity = False
+
     # Codex commentary visibility (display.show_commentary, default true).
     # When true, completed Codex phase=commentary messages are delivered as
     # visible mid-turn updates through the interim message path. When false,

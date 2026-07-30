@@ -162,6 +162,7 @@ _DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin",
 # per-platform enable/disable checklist; configured via the "Reconfigure an
 # existing tool" flow and the GUI provider matrix instead.
 _CONFIG_ONLY_TOOLSETS = {"stt"}
+_SESSION_IDENTITY_TOOL_NAME = "session_identity"
 
 
 def _xai_credentials_present() -> bool:
@@ -2664,6 +2665,33 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
     return curses_radiolist(question, choices, selected=default, cancel_returns=default)
 
 
+def _configure_session_identity(config: dict) -> None:
+    """Configure consent for forwarding platform identity to custom upstreams."""
+    privacy = config.setdefault("privacy", {})
+    if not isinstance(privacy, dict):
+        privacy = {}
+        config["privacy"] = privacy
+    enabled = privacy.get("share_session_identity") is True
+    print()
+    print(color("  Upstream session identity (privacy setting)", Colors.CYAN, Colors.BOLD))
+    print(color("  When enabled, Hermes sends the platform user ID and stable chat session ID", Colors.DIM))
+    print(color("  to explicitly configured custom OpenAI-compatible providers such as LiteLLM.", Colors.DIM))
+    print(color("  Built-in providers are never sent these identifiers by this setting.", Colors.DIM))
+    choices = [
+        "Disabled (recommended)",
+        "Enabled for custom OpenAI-compatible providers",
+        "Cancel",
+    ]
+    default = 1 if enabled else 0
+    choice = _prompt_choice("Share session identity with custom upstreams?", choices, default)
+    if choice == 0:
+        privacy["share_session_identity"] = False
+        _print_success("  Session identity forwarding disabled")
+    elif choice == 1:
+        privacy["share_session_identity"] = True
+        _print_success("  Session identity forwarding enabled for custom providers")
+
+
 # ─── Token Estimation ────────────────────────────────────────────────────────
 
 # Module-level cache so discovery + tokenization runs at most once per process.
@@ -4941,6 +4969,8 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             print(color(f"  ✓ Saved {pinfo['label']} tool configuration", Colors.GREEN))
             print()
 
+        _configure_session_identity(config)
+        save_config(config)
         return
 
     # ── Returning user: platform menu loop ──
@@ -4964,17 +4994,25 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if _has_mcp:
         platform_choices.append("Configure MCP server tools")
 
+    _privacy_idx = len(platform_choices)
+    platform_choices.append("Configure privacy / upstream session identity")
+    _done_idx = _privacy_idx + 1
     platform_choices.append("Done")
 
     # Index offsets for the extra options after per-platform entries
     _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
     _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
     _mcp_idx = (_reconfig_idx + 1) if _has_mcp else -1
-    _done_idx = _reconfig_idx + (2 if _has_mcp else 1)
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
 
+        # Privacy / upstream identity selected
+        if idx == _privacy_idx:
+            _configure_session_identity(config)
+            save_config(config)
+            print()
+            continue
         # "Done" selected
         if idx == _done_idx:
             break
@@ -5394,7 +5432,11 @@ def tools_disable_enable_command(args):
         return
 
     targets: List[str] = args.names
-    toolset_targets = [t for t in targets if ":" not in t]
+    if _SESSION_IDENTITY_TOOL_NAME in targets:
+        config.setdefault("privacy", {})["share_session_identity"] = action == "enable"
+        state = "enabled" if action == "enable" else "disabled"
+        _print_success(f"Session identity forwarding {state} for custom providers")
+    toolset_targets = [t for t in targets if ":" not in t and t != _SESSION_IDENTITY_TOOL_NAME]
     mcp_targets = [t for t in targets if ":" in t]
 
     valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()

@@ -390,6 +390,22 @@ def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
 # ---------------------------------------------------------------------------
 
 
+
+def test_preflight_preserves_user_and_metadata():
+    kwargs = {
+        "model": "gpt-oss-120b",
+        "instructions": "You are Hermes.",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "store": False,
+        "user": "hermes-user",
+        "metadata": {"session_id": "session-123", "source": "hermes"},
+    }
+
+    out = _preflight_codex_api_kwargs(kwargs)
+
+    assert out["user"] == "hermes-user"
+    assert out["metadata"] == {"session_id": "session-123", "source": "hermes"}
+
 def test_preflight_passes_native_web_search_tool_through():
     kwargs = {
         "model": "grok-composer-2.5-fast",

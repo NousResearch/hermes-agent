@@ -10,6 +10,7 @@ from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _RECENTLY_SHIPPED_TOOLSETS,
+    _configure_session_identity,
     _apply_toolset_change,
     _checklist_toolset_keys,
     _configure_provider,

@@ -1381,6 +1381,8 @@ DEFAULT_CONFIG = {
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        # Explicitly allow platform/chat identifiers on custom OpenAI-compatible upstreams.
+        "share_session_identity": False,
     },
 
     # Text-to-speech configuration

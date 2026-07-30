@@ -2477,6 +2477,36 @@ def _build_partial_stream_stub(
     )
 
 
+def _bind_worker_session_context(agent) -> None:
+    """Bind ``agent.session_id`` to the CURRENT thread's log context.
+
+    The ``[session]`` tag on every log line comes from a ``threading.local``
+    in :mod:`hermes_logging`, so a worker thread starts UNBOUND: every record
+    it emits is formatted without a session tag.  ``_context_thread_target``
+    carries the caller's ContextVars across the boundary but cannot carry a
+    thread-local, and in a process running concurrent sessions that makes the
+    streaming workers' own errors impossible to attribute to the session that
+    suffered them.
+
+    Bound from ``agent.session_id`` rather than inherited from the calling
+    thread: the agent is the ground truth, and a caller that reached streaming
+    without going through ``turn_context`` is itself unbound.
+
+    Best-effort by contract — an agent without ``session_id`` (test double,
+    version-skewed checkout) leaves the thread unbound instead of raising
+    inside the worker.
+    """
+    session_id = getattr(agent, "session_id", None)
+    if not session_id:
+        return
+    try:
+        from hermes_logging import set_session_context
+
+        set_session_context(session_id)
+    except Exception:
+        pass
+
+
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 
@@ -2550,6 +2580,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     pass
 
         def _bedrock_call():
+            _bind_worker_session_context(agent)
+
             stream = None
             try:
                 from agent import relay_llm
@@ -3677,6 +3709,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     def _call():
         import httpx as _httpx
+
+        _bind_worker_session_context(agent)
 
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
 

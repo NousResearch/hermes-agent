@@ -1049,6 +1049,51 @@ class TestToolsetInjection:
             assert "mcp__broken__ping" in result2
             assert call_count == 1  # Only broken retried
 
+    def test_failed_discovery_redacts_server_env_file_values(
+        self, tmp_path, caplog
+    ):
+        import tools.mcp_tool as mcp_mod
+
+        env_file = tmp_path / "server.env"
+        env_file.write_text(
+            "MCP_PRIVATE_TOKEN=server-secret-value\n", encoding="utf-8"
+        )
+        fake_config = {
+            "private": {
+                "url": "https://example.invalid/${MCP_PRIVATE_TOKEN}",
+                "env_file": str(env_file),
+            },
+        }
+
+        async def fail_discovery(name, config):
+            raise RuntimeError("401 Unauthorized at /server-secret-value")
+
+        def run_on_loop(coro_or_factory, timeout=120):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            return asyncio.run(coro)
+
+        connect_errors = {}
+        with patch.object(mcp_mod, "_MCP_AVAILABLE", True), patch.object(
+            mcp_mod, "_servers", {}
+        ), patch.object(mcp_mod, "_server_connecting", set()), patch.object(
+            mcp_mod, "_server_connect_errors", connect_errors
+        ), patch.object(mcp_mod, "_server_connect_retry_after", {}), patch.object(
+            mcp_mod, "_server_connect_failures", {}
+        ), patch.object(
+            mcp_mod, "_load_mcp_config", return_value=fake_config
+        ), patch.object(
+            mcp_mod, "_discover_and_register_server", side_effect=fail_discovery
+        ), patch.object(
+            mcp_mod, "_ensure_mcp_loop"
+        ), patch.object(
+            mcp_mod, "_run_on_mcp_loop", side_effect=run_on_loop
+        ), caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            assert mcp_mod.discover_mcp_tools() == []
+
+        assert "server-secret-value" not in caplog.text
+        assert "server-secret-value" not in connect_errors["private"]
+        assert "[REDACTED]" in connect_errors["private"]
+
 
 # ---------------------------------------------------------------------------
 # Graceful fallback
@@ -1356,6 +1401,15 @@ class TestSanitizeError:
         result = _sanitize_error("normal error message")
         assert result == "normal error message"
 
+    def test_redacts_explicit_server_values(self):
+        from tools.mcp_tool import _sanitize_error
+
+        result = _sanitize_error(
+            "request failed at /server-secret-value with PIN 123",
+            ["server-secret-value", "123"],
+        )
+        assert result == "request failed at /[REDACTED] with PIN [REDACTED]"
+
 # ---------------------------------------------------------------------------
 # HTTP config
 # ---------------------------------------------------------------------------
@@ -1448,6 +1502,45 @@ class TestReconnection:
             assert run_count >= 2  # At least one reconnection attempt
 
         asyncio.run(_test())
+
+    def test_runtime_failure_logs_redact_server_env_file_values(
+        self, tmp_path, caplog
+    ):
+        from tools.mcp_tool import MCPServerTask
+
+        env_file = tmp_path / "server.env"
+        env_file.write_text(
+            "MCP_PRIVATE_TOKEN=server-secret-value\n", encoding="utf-8"
+        )
+
+        async def fail_http(self_srv, config):
+            raise RuntimeError("401 Unauthorized at /server-secret-value")
+
+        async def stop_after_failure(self_srv, timeout=None):
+            return "shutdown"
+
+        async def _test():
+            server = MCPServerTask("private")
+            with patch.object(MCPServerTask, "_run_http", fail_http), patch.object(
+                MCPServerTask,
+                "_preflight_content_type",
+                new_callable=AsyncMock,
+            ), patch.object(
+                MCPServerTask,
+                "_wait_for_reconnect_or_shutdown",
+                stop_after_failure,
+            ), patch(
+                "asyncio.sleep",
+                new_callable=AsyncMock,
+            ), caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+                await server.run({
+                    "url": "https://example.invalid/mcp",
+                    "env_file": str(env_file),
+                })
+
+        asyncio.run(_test())
+        assert "server-secret-value" not in caplog.text
+        assert "[REDACTED]" in caplog.text
 
 
     def test_preflight_probe_runs_on_initial_http_connect(self):

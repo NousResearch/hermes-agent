@@ -6,6 +6,7 @@ import json
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -256,6 +257,177 @@ class TestWebServerEndpoints:
 
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_get_sessions_poll_preserves_pending_wal(self):
+        """Repeated GET-only polls must not checkpoint another writer's WAL."""
+        import sqlite3
+
+        from hermes_cli import web_server
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        web_server._last_auto_archive_check.clear()
+        db_path = get_hermes_home() / "state.db"
+        wal_path = Path(f"{db_path}-wal")
+        writer = SessionDB(db_path=db_path)
+        monitor = None
+        try:
+            writer._conn.execute("PRAGMA wal_autocheckpoint=0")
+            writer.create_session("poll-wal", source="cli")
+            writer.append_message(
+                "poll-wal",
+                role="user",
+                content="pending writer frame " + ("x" * 65_536),
+            )
+
+            monitor = sqlite3.connect(str(db_path), isolation_level=None)
+            wal_bytes_before = wal_path.stat().st_size
+            data_version_before = monitor.execute(
+                "PRAGMA data_version"
+            ).fetchone()[0]
+            counts_before = monitor.execute(
+                "SELECT (SELECT COUNT(*) FROM sessions), "
+                "(SELECT COUNT(*) FROM messages)"
+            ).fetchone()
+
+            responses = [
+                self.client.get(
+                    "/api/sessions?limit=50&offset=0&order=created"
+                )
+                for _ in range(3)
+            ]
+
+            wal_bytes_after = wal_path.stat().st_size
+            data_version_after = monitor.execute(
+                "PRAGMA data_version"
+            ).fetchone()[0]
+            counts_after = monitor.execute(
+                "SELECT (SELECT COUNT(*) FROM sessions), "
+                "(SELECT COUNT(*) FROM messages)"
+            ).fetchone()
+
+            assert all(response.status_code == 200 for response in responses)
+            assert all(response.json()["total"] == 1 for response in responses)
+            assert wal_bytes_before > 0
+            assert wal_bytes_after == wal_bytes_before
+            assert data_version_after == data_version_before
+            assert counts_after == counts_before == (1, 1)
+        finally:
+            if monitor is not None:
+                monitor.close()
+            writer.close()
+
+    def test_get_sessions_auto_archive_uses_maintenance_writer(self):
+        from hermes_cli import web_server
+        from hermes_cli.config import load_config, save_config
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("stale", source="cli")
+            seed.create_session("fresh", source="cli")
+            seed._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (time.time() - 30 * 86400, "stale"),
+            )
+        finally:
+            seed.close()
+
+        config = load_config()
+        config.setdefault("sessions", {}).update(
+            {
+                "auto_archive": True,
+                "auto_archive_days": 3,
+                "min_interval_hours": 0,
+            }
+        )
+        save_config(config)
+        web_server._last_auto_archive_check.clear()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert [row["id"] for row in response.json()["sessions"]] == ["fresh"]
+        verify = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert verify.get_session("stale")["archived"] == 1
+            assert verify.get_meta("last_auto_archive")
+        finally:
+            verify.close()
+
+    def test_get_sessions_fresh_store_returns_empty_list(self):
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+        assert response.json()["total"] == 0
+
+    @pytest.mark.parametrize("missing_column", ["archived", "pinned"])
+    def test_get_sessions_heals_stale_schema_store(self, missing_column):
+        import sqlite3
+
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("stale-schema", source="cli")
+        finally:
+            seed.close()
+
+        legacy = sqlite3.connect(str(db_path))
+        try:
+            legacy.execute(f"ALTER TABLE sessions DROP COLUMN {missing_column}")
+            legacy.commit()
+        finally:
+            legacy.close()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert [row["id"] for row in response.json()["sessions"]] == [
+            "stale-schema"
+        ]
+        healed = sqlite3.connect(str(db_path))
+        try:
+            columns = {
+                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
+            }
+        finally:
+            healed.close()
+        assert missing_column in columns
+
+    def test_get_sessions_zero_byte_store_returns_empty_list(self):
+        from hermes_constants import get_hermes_home
+
+        db_path = get_hermes_home() / "state.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path.touch()
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+        assert response.json()["total"] == 0
+
+    def test_concurrent_first_load_reads_all_succeed_on_fresh_store(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        paths = [
+            "/api/sessions?limit=50&offset=0",
+            "/api/sessions/stats",
+            "/api/sessions/empty/count",
+            "/api/sessions?limit=10&offset=0&order=recent",
+        ] * 2
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            responses = list(pool.map(self.client.get, paths))
+
+        assert [response.status_code for response in responses] == [
+            200
+        ] * len(paths)
 
 
 
@@ -3639,5 +3811,3 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
-
-

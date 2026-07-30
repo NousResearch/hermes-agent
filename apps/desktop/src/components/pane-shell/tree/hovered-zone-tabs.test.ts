@@ -87,4 +87,61 @@ describe('hovered zone retargets the tab verbs', () => {
     expect(model.allPaneIds(tree.$layoutTree.get()!)).not.toContain('session-tile:c')
     expect(model.allPaneIds(tree.$layoutTree.get()!)).toContain('workspace')
   })
+
+  // Hovering chrome that is not a zone at all (the sidebar, the titlebar, the
+  // statusbar) reports no group. The keys must fall through to focus rather
+  // than dead-ending — pointing away from the panes is not a reason to stop
+  // switching tabs.
+  it('hovering non-pane chrome falls through to the focused zone', async () => {
+    const { activeOf, tree } = await setup()
+
+    tree.noteActiveTreeGroup('grp-side')
+    tree.noteHoveredTreeGroup(null)
+
+    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(activeOf('grp-side')).toBe('session-tile:c')
+    expect(tree.cycleTreeTabInFocusedZone(1)).toBe(true)
+    expect(activeOf('grp-side')).toBe('session-tile:b')
+  })
+
+  // Nothing interacted with yet (fresh boot) or focus parked somewhere that
+  // can't serve the verb: main is the last rung, so ⌘2 still works.
+  it('falls through to the workspace zone with neither hover nor focus', async () => {
+    const { activeOf, tree } = await setup()
+
+    tree.noteActiveTreeGroup(null)
+    tree.noteHoveredTreeGroup(null)
+
+    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(activeOf('grp-main')).toBe('session-tile:a')
+    expect(activeOf('grp-side')).toBe('session-tile:b')
+  })
+
+  // The ladder is per-rung eligible, not "first rung wins": a hovered zone that
+  // ISN'T a tab strip must hand the keys to the next rung, not swallow them.
+  it('an ineligible hovered zone hands off instead of swallowing the key', async () => {
+    const { activeOf, model, tree } = await setup()
+    const { registry } = await import('@/contrib/registry')
+
+    registry.register({ area: 'panes', data: { placement: 'right' }, id: 'files', render: () => null, title: 'files' })
+
+    // Replace the tree outright — declareDefaultTree only ADOPTS into an
+    // existing one, so the lone-files zone has to be set directly.
+    tree.$layoutTree.set(
+      model.split('row', [
+        model.group(['workspace', 'session-tile:a'], { active: 'workspace', id: 'grp-main' }),
+        model.group(['files'], { active: 'files', id: 'grp-files' })
+      ])
+    )
+
+    // Pointer resting on the lone file tree, focus nowhere.
+    tree.noteActiveTreeGroup(null)
+    tree.noteHoveredTreeGroup('grp-files')
+
+    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(activeOf('grp-main')).toBe('session-tile:a')
+    // ⌘W must not close the file tree from a rung that can't serve it.
+    expect(activeOf('grp-files')).toBe('files')
+    expect(model.allPaneIds(tree.$layoutTree.get()!)).toContain('files')
+  })
 })

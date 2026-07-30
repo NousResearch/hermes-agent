@@ -219,8 +219,14 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(
-                timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
+            from gateway.platforms.base import _ssrf_redirect_guard
+            from tools.url_safety import create_ssrf_safe_async_client
+
+            self._http_client = create_ssrf_safe_async_client(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+                limits=platform_httpx_limits(),
             )
             await self._open_connection()
             self._mark_connected()
@@ -1095,14 +1101,20 @@ class WeComAdapter(BasePlatformAdapter):
         url: str,
         max_bytes: int,
     ) -> Tuple[bytes, Dict[str, str]]:
-        from tools.url_safety import is_safe_url
+        from gateway.platforms.base import _ssrf_redirect_guard
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
 
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
 
-        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        client = self._http_client or create_ssrf_safe_async_client(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        )
         created_client = client is not self._http_client
         try:
             async with client.stream(
@@ -1719,7 +1731,7 @@ def interactive_setup() -> None:
     Replaces hermes_cli/gateway.py::_setup_wecom and the static
     _PLATFORMS["wecom"] dict. CLI helpers are lazy-imported.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
     from hermes_cli.cli_output import (
         prompt,
@@ -1817,10 +1829,13 @@ def interactive_setup() -> None:
         else:
             print_info("Skipped — configure later with 'hermes gateway setup'")
 
-    home = prompt("Home chat ID (optional, for cron/notifications)", password=False)
+    home = prompt("Home chat ID (optional, for cron/notifications)", password=False).strip()
     if home:
         save_env_value("WECOM_HOME_CHANNEL", home)
         print_success(f"Home channel set to {home}")
+    else:
+        if remove_env_value("WECOM_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
 
     print_success("💬 WeCom configured!")
 
@@ -1861,7 +1876,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["WECOM_BOT_ID", "WECOM_SECRET"],
-        install_hint="pip install 'hermes-agent[wecom]'",
+        install_hint="Run `hermes setup` to install WeCom support.",
         setup_fn=interactive_setup,
         allowed_users_env="WECOM_ALLOWED_USERS",
         allow_all_env="WECOM_ALLOW_ALL_USERS",
@@ -1881,7 +1896,7 @@ def register(ctx) -> None:
         is_connected=_callback_is_connected,
         validate_config=_callback_is_connected,
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
-        install_hint="pip install 'hermes-agent[wecom]'",
+        install_hint="Run `hermes setup` to install WeCom support.",
         allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS",
         allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS",
         emoji="💼",

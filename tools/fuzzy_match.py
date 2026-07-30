@@ -38,6 +38,23 @@ UNICODE_MAP = {
     "\u2018": "'", "\u2019": "'",  # smart single quotes
     "\u2014": "--", "\u2013": "-", # em/en dashes
     "\u2026": "...", "\u00a0": " ", # ellipsis and non-breaking space
+    # Unicode minus sign — models type ASCII '-' for file content that uses
+    # the typographic minus (math/scientific docs).
+    "\u2212": "-",
+    # Space-separator family (Zs) beyond NBSP.  Files with typographic
+    # spacing (en/em/thin spaces, narrow NBSP in French text, ideographic
+    # space in CJK text) never match a model's ASCII-space old_string via
+    # the precise strategies, falling through to the similarity-based
+    # context_aware fallback — which can pick the wrong region and flattens
+    # the file's Unicode on replacement.  (anomalyco/opencode#38133 corpus)
+    "\u2000": " ", "\u2001": " ",  # en/em quad
+    "\u2002": " ", "\u2003": " ",  # en/em space
+    "\u2004": " ", "\u2005": " ", "\u2006": " ",  # three/four/six-per-em
+    "\u2007": " ", "\u2008": " ",  # figure/punctuation space
+    "\u2009": " ", "\u200a": " ",  # thin/hair space
+    "\u202f": " ",  # narrow no-break space
+    "\u205f": " ",  # medium mathematical space
+    "\u3000": " ",  # ideographic (CJK full-width) space
 }
 
 def _unicode_normalize(text: str) -> str:

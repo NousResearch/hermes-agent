@@ -15,6 +15,7 @@ import type {
 } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
+import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
@@ -36,6 +37,17 @@ export interface StateSetter<T> {
 }
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
+
+export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
+
+// A single battery reading pushed from the Python gateway (`system.battery`).
+// `available` is false on machines without a battery; `percent` is 0-100.
+export interface BatteryInfo {
+  available: boolean
+  category: BatteryCategory
+  percent: null | number
+  plugged: null | boolean
+}
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
@@ -76,6 +88,9 @@ export interface SelectionApi {
 
 export interface CompletionItem {
   display: string
+  /** Completion class from the gateway; `skill` is the only kind offered for
+   *  an inline `/skill` reference typed mid-message. */
+  kind?: string
   meta?: string
   text: string
 }
@@ -198,8 +213,11 @@ export interface SubscriptionOverlayCtx {
    * the server doesn't say (older NAS): the confirm keeps its generic line.
    */
   fetchCard: () => Promise<BillingCardInfo | null>
-  /** Build {portal}/manage-subscription?org_id=… locally and open it. Resolves ok/false. */
-  openManageLink: () => Promise<boolean>
+  /**
+   * Build {portal}/manage-subscription?org_id=… locally and open it. Resolves
+   * ok/false. Pass `tierId` to deep-link a specific plan via `?plan=`.
+   */
+  openManageLink: (tierId?: string) => Promise<boolean>
   /** Open an arbitrary portal recovery URL (e.g. an upgrade's SCA handoff). */
   openPortal: (url: string) => void
   /** Re-fetch subscription.state. */
@@ -269,6 +287,10 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
+  ambient: ActiveWidget[]
+  /** Modal widget app — owns input, blocks the composer. */
+  widget: ActiveWidget | null
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
   pager: null | PagerState
@@ -294,12 +316,17 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  battery: boolean
+  batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
+  // Focus view (/focus) — display-only reduced-output mode. Drives the
+  // persistent `◉ focus` status-bar badge; never affects request payloads.
+  focusView: boolean
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
@@ -499,7 +526,7 @@ export interface SlashHandlerContext {
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string) => void
+    send: (text: string, showUserMessage?: boolean, displayText?: string) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]

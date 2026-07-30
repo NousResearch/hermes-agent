@@ -441,7 +441,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
         }
 
         busyRef.current = true
-        void ctx.openManageLink()
+        void ctx.openManageLink(tier.tier_id)
         onClose()
       }
     })

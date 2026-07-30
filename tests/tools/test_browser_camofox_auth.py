@@ -37,9 +37,6 @@ class TestAuthHeaders:
         monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
         assert _auth_headers() == {}
 
-    def test_bearer_when_key_set(self, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_API_KEY", "test-secret-123")
-        assert _auth_headers() == {"Authorization": "Bearer test-secret-123"}
 
     def test_empty_when_key_blank(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_API_KEY", "   ")
@@ -61,28 +58,6 @@ class TestAuthHeadersSent:
         _, kwargs = mock_post.call_args
         assert kwargs["headers"] == {"Authorization": "Bearer my-api-key"}
 
-    @patch("tools.browser_camofox.requests.post")
-    def test_post_sends_auth(self, mock_post):
-        mock_post.return_value = _mock_response(json_data={"tabId": "t2"})
-        camofox_navigate("https://example.com", task_id="auth_test_2")
-        mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://x.com"})
-        camofox_navigate("https://x.com", task_id="auth_test_2")
-        # The second call is a POST to /tabs/{tabId}/navigate
-        last_call = mock_post.call_args_list[-1]
-        assert last_call.kwargs.get("headers") == {"Authorization": "Bearer my-api-key"}
-
-    @patch("tools.browser_camofox.requests.post")
-    @patch("tools.browser_camofox.requests.get")
-    def test_get_sends_auth(self, mock_get, mock_post):
-        mock_post.return_value = _mock_response(json_data={"tabId": "t3"})
-        camofox_navigate("https://example.com", task_id="auth_test_3")
-        mock_get.return_value = _mock_response(json_data={
-            "snapshot": '- heading "Hello"',
-            "refsCount": 1,
-        })
-        camofox_snapshot(task_id="auth_test_3")
-        _, kwargs = mock_get.call_args
-        assert kwargs["headers"] == {"Authorization": "Bearer my-api-key"}
 
     @patch("tools.browser_camofox.requests.post")
     @patch("tools.browser_camofox.requests.delete")

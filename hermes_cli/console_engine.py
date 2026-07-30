@@ -16,7 +16,7 @@ import io
 import json
 import shlex
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NoReturn, Sequence
 
@@ -1180,7 +1180,7 @@ class HermesConsoleEngine:
             "model",
             "moa",
             "oneshot",
-            "postinstall",
+
             "proxy",
             "serve",
             "setup",

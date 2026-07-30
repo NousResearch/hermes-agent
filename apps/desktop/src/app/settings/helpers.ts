@@ -113,7 +113,7 @@ export function inferFieldSchema(value: unknown): ConfigFieldSchema {
   return { type: 'string' }
 }
 
-// Backend schema omits some declared keys (e.g. memory.provider); config presence is the availability signal.
+// Backend schema omits some declared keys; config presence is the availability signal.
 export function sectionFieldEntries(
   schema: Record<string, ConfigFieldSchema>,
   config: HermesConfigRecord
@@ -259,6 +259,12 @@ function commandProviderNames(config: HermesConfigRecord, section: 'tts' | 'stt'
   return [...names]
 }
 
+// Voice sets per OpenAI speech model, per the OpenAI TTS API docs: tts-1 and
+// tts-1-hd support 9 voices; gpt-4o-mini-tts supports those plus ballad,
+// verse, marin, and cedar (13 total). Unknown/future models get the full
+// union (the field is free-input anyway — this only narrows suggestions).
+const OPENAI_TTS1_VOICES = new Set(['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'])
+
 export function enumOptionsFor(
   key: string,
   value: unknown,
@@ -277,6 +283,16 @@ export function enumOptionsFor(
 
     if (custom.length > 0) {
       opts = [...opts, ...custom]
+    }
+  }
+
+  // Narrow OpenAI voice suggestions to what the selected model actually
+  // accepts — offering `marin` against tts-1 would 400 at the API.
+  if (!dynamicOptions && opts && key === 'tts.openai.voice') {
+    const model = asText(getNested(config, 'tts.openai.model'))
+
+    if (model === 'tts-1' || model === 'tts-1-hd') {
+      opts = opts.filter(voice => OPENAI_TTS1_VOICES.has(voice))
     }
   }
 

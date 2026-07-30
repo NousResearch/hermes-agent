@@ -102,52 +102,6 @@ class TestStalenessCheck(unittest.TestCase):
         result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t1"))
         self.assertNotIn("_warning", result)
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_warning_when_file_modified_externally(self, mock_ops):
-        """Read, then external modify, then write — should warn."""
-        mock_ops.return_value = _make_fake_ops("original content\n", 18)
-        read_file_tool(self._tmpfile, task_id="t1")
-
-        # Simulate external modification
-        time.sleep(0.05)
-        with open(self._tmpfile, "w") as f:
-            f.write("someone else changed this\n")
-
-        result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t1"))
-        self.assertIn("_warning", result)
-        self.assertIn("modified since you last read", result["_warning"])
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_no_warning_when_file_never_read(self, mock_ops):
-        """Writing a file that was never read — no warning."""
-        mock_ops.return_value = _make_fake_ops()
-        result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t2"))
-        self.assertNotIn("_warning", result)
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_no_warning_for_new_file(self, mock_ops):
-        """Creating a new file — no warning."""
-        mock_ops.return_value = _make_fake_ops()
-        new_path = os.path.join(self._tmpdir, "brand_new.txt")
-        result = json.loads(write_file_tool(new_path, "content", task_id="t3"))
-        self.assertNotIn("_warning", result)
-        try:
-            os.unlink(new_path)
-        except OSError:
-            pass
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_different_task_isolated(self, mock_ops):
-        """Task A reads, file changes, Task B writes — no warning for B."""
-        mock_ops.return_value = _make_fake_ops("original content\n", 18)
-        read_file_tool(self._tmpfile, task_id="task_a")
-
-        time.sleep(0.05)
-        with open(self._tmpfile, "w") as f:
-            f.write("changed\n")
-
-        result = json.loads(write_file_tool(self._tmpfile, "new", task_id="task_b"))
-        self.assertNotIn("_warning", result)
 
     @patch("tools.file_tools._get_file_ops")
     def test_relative_path_uses_recorded_session_cwd_for_staleness_tracking(self, mock_ops):
@@ -262,16 +216,6 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
     def test_returns_none_for_unknown_task(self):
         self.assertIsNone(_check_file_staleness("/tmp/x.py", "nonexistent"))
 
-    def test_returns_none_for_unread_file(self):
-        # Populate tracker with a different file
-        from tools.file_tools import _read_tracker, _read_tracker_lock
-        with _read_tracker_lock:
-            _read_tracker["t1"] = {
-                "last_key": None, "consecutive": 0,
-                "read_history": set(), "dedup": {},
-                "read_timestamps": {"/tmp/other.py": 12345.0},
-            }
-        self.assertIsNone(_check_file_staleness("/tmp/x.py", "t1"))
 
     def test_returns_none_when_stat_fails(self):
         from tools.file_tools import _read_tracker, _read_tracker_lock

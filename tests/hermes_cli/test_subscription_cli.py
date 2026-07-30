@@ -64,261 +64,95 @@ def _no_usage_model(monkeypatch):
     monkeypatch.setattr(bu, "build_usage_model", lambda *a, **kw: None, raising=False)
 
 
-def test_overview_leads_with_scheduled_downgrade_banner(cli, monkeypatch, capsys):
-    st = _sub_state(pending_downgrade_tier_name="Plus", pending_downgrade_at="2026-07-28")
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: st)
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert "Scheduled change" in out
-    assert "──▶" in out
-    assert "Plus" in out
-    # the status line itself echoes the transition
-    assert "Plan: Ultra → Plus" in out
+_FREE_TIERS = (
+    SubscriptionTier(tier_id="free", name="Free", tier_order=0, dollars_per_month=Decimal("0"), monthly_credits=Decimal("0"), is_current=False, is_enabled=True),
+    SubscriptionTier(tier_id="plus", name="Plus", tier_order=1, dollars_per_month=Decimal("20"), monthly_credits=Decimal("22"), is_current=False, is_enabled=True),
+    SubscriptionTier(tier_id="ultra", name="Ultra", tier_order=3, dollars_per_month=Decimal("200"), monthly_credits=Decimal("220"), is_current=False, is_enabled=True),
+)
 
 
-def test_change_flow_schedules_a_downgrade(cli, monkeypatch, capsys):
+def _free_state(tiers=_FREE_TIERS) -> SubscriptionState:
+    return SubscriptionState(
+        logged_in=True,
+        org_name="Acme",
+        org_id="org_1",
+        role="OWNER",
+        context="personal",
+        current=None,  # Free = no plan
+        tiers=tiers,
+        portal_url="https://portal.example/billing",
+    )
+
+
+def _capture_opener(monkeypatch, *, opened_ok=False):
+    """Patch the canonical browser opener to capture the URL; return whether a
+    real browser 'opened' (default False → the printed-URL fallback fires)."""
+    seen = {}
+
+    def _open(self, url):
+        seen["url"] = url
+        return opened_ok
+
+    monkeypatch.setattr(HermesCLI, "_open_url_in_browser", _open, raising=False)
+    return seen
+
+
+def test_free_prints_catalog_and_deep_links_with_plan(cli, monkeypatch, capsys):
+    # (a)+(b): Free + admin + interactive prints the plan catalog (name · $/mo ·
+    # $credits/mo) and a pick opens the portal deep-link with plan=<tier_id>.
     cli._app = object()  # interactive
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _sub_state())
-    # change menu → "change"; picker → "plus" (only selectable); confirm → "yes"
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "plus", "yes"), raising=False)
-    monkeypatch.setattr(
-        nb, "post_subscription_preview",
-        lambda **kw: {"effect": "scheduled", "targetTierName": "Plus", "effectiveAt": "2026-07-28T00:00:00Z", "monthlyCreditsDelta": "-198"},
-    )
-    seen = {}
-    monkeypatch.setattr(nb, "put_subscription_pending_change", lambda **kw: seen.update(kw) or {"message": "Scheduled."})
+    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _free_state())
+    # catalog pick → "plus" (single modal; the pick opens the portal directly)
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("plus"), raising=False)
+    opened = _capture_opener(monkeypatch)  # returns False → URL also printed
 
     cli._show_subscription()
     out = capsys.readouterr().out
 
-    assert seen.get("subscription_type_id") == "plus"
-    assert "doesn't change today" in out
+    # Catalog rows — monthly credits render as DOLLARS ($22 credits/mo), never bare.
+    assert "Choose a plan" in out
+    assert "Plus · $20/mo · $22 credits/mo" in out
+    assert "Ultra · $200/mo · $220 credits/mo" in out
+    # Free (tier_order 0) is excluded from the paid catalog rows.
+    assert "Free · $0" not in out
+    # The pick opens the deep-link directly (no second open/copy menu); the URL
+    # carries plan=<picked tier>, org_id first, plan second.
+    assert opened.get("url") == "https://portal.example/manage-subscription?org_id=org_1&plan=plus"
+    assert "/manage-subscription?org_id=org_1&plan=plus" in out
+    assert "start Plus" in out
 
 
-def test_change_flow_upgrade_charges_now(cli, monkeypatch, capsys):
-    cli._app = object()
-    # Current = Plus so Ultra is a selectable upgrade.
-    st = _sub_state(tier_id="plus", tier_name="Plus")
-    tiers = tuple(SubscriptionTier(tier_id=t.tier_id, name=t.name, tier_order=t.tier_order, dollars_per_month=t.dollars_per_month, monthly_credits=t.monthly_credits, is_current=(t.tier_id == "plus"), is_enabled=True) for t in _TIERS)
-    object.__setattr__(st, "tiers", tiers)
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: st)
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "ultra", "yes"), raising=False)
-    monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "charge_now", "targetTierName": "Ultra", "amountDueNowCents": 4630})
-    seen = {}
-    monkeypatch.setattr(nb, "post_subscription_upgrade", lambda **kw: seen.update(kw) or {"status": "upgraded", "targetTierName": "Ultra"})
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert seen.get("subscription_type_id") == "ultra"
-    assert seen.get("idempotency_key")  # minted
-    assert "$46.30" in out
-    assert "Upgraded to Ultra" in out
 
 
-def test_change_menu_cancel_schedules_cancellation(cli, monkeypatch, capsys):
-    cli._app = object()
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _sub_state())
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("cancel_sub", "yes"), raising=False)
-    seen = {}
-    monkeypatch.setattr(nb, "put_subscription_pending_change", lambda **kw: seen.update(kw) or {"message": "Cancelled."})
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert seen.get("cancel") is True
-    assert "cancels" in out.lower()
+# ── canonical browser opener (guarded like the device-code auth flows) ──
 
 
-def test_pending_change_menu_offers_undo(cli, monkeypatch, capsys):
-    cli._app = object()
-    st = _sub_state(pending_downgrade_tier_name="Plus", pending_downgrade_at="2026-07-28")
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: st)
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("keep"), raising=False)
+def test_open_url_in_browser_refuses_remote_session(cli, monkeypatch):
+    # (4): a remote/SSH session must NOT auto-open — webbrowser.open is never called.
+    import webbrowser
+
+    import hermes_cli.auth as auth
+
+    monkeypatch.setattr(auth, "_is_remote_session", lambda: True, raising=False)
     called = {"n": 0}
-    monkeypatch.setattr(nb, "delete_subscription_pending_change", lambda **kw: called.update(n=called["n"] + 1) or {"message": "Resumed."})
+    monkeypatch.setattr(webbrowser, "open", lambda url: called.update(n=called["n"] + 1) or True)
 
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert called["n"] == 1
-    assert "Undone" in out
+    assert cli._open_url_in_browser("https://x.example") is False
+    assert called["n"] == 0  # guard short-circuits before webbrowser.open
 
 
-def test_insufficient_scope_triggers_stepup_then_replays(cli, monkeypatch, capsys):
-    cli._app = object()
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _sub_state())
-    # menu → change; picker → plus; confirm → yes; step-up → yes
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "plus", "yes", "yes"), raising=False)
-    monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "scheduled", "targetTierName": "Plus", "effectiveAt": "2026-07-28"})
-    calls = {"n": 0}
-
-    def _put(**kw):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise nb.BillingScopeRequired("remote spending required")
-        return {"message": "Scheduled."}
-
-    monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
-    import hermes_cli.auth as auth
-
-    monkeypatch.setattr(auth, "step_up_nous_billing_scope", lambda **kw: True, raising=False)
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    # applied once (scope-denied), granted, replayed → applied again
-    assert calls["n"] == 2
-    assert "Remote Spending allowed" in out
 
 
-def test_stepup_declined_grant_does_not_replay(cli, monkeypatch, capsys):
-    cli._app = object()
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _sub_state())
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "plus", "yes", "yes"), raising=False)
-    monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "scheduled", "targetTierName": "Plus", "effectiveAt": "2026-07-28"})
-    calls = {"n": 0}
-
-    def _put(**kw):
-        calls["n"] += 1
-        raise nb.BillingScopeRequired("remote spending required")
-
-    monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
-    import hermes_cli.auth as auth
-
-    monkeypatch.setattr(auth, "step_up_nous_billing_scope", lambda **kw: False, raising=False)
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert calls["n"] == 1  # applied once, grant denied, no replay
-    assert "Couldn't allow Remote Spending" in out
 
 
-def test_unknown_preview_effect_fails_safe(cli, monkeypatch, capsys):
-    # An unrecognized effect string must NOT schedule a real change (fail safe).
-    cli._app = object()
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _sub_state())
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "plus"), raising=False)
-    monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "weird_unknown", "targetTierName": "Plus"})
-    put = {"n": 0}
-    monkeypatch.setattr(nb, "put_subscription_pending_change", lambda **kw: put.update(n=put["n"] + 1) or {})
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert put["n"] == 0  # no mutation on an unknown effect
-    assert "portal" in out.lower()
 
 
-def test_bounded_stepup_does_not_loop_on_repeat_denial(cli, monkeypatch, capsys):
-    # Grant "succeeds" but the scope stays denied → replay ONCE (allow_stepup=False),
-    # then stop — no re-prompt / re-open-browser loop.
-    cli._app = object()
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: _sub_state())
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "plus", "yes", "yes"), raising=False)
-    monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "scheduled", "targetTierName": "Plus", "effectiveAt": "2026-07-28"})
-    calls = {"n": 0}
-
-    def _put(**kw):
-        calls["n"] += 1
-        raise nb.BillingScopeRequired("still no scope")
-
-    monkeypatch.setattr(nb, "put_subscription_pending_change", _put)
-    import hermes_cli.auth as auth
-
-    monkeypatch.setattr(auth, "step_up_nous_billing_scope", lambda **kw: True, raising=False)
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert calls["n"] == 2  # applied, granted, replayed once — no third attempt
-    assert (
-        "Remote Spending still isn't active for this terminal — the authorization "
-        "didn't take. Retry, or make this change on the portal."
-    ) in out
 
 
-def test_upgrade_transport_failure_is_ambiguous_not_flat_failure(cli, monkeypatch, capsys):
-    # BUG B: a charge-route failure must warn "may or may not have been charged"
-    # (steer to a re-check), never a flat failure that invites a blind retry (which
-    # would mint a fresh idempotency key the server can't dedup → a real 2nd charge).
-    cli._app = object()
-    st = _sub_state(tier_id="plus", tier_name="Plus")
-    tiers = tuple(
-        SubscriptionTier(tier_id=t.tier_id, name=t.name, tier_order=t.tier_order, dollars_per_month=t.dollars_per_month, monthly_credits=t.monthly_credits, is_current=(t.tier_id == "plus"), is_enabled=True)
-        for t in _TIERS
-    )
-    object.__setattr__(st, "tiers", tiers)
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: st)
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "ultra", "yes"), raising=False)
-    monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "charge_now", "targetTierName": "Ultra", "amountDueNowCents": 4630})
-
-    def _boom(**kw):
-        raise nb.BillingError("Could not reach Nous Portal", error="endpoint_unavailable")
-
-    monkeypatch.setattr(nb, "post_subscription_upgrade", _boom)
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert "may or may not have been charged" in out
-    assert "Re-run /subscription" in out
-    assert "could not be completed" not in out  # not the old flat failure
 
 
-def test_upgrade_rate_limit_is_deterministic_not_ambiguous(cli, monkeypatch, capsys):
-    # R2: a typed PRE-charge rejection (429 rate-limit) must NOT be mislabeled
-    # "may or may not have been charged" — it never reached Stripe. It gets the
-    # normal error copy, not the ambiguous one.
-    cli._app = object()
-    st = _sub_state(tier_id="plus", tier_name="Plus")
-    tiers = tuple(
-        SubscriptionTier(tier_id=t.tier_id, name=t.name, tier_order=t.tier_order, dollars_per_month=t.dollars_per_month, monthly_credits=t.monthly_credits, is_current=(t.tier_id == "plus"), is_enabled=True)
-        for t in _TIERS
-    )
-    object.__setattr__(st, "tiers", tiers)
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: st)
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "ultra", "yes"), raising=False)
-    monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "charge_now", "targetTierName": "Ultra", "amountDueNowCents": 4630})
-
-    def _rl(**kw):
-        raise nb.BillingRateLimited("Slow down — too many requests.", error="rate_limited", status=429, retry_after=30)
-
-    monkeypatch.setattr(nb, "post_subscription_upgrade", _rl)
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert "may or may not have been charged" not in out  # NOT the ambiguous copy
-    assert "Slow down" in out  # the real, deterministic error
 
 
-def test_upgrade_transport_failure_still_ambiguous_after_narrowing(cli, monkeypatch, capsys):
-    # Regression floor for R2: a genuine transport failure (network_error, no status)
-    # must STILL be ambiguous after the narrowing.
-    cli._app = object()
-    st = _sub_state(tier_id="plus", tier_name="Plus")
-    tiers = tuple(
-        SubscriptionTier(tier_id=t.tier_id, name=t.name, tier_order=t.tier_order, dollars_per_month=t.dollars_per_month, monthly_credits=t.monthly_credits, is_current=(t.tier_id == "plus"), is_enabled=True)
-        for t in _TIERS
-    )
-    object.__setattr__(st, "tiers", tiers)
-    monkeypatch.setattr(sv, "build_subscription_state", lambda *a, **kw: st)
-    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "ultra", "yes"), raising=False)
-    monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "charge_now", "targetTierName": "Ultra", "amountDueNowCents": 4630})
-
-    def _net(**kw):
-        raise nb.BillingError("Could not reach Nous Portal: timeout", error="network_error")
-
-    monkeypatch.setattr(nb, "post_subscription_upgrade", _net)
-
-    cli._show_subscription()
-    out = capsys.readouterr().out
-
-    assert "may or may not have been charged" in out
 
 
 @pytest.fixture(autouse=True)

@@ -212,6 +212,35 @@ class ComputerUseBackend(ABC):
         `element` is the 1-based SOM index returned by a prior capture call.
         """
 
+    # ── Optional typed-browser adapter ──────────────────────────────
+    @staticmethod
+    def _typed_browser_unavailable() -> Dict[str, Any]:
+        return {
+            "ok": False,
+            "status": "refused",
+            "code": "typed_browser_unavailable",
+            "message": "This computer-use backend has no typed browser route; use native capture/input.",
+            "native_fallback_required": True,
+        }
+
+    def typed_browser_state(self, **kwargs: Any) -> Dict[str, Any]:
+        """Optional exact-bind/read hook; native-only backends fail closed."""
+        return self._typed_browser_unavailable()
+
+    def typed_browser_prepare(self, **kwargs: Any) -> Dict[str, Any]:
+        """Optional setup hook; native-only backends fail closed."""
+        return self._typed_browser_unavailable()
+
+    def typed_browser_action(
+        self,
+        driver_tool: str,
+        *,
+        tab_id: Optional[str] = None,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Optional mutation hook; native-only backends fail closed."""
+        return self._typed_browser_unavailable()
+
     # ── Timing ──────────────────────────────────────────────────────
     def wait(self, seconds: float) -> ActionResult:
         """Default implementation: time.sleep."""

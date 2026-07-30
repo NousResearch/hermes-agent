@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw
 
 
 def create_validation_image(page_number, fields_json_path, input_path, output_path):
-    with open(fields_json_path, 'r') as f:
+    with open(fields_json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
         img = Image.open(input_path)

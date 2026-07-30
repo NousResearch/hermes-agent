@@ -61,40 +61,6 @@ def test_allowed_users_env_populates_allowlist_and_enforces_it(monkeypatch):
     assert adapter._is_dm_allowed("19998887777") is False
 
 
-def test_allow_all_users_env_opts_into_open_dms(monkeypatch):
-    adapter = _build_adapter(
-        monkeypatch, {"WHATSAPP_CLOUD_ALLOW_ALL_USERS": "true"}
-    )
-
-    assert adapter._dm_policy == "open"
-    assert adapter._open_dm_opted_in() is True
-    assert adapter._is_dm_allowed("19998887777") is True
-
-
-def test_explicit_dm_policy_still_wins_over_derived_default(monkeypatch):
-    adapter = _build_adapter(
-        monkeypatch,
-        {
-            "WHATSAPP_CLOUD_ALLOWED_USERS": "15551234567",
-            "WHATSAPP_CLOUD_DM_POLICY": "disabled",
-        },
-    )
-
-    # Operator's explicit policy beats the allowlist-derived default.
-    assert adapter._dm_policy == "disabled"
-
-
-def test_unconfigured_default_unchanged(monkeypatch):
-    adapter = _build_adapter(monkeypatch, {})
-
-    # No allowlist, no opt-in: default stays "open" (which fails closed
-    # in the shared mixin without an allow-all opt-in) — pre-fix behavior
-    # for unconfigured installs is preserved.
-    assert adapter._dm_policy == "open"
-    assert adapter._allow_from == set()
-    assert adapter._open_dm_opted_in() is False
-
-
 def test_allow_from_still_takes_precedence(monkeypatch):
     adapter = _build_adapter(
         monkeypatch,

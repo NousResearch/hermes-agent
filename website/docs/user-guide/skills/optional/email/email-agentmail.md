@@ -1,14 +1,14 @@
 ---
-title: "Agentmail — Give the agent its own dedicated email inbox via AgentMail"
+title: "Agentmail — Give the agent its own inbox: send and receive email"
 sidebar_label: "Agentmail"
-description: "Give the agent its own dedicated email inbox via AgentMail"
+description: "Give the agent its own inbox: send and receive email"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Agentmail
 
-Give the agent its own dedicated email inbox via AgentMail. Send, receive, and manage email autonomously using agent-owned email addresses (e.g. hermes-agent@agentmail.to).
+Give the agent its own inbox: send and receive email.
 
 ## Skill metadata
 

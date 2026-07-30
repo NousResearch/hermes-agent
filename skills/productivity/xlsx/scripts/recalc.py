@@ -71,7 +71,7 @@ def setup_libreoffice_macro(profile_dir: Path, timeout=30):
         return None, "LibreOffice did not create a usable profile; formulas were NOT recalculated"
 
     try:
-        (macro_dir / MACRO_FILENAME).write_text(RECALCULATE_MACRO)
+        (macro_dir / MACRO_FILENAME).write_text(RECALCULATE_MACRO, encoding="utf-8")
     except OSError as e:
         return None, f"Could not install the recalculation macro: {e}"
 
@@ -189,7 +189,7 @@ def _recalc_with_profile(filename, abs_path, timeout, profile_dir: Path):
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, env=get_soffice_env(), timeout=timeout + 15
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=get_soffice_env(), timeout=timeout + 15
         )
     except subprocess.TimeoutExpired:
         return {"error": timed_out}

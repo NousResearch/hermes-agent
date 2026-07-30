@@ -22,6 +22,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
@@ -403,7 +404,7 @@ vertex:
   region: "global"               # required for the Gemini 3.x previews
 ```
 
-`VERTEX_PROJECT_ID` / `VERTEX_REGION` env vars override the `config.yaml` values. Install with `pip install 'hermes-agent[vertex]'` (or let Hermes lazy-install `google-auth` on first use). See the [Google Vertex AI guide](/guides/google-vertex) for the full walkthrough, and the [Google Gemini guide](/guides/google-gemini) for the static-API-key AI Studio path instead.
+`VERTEX_PROJECT_ID` / `VERTEX_REGION` env vars override the `config.yaml` values. Hermes lazy-installs `google-auth` on first use; run `hermes setup` if the managed install needs repair. See the [Google Vertex AI guide](/guides/google-vertex) for the full walkthrough, and the [Google Gemini guide](/guides/google-gemini) for the static-API-key AI Studio path instead.
 
 ### Qwen Portal (OAuth)
 
@@ -844,7 +845,7 @@ hermes model
 # If LM Studio server auth is enabled, enter LM_API_KEY when prompted
 ```
 
-By default, Hermes explicitly asks LM Studio to load the selected model with 64K context length before the first request.
+Hermes preserves the context of an already-loaded LM Studio instance. For an unloaded model in the default explicit mode, Hermes omits `context_length` unless you configured one in Hermes, so LM Studio can apply its own model setting. Hermes then uses only the context length LM Studio reports after loading.
 
 To change context length in LM Studio:
 
@@ -1151,7 +1152,7 @@ Set `model.max_tokens` only when you need to limit how long individual responses
 Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
 
 1. **Config override** — `model.context_length` in config.yaml (highest priority)
-2. **Custom provider per-model** — `custom_providers[].models.<id>.context_length`
+2. **Custom provider per-model** — `providers.<name>.models.<id>.context_length`
 3. **Persistent cache** — previously discovered values (survives restarts)
 4. **Endpoint `/models`** — queries your server's API (local/custom endpoints)
 5. **Anthropic `/v1/models`** — queries Anthropic's API for `max_input_tokens` (API-key users only)
@@ -1174,9 +1175,9 @@ model:
 For custom endpoints, you can also set context length per model:
 
 ```yaml
-custom_providers:
-  - name: "My Local LLM"
-    base_url: "http://localhost:11434/v1"
+providers:
+  my-local-llm:
+    api: "http://localhost:11434/v1"
     models:
       qwen3.5:27b:
         context_length: 64000
@@ -1196,30 +1197,36 @@ custom_providers:
 
 ### Named Custom Providers
 
-If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers in `config.yaml`:
+If you work with multiple custom endpoints (e.g., a local dev server and a remote GPU server), you can define them as named custom providers under the `providers:` dict in `config.yaml`, keyed by provider name:
 
 ```yaml
-custom_providers:
-  - name: local
-    base_url: http://localhost:8080/v1
+providers:
+  local:
+    api: http://localhost:8080/v1
     # api_key omitted — Hermes uses "no-key-required" for keyless local servers
-  - name: work
-    base_url: https://gpu-server.internal.corp/v1
+  work:
+    api: https://gpu-server.internal.corp/v1
     key_env: CORP_API_KEY
-    api_mode: chat_completions   # set explicitly by `hermes model` → Custom Endpoint wizard; auto-detection still happens as a fallback
-  - name: anthropic-proxy
-    base_url: https://proxy.example.com/anthropic
+    transport: chat_completions   # set explicitly by `hermes model` → Custom Endpoint wizard; auto-detection still happens as a fallback
+  anthropic-proxy:
+    api: https://proxy.example.com/anthropic
     key_env: ANTHROPIC_PROXY_KEY
-    api_mode: anthropic_messages  # for Anthropic-compatible proxies
+    transport: anthropic_messages  # for Anthropic-compatible proxies
 ```
+
+Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key`, `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `ssl_ca_cert` / `ssl_verify`, and `enabled: false` to hide an entry without deleting it.
+
+:::note Legacy format
+Older configs used a top-level `custom_providers:` list instead. It still works — Hermes reads both — and `hermes update` auto-migrates it to the `providers:` dict (config v12). Field names differ slightly in the dict format: legacy `model` is `default_model`, and legacy `api_mode` is `transport`.
+:::
 
 Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
 
 ```yaml
-custom_providers:
-  - name: gemma-local
-    base_url: http://localhost:8080/v1
-    model: google/gemma-4-31b-it
+providers:
+  gemma-local:
+    api: http://localhost:8080/v1
+    default_model: google/gemma-4-31b-it
     extra_body:
       enable_thinking: true
       reasoning_effort: high
@@ -1241,7 +1248,7 @@ extra_body:
     enable_thinking: false
 ```
 
-The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
+The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.
 
@@ -1253,7 +1260,7 @@ model:
   supports_vision: true   # send images natively; otherwise vision_analyze pre-describes them
 ```
 
-The same key is honored on per-named-provider models (`custom_providers[*].models[*].supports_vision`) and accepts standard YAML booleans (`true/false/yes/no/on/off/1/0`).
+The same key is honored on per-named-provider models (`providers.<name>.models.<id>.supports_vision`) and accepts standard YAML booleans (`true/false/yes/no/on/off/1/0`).
 
 Switch between them mid-session with the triple syntax:
 
@@ -1269,7 +1276,7 @@ You can also select named custom providers from the interactive `hermes model` m
 
 ### Cookbook: Together AI, Groq, Perplexity
 
-The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under `custom_providers:`. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
+The cloud providers listed in [Other Compatible Providers](#other-compatible-providers) all speak OpenAI's REST dialect, so they wire up the same way under the `providers:` dict. Three worked recipes follow. Each drops into `~/.hermes/config.yaml` and the matching API key goes in `~/.hermes/.env`.
 
 #### Together AI
 
@@ -1277,11 +1284,11 @@ Hosts open-weight models (Llama, MiniMax, Gemma, DeepSeek, Qwen) at prices signi
 
 ```yaml
 # ~/.hermes/config.yaml
-custom_providers:
-  - name: together
-    base_url: https://api.together.xyz/v1
+providers:
+  together:
+    api: https://api.together.xyz/v1
     key_env: TOGETHER_API_KEY
-    # api_mode: chat_completions  # default — no need to set
+    # transport: chat_completions  # default — no need to set
 
 model:
   default: MiniMaxAI/MiniMax-M2.7   # or any model from together.ai/models
@@ -1309,9 +1316,9 @@ Ultra-fast inference (~500 tok/s on Llama-3.3-70B). Small catalog but strong for
 
 ```yaml
 # ~/.hermes/config.yaml
-custom_providers:
-  - name: groq
-    base_url: https://api.groq.com/openai/v1
+providers:
+  groq:
+    api: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
 
 model:
@@ -1330,9 +1337,9 @@ Useful when you want a model that does live web search and citation automaticall
 
 ```yaml
 # ~/.hermes/config.yaml
-custom_providers:
-  - name: perplexity
-    base_url: https://api.perplexity.ai
+providers:
+  perplexity:
+    api: https://api.perplexity.ai
     key_env: PERPLEXITY_API_KEY
 
 model:
@@ -1350,15 +1357,15 @@ PERPLEXITY_API_KEY=your-perplexity-key
 The three recipes compose — use all of them together and switch per turn with `/model custom:<name>:<model>`:
 
 ```yaml
-custom_providers:
-  - name: together
-    base_url: https://api.together.xyz/v1
+providers:
+  together:
+    api: https://api.together.xyz/v1
     key_env: TOGETHER_API_KEY
-  - name: groq
-    base_url: https://api.groq.com/openai/v1
+  groq:
+    api: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
-  - name: perplexity
-    base_url: https://api.perplexity.ai
+  perplexity:
+    api: https://api.perplexity.ai
     key_env: PERPLEXITY_API_KEY
 
 model:
@@ -1369,7 +1376,7 @@ model:
 :::tip Troubleshooting
 - `hermes doctor` should print no `Unknown provider` warnings for any of these names after the CLI validator fixes in #15083.
 - If a provider's `/v1/models` endpoint is unreachable (Perplexity is the common one), `hermes model` will persist the model with a warning rather than hard-reject — see #15136.
-- To skip `custom_providers:` entirely and use bare `provider: custom` with `CUSTOM_BASE_URL` env var, see #15103.
+- To skip named providers entirely and use bare `provider: custom` with `CUSTOM_BASE_URL` env var, see #15103.
 :::
 
 ---
@@ -1491,7 +1498,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

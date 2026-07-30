@@ -1,3 +1,45 @@
+# Debian 13 still ships SQLite 3.46.1, which contains the upstream WAL-reset
+# corruption bug. Build a pinned shared library for the runtime image instead
+# of relying on a distro backport that trixie does not currently provide.
+# See #70480 and https://sqlite.org/wal.html#walresetbug.
+FROM debian:13.4 AS sqlite_build
+ARG SQLITE_AUTOCONF_VERSION=3530400
+ARG SQLITE_SHA256=0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+        build-essential ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    (curl -fsSL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 60 \
+        -o /tmp/sqlite.tar.gz \
+        "https://sqlite.org/2026/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz" || \
+     curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 \
+        -o /tmp/sqlite.tar.gz \
+        "https://sources.buildroot.net/sqlite/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz") && \
+    printf '%s  %s\n' "${SQLITE_SHA256}" /tmp/sqlite.tar.gz > /tmp/sqlite.sha256 && \
+    sha256sum -c /tmp/sqlite.sha256 && \
+    tar -xzf /tmp/sqlite.tar.gz -C /tmp && \
+    cd "/tmp/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}" && \
+    CFLAGS="-O2 \
+        -DSQLITE_ENABLE_FTS3 \
+        -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+        -DSQLITE_ENABLE_FTS4 \
+        -DSQLITE_ENABLE_FTS5 \
+        -DSQLITE_ENABLE_RTREE \
+        -DSQLITE_ENABLE_GEOPOLY \
+        -DSQLITE_ENABLE_COLUMN_METADATA \
+        -DSQLITE_ENABLE_UNLOCK_NOTIFY \
+        -DSQLITE_ENABLE_DBSTAT_VTAB \
+        -DSQLITE_ENABLE_DBPAGE_VTAB \
+        -DSQLITE_ENABLE_MATH_FUNCTIONS \
+        -DSQLITE_ENABLE_PREUPDATE_HOOK \
+        -DSQLITE_ENABLE_SESSION \
+        -DSQLITE_SECURE_DELETE \
+        -DSQLITE_THREADSAFE=1 \
+        -DSQLITE_MAX_VARIABLE_NUMBER=250000" \
+        ./configure --prefix=/opt/sqlite-fixed --disable-static && \
+    make -j"$(nproc)" && \
+    make install
+
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
 # Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
 # which reached EOL in April 2026 — we copy node + npm + corepack from the
@@ -30,6 +72,23 @@ RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
+
+# Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
+# public library name stable so both the system interpreter and the uv-created
+# venv resolve the replacement without changing Python import paths.
+COPY --from=sqlite_build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/local/lib/
+RUN ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 && \
+    ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so && \
+    printf '/usr/local/lib\n' > /etc/ld.so.conf.d/000-sqlite-fixed.conf && \
+    ldconfig && \
+    python3 -c "import sqlite3, sys; \
+v = sqlite3.sqlite_version_info; \
+sys.exit(f'linked SQLite {sqlite3.sqlite_version} still has the WAL-reset bug') if v < (3, 51, 3) else None; \
+db = sqlite3.connect(':memory:'); \
+db.execute(\"CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='trigram')\"); \
+db.execute(\"INSERT INTO docs VALUES ('hermes')\"); \
+sys.exit('SQLite FTS5 trigram self-test failed') if db.execute(\"SELECT count(*) FROM docs WHERE docs MATCH 'erm'\").fetchone()[0] != 1 else None; \
+db.close()"
 
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
@@ -141,6 +200,22 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
     done && \
     npm cache clean --force
 
+# ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
+# The photon plugin's Node sidecar needs its own node_modules
+# (spectrum-ts). The install tree is immutable at runtime, so a lazy
+# `npm ci` on first connect would hit EROFS — bake the deps here instead
+# (deterministic installs, NS-559). The patch script is copied alongside
+# the manifests because package.json's postinstall runs it, which also
+# means the spectrum-ts patch is applied at build time. Layer-cached:
+# only re-runs when the sidecar manifests/patch change.
+COPY plugins/platforms/photon/sidecar/package.json \
+     plugins/platforms/photon/sidecar/package-lock.json \
+     plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
+     plugins/platforms/photon/sidecar/
+RUN cd plugins/platforms/photon/sidecar && \
+    npm ci --no-audit --fetch-retries=5 && \
+    npm cache clean --force
+
 # ---------- Layer-cached Python dependency install ----------
 # Copy only pyproject.toml + uv.lock so the Python dep resolve + wheel
 # download + native-extension compile layer is cached unless those inputs
@@ -152,7 +227,7 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # frontend stats the readme path during dep resolution, so we `touch` an
 # empty placeholder — the real README is restored by `COPY . .` below.
 #
-# `uv sync --frozen --no-install-project --extra all --extra messaging`
+# `uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp`
 # installs the deps reachable through the composite `[all]` extra
 # (handpicked set intended for the production image — excludes `[dev]`),
 # plus gateway messaging adapters that should work in the published image
@@ -164,6 +239,10 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # Provider packages (anthropic, bedrock, azure-identity) are included
 # so Docker users can use these providers without requiring runtime
 # lazy-install access to PyPI (often blocked in containerized envs).
+#
+# The [otlp] extra contains the SDK/exporter imported by Hermes when Gateway
+# Health export is enabled. Collector and observability-backend dependencies
+# remain external and are not part of the Hermes production image.
 #
 # The hindsight memory provider's client (hindsight-client) is baked in
 # for the same reason: it lazy-installs into /opt/hermes/.venv at first
@@ -182,7 +261,7 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't

@@ -483,6 +483,12 @@ export async function extractBridgeEvent({
     quotedText,
     hasQuotedMessage,
     botIds,
+    readReceiptKey: {
+      remoteJid: msg.key.remoteJid || chatId,
+      id: msg.key.id,
+      participant: msg.key.participant || senderId,
+      fromMe: Boolean(msg.key.fromMe),
+    },
     timestamp: msg.messageTimestamp,
   };
 }
@@ -492,6 +498,12 @@ export function inferMediaType(ext) {
   if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
   if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
   return 'document';
+}
+
+export function inboundReadReceiptKeys({ key, enabled }) {
+  if (!enabled || !key || key.fromMe || !key.id || !key.remoteJid) return [];
+  // Preserve participant for group messages: Baileys needs the original key.
+  return [key];
 }
 
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {

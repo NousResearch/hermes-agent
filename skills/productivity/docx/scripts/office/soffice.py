@@ -64,7 +64,7 @@ def _ensure_shim() -> Path:
         return _SHIM_SO
 
     src = Path(tempfile.gettempdir()) / "lo_socket_shim.c"
-    src.write_text(_SHIM_SOURCE)
+    src.write_text(_SHIM_SOURCE, encoding="utf-8")
     subprocess.run(
         ["gcc", "-shared", "-fPIC", "-o", str(_SHIM_SO), str(src), "-ldl"],
         check=True,

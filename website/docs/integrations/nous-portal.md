@@ -42,7 +42,11 @@ The Portal proxies a curated catalog of agentic models from across the ecosystem
 | **Hermes** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |
 | **+ everything else** | 280+ additional models — the full agentic frontier |
 
-Routing happens through OpenRouter under the hood, so model availability and failover behavior matches what you'd get with an OpenRouter key — just billed against your Nous subscription instead. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
+Under the hood, the Portal routes each model to the backend best suited for it — some models go through OpenRouter, others through proprietary or secondary providers, and the routing for a given model can change over time. Everything is billed against your Nous subscription either way. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
+
+:::note
+Because routing is per-model and not always through OpenRouter, OpenRouter-specific request extensions (such as `provider` routing preferences, `session_id` sticky routing, or top-level `cache_control`) are not part of the Portal's API contract and may be ignored depending on which backend serves the model.
+:::
 
 ### The Nous Tool Gateway
 
@@ -213,16 +217,19 @@ The Tool Gateway settings live under their respective tool sections:
 
 ```yaml
 web:
-  backend: nous       # web search/extract routes through Tool Gateway
+  backend: firecrawl
+  use_gateway: true   # web search/extract routes through Tool Gateway
 
 image_gen:
-  provider: nous
+  use_gateway: true
 
 tts:
-  provider: nous
+  provider: openai
+  use_gateway: true
 
 browser:
-  backend: nous
+  cloud_provider: browser-use
+  use_gateway: true
 ```
 
 The OAuth refresh token is stored separately at `~/.hermes/auth.json` (not in `config.yaml` — credentials and configuration are kept separate by design).
@@ -251,7 +258,7 @@ Your Portal refresh token was invalidated (password change, manual revoke, or se
 
 ### Want to use a specific provider model that the Portal doesn't expose
 
-The Portal proxies through OpenRouter, so any model that OpenRouter supports is generally available. If a specific model isn't appearing in `/model`, try the OpenRouter-style slug directly:
+The Portal routes each model to a suitable backend — some through OpenRouter, others through proprietary or secondary providers — so most models OpenRouter supports are generally available. If a specific model isn't appearing in `/model`, try the OpenRouter-style slug directly:
 
 ```bash
 /model anthropic/claude-opus-4.6

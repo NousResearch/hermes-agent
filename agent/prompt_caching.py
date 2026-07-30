@@ -1,9 +1,11 @@
 """Anthropic prompt caching strategy.
 
-Single layout: ``system_and_3``. 4 cache_control breakpoints — system
-prompt + last 3 non-system messages, all at the same TTL (5m or 1h).
-Reduces input token costs by ~75% on multi-turn conversations within a
-single session.
+The default layout uses 4 cache_control breakpoints: the static system
+prefix, the end of the system prompt, and the last 2 non-system messages.
+When a static system prefix is unavailable, it falls back to one system
+breakpoint plus the last 3 messages. All markers use the same TTL (5m or 1h).
+This preserves intra-session caching while allowing new sessions to reuse the
+stable system-prompt prefix.
 
 Pure functions -- no class state, no AIAgent dependency.
 """
@@ -81,30 +83,128 @@ def _build_marker(ttl: str) -> Dict[str, str]:
     return marker
 
 
+def _apply_system_cache_markers(
+    message: dict,
+    cache_marker: dict,
+    static_system_prefix: str | None,
+    *,
+    native_anthropic: bool,
+) -> int:
+    """Mark the static system prefix and full prompt when they can be split.
+
+    The system prompt remains one stored string. Splitting it only in the
+    outgoing request keeps session persistence and non-Anthropic transports
+    unchanged while making the stable prefix independently cacheable.
+    """
+    content = message.get("content")
+    if (
+        isinstance(static_system_prefix, str)
+        and static_system_prefix
+        and isinstance(content, str)
+        and content.startswith(static_system_prefix)
+    ):
+        suffix = content[len(static_system_prefix):]
+        if suffix:
+            message["content"] = [
+                {
+                    "type": "text",
+                    "text": static_system_prefix,
+                    "cache_control": cache_marker,
+                },
+                {"type": "text", "text": suffix, "cache_control": cache_marker},
+            ]
+            return 2
+
+    _apply_cache_marker(message, cache_marker, native_anthropic=native_anthropic)
+    return 1
+
+
+def strip_anthropic_cache_control(
+    api_messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove ``cache_control`` markers and undo decoration-produced list shapes.
+
+    Used before re-applying decoration after a mid-turn provider failover so
+    the mutated, undecorated shape (image shrink / ASCII cleanup / etc.) is
+    preserved while markers match the *new* provider's cache policy (#72626).
+
+    Flattening back to a plain string is restricted to the exact shapes
+    :func:`apply_anthropic_cache_control` produces from string content —
+    a single ``{"type": "text"}`` part, or the two-part ``[static, volatile]``
+    system split — so the ``""``-join is provably byte-exact. Organic
+    multi-part text (merged user turns, imported transcripts) and parts
+    carrying extra keys (``citations`` etc.) keep their structure; only
+    per-part markers are removed. Marker removal is copy-on-write on the
+    part dicts: content parts may alias the persistent conversation history
+    (the per-call copy is shallow), and stripping must never rewrite the
+    stored transcript.
+
+    Mutates the top-level message dicts of ``api_messages`` in place and
+    returns the same list.
+    """
+    for msg in api_messages:
+        if not isinstance(msg, dict):
+            continue
+        msg.pop("cache_control", None)
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if any(isinstance(part, dict) and "cache_control" in part for part in content):
+            content = [
+                {k: v for k, v in part.items() if k != "cache_control"}
+                if isinstance(part, dict) and "cache_control" in part
+                else part
+                for part in content
+            ]
+            msg["content"] = content
+        decoration_shape = content and all(
+            isinstance(part, dict)
+            and part.get("type", "text") == "text"
+            and isinstance(part.get("text"), str)
+            and set(part.keys()) <= {"type", "text"}
+            for part in content
+        ) and (
+            len(content) == 1
+            or (msg.get("role") == "system" and len(content) == 2)
+        )
+        if decoration_shape:
+            msg["content"] = "".join(part["text"] for part in content)
+    return api_messages
+
+
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
     native_anthropic: bool = False,
+    static_system_prefix: str | None = None,
 ) -> List[Dict[str, Any]]:
-    """Apply system_and_3 caching strategy to messages for Anthropic models.
+    """Apply Anthropic cache-control markers to API messages.
 
-    Places up to 4 cache_control breakpoints: system prompt + last 3 non-system
-    messages, all at the same TTL.
+    When ``static_system_prefix`` exactly matches the beginning of a string
+    system prompt, it receives an early marker and the full system prompt gets
+    a trailing marker. The remaining two markers target the latest cacheable
+    non-system messages. Without that prefix, the legacy system-and-3 layout
+    is retained.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        Shallow copy of message list with selective deep copies of modified messages.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return api_messages
 
+    messages = list(api_messages)
     marker = _build_marker(cache_ttl)
 
     breakpoints_used = 0
 
     if messages[0].get("role") == "system":
-        _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
-        breakpoints_used += 1
+        messages[0] = copy.deepcopy(messages[0])
+        breakpoints_used = _apply_system_cache_markers(
+            messages[0],
+            marker,
+            static_system_prefix,
+            native_anthropic=native_anthropic,
+        )
 
     remaining = 4 - breakpoints_used
     non_sys = [
@@ -114,6 +214,7 @@ def apply_anthropic_cache_control(
         and _can_carry_marker(messages[i], native_anthropic=native_anthropic)
     ]
     for idx in non_sys[-remaining:]:
+        messages[idx] = copy.deepcopy(messages[idx])
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
 
     return messages

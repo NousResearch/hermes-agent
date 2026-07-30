@@ -11,6 +11,7 @@ import {
 import { setCronJobs } from '@/store/cron'
 import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import { $removedSessionIds } from '@/store/projects'
 import {
   $messagingSessions,
   $selectedStoredSessionId,
@@ -22,10 +23,9 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
-  setSessionProfileTotals,
+  setSessionProfilesTruncated,
   setSessions,
-  setSessionsLoading,
-  setSessionsTotal
+  setSessionsLoading
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
@@ -180,18 +180,34 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       if (refreshSessionsRequestRef.current === requestId) {
         const recents = result.recents
 
+        // Drop rows the user just deleted/archived: a refresh can race an
+        // in-flight mutation and the backend page still carries the doomed row.
+        // Honoring the optimistic tombstone keeps the removal from flashing back
+        // (the tombstone self-clears once projects.tree confirms the delete).
+        const tombstones = $removedSessionIds.get()
+
+        const incoming = tombstones.size
+          ? recents.sessions.filter(
+              s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
+            )
+          : recents.sessions
+
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
         // that returns content-identical rows must keep the previous array
         // identity, or every sidebar memo keyed on $sessions recomputes and the
         // whole list re-renders once per turn/broadcast for nothing.
         setSessions(prev => {
-          const next = mergeSessionPage(prev, recents.sessions, sessionsToKeep())
+          const next = mergeSessionPage(prev, incoming, sessionsToKeep())
 
           return sameCronSignature(prev, next) ? prev : next
         })
-        setSessionsTotal(typeof recents.total === 'number' ? recents.total : recents.sessions.length)
-        setSessionProfileTotals(prev => {
-          const next = recents.profile_totals ?? {}
+        // "Is there another page?" instead of an exact total: the backend
+        // reports which profiles filled their window, which costs nothing on
+        // top of the rows it already read (the old exact totals ran a COUNT(*)
+        // per profile DB on every refresh). Reference-stable when unchanged so
+        // the sidebar's group memos don't recompute per refresh.
+        setSessionProfilesTruncated(prev => {
+          const next = recents.profiles_truncated ?? {}
           const prevKeys = Object.keys(prev)
 
           return prevKeys.length === Object.keys(next).length && prevKeys.every(key => prev[key] === next[key])
@@ -245,8 +261,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
     ])
 
-    const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
-    setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
+    // A full window back means the profile still has more on disk.
+    const truncated = result.sessions.length >= loaded + SIDEBAR_SESSIONS_PAGE_SIZE
+    setSessionProfilesTruncated(prev => ({ ...prev, [key]: truncated }))
   }, [])
 
   return {

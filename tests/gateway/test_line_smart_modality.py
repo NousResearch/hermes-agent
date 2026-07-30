@@ -1,5 +1,8 @@
-from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+import pytest
+
+from gateway.config import GatewayConfig, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from plugins.platforms.line.adapter import LineAdapter, _env_enablement
 
@@ -14,6 +17,16 @@ def _adapter(*, smart_modality=True):
             extra={"smart_modality": smart_modality},
         )
     )
+
+
+def _runner(adapter):
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={_LINE_PLATFORM: PlatformConfig(enabled=True, extra={})}
+    )
+    runner.adapters = {_LINE_PLATFORM: adapter}
+    runner._voice_mode = {}
+    return runner
 
 
 def _event(message_type, *, chat_id="Cline", user_id="Uline", chat_type="group"):
@@ -100,6 +113,87 @@ def test_line_smart_modality_env_overrides_config(monkeypatch):
     assert adapter.reply_delivery_policy(
         voice_event, "hi", voice_mode="off", already_sent=True
     ).send_voice_reply is False
+
+
+def test_line_voice_turn_gates_text_streaming_before_content_is_emitted():
+    """Regression: with streaming enabled, streamed text is marked
+    already_sent once delivered and can't be retracted, so a smart-voice
+    turn must disable streaming up front (voice + duplicate text bug)."""
+    adapter = _adapter()
+    runner = _runner(adapter)
+
+    runner._observe_inbound_message(_event(MessageType.VOICE))
+    assert runner._suppress_text_streaming_for_voice(_event(MessageType.VOICE).source) is True
+
+    # A text turn from the same participant re-enables streaming.
+    runner._observe_inbound_message(_event(MessageType.TEXT))
+    assert runner._suppress_text_streaming_for_voice(_event(MessageType.TEXT).source) is False
+
+
+def test_line_streaming_not_gated_when_smart_modality_disabled():
+    adapter = _adapter(smart_modality=False)
+    runner = _runner(adapter)
+
+    runner._observe_inbound_message(_event(MessageType.VOICE))
+    assert runner._suppress_text_streaming_for_voice(_event(MessageType.VOICE).source) is False
+
+
+@pytest.mark.asyncio
+async def test_streaming_enabled_smart_voice_turn_has_no_duplicate_text(monkeypatch, tmp_path):
+    """Integration-style walk of the streaming-enabled smart-voice path:
+    the streaming gate fires before content is emitted, the reply goes out
+    as exactly one voice message, and no text is ever delivered."""
+    adapter = _adapter()
+    runner = _runner(adapter)
+    event = _event(MessageType.VOICE)
+
+    sent_text = []
+    sent_voice = []
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        sent_text.append(content)
+        return SendResult(success=True, message_id="t1")
+
+    async def fake_send_voice(**kwargs):
+        sent_voice.append(kwargs)
+        return SendResult(success=True, message_id="v1")
+
+    monkeypatch.setattr(adapter, "send", fake_send)
+    monkeypatch.setattr(adapter, "send_voice", fake_send_voice)
+
+    audio_path = tmp_path / "voice.mp3"
+    audio_path.write_bytes(b"audio")
+
+    def fake_tts(*, text, output_path):
+        return '{"success": true, "file_path": "' + str(audio_path) + '"}'
+
+    monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", fake_tts)
+    monkeypatch.setattr("tools.tts_tool._strip_markdown_for_tts", lambda text: text)
+
+    # 1. Inbound dispatch observes the voice turn (runs before the agent).
+    runner._observe_inbound_message(event)
+
+    # 2. Streaming setup consults the gate and disables text streaming, so
+    #    the final text is never delivered by the stream consumer and the
+    #    turn ends with already_sent=False.
+    streaming_gated = runner._suppress_text_streaming_for_voice(event.source)
+    assert streaming_gated is True
+    already_sent = False
+
+    # 3. Final delivery: voice reply sent, text suppressed by policy.
+    response = "final answer"
+    assert runner._should_send_voice_reply(event, response, [], already_sent=already_sent) is True
+    voice_sent = await runner._send_voice_reply(event, response)
+    assert voice_sent is True
+    if runner._should_suppress_text_after_voice_reply(
+        event, response, voice_sent, already_sent=already_sent
+    ):
+        response = None
+    if response is not None:
+        await adapter.send(event.source.chat_id, response)
+
+    assert len(sent_voice) == 1
+    assert sent_text == []
 
 
 def test_line_env_enablement_seeds_smart_modality_toggle(monkeypatch):

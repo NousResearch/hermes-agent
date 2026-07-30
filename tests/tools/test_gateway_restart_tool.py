@@ -375,72 +375,80 @@ def test_legacy_module_without_top_level_register_would_not_be_discovered(
 def test_get_tool_definitions_returns_request_gateway_restart_schema_when_authorized(
     restore_registry_state, monkeypatch
 ):
-    """End-to-end: with authorization env in place and the 'gateway' toolset
-    enabled, ``model_tools.get_tool_definitions(...)`` returns the
-    request_gateway_restart schema — proving the tool is reachable through
-    the model surface, not just present in the registry.
+    """End-to-end: with realistic foreground session authorization conditions in
+    place and the 'gateway' toolset enabled, ``model_tools.get_tool_definitions(...)``
+    returns the request_gateway_restart schema — proving the tool reaches the model
+    surface through genuine check_fn evaluation without patching check_fn or registry.
     """
-    import importlib
     import model_tools
+    from tools.registry import invalidate_check_fn_cache
 
-    # Re-import to ensure the cached tool-definition state is fresh after
-    # our restore_registry_state fixture ran.
-    importlib.reload(model_tools)
+    model_tools._clear_tool_defs_cache()
+    invalidate_check_fn_cache()
 
-    # Mock the conditions that authorize the tool visibility check.
-    monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    try:
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "c1")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "dm")
+        monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-1")
+        monkeypatch.setenv("HERMES_SESSION_MESSAGE_ID", "m1")
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
 
-    # Patch the authorization surface that tools.gateway_restart_tool probes
-    # via lazy imports; returning True / non-empty here is what the production
-    # flow does for a real foreground Gateway turn.
-    monkeypatch.setattr(
-        "agent.delegation_context.is_delegated_child_process_context",
-        lambda: False,
-    )
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        try:
+            from agent.delegation_context import KANBAN_ENV_KEYS
+            for k in KANBAN_ENV_KEYS:
+                monkeypatch.delenv(k, raising=False)
+        except Exception:
+            pass
 
-    # _resolve_current_source reads contextvars that aren't propagated by
-    # pytest's thread model; stub it via the module's own _resolve_current_source.
-    from tools.gateway_restart_tool import _resolve_current_source
-    from gateway.config import Platform
-    from gateway.session import SessionSource
+        monkeypatch.setattr(
+            "agent.delegation_context.is_delegated_child_process_context",
+            lambda: False,
+        )
 
-    fake_source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="c1",
-        chat_type="dm",
-        user_id="user-1",
-        message_id="m1",
-    )
-    monkeypatch.setattr(
-        "tools.gateway_restart_tool._resolve_current_source",
-        lambda: fake_source,
-    )
-    # Authorization check_fn path: the runner policy re-check needs a non-None
-    # result; mock it to skip the second-pass policy lookup.
-    monkeypatch.setattr(
-        "gateway.run._gateway_runner_ref", lambda: None,
-        raising=False,
-    )
+        monkeypatch.setattr(
+            "gateway.run._gateway_runner_ref",
+            lambda: None,
+            raising=False,
+        )
 
-    # With no runners alive, check_fn returns False — so we also assert the
-    # tool shows up when the env IS authorized but stripped-of-runner. This
-    # proves the schema is at least listed in the registry/discovery surface.
-    defs = model_tools.get_tool_definitions(
-        enabled_toolsets=["gateway"], quiet_mode=True,
-    )
-    names = [d.get("function", {}).get("name") for d in defs]
-    # The schema is in the registry; whether it surfaces under get_tool_definitions
-    # depends on check_fn visibility, which we mock-allow by directly asserting
-    # registry membership as the authoritative list of definitions:
-    from tools.registry import registry
-    assert "request_gateway_restart" in registry._tools
-    # And confirm the registry toolset alias is correct:
-    assert registry._tools["request_gateway_restart"].toolset == "gateway"
-    # The names list will include the tool only if check_fn passes; this is
-    # the documented visibility contract and we test it below in a relaxed
-    # version.
-    assert isinstance(names, list)
+        model_tools._clear_tool_defs_cache()
+        invalidate_check_fn_cache()
+
+        defs = model_tools.get_tool_definitions(
+            enabled_toolsets=["gateway"], quiet_mode=True,
+        )
+        tool_names = {
+            d.get("function", {}).get("name")
+            for d in defs
+            if d.get("type") == "function" or "function" in d
+        }
+
+        assert "request_gateway_restart" in tool_names, (
+            "request_gateway_restart MUST be returned by model_tools.get_tool_definitions() "
+            "when foreground Gateway session authorization conditions are met."
+        )
+
+        matching_defs = [
+            d for d in defs
+            if d.get("function", {}).get("name") == "request_gateway_restart"
+        ]
+        assert len(matching_defs) >= 1
+
+        target_def = matching_defs[0]
+        assert target_def.get("type") == "function"
+        fn_info = target_def.get("function", {})
+        assert fn_info.get("name") == "request_gateway_restart"
+
+        params = fn_info.get("parameters", {})
+        assert isinstance(params, dict)
+        assert params.get("type") == "object"
+
+    finally:
+        model_tools._clear_tool_defs_cache()
+        invalidate_check_fn_cache()
 
 
 # ---------------------------------------------------------------------------

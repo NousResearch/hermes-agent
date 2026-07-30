@@ -40,6 +40,12 @@ class RecordingBoundary extends Component<{ children: ReactNode }, { error: Erro
   }
 }
 
+const lookupErrors = [
+  ['useClientLookup', lookupError],
+  ['tapClientLookup', new Error('tapClientLookup: Index 2 out of bounds (length: 2)')],
+  ['tapClientResource', new Error('tapClientResource: Index 2 out of bounds (length: 2)')]
+] as const
+
 describe('MessageRenderBoundary', () => {
   it('renders children when nothing throws', () => {
     render(
@@ -51,12 +57,12 @@ describe('MessageRenderBoundary', () => {
     expect(screen.getByText('content')).toBeTruthy()
   })
 
-  it('swallows the transient useClientLookup out-of-bounds store race', () => {
+  it.each(lookupErrors)('swallows the transient %s out-of-bounds store race', (_label, error) => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     const { container } = render(
       <MessageRenderBoundary resetKey="a">
-        <Boom error={lookupError} />
+        <Boom error={error} />
       </MessageRenderBoundary>
     )
 

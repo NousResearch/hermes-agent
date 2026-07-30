@@ -23,7 +23,7 @@ interface ErrorBoundaryState {
 // Some assistant-ui lookup races escape the message-local boundary and reach
 // the root. Retry only that exact transient error class, never arbitrary render
 // failures, and cap retries so a persistent failure still exposes the fallback.
-const ASSISTANT_UI_LOOKUP_ERROR = /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/i
+const ASSISTANT_UI_LOOKUP_ERROR = /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/
 const MAX_AUTO_RECOVERIES = 3
 const AUTO_RECOVERY_WINDOW_MS = 5_000
 
@@ -32,11 +32,21 @@ const isTransientAssistantUiLookupError = (error: Error): boolean => ASSISTANT_U
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { error: null }
   private autoRecoveryCount = 0
+  private autoRecoveryPending = false
   private autoRecoveryTimer: number | null = null
   private autoRecoveryWindowStart = 0
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { error }
+  }
+
+  componentDidMount() {
+    // StrictMode replays mount lifecycles in development. Its synthetic
+    // componentWillUnmount clears the timer scheduled by componentDidCatch,
+    // so restore the still-owned recovery on the matching remount.
+    if (this.autoRecoveryPending && this.autoRecoveryTimer === null) {
+      this.scheduleAutoRecovery()
+    }
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
@@ -46,6 +56,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
     if (this.props.label === 'root' && isTransientAssistantUiLookupError(error) && this.takeAutoRecoveryAttempt()) {
       console.warn(`${tag} auto-recovering from assistant-ui lookup render race`, error.message)
+      this.autoRecoveryPending = true
       this.scheduleAutoRecovery()
     }
   }
@@ -56,6 +67,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   reset = () => {
     this.clearAutoRecoveryTimer()
+    this.autoRecoveryPending = false
     this.autoRecoveryCount = 0
     this.autoRecoveryWindowStart = 0
     this.setState({ error: null })
@@ -64,7 +76,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   private takeAutoRecoveryAttempt(): boolean {
     const now = Date.now()
 
-    if (now - this.autoRecoveryWindowStart > AUTO_RECOVERY_WINDOW_MS) {
+    if (this.autoRecoveryCount === 0 || now - this.autoRecoveryWindowStart >= AUTO_RECOVERY_WINDOW_MS) {
       this.autoRecoveryWindowStart = now
       this.autoRecoveryCount = 0
     }
@@ -88,6 +100,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   private autoRecover = () => {
     this.autoRecoveryTimer = null
+    this.autoRecoveryPending = false
     this.setState({ error: null })
   }
 
@@ -104,6 +117,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
     return <RootErrorFallback error={error} reset={this.reset} />
   }
+}
+
+export function RootErrorBoundary({ children }: { children: ReactNode }) {
+  return <ErrorBoundary label="root">{children}</ErrorBoundary>
 }
 
 function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {

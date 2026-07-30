@@ -147,7 +147,9 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
 @router.post("/api/mcp/servers/{name}/test")
 async def test_mcp_server(name: str, profile: Optional[str] = None):
     """Connect to the server, list its tools, disconnect."""
-    from hermes_cli.mcp_config import _get_mcp_servers, _oauth_tokens_present, _probe_single_server
+    from hermes_cli.mcp_config import (
+        _get_mcp_servers, _oauth_tokens_present, _probe_single_server, _sanitize_mcp_probe_error,
+    )
 
     servers = await scoped_to_thread(profile, _get_mcp_servers)
     if name not in servers:
@@ -170,7 +172,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     try:  # probe blocks on a dedicated MCP event loop — keep it off the FastAPI loop
         tools, token_present = await asyncio.to_thread(_probe_scoped)
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "tools": []}
+        return {"ok": False, "error": _sanitize_mcp_probe_error(exc, servers[name]), "tools": []}
     if not token_present:
         return {"ok": False, "error": "OAuth authentication required — no token found.", "tools": []}
     # Optional per-tool schema size (chars) for the desktop's cost overlay;

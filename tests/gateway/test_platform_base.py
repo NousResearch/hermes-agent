@@ -55,6 +55,19 @@ class TestInboundMediaSizeCap:
         with pytest.raises(ValueError, match="Inbound image payload is too large"):
             cache_image_from_bytes(self._PNG, ext=".png")
 
+    def test_negative_config_disables_cap_and_accepts_image(self, monkeypatch, tmp_path):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"gateway": {"max_inbound_media_bytes": -1}},
+        ):
+            assert base.get_inbound_media_max_bytes() == 0
+            path = base.cache_image_from_bytes(self._PNG, ext=".png")
+
+        assert os.path.exists(path)
+
 
 class TestSecretCaptureGuidance:
     def test_gateway_secret_capture_message_points_to_local_setup(self):

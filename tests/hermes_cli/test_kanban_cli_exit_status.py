@@ -34,6 +34,7 @@ def _run_hermes(home: Path, *args: str, marker: bool = False) -> subprocess.Comp
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
 

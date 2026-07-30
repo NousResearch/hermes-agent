@@ -1107,7 +1107,9 @@ class MoAChatCompletions:
         # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
         agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
         agg_response = call_llm(
-            task="moa_aggregator", messages=agg_messages, temperature=prepared["aggregator_temperature"],
+            task="moa_aggregator",
+            _skip_auxiliary_observers=True,
+            messages=agg_messages, temperature=prepared["aggregator_temperature"],
             max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,

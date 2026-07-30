@@ -7245,9 +7245,10 @@ def _stamp_latency_once(latency_info: Optional[Dict[str, int]], key: str, starte
 
 
 class _AuxiliaryObserverContext:
-    def __init__(self):
+    def __init__(self, *, skip_observers: bool = False):
         self.auxiliary_call_id = str(uuid.uuid4())
         self.attempt_index = 0
+        self.skip_observers = skip_observers
 
     def next_attempt(self) -> int:
         attempt_index = self.attempt_index
@@ -7259,14 +7260,16 @@ _auxiliary_observer_context: contextvars.ContextVar[
     Optional[_AuxiliaryObserverContext]
 ] = contextvars.ContextVar("auxiliary_observer_context", default=None)
 
-_MAIN_LOOP_OBSERVED_AUXILIARY_TASKS = frozenset({"moa_aggregator"})
-
 
 def _auxiliary_observer_lifecycle(call):
     if inspect.iscoroutinefunction(call):
         @functools.wraps(call)
         async def _async_wrapper(*args, **kwargs):
-            token = _auxiliary_observer_context.set(_AuxiliaryObserverContext())
+            token = _auxiliary_observer_context.set(
+                _AuxiliaryObserverContext(
+                    skip_observers=bool(kwargs.get("_skip_auxiliary_observers")),
+                )
+            )
             try:
                 return await call(*args, **kwargs)
             finally:
@@ -7276,7 +7279,11 @@ def _auxiliary_observer_lifecycle(call):
 
     @functools.wraps(call)
     def _sync_wrapper(*args, **kwargs):
-        token = _auxiliary_observer_context.set(_AuxiliaryObserverContext())
+        token = _auxiliary_observer_context.set(
+            _AuxiliaryObserverContext(
+                skip_observers=bool(kwargs.get("_skip_auxiliary_observers")),
+            )
+        )
         try:
             return call(*args, **kwargs)
         finally:
@@ -7295,6 +7302,31 @@ def _auxiliary_session_id() -> str:
     except Exception:
         pass
     return ""
+
+
+def _auxiliary_observer_correlation(
+    task: Optional[str],
+    auxiliary_call_id: str,
+) -> Dict[str, str]:
+    try:
+        from agent import relay_runtime
+
+        turn = relay_runtime.active_turn()
+    except Exception:
+        turn = None
+    if turn is not None:
+        return {
+            "session_id": str(turn.lease.session_id or ""),
+            "task_id": str(turn.task_id or ""),
+            "turn_id": str(turn.turn_id or ""),
+            "platform": str(turn.lease.platform or ""),
+        }
+    return {
+        "session_id": _auxiliary_session_id(),
+        "task_id": task or "auxiliary",
+        "turn_id": auxiliary_call_id,
+        "platform": "",
+    }
 
 
 def _auxiliary_client_base_url(client: Any, fallback: Optional[str] = None) -> str:
@@ -7369,14 +7401,20 @@ def _auxiliary_attempt_api_mode(
 
 
 def _auxiliary_observers_enabled(task: Optional[str]) -> bool:
-    if task in _MAIN_LOOP_OBSERVED_AUXILIARY_TASKS:
+    observer = _auxiliary_observer_context.get()
+    if observer is not None and observer.skip_observers:
         return False
     try:
         from hermes_cli import plugins
 
         plugins.discover_plugins()
+    except Exception:
+        pass
+    try:
+        from hermes_cli import lifecycle
+
         return any(
-            plugins.has_hook(hook_name)
+            lifecycle.has_hook(hook_name)
             for hook_name in (
                 "pre_api_request",
                 "post_api_request",
@@ -7411,17 +7449,19 @@ def _auxiliary_attempt_metadata(
         observer_base_url = ""
     actual_provider = _auxiliary_attempt_provider(provider, base_url)
     actual_api_mode = _auxiliary_attempt_api_mode(client, api_mode, base_url)
+    relay_context = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    auxiliary_call_id = str(
+        relay_context.get("request_id") or observer.auxiliary_call_id
+    )
     metadata = {
         "request_kind": "auxiliary",
         "auxiliary_task": task or "",
-        "auxiliary_call_id": observer.auxiliary_call_id,
+        "auxiliary_call_id": auxiliary_call_id,
         "api_request_id": str(uuid.uuid4()),
         "attempt_index": attempt_index,
+        "retry_count": attempt_index,
         "attempt_reason": attempt_reason,
-        "session_id": _auxiliary_session_id(),
-        "task_id": task or "auxiliary",
-        "turn_id": observer.auxiliary_call_id,
-        "platform": "",
+        **_auxiliary_observer_correlation(task, auxiliary_call_id),
         "provider": actual_provider,
         "model": str(kwargs.get("model") or ""),
         "base_url": observer_base_url,
@@ -7433,9 +7473,9 @@ def _auxiliary_attempt_metadata(
 
 def _invoke_auxiliary_observer(hook_name: str, **kwargs: Any) -> None:
     try:
-        from hermes_cli import plugins
+        from hermes_cli import lifecycle
 
-        plugins.invoke_hook(hook_name, **kwargs)
+        lifecycle.invoke_hook(hook_name, **kwargs)
     except Exception:
         pass
 
@@ -7473,7 +7513,7 @@ def _finish_auxiliary_observer_error(
     *,
     started_at: float,
     request: Dict[str, Any],
-    error: Exception,
+    error: BaseException,
     attempt_reason: str,
 ) -> None:
     try:
@@ -7692,6 +7732,7 @@ def call_llm(
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
     latency_info: Optional[Dict[str, int]] = None,
+    _skip_auxiliary_observers: bool = False,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -8005,6 +8046,7 @@ async def async_call_llm(
     temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[Dict[str, str]] = None,
+    _skip_auxiliary_observers: bool = False,
 ) -> Any:
     """Run an asynchronous auxiliary LLM request under the configured limit."""
     semaphore = _acquire_async_aux_semaphore(task)

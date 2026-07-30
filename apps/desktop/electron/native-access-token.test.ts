@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-88,547
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 

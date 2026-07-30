@@ -1509,9 +1509,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # Instead, we keep the SQLite timeout short (1s) and handle retries at the
     # application level with random jitter, which naturally staggers competing
     # writers and avoids the convoy.
-    _WRITE_MAX_RETRIES = 15
+    #
+    # Patience is TIME-based, not attempt-based.  A shared state.db is
+    # legitimately held for multi-second stretches by sibling Hermes
+    # processes: a TRUNCATE checkpoint at close on a large WAL, VACUUM after
+    # an auto-prune, offline recovery, or an older still-running process
+    # whose FTS maintenance predates the bounded-merge protocol (every
+    # `hermes update` leaves mixed-version processes sharing the DB until
+    # the old ones exit).  An attempt-counted budget (~15s incidental worst
+    # case) silently loses that race and surfaces as
+    # session_persistence_failed — a destroyed turn — even though the store
+    # is healthy and merely busy (#74478).
+    #
+    # Two budgets: routine writes give up after _WRITE_PATIENCE_S so
+    # background/UI callers don't stall excessively, while transcript
+    # writes (append_message / session-row creation — the ones whose
+    # failure aborts the user's turn) ride out anything shorter than
+    # _TRANSCRIPT_WRITE_PATIENCE_S.  Jitter stays small for the first
+    # _WRITE_RETRY_SLOW_AFTER_S (fast reclaim on millisecond contention),
+    # then backs off so a long hold isn't hammered with BEGIN IMMEDIATE
+    # attempts.
+    _WRITE_PATIENCE_S = 20.0
+    _TRANSCRIPT_WRITE_PATIENCE_S = 60.0
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
+    _WRITE_RETRY_SLOW_AFTER_S = 2.0
+    _WRITE_RETRY_SLOW_MIN_S = 0.250  # 250ms
+    _WRITE_RETRY_SLOW_MAX_S = 1.000  # 1s
     # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Retain the existing coarse 1000-write maintenance cadence, but replace
@@ -1667,8 +1691,46 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()
 
+            def _connect_and_init_with_lock_patience():
+                # Lock contention during open: _init_schema's DDL/reconcile
+                # statements run on a 1s-timeout connection with no retry, so
+                # a sibling process holding the write lock (VACUUM, TRUNCATE
+                # checkpoint at close, a long FTS pass from an older
+                # still-running install) used to fail the ENTIRE open —
+                # callers then disable persistence for the whole run
+                # ("Failed to initialize SessionDB ... database is locked",
+                # #74478). The store is healthy; wait it out with the same
+                # jittered patience the write path uses. Non-lock errors
+                # (including the malformed class) propagate immediately.
+                deadline = time.monotonic() + self._WRITE_PATIENCE_S
+                while True:
+                    try:
+                        _connect_and_init()
+                        return
+                    except sqlite3.OperationalError as exc:
+                        err = str(exc).lower()
+                        if "locked" not in err and "busy" not in err:
+                            raise
+                        try:
+                            if self._conn is not None:
+                                self._conn.close()
+                        except Exception:
+                            pass
+                        now = time.monotonic()
+                        if now >= deadline:
+                            raise
+                        time.sleep(
+                            min(
+                                random.uniform(
+                                    self._WRITE_RETRY_SLOW_MIN_S,
+                                    self._WRITE_RETRY_SLOW_MAX_S,
+                                ),
+                                max(deadline - now, 0.001),
+                            )
+                        )
+
             try:
-                _connect_and_init()
+                _connect_and_init_with_lock_patience()
             except sqlite3.DatabaseError as exc:
                 # The malformed-schema class (e.g. a duplicate sqlite_master
                 # row for messages_fts) fails on the very first statement —
@@ -1691,7 +1753,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 report = repair_state_db_schema(self.db_path)
                 if not report.get("repaired"):
                     raise
-                _connect_and_init()
+                _connect_and_init_with_lock_patience()
 
             # NOTE: the v23 FTS optimization is OPT-IN (`hermes db optimize`),
             # never auto-started on open. Legacy installs keep their working
@@ -2029,6 +2091,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _execute_write(
         self,
         fn: Callable[[sqlite3.Connection], T],
+        patience_s: Optional[float] = None,
     ) -> T:
         """Execute a write transaction with BEGIN IMMEDIATE and jitter retry.
 
@@ -2039,13 +2102,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         BEGIN IMMEDIATE acquires the WAL write lock at transaction start
         (not at commit time), so lock contention surfaces immediately.
         On ``database is locked``, we release the Python lock, sleep a
-        random 20-150ms, and retry — breaking the convoy pattern that
+        random jitter, and retry — breaking the convoy pattern that
         SQLite's built-in deterministic backoff creates.
+
+        *patience_s* is the total time budget for lock retries (default
+        ``_WRITE_PATIENCE_S``).  Transcript-critical writes pass
+        ``_TRANSCRIPT_WRITE_PATIENCE_S`` so a sibling process holding the
+        lock for a legitimate long operation (VACUUM, TRUNCATE checkpoint,
+        pre-bounded-merge FTS optimize from an older still-running
+        install) exhausts routine writers' patience without destroying a
+        user turn.  Jitter starts small (20-150ms) for fast reclaim on
+        millisecond contention and backs off to 250ms-1s once the lock has
+        been held longer than ``_WRITE_RETRY_SLOW_AFTER_S``.
 
         Returns whatever *fn* returns.
         """
-        last_err: Optional[Exception] = None
-        for attempt in range(self._WRITE_MAX_RETRIES):
+        if patience_s is None:
+            patience_s = self._WRITE_PATIENCE_S
+        deadline = time.monotonic() + patience_s
+        while True:
             try:
                 with self._lock:
                     self._conn.execute("BEGIN IMMEDIATE")
@@ -2068,15 +2143,32 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
                 if "locked" in err_msg or "busy" in err_msg:
-                    last_err = exc
-                    if attempt < self._WRITE_MAX_RETRIES - 1:
-                        jitter = random.uniform(
-                            self._WRITE_RETRY_MIN_S,
-                            self._WRITE_RETRY_MAX_S,
-                        )
-                        time.sleep(jitter)
+                    now = time.monotonic()
+                    if now < deadline:
+                        elapsed = now - (deadline - patience_s)
+                        if elapsed >= self._WRITE_RETRY_SLOW_AFTER_S:
+                            jitter = random.uniform(
+                                self._WRITE_RETRY_SLOW_MIN_S,
+                                self._WRITE_RETRY_SLOW_MAX_S,
+                            )
+                        else:
+                            jitter = random.uniform(
+                                self._WRITE_RETRY_MIN_S,
+                                self._WRITE_RETRY_MAX_S,
+                            )
+                        # Never overshoot the deadline by a full slow-jitter.
+                        time.sleep(min(jitter, max(deadline - now, 0.001)))
                         continue
-                # Non-lock error or retries exhausted — propagate.
+                    # Patience exhausted — say what actually happened so the
+                    # surfaced error doesn't read as disk/permission damage.
+                    raise sqlite3.OperationalError(
+                        f"database is locked (another Hermes process held the "
+                        f"state.db write lock for over {patience_s:.0f}s — "
+                        "likely a long maintenance operation such as VACUUM, "
+                        "a large WAL checkpoint, or an older pre-update "
+                        "process; the database itself is healthy)"
+                    ) from exc
+                # Non-lock error — propagate.
                 raise
             except sqlite3.DatabaseError as exc:
                 # Corrupt FTS shadow tables make every write raise the
@@ -2091,10 +2183,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if not self._try_runtime_fts_rebuild(exc):
                     raise
                 continue
-        # Retries exhausted (shouldn't normally reach here).
-        raise last_err or sqlite3.OperationalError(
-            "database is locked after max retries"
-        )
 
     @staticmethod
     def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
@@ -2452,7 +2540,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        )""",
                     (session_id,),
                 )
-        self._execute_write(_do)
+        # Session-row creation is transcript-critical: if it fails, the
+        # first flush of a new session fails and the turn is aborted as
+        # session_persistence_failed. Ride out long sibling holds.
+        self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""
@@ -5287,7 +5378,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
             return msg_id
 
-        return self._execute_write(_do)
+        # Transcript append is THE critical write: its failure aborts the
+        # user's turn (session_persistence_failed). Use the long patience so
+        # a sibling process legitimately holding the write lock for seconds
+        # (VACUUM, TRUNCATE checkpoint at close, an older pre-bounded-merge
+        # process's FTS optimize) can't destroy a healthy turn (#74478).
+        return self._execute_write(
+            _do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S
+        )
 
     def set_latest_matching_message_display_kind(
         self, session_id: str, *, role: str, content: str, display_kind: str,

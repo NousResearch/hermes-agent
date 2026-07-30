@@ -326,3 +326,34 @@ test('an unusable keychain fails the write loudly and writes nothing', () => {
   // ...and must not clobber the tokens already on disk.
   assert.equal(broken.fileText(), before)
 })
+
+test('an encrypt that returns null is refused rather than blanking the stored entry', () => {
+  const existing = createFakeDisk()
+
+  persistNativeTokenSet(GATEWAY, TOKENS, existing.io)
+
+  const before = existing.fileText()
+  const nulled = createFakeDisk(before, { encrypt: () => null })
+  let writes = 0
+
+  // Spy that still delegates, so a stray write would show up in BOTH the
+  // counter and the file text.
+  const io = {
+    ...nulled.io,
+    writeStoreText: (text: string) => {
+      writes += 1
+      nulled.io.writeStoreText(text)
+    }
+  }
+
+  // A quiet null is the same failure as a throw and must be just as loud.
+  assert.throws(
+    () => persistNativeTokenSet(GATEWAY, { ...TOKENS, accessToken: 'AT-new' }, io),
+    /refusing to overwrite stored native tokens/
+  )
+  assert.equal(writes, 0, 'the store file must not be written at all')
+  // Byte-for-byte unchanged...
+  assert.equal(nulled.fileText(), before)
+  // ...and the original token set still loads, refresh token intact.
+  assert.deepEqual(loadNativeTokenSet(GATEWAY, createFakeDisk(before).io), TOKENS)
+})

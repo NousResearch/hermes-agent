@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import sqlite3
 import subprocess
@@ -32,6 +33,43 @@ def _python_project(root: Path) -> None:
 def _create_verification_db(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         _ensure_schema(conn)
+
+
+def _sidecar_paths(db_path: Path) -> list[Path]:
+    return [
+        db_path.with_name(f"{db_path.name}-wal"),
+        db_path.with_name(f"{db_path.name}-shm"),
+        db_path.with_name(f"{db_path.name}-journal"),
+    ]
+
+
+def _readonly_schema_snapshot(db_path: Path) -> dict[str, object]:
+    with sqlite3.connect(db_path) as conn:
+        sqlite_master = conn.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+        ).fetchall()
+        table_info = {
+            table_name: conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            for table_name in ("verification_state", "verification_events")
+        }
+    return {
+        "sha256": hashlib.sha256(db_path.read_bytes()).hexdigest(),
+        "sqlite_master": sqlite_master,
+        "table_info": table_info,
+        "sidecars": {str(path): path.exists() for path in _sidecar_paths(db_path)},
+    }
+
+
+def _assert_readonly_snapshot_unchanged(
+    db_path: Path,
+    before: dict[str, object],
+) -> None:
+    after = _readonly_schema_snapshot(db_path)
+    assert after["sha256"] == before["sha256"]
+    assert after["sqlite_master"] == before["sqlite_master"]
+    assert after["table_info"] == before["table_info"]
+    assert after["sidecars"] == before["sidecars"]
+    assert not any(path.exists() for path in _sidecar_paths(db_path))
 
 
 def _insert_verification_event(
@@ -315,6 +353,136 @@ def test_readonly_status_returns_unverified_for_missing_schema_without_creating_
     with sqlite3.connect(db_path) as conn:
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     assert tables == []
+
+
+def test_readonly_status_returns_unverified_for_partial_state_schema_without_repair(tmp_path):
+    db_path = tmp_path / "verification_evidence.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE verification_events (
+                id INTEGER PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                root TEXT NOT NULL,
+                command TEXT NOT NULL,
+                canonical_command TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                status TEXT NOT NULL,
+                exit_code INTEGER NOT NULL,
+                output_summary TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE verification_state (
+                session_id TEXT NOT NULL,
+                root TEXT NOT NULL,
+                last_event_id INTEGER,
+                last_edit_at TEXT,
+                PRIMARY KEY (session_id, root)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO verification_events(
+                id, created_at, session_id, cwd, root, command, canonical_command,
+                kind, scope, status, exit_code, output_summary
+            ) VALUES (1, '2026-01-01T00:00:00+00:00', 's1', ?, ?,
+                      'python -m pytest', 'pytest', 'test', 'full', 'passed', 0, 'summary')
+            """,
+            (str(tmp_path), str(tmp_path)),
+        )
+        conn.execute(
+            """
+            INSERT INTO verification_state(
+                session_id, root, last_event_id, last_edit_at
+            ) VALUES ('s1', ?, 1, NULL)
+            """,
+            (str(tmp_path),),
+        )
+        conn.commit()
+    before = _readonly_schema_snapshot(db_path)
+
+    status = verification_status_readonly(session_id="s1", root=tmp_path, db_path=db_path)
+
+    assert status == {
+        "status": "unverified",
+        "evidence": None,
+        "root": str(tmp_path),
+        "session_id": "s1",
+        "changed_paths": [],
+    }
+    _assert_readonly_snapshot_unchanged(db_path, before)
+
+
+def test_readonly_status_returns_unverified_for_partial_events_schema_without_repair(tmp_path):
+    db_path = tmp_path / "verification_evidence.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE verification_events (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                root TEXT NOT NULL,
+                command TEXT NOT NULL,
+                canonical_command TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                status TEXT NOT NULL,
+                exit_code INTEGER NOT NULL,
+                output_summary TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE verification_state (
+                session_id TEXT NOT NULL,
+                root TEXT NOT NULL,
+                last_event_id INTEGER,
+                last_edit_at TEXT,
+                changed_paths_json TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY (session_id, root)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO verification_events(
+                id, session_id, cwd, root, command, canonical_command,
+                kind, scope, status, exit_code, output_summary
+            ) VALUES (1, 's1', ?, ?, 'python -m pytest', 'pytest', 'test',
+                      'full', 'passed', 0, 'summary')
+            """,
+            (str(tmp_path), str(tmp_path)),
+        )
+        conn.execute(
+            """
+            INSERT INTO verification_state(
+                session_id, root, last_event_id, last_edit_at, changed_paths_json
+            ) VALUES ('s1', ?, 1, NULL, '[]')
+            """,
+            (str(tmp_path),),
+        )
+        conn.commit()
+    before = _readonly_schema_snapshot(db_path)
+
+    status = verification_status_readonly(session_id="s1", root=tmp_path, db_path=db_path)
+
+    assert status == {
+        "status": "unverified",
+        "evidence": None,
+        "root": str(tmp_path),
+        "session_id": "s1",
+        "changed_paths": [],
+    }
+    _assert_readonly_snapshot_unchanged(db_path, before)
 
 
 def test_readonly_status_returns_unverified_when_state_is_missing(tmp_path):

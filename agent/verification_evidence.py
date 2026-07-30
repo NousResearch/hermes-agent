@@ -32,6 +32,33 @@ _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 _REQUIRED_STATUS_TABLES = frozenset({"verification_state", "verification_events"})
+_REQUIRED_STATUS_COLUMNS: dict[str, frozenset[str]] = {
+    "verification_state": frozenset(
+        {
+            "session_id",
+            "root",
+            "last_event_id",
+            "last_edit_at",
+            "changed_paths_json",
+        }
+    ),
+    "verification_events": frozenset(
+        {
+            "id",
+            "created_at",
+            "session_id",
+            "cwd",
+            "root",
+            "command",
+            "canonical_command",
+            "kind",
+            "scope",
+            "status",
+            "exit_code",
+            "output_summary",
+        }
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -479,6 +506,20 @@ def _fetch_status_rows(
     return state, event
 
 
+def _readonly_status_schema_is_complete(conn: sqlite3.Connection) -> bool:
+    """Return whether the read-only status path can safely query the ledger."""
+
+    for table_name, required_columns in _REQUIRED_STATUS_COLUMNS.items():
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        except sqlite3.Error:
+            return False
+        observed_columns = {row["name"] for row in rows}
+        if not required_columns.issubset(observed_columns):
+            return False
+    return True
+
+
 def _sqlite_readonly_uri(path: Path) -> str:
     return f"file:{quote(str(path), safe='/:')}?mode=ro"
 
@@ -705,6 +746,8 @@ def verification_status_readonly(
         ).fetchall()
         existing_tables = {row["name"] for row in rows}
         if not _REQUIRED_STATUS_TABLES.issubset(existing_tables):
+            return _unverified_status(session_id=sid, root=root_str)
+        if not _readonly_status_schema_is_complete(conn):
             return _unverified_status(session_id=sid, root=root_str)
         state, event = _fetch_status_rows(conn, session_id=sid, root=root_str)
         return _status_from_rows(session_id=sid, root=root_str, state=state, event=event)

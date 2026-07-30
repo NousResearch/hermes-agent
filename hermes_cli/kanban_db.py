@@ -5499,6 +5499,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
+                   AND status IN ('running', 'ready', 'blocked')
                    AND claim_lock = ?
                 """,
                 (result, now, task_id, expected_claim_lock),

@@ -2106,7 +2106,6 @@ class FeishuAdapter(BasePlatformAdapter):
                     actions.append(_btn(_btn_always, "approve_always"))
             actions.append(_btn(_btn_deny, "deny", "danger"))
             scope_note = "\n\n**Smart DENY:** owner override applies to this one operation only." if smart_denied else ""
->>>>>>> 7cf1b7eaa (feat(approval): native cross-platform approval delegation)
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
@@ -2116,11 +2115,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-<<<<<<< HEAD
                         "content": self._format_exec_approval(command, description, smart_denied),
-=======
-                        "content": f"```\n{cmd_preview}\n```\n**{_reason_label}:** {description}{scope_note}",
->>>>>>> 7cf1b7eaa (feat(approval): native cross-platform approval delegation)
                     },
                     {
                         "tag": "action",

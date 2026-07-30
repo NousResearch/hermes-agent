@@ -677,28 +677,44 @@ def _call_llm_for_enrichment(prompt: str) -> dict[str, Any] | None:
                 )
                 return None
         else:
-            # Fallback: first provider with a usable API key
-            for pid in PROVIDER_REGISTRY:
-                if pid in ("copilot", "lmstudio"):
-                    continue
-                resolved = _resolve_provider(pid)
+            # Default: use the main agent's configured provider
+            main_model_cfg = config.get("model", {})
+            main_provider = main_model_cfg.get("provider", "")
+            if main_provider:
+                resolved = _resolve_provider(main_provider)
                 if resolved:
-                    provider_name = pid
+                    provider_name = main_provider
                     api_key, base_url = resolved
-                    break
+            if not provider_name:
+                # Last resort: first provider with a usable API key
+                for pid in PROVIDER_REGISTRY:
+                    if pid in ("copilot", "lmstudio"):
+                        continue
+                    resolved = _resolve_provider(pid)
+                    if resolved:
+                        provider_name = pid
+                        api_key, base_url = resolved
+                        break
 
         if not provider_name:
             logger.warning("skill-graph: enrichment skipped — no provider with API key configured")
             return None
 
-        # Resolve model: enrichment uses a fast non-reasoning model
+        # Resolve model: enrichment config → main agent model → deepseek-chat
         try:
             config = load_config()
             sg_config2 = config.get("skills", {}).get("config", {}).get("skill-graph", {})
             enrichment_cfg2 = sg_config2.get("enrichment", {}) if isinstance(sg_config2, dict) else {}
-            model_name = enrichment_cfg2.get("model", "deepseek-v4-flash")
+            model_name = enrichment_cfg2.get("model", "")
+            if not model_name:
+                # Default to main agent's model, preferring a fast variant
+                main_model = config.get("model", {}).get("default", "")
+                if main_model:
+                    model_name = main_model
+            if not model_name:
+                model_name = "deepseek-chat"
         except Exception:
-            model_name = "deepseek-v4-flash"
+            model_name = "deepseek-chat"
 
         logger.debug("skill-graph: enrichment using provider=%s model=%s",
                      provider_name, model_name)

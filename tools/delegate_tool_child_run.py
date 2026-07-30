@@ -50,6 +50,28 @@ def _close_child(child: Any, log_message: str) -> None:
         if callable(close):
             close()
 
+def _run_child_in_workspace(child: Any, workspace_path: Optional[str], *args, **kwargs):
+    """Run a child with its logical cwd pinned to the parent's workspace.
+
+    ``workspace_path`` comes from ``_resolve_workspace_hint`` (parent-specific
+    fields only, never a bare ``os.getcwd()``), so pinning it is what keeps the
+    child's own cwd resolution — system prompt, context-file discovery, terminal
+    default — on the parent's workspace instead of on whatever directory the
+    gateway process happens to have been launched from. The reset goes through
+    the Token's own ContextVar (``token.var``) rather than importing the private
+    ``_SESSION_CWD`` module global, and it runs on every exit path so a crashed
+    child cannot leak its workspace into the caller's context.
+    """
+    if not workspace_path:
+        return child.run_conversation(*args, **kwargs)
+    from agent.runtime_cwd import set_session_cwd
+
+    token = set_session_cwd(workspace_path)
+    try:
+        return child.run_conversation(*args, **kwargs)
+    finally:
+        token.var.reset(token)
+
 def _with_children_lock(parent_agent: Any, op: str, child: Any) -> None:
     """``parent_agent._active_children.<op>(child)`` under the parent's lock when it has one."""
     lock = getattr(parent_agent, "_active_children_lock", None)
@@ -656,7 +678,8 @@ class _ChildRun:
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
+                return _run_child_in_workspace(
+                    child, getattr(child, "_delegate_workspace_path", None),
                     user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )
 

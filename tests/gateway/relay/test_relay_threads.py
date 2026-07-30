@@ -150,3 +150,65 @@ def test_event_from_wire_reply_to_absent_and_partial():
 # ── hello command manifest ───────────────────────────────────────────────
 
 
+
+
+# ── auto-thread routing feedback (send-result thread_id) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_captures_auto_thread_feedback():
+    """A send result carrying thread_id + auto_thread_name (the connector's
+    auto-thread egress policy routed the reply into a thread it created)
+    populates auto_thread_info_for_chat for the semantic-rename lane."""
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        stub.sent.append(action)
+        return {
+            "success": True,
+            "message_id": "m1",
+            "thread_id": "th-auto-1",
+            "auto_thread_name": "What is a duck",
+        }
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    result = await adapter.send("chan1", "quack")
+    assert result.success
+    assert adapter.auto_thread_info_for_chat("chan1") == (
+        "th-auto-1",
+        "What is a duck",
+    )
+    # Plain results (no auto-thread) leave no feedback for other chats.
+    assert adapter.auto_thread_info_for_chat("chan-other") is None
+
+
+@pytest.mark.asyncio
+async def test_send_without_thread_feedback_leaves_no_info():
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        return {"success": True, "message_id": "m2"}
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    await adapter.send("chan2", "hello")
+    assert adapter.auto_thread_info_for_chat("chan2") is None
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_feedback_is_bounded():
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        return {
+            "success": True,
+            "message_id": "m",
+            "thread_id": f"th-{action['chat_id']}",
+            "auto_thread_name": "n",
+        }
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    for i in range(300):
+        await adapter.send(f"c{i}", "x")
+    assert len(adapter._auto_thread_by_chat) <= 256
+    # Newest entries survive the bound.
+    assert adapter.auto_thread_info_for_chat("c299") == ("th-c299", "n")

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, Optional, cast
+from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
@@ -72,6 +72,11 @@ class RelayAdapter(BasePlatformAdapter):
         # recipient's author binding; we re-attach this user_id as
         # metadata.user_id on the outbound action so it can. See _capture_scope.
         self._dm_user_by_chat: Dict[str, str] = {}
+        # chat_id -> (thread_id, initial_name) of the auto-thread the CONNECTOR
+        # created for our most recent send into that chat (auto-thread routing
+        # feedback off SendResult — see send()). Consumed by the gateway's
+        # semantic thread-rename lane; bounded like the sibling caches.
+        self._auto_thread_by_chat: Dict[str, Tuple[str, str]] = {}
         # chat_id -> chat_type (e.g. "dm", "channel", "group") learned from the
         # inbound event. Used to reproduce native Slack's synthetic-DM-thread
         # suppression on the relay lane: a DM streaming reply carries
@@ -939,11 +944,40 @@ class RelayAdapter(BasePlatformAdapter):
             },
             platform=self._platform_by_chat.get(str(chat_id)),
         )
+        # Auto-thread routing feedback (contract §SendResult): when the
+        # connector's auto-thread egress policy routed this send into a
+        # thread it just created, the result carries thread_id (+ the
+        # initial name). The conversation was keyed on the PARENT channel —
+        # the thread didn't exist at ingest — so this is the only place the
+        # gateway learns where the reply landed. The semantic-rename lane
+        # (auto session title) reads it via auto_thread_info_for_chat.
+        try:
+            _at_thread = result.get("thread_id")
+            _at_name = result.get("auto_thread_name")
+            if _at_thread and _at_name:
+                self._auto_thread_by_chat[str(chat_id)] = (
+                    str(_at_thread),
+                    str(_at_name),
+                )
+                if len(self._auto_thread_by_chat) > 256:
+                    self._auto_thread_by_chat.pop(
+                        next(iter(self._auto_thread_by_chat)), None
+                    )
+        except Exception:  # noqa: BLE001 - feedback capture must never break send
+            pass
         return SendResult(
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
             error=result.get("error"),
         )
+
+    def auto_thread_info_for_chat(
+        self, chat_id: str
+    ) -> Optional[Tuple[str, str]]:
+        """(thread_id, initial_name) of the auto-thread the connector created
+        for the most recent send into *chat_id*, if any. Consumed by the
+        gateway's semantic thread-rename lane (auto session title)."""
+        return self._auto_thread_by_chat.get(str(chat_id))
 
     def _resolve_reply_to_for_send(
         self,

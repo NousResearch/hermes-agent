@@ -44,7 +44,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast
+from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
@@ -5328,7 +5328,9 @@ class TurnRunner:
                         effective_session_id,
                         title,
                     )
-                elif self._runner._is_discord_auto_thread_lane(ctx.source):
+                elif self._runner._is_discord_auto_thread_lane(ctx.source) or (
+                    self._runner._relay_auto_thread_info(ctx.source) is not None
+                ):
                     maybe_auto_title_kwargs["title_callback"] = lambda title: self._runner._schedule_discord_semantic_thread_rename(
                         ctx.source,
                         effective_session_id,
@@ -18807,6 +18809,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and bool(getattr(source, "auto_thread_initial_name", None))
         )
 
+    def _relay_auto_thread_info(
+        self, source: SessionSource
+    ) -> Optional[Tuple[str, str]]:
+        """(thread_id, initial_name) when the RELAY connector auto-threaded our
+        reply to this source's chat — the title-turn sibling of
+        _is_discord_auto_thread_lane.
+
+        The marker-based check above only lights up for events ARRIVING IN an
+        auto-created thread (turn 2+). The auto-title fires on the FIRST
+        exchange, whose source is the PARENT channel event — the thread did
+        not exist at ingest, so no markers can be present and the native lane
+        check never matches on the relay title turn (staging repro
+        2026-07-29: initial titles fine, semantic renames never happened).
+        The connector reports where the reply actually landed on the send
+        result (contract §SendResult thread_id/auto_thread_name); the relay
+        adapter caches it per chat and this reads it back.
+        """
+        if source.platform != Platform.DISCORD or not source.chat_id:
+            return None
+        if not getattr(source, "delivered_via_upstream_relay", False):
+            return None
+        adapter = self._adapter_for_source(source)
+        info_fn = getattr(adapter, "auto_thread_info_for_chat", None)
+        if not callable(info_fn):
+            return None
+        try:
+            info = info_fn(str(source.chat_id))
+            if (
+                isinstance(info, tuple)
+                and len(info) == 2
+                and all(isinstance(x, str) for x in info)
+            ):
+                return cast(Tuple[str, str], info)
+            return None
+        except Exception:
+            return None
+
     def _sanitize_discord_thread_title(self, title: str) -> str:
         """Return a Discord-safe semantic thread title from a session title.
 
@@ -18826,9 +18865,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: SessionSource,
         session_id: str,
         title: str,
+        relay_info: Optional[Tuple[str, str]] = None,
     ) -> None:
-        """Best-effort semantic rename of a newly auto-created Discord thread."""
-        if not await asyncio.to_thread(self._is_discord_auto_thread_lane, source):
+        """Best-effort semantic rename of a newly auto-created Discord thread.
+
+        ``relay_info`` is the (thread_id, initial_name) pair from the relay
+        connector's send-result feedback — supplied on the title turn, where
+        the source is the parent-channel event and carries no auto-thread
+        markers (see _relay_auto_thread_info). When absent, the native
+        marker-based lane supplies thread identity from the source itself.
+        """
+        if relay_info is None and not await asyncio.to_thread(
+            self._is_discord_auto_thread_lane, source
+        ):
             return
         adapter = self._adapter_for_source(source) if getattr(self, "adapters", None) else None
         if adapter is None:
@@ -18836,12 +18885,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         rename_thread = getattr(adapter, "rename_thread", None)
         if rename_thread is None:
             return
+        target_thread_id = relay_info[0] if relay_info else str(source.thread_id)
+        guard_name = (
+            relay_info[1]
+            if relay_info
+            else getattr(source, "auto_thread_initial_name", None)
+        )
         thread_name = self._sanitize_discord_thread_title(title)
         try:
             await rename_thread(
-                str(source.thread_id),
+                target_thread_id,
                 thread_name,
-                only_if_current_name=getattr(source, "auto_thread_initial_name", None),
+                only_if_current_name=guard_name,
             )
         except Exception:
             logger.debug("Failed to rename Discord auto-thread for generated session title", exc_info=True)
@@ -18853,8 +18908,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
     ) -> None:
         """Schedule Discord auto-thread rename from the auto-title background thread."""
-        if not title or not self._is_discord_auto_thread_lane(source):
+        relay_info = None
+        if not title:
             return
+        if not self._is_discord_auto_thread_lane(source):
+            # Relay title turn: the source is the PARENT channel event (the
+            # thread didn't exist at ingest, so no auto-thread markers). The
+            # connector's send-result feedback tells us where the reply landed.
+            relay_info = self._relay_auto_thread_info(source)
+            if relay_info is None:
+                return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -18866,7 +18929,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             copied_source = source
         future = safe_schedule_threadsafe(
-            self._rename_discord_auto_thread_for_session_title(copied_source, session_id, title),
+            self._rename_discord_auto_thread_for_session_title(
+                copied_source, session_id, title, relay_info=relay_info
+            ),
             loop,
             logger=logger,
             log_message="Discord semantic thread rename failed to schedule",

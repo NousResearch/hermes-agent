@@ -23,7 +23,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { resetHermesConfig, setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
@@ -92,29 +92,31 @@ export function ConfigSettings({
   const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
   const [saveVersion, setSaveVersion] = useState(0)
 
-  // Seed the local draft once, the first time the shared record lands.
-  // Background refetches thereafter must not clobber in-progress edits.
-  const configSeeded = useRef(false)
-
+  // Seed the local draft whenever it is empty and the shared record is
+  // available. The guard is the draft state itself (not a one-shot ref), so any
+  // path that clears the draft re-seeds automatically once data lands — there
+  // is no "cleared but never re-seeded" state to get stuck in. Background
+  // refetches while an edit is in progress still can't clobber the draft,
+  // because a non-null draft blocks the seed.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (loadedConfig && !configSeeded.current) {
-      configSeeded.current = true
+    if (loadedConfig && config === null) {
       savedDiscoverySignatureRef.current = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(loadedConfig))
       setConfig(loadedConfig)
     }
-  }, [loadedConfig])
+  }, [loadedConfig, config])
 
-  // A profile switch invalidates (but doesn't clear) the shared config query, so
-  // the local draft would otherwise keep profile A's data and autosave it into
-  // B. Drop the seed + draft (re-seeds from B's refetch) and zero saveVersion so
-  // the pending debounced autosave is cancelled by its effect cleanup.
+  // A profile switch swaps the backend under the mounted panel. Drop the draft
+  // and zero saveVersion so the pending debounced autosave is cancelled by its
+  // effect cleanup, and hard-reset the shared record (data → undefined, then
+  // refetch) so the seed effect can't re-seed profile A's cached record into
+  // B's view while B's fetch is in flight.
   useOnProfileSwitch(() => {
-    configSeeded.current = false
     savedDiscoverySignatureRef.current = undefined
     setConfig(null)
     saveVersionRef.current = 0
     setSaveVersion(0)
+    void resetHermesConfig()
   })
 
   useEffect(() => {

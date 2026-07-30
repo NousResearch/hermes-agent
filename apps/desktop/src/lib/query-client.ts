@@ -14,6 +14,9 @@ export const queryClient = new QueryClient({
 
 // Curried, setState-shaped cache writer for optimistic write-through: keeps
 // mutation sites terse (`setX(next)` or `setX(prev => …)`) over one query key.
+// Writing `undefined` does NOT clear the entry — React Query's setQueryData
+// treats undefined as a bail-out. To drop cached data use
+// queryClient.resetQueries / removeQueries.
 export const writeCache =
   <T>(key: QueryKey) =>
   (next: T | undefined | ((prev: T | undefined) => T | undefined)): void =>

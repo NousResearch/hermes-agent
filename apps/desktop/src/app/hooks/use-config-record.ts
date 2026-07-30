@@ -20,3 +20,11 @@ export const useHermesConfigRecord = () =>
 export const setHermesConfigCache = writeCache<HermesConfigRecord>(HERMES_CONFIG_KEY)
 
 export const invalidateHermesConfig = () => queryClient.invalidateQueries({ queryKey: HERMES_CONFIG_KEY })
+
+// Hard reset for profile switches: unlike invalidate (which keeps the old
+// profile's record visible while refetching), reset drops the data to
+// undefined immediately and refetches for active observers — so profile B
+// never reads profile A's config, not even transiently. Note that
+// `setHermesConfigCache(undefined)` cannot do this: React Query treats an
+// undefined value in setQueryData as a bail-out, not a delete.
+export const resetHermesConfig = () => queryClient.resetQueries({ queryKey: HERMES_CONFIG_KEY })

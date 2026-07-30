@@ -4768,9 +4768,18 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
     except Exception:
         yolo = False
+    # A model switch queued mid-turn (pending_model_switch) applies at the next
+    # turn start, so agent.model still reads the OLD model until then. Report the
+    # pending pick instead — it's the model the next turn will run, and it stops
+    # the end-of-turn settle from blipping the UI back to the old model before
+    # the switch lands. Cleared once _apply_pending_model_switch consumes it.
+    pending_switch = (session or {}).get("pending_model_switch") or {}
+    pending_model = str(pending_switch.get("display_model") or "").strip()
+    pending_provider = str(pending_switch.get("display_provider") or "").strip()
     info: dict = {
-        "model": mirror.get("model", getattr(agent, "model", "")),
-        "provider": mirror.get("provider", getattr(agent, "provider", "")),
+        "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
+        "provider": pending_provider
+        or mirror.get("provider", getattr(agent, "provider", "")),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -10012,8 +10021,9 @@ def _(rid, params: dict) -> dict:
                 # The user gets to pick, keep typing, and send the next turn on
                 # the new model without waiting for the swap or interrupting.
                 if session.get("running"):
+                    parsed = parse_model_switch_args(value)
                     try:
-                        pending_model = parse_model_switch_args(value).model_input
+                        pending_model = parsed.model_input
                     except Exception:
                         pending_model = str(value)
                     session["pending_model_switch"] = {
@@ -10021,6 +10031,14 @@ def _(rid, params: dict) -> dict:
                         "confirm_expensive_model": bool(
                             params.get("confirm_expensive_model", False)
                         ),
+                        # The resolved model/provider the next turn will run on.
+                        # _session_info reports these while the switch is pending
+                        # so the end-of-turn settle keeps showing the user's pick
+                        # instead of blipping back to the still-live old model.
+                        "display_model": pending_model,
+                        "display_provider": (
+                            getattr(parsed, "explicit_provider", "") or ""
+                        ).strip(),
                     }
                     return _ok(
                         rid,

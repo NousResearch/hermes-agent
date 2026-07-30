@@ -578,6 +578,25 @@ def is_routing_aggregator(provider: str) -> bool:
     return is_aggregator(provider_norm)
 
 
+def is_official_openai_host(base_url: str) -> bool:
+    """True when *base_url* points at OpenAI's official API host family.
+
+    Matches the canonical host (``api.openai.com``) and OpenAI's documented
+    data-residency / regional hosts (``us.api.openai.com``,
+    ``eu.api.openai.com``, and any future ``<region>.api.openai.com``) —
+    those serve the same API surface with the same transport requirements
+    and the same access-scoped ``/v1/models`` listing.
+
+    Hostname-parsed matching only — never substring — so lookalike hosts
+    (``api.openai.com.attacker.test``) and path-segment spoofs
+    (``proxy.test/api.openai.com/v1``) are rejected. A genuine
+    ``*.api.openai.com`` subdomain requires control of openai.com DNS, so
+    the dot-suffix match does not reopen the #32243 spoofing hole.
+    """
+    hostname = base_url_hostname(base_url)
+    return hostname == "api.openai.com" or hostname.endswith(".api.openai.com")
+
+
 def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     """Return the wire protocol a specific endpoint *requires*, or None.
 
@@ -605,7 +624,11 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.anthropic.com" or url_lower.endswith("/anthropic"):
         return "anthropic_messages"
-    if hostname == "api.openai.com":
+    # Official OpenAI host family: canonical + data-residency regional hosts
+    # (us./eu.api.openai.com) all mandate the Responses API for reasoning
+    # models with tools. Shared predicate keeps this lane in lockstep with
+    # catalog filtering and listing authority.
+    if is_official_openai_host(base_url):
         return "codex_responses"
     if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
         return "bedrock_converse"

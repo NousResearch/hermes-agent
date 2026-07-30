@@ -1133,8 +1133,32 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
     Intended for ``hermes update``. Never raises; lazy-install failures
     here must not block the rest of the update flow.
     """
+    return _refresh_features(active_features(), prompt=prompt, restoring=False)
+
+
+def restore_features(features: list[str]) -> dict[str, str]:
+    """Restore features captured before an explicit managed-runtime rebuild.
+
+    ``security.allow_lazy_installs`` gates installs initiated at feature-use
+    time. A runtime rebuild is different: the updater is deliberately
+    recreating the environment and may restore only features that were
+    already present before that rebuild. Feature names are still checked
+    against :data:`LAZY_DEPS`, so this never accepts arbitrary package specs.
+
+    This does not change the security setting. Subsequent runtime calls to
+    :func:`ensure` remain subject to the normal lazy-install gate.
+    """
+    return _refresh_features(features, prompt=False, restoring=True)
+
+
+def _refresh_features(
+    features: list[str], *, prompt: bool, restoring: bool
+) -> dict[str, str]:
+    """Refresh or restore a known set of allowlisted lazy features."""
     results: dict[str, str] = {}
-    for feature in active_features():
+    for feature in features:
+        if feature not in LAZY_DEPS:
+            continue
         missing = feature_missing(feature)
         if not missing:
             results[feature] = "current"
@@ -1146,8 +1170,26 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
             continue
 
         try:
-            ensure(feature, prompt=prompt)
-            results[feature] = "refreshed"
+            if restoring:
+                result = _venv_pip_install(missing)
+                if not result.success:
+                    snippet = (result.stderr or result.stdout or "").strip()
+                    raise FeatureUnavailable(
+                        feature,
+                        missing,
+                        f"pip install failed: {snippet or 'no error output'}",
+                    )
+                if feature_missing(feature):
+                    raise FeatureUnavailable(
+                        feature,
+                        missing,
+                        "install reported success but packages are still missing "
+                        "(may require Python restart)",
+                    )
+                results[feature] = "restored"
+            else:
+                ensure(feature, prompt=prompt)
+                results[feature] = "refreshed"
         except FeatureUnavailable as e:
             # Distinguish "user opted out" or platform-incompatible features
             # from install failures so the update command can render the

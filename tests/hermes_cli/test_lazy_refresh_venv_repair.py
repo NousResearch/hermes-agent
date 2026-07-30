@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import hermes_cli.main as m
+import pytest
 
 
 
@@ -108,6 +109,28 @@ def test_refresh_repairs_venv_after_lazy_failure(tmp_path, monkeypatch, capsys):
     assert "Venv repair succeeded" in out
     assert "import probes" in out
     assert "Backends keep their previously-installed version" not in out
+
+
+def test_refresh_uses_pre_rebuild_snapshot_when_provided(monkeypatch):
+    """Replacement runtimes must not re-detect features after packages vanish."""
+    import tools.lazy_deps as lazy_deps_mod
+
+    monkeypatch.setattr(
+        lazy_deps_mod,
+        "active_features",
+        lambda: pytest.fail("post-rebuild detection must not run"),
+    )
+    restored = []
+    monkeypatch.setattr(
+        lazy_deps_mod,
+        "restore_features",
+        lambda features: restored.append(features) or {"platform.telegram": "restored"},
+    )
+
+    assert m._refresh_active_lazy_features(
+        ["uv", "pip"], features=["platform.telegram"]
+    ) is True
+    assert restored == [["platform.telegram"]]
 
 
 

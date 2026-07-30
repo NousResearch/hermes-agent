@@ -1790,10 +1790,23 @@ def _upgrade_pip_before_lazy_refresh(
     except subprocess.CalledProcessError as exc:
         logger.debug("pip upgrade before lazy refresh failed: %s", exc)
 
+
+def _capture_active_lazy_features() -> list[str]:
+    """Snapshot active lazy backends before a managed runtime is replaced."""
+    try:
+        from tools import lazy_deps
+
+        return lazy_deps.active_features()
+    except Exception as exc:
+        logger.debug("Could not snapshot active lazy features: %s", exc)
+        return []
+
+
 def _refresh_active_lazy_features(
     install_cmd_prefix: list[str] | None = None,
     *,
     env: dict[str, str] | None = None,
+    features: list[str] | None = None,
 ) -> bool:
     """Refresh lazy-installed backends after a code update.
 
@@ -1821,11 +1834,14 @@ def _refresh_active_lazy_features(
         logger.debug("Lazy refresh skipped (import failed): %s", exc)
         return True
 
-    try:
-        active = lazy_deps.active_features()
-    except Exception as exc:
-        logger.debug("Lazy refresh skipped (active_features failed): %s", exc)
-        return True
+    if features is None:
+        try:
+            active = lazy_deps.active_features()
+        except Exception as exc:
+            logger.debug("Lazy refresh skipped (active_features failed): %s", exc)
+            return True
+    else:
+        active = features
 
     if not active:
         return True
@@ -1835,7 +1851,10 @@ def _refresh_active_lazy_features(
 
     unexpected_failure = False
     try:
-        results = lazy_deps.refresh_active_features(prompt=False)
+        if features is None:
+            results = lazy_deps.refresh_active_features(prompt=False)
+        else:
+            results = lazy_deps.restore_features(active)
     except Exception as exc:
         # refresh_active_features is documented as never-raise, but defend
         # the update flow against future regressions.
@@ -1843,7 +1862,7 @@ def _refresh_active_lazy_features(
         results = {}
         unexpected_failure = True
 
-    refreshed = [f for f, s in results.items() if s == "refreshed"]
+    refreshed = [f for f, s in results.items() if s in {"refreshed", "restored"}]
     current = [f for f, s in results.items() if s == "current"]
     failed = [(f, s) for f, s in results.items() if s.startswith("failed:")]
     skipped = [(f, s) for f, s in results.items() if s.startswith("skipped:")]
@@ -4065,6 +4084,11 @@ def _rebuild_desktop_after_update(
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    # A managed-runtime refresh can replace site-packages before the normal
+    # ``.[all]`` install runs. Snapshot while the old environment can still
+    # prove which optional backends the user had activated.
+    active_lazy_features = _m()._capture_active_lazy_features()
+
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))
@@ -4493,9 +4517,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     _m()._install_python_dependencies_with_optional_fallback(
                         [repair_uv, "pip"], env=repair_env, group="all"
                     )
+                    _m()._refresh_active_lazy_features(
+                        [repair_uv, "pip"],
+                        env=repair_env,
+                        features=active_lazy_features,
+                    )
                 else:
                     _m()._install_python_dependencies_with_optional_fallback(
                         [sys.executable, "-m", "pip"], group="all"
+                    )
+                    _m()._refresh_active_lazy_features(
+                        [sys.executable, "-m", "pip"],
+                        features=active_lazy_features,
                     )
                 _m()._clear_update_incomplete_marker()
                 healthy_after, detail_after = _venv_core_imports_healthy()
@@ -4775,7 +4808,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Lazy refresh can corrupt the venv when a backend install fails.
         # Clear the lazy marker only when refresh/repair is confirmed healthy.
-        lazy_ok = _m()._refresh_active_lazy_features(install_prefix, env=lazy_env)
+        lazy_ok = _m()._refresh_active_lazy_features(
+            install_prefix,
+            env=lazy_env,
+            features=active_lazy_features,
+        )
         if lazy_ok:
             _m()._clear_lazy_refresh_incomplete_marker()
         else:

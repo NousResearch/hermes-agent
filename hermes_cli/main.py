@@ -5189,6 +5189,7 @@ def _clear_bytecode_cache(root: Path) -> int:
 from hermes_cli.update_cmd import (  # noqa: F401
     _add_upstream_remote,
     _atomic_replace_dir,
+    _capture_active_lazy_features,
     _capture_head_sha,
     _cmd_update_check,
     _cmd_update_impl,

@@ -358,6 +358,42 @@ class TestRefreshActiveFeatures:
             ld._unsupported_feature_reason("platform.matrix") or ""
         )
 
+    def test_restore_snapshot_reinstalls_telegram_with_lazy_installs_disabled(
+        self, monkeypatch
+    ):
+        """An update may restore a captured feature without opening runtime installs."""
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
+        satisfied = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(satisfied))
+        installs = []
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda specs, **kw: installs.append(specs)
+            or ld._InstallResult(True, "", ""),
+        )
+
+        result = ld.restore_features(["platform.telegram"])
+
+        assert result == {"platform.telegram": "restored"}
+        assert installs == [("python-telegram-bot[webhooks]==22.6",)]
+        assert ld._allow_lazy_installs() is False
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        with pytest.raises(ld.FeatureUnavailable, match="lazy installs disabled"):
+            ld.ensure("platform.telegram", prompt=False)
+
+    def test_restore_snapshot_does_not_install_never_activated_features(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda *args, **kwargs: pytest.fail(
+                "cold features must stay uninstalled"
+            ),
+        )
+
+        assert ld.restore_features([]) == {}
 
     def test_mixed_results_returns_per_feature_status(self, monkeypatch):
         monkeypatch.setattr(ld, "active_features", lambda: ["a.ok", "b.fail"])

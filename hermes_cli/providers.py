@@ -592,9 +592,11 @@ def is_official_openai_host(base_url: str) -> bool:
     (``proxy.test/api.openai.com/v1``) are rejected. A genuine
     ``*.api.openai.com`` subdomain requires control of openai.com DNS, so
     the dot-suffix match does not reopen the #32243 spoofing hole.
+    Delegates to ``utils.base_url_host_matches``, which owns the
+    exact-or-dot-suffix hostname contract (userinfo/port stripped,
+    lowercased, trailing dot removed) — one implementation, not two.
     """
-    hostname = base_url_hostname(base_url)
-    return hostname == "api.openai.com" or hostname.endswith(".api.openai.com")
+    return base_url_host_matches(base_url, "api.openai.com")
 
 
 def host_mandated_api_mode(base_url: str = "") -> Optional[str]:

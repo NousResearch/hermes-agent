@@ -5642,8 +5642,12 @@ function installContextMenu(window) {
       }
     }
 
+    // Bare right-click on non-editable, non-selected, non-media content (a pane
+    // body, the sidebar, chrome): the renderer's own context menus own those
+    // surfaces, and anywhere without one shows nothing — not a lone, useless
+    // "Select All" from the native fallback.
     if (!template.length) {
-      template.push({ role: 'selectAll' })
+      return
     }
 
     Menu.buildFromTemplate(template).popup({ window })

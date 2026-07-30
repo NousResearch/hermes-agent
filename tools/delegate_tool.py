@@ -3624,18 +3624,21 @@ def delegate_task(
 
     charged = commit_subagent_spawn(len(task_list))
     rejected = len(task_list) - charged
+    results = []
     if rejected > 0:
+        # Capture the goals of tasks that will be dropped so the LLM
+        # knows exactly what was not created.
+        rejected_goals = [t.get("goal", "")[:60] for t in task_list[charged:]]
         task_list = task_list[:charged]
         results.append(
             tool_result(
-                f"{rejected} task(s) rejected: per-turn subagent cap reached "
-                f"(limit {charged} spawned this turn). The remaining tasks "
-                "were not created."
+                f"{rejected} task(s) rejected: per-turn subagent spawn cap "
+                f"reached (budget: {charged} this turn). "
+                f"Dropped: {rejected_goals}"
             )
         )
 
     overall_start = time.monotonic()
-    results = []
 
     n_tasks = len(task_list)
     # Track goal labels for progress display (truncated for readability)

@@ -1727,10 +1727,15 @@ class GatewaySlashCommandsMixin:
         )
 
         # --refresh: bust the disk cache so the picker shows live data.
+        # The cache file lives under get_hermes_home() (models.py:
+        # _provider_models_cache_path), so the clear must run inside the
+        # routed profile's scope — unscoped, a routed /model --refresh
+        # wipes the DEFAULT profile's cache instead (#69242 sweeper review).
         if force_refresh:
             try:
                 from hermes_cli.models import clear_provider_models_cache
-                clear_provider_models_cache()
+                with _model_cmd_scope_factory():
+                    clear_provider_models_cache()
             except Exception:
                 pass
 
@@ -1795,17 +1800,23 @@ class GatewaySlashCommandsMixin:
                     # Offload blocking provider-listing (can fall through to a
                     # synchronous urllib HTTP fetch on a stale cache) off the
                     # event loop so the gateway doesn't freeze. See #41289.
-                    providers = await asyncio.to_thread(
-                        list_picker_providers,
-                        current_provider=current_provider,
-                        current_base_url=current_base_url,
-                        current_model=current_model,
-                        user_providers=user_provs,
-                        custom_providers=custom_provs,
-                        max_models=50,
-                        include_moa=True,
-                        excluded_providers=excluded_provs,
-                    )
+                    # Scope the listing to the routed profile: the provider
+                    # catalog cache resolves through get_hermes_home(), and
+                    # asyncio.to_thread copies the calling context, so the
+                    # ContextVar-based scope carries into the worker thread
+                    # (#69242 sweeper review, second pass).
+                    with _model_cmd_scope_factory():
+                        providers = await asyncio.to_thread(
+                            list_picker_providers,
+                            current_provider=current_provider,
+                            current_base_url=current_base_url,
+                            current_model=current_model,
+                            user_providers=user_provs,
+                            custom_providers=custom_provs,
+                            max_models=50,
+                            include_moa=True,
+                            excluded_providers=excluded_provs,
+                        )
                 except Exception:
                     providers = []
 
@@ -2103,16 +2114,20 @@ class GatewaySlashCommandsMixin:
             try:
                 # Offload blocking provider-listing off the event loop so the
                 # gateway doesn't freeze on a stale-cache HTTP fetch. See #41289.
-                providers = await asyncio.to_thread(
-                    list_authenticated_providers,
-                    current_provider=current_provider,
-                    current_base_url=current_base_url,
-                    current_model=current_model,
-                    user_providers=user_provs,
-                    custom_providers=custom_provs,
-                    max_models=5,
-                    excluded_providers=excluded_provs,
-                )
+                # Scoped for the same reason as the picker listing above:
+                # the catalog cache is get_hermes_home()-relative and
+                # to_thread carries the ContextVar scope (#69242 review).
+                with _model_cmd_scope_factory():
+                    providers = await asyncio.to_thread(
+                        list_authenticated_providers,
+                        current_provider=current_provider,
+                        current_base_url=current_base_url,
+                        current_model=current_model,
+                        user_providers=user_provs,
+                        custom_providers=custom_provs,
+                        max_models=5,
+                        excluded_providers=excluded_provs,
+                    )
                 for p in providers:
                     tag = t("gateway.model.current_tag") if p["is_current"] else ""
                     lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")

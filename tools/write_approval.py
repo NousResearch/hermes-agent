@@ -263,8 +263,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
         inline_detail: full content shown in the inline prompt (memory entries
             are small; skills never take the inline path).
 
-    Decision matrix:
-        gate off (default)                    → allow (writes flow freely)
+    Decision matrix (memory defaults gate off; skills defaults gate on):
+        gate off                              → allow (writes flow freely)
         gate on, memory + interactive CLI     → inline approve/deny prompt
         gate on, memory + gateway/script/bg   → stage
         gate on, skills (any origin)          → stage (too big to review inline)

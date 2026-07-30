@@ -34,22 +34,76 @@ def _reset_notice_state():
 
 
 def test_backend_defaults_to_local(monkeypatch):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
     monkeypatch.setattr(sched, "load_config", lambda: {})
-    assert sched._configured_terminal_backend() == "local"
+    assert sched._effective_terminal_backend() == "local"
 
 
 def test_backend_is_read_and_normalized(monkeypatch):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
     monkeypatch.setattr(sched, "load_config", lambda: {"terminal": {"backend": "  SSH "}})
-    assert sched._configured_terminal_backend() == "ssh"
+    assert sched._effective_terminal_backend() == "ssh"
 
 
 def test_backend_read_failure_degrades_to_local(monkeypatch):
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
     def _boom():
         raise RuntimeError("config exploded")
 
     monkeypatch.setattr(sched, "load_config", _boom)
     # Diagnostics must never raise into the job runner.
-    assert sched._configured_terminal_backend() == "local"
+    assert sched._effective_terminal_backend() == "local"
+
+
+# --- TERMINAL_ENV precedence -----------------------------------------------
+#
+# The terminal tool treats an explicit TERMINAL_ENV as authoritative and only
+# bridges terminal.backend into the unset case (tools/terminal_tool.py,
+# _ensure_terminal_env_bridged / _get_env_config). These diagnostics have to
+# agree with it: naming a backend the terminal tool isn't actually using would
+# point the operator at the wrong host while they debug a missing script.
+
+
+def test_env_override_wins_over_config(monkeypatch):
+    """TERMINAL_ENV=local + terminal.backend=docker → terminal runs LOCAL."""
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(sched, "load_config", lambda: {"terminal": {"backend": "docker"}})
+    assert sched._effective_terminal_backend() == "local"
+    # ...so no isolation hint is emitted: there is no mismatch to explain.
+    assert sched._script_runs_on_scheduler_host_hint() == ""
+
+
+def test_env_override_is_normalized(monkeypatch):
+    monkeypatch.setenv("TERMINAL_ENV", "  DOCKER ")
+    monkeypatch.setattr(sched, "load_config", lambda: {})
+    assert sched._effective_terminal_backend() == "docker"
+
+
+def test_env_override_names_the_backend_config_does_not_know(monkeypatch):
+    """The inverse: env selects a remote backend, config says nothing."""
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setattr(sched, "load_config", lambda: {})
+    assert sched._effective_terminal_backend() == "ssh"
+    assert "ssh" in sched._script_runs_on_scheduler_host_hint()
+
+
+def test_blank_env_override_falls_back_to_config(monkeypatch):
+    """An empty/whitespace TERMINAL_ENV is not a deliberate choice."""
+    monkeypatch.setenv("TERMINAL_ENV", "   ")
+    monkeypatch.setattr(sched, "load_config", lambda: {"terminal": {"backend": "docker"}})
+    assert sched._effective_terminal_backend() == "docker"
+
+
+def test_env_override_skips_config_read_entirely(monkeypatch):
+    """An explicit env choice must not depend on config being readable."""
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    def _boom():
+        raise AssertionError("config must not be read when TERMINAL_ENV is set")
+
+    monkeypatch.setattr(sched, "load_config", _boom)
+    assert sched._effective_terminal_backend() == "docker"
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +184,10 @@ def test_isolation_warning_fires_for_non_local_backend(caplog, tmp_path):
 
     messages = [r.getMessage() for r in caplog.records]
     assert len(messages) == 1
-    assert "OUTSIDE the configured" in messages[0]
+    assert "OUTSIDE the terminal backend in effect" in messages[0]
+    # Names both sources, so the operator knows where to look.
+    assert "TERMINAL_ENV" in messages[0]
+    assert "terminal.backend" in messages[0]
     assert "docker" in messages[0]
     assert "not sandboxed" in messages[0]
 
@@ -158,9 +215,80 @@ def test_distinct_scripts_each_get_noted(caplog, tmp_path):
 
 
 def test_notice_registry_is_bounded(caplog, tmp_path):
-    """The dedup set can't grow without bound on job churn."""
+    """The dedup registry can't grow without bound on job churn."""
     cap = sched._SCRIPT_HOST_NOTICES_MAX
     with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
         for i in range(cap + 10):
             sched._note_script_runs_outside_backend(tmp_path / f"s{i}.sh", "ssh")
     assert len(sched._SCRIPT_HOST_NOTICES) <= cap
+
+
+# --- eviction policy at the cap --------------------------------------------
+#
+# Paths past the cap used to be logged without being recorded, so the dedupe
+# check could never hit them and a job at that position re-warned on EVERY
+# tick — the once-per-script guarantee silently stopped holding exactly where
+# log volume mattered most. The registry now evicts the oldest entry instead.
+
+
+def test_once_per_script_still_holds_at_the_cap(caplog, tmp_path):
+    """The regression: a path past the cap must not warn on every run."""
+    cap = sched._SCRIPT_HOST_NOTICES_MAX
+    for i in range(cap):
+        sched._note_script_runs_outside_backend(tmp_path / f"filler{i}.sh", "ssh")
+    assert len(sched._SCRIPT_HOST_NOTICES) == cap  # registry is full
+
+    overflow = tmp_path / "per_minute_job.sh"
+    with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+        for _ in range(10):
+            sched._note_script_runs_outside_backend(overflow, "ssh")
+    # Exactly once across 10 ticks — not once per tick.
+    assert len([r for r in caplog.records if "per_minute_job.sh" in r.getMessage()]) == 1
+
+
+def test_cap_evicts_the_oldest_entry(caplog, tmp_path):
+    cap = sched._SCRIPT_HOST_NOTICES_MAX
+    first = tmp_path / "oldest.sh"
+    sched._note_script_runs_outside_backend(first, "ssh")
+    for i in range(cap - 1):
+        sched._note_script_runs_outside_backend(tmp_path / f"filler{i}.sh", "ssh")
+    assert str(first) in sched._SCRIPT_HOST_NOTICES
+
+    # One more distinct path evicts the oldest, keeping the registry at the cap.
+    sched._note_script_runs_outside_backend(tmp_path / "newest.sh", "ssh")
+    assert len(sched._SCRIPT_HOST_NOTICES) == cap
+    assert str(first) not in sched._SCRIPT_HOST_NOTICES
+    assert str(tmp_path / "newest.sh") in sched._SCRIPT_HOST_NOTICES
+
+
+def test_evicted_script_can_warn_again_but_not_per_tick(caplog, tmp_path):
+    """Eviction trades a bounded re-warn for never silently dropping a script."""
+    cap = sched._SCRIPT_HOST_NOTICES_MAX
+    script = tmp_path / "evicted.sh"
+    sched._note_script_runs_outside_backend(script, "ssh")
+    # Push it out with cap distinct paths.
+    for i in range(cap):
+        sched._note_script_runs_outside_backend(tmp_path / f"churn{i}.sh", "ssh")
+    assert str(script) not in sched._SCRIPT_HOST_NOTICES
+
+    caplog.clear()  # drop the setup warnings; count only the re-entry
+    with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+        for _ in range(5):
+            sched._note_script_runs_outside_backend(script, "ssh")
+    # Warns once on re-entry, then dedupes again — not five times.
+    assert len([r for r in caplog.records if "evicted.sh" in r.getMessage()]) == 1
+
+
+def test_recorded_and_emitted_never_disagree(caplog, tmp_path):
+    """Every emitted notice has a matching record; no log-without-record."""
+    cap = sched._SCRIPT_HOST_NOTICES_MAX
+    with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+        for i in range(cap + 25):
+            path = tmp_path / f"s{i}.sh"
+            before = str(path) in sched._SCRIPT_HOST_NOTICES
+            sched._note_script_runs_outside_backend(path, "ssh")
+            # A first-time path is always recorded when it is logged.
+            if not before:
+                assert str(path) in sched._SCRIPT_HOST_NOTICES
+    # cap + 25 distinct paths, each logged exactly once as it was first seen.
+    assert len([r for r in caplog.records if "OUTSIDE" in r.getMessage()]) == cap + 25

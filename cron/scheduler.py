@@ -2110,14 +2110,25 @@ _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 
 
-def _configured_terminal_backend() -> str:
-    """Return the configured ``terminal.backend`` name (default ``local``).
+def _effective_terminal_backend() -> str:
+    """Return the backend the terminal tool would actually use (default ``local``).
 
     Read for DIAGNOSTICS only (#29849): script-backed cron jobs always execute
-    on the scheduler host, so when a remote/sandboxed backend is configured the
+    on the scheduler host, so when a remote/sandboxed backend is in effect the
     messages below can name the mismatch instead of leaving the operator with a
     bare "not found". Never changes where anything runs.
+
+    Mirrors the terminal tool's own precedence rather than reading config alone:
+    ``TERMINAL_ENV`` wins when set (a launcher's bridge or the user's .env made
+    a deliberate choice) and ``terminal.backend`` only fills the unset case
+    (``tools/terminal_tool.py`` ``_ensure_terminal_env_bridged`` /
+    ``_get_env_config``). Reading config alone would name a remote backend in
+    these messages even where terminal calls actually run local — pointing the
+    operator at the wrong host while diagnosing a missing script.
     """
+    env_backend = os.environ.get("TERMINAL_ENV")
+    if env_backend and env_backend.strip():
+        return env_backend.strip().lower()
     try:
         cfg = load_config() or {}
         terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
@@ -2131,8 +2142,18 @@ def _configured_terminal_backend() -> str:
 
 # Script paths already noted as running outside the configured backend, so a
 # frequently-firing job logs the isolation notice once per process instead of
-# once per run. Capped so a pathological job-churn loop can't grow it forever.
-_SCRIPT_HOST_NOTICES: set = set()
+# once per run. Capped so a pathological job-churn loop can't grow it forever;
+# insertion-ordered, and the oldest entry is evicted at the cap (a plain dict
+# is insertion-ordered, so the first key is the oldest).
+#
+# Eviction policy: the notice fires once per script for the most recent
+# _SCRIPT_HOST_NOTICES_MAX distinct paths. Only-remember-the-first-256 would
+# instead log the 257th path on EVERY tick (it could never be recorded, so the
+# dedupe check could never hit), turning a once-per-script diagnostic into
+# per-run spam. Evicting means a script can warn again only after 256 other
+# distinct paths have run since — bounded, and no script is ever silently
+# dropped from the diagnostic.
+_SCRIPT_HOST_NOTICES: dict = {}
 _SCRIPT_HOST_NOTICES_MAX = 256
 
 
@@ -2142,13 +2163,14 @@ def _script_runs_on_scheduler_host_hint(backend: Optional[str] = None) -> str:
     Empty for a ``local`` backend, where scheduler host and terminal backend
     are the same machine and there is nothing to explain.
     """
-    backend = backend or _configured_terminal_backend()
+    backend = backend or _effective_terminal_backend()
     if backend == "local":
         return ""
     return (
         f" Note: script-backed cron jobs always execute on the host that ticks "
-        f"cron (this scheduler process), NOT on the configured "
-        f"terminal.backend ({backend}) — so a script written to the backend's "
+        f"cron (this scheduler process), NOT on the terminal backend in "
+        f"effect ({backend}, from TERMINAL_ENV or terminal.backend) — so a "
+        f"script written to the backend's "
         f"filesystem by the agent is not visible here. Keep the script in this "
         f"host's HERMES_HOME/scripts/, or drive the backend from the script "
         f"itself."
@@ -2169,11 +2191,16 @@ def _note_script_runs_outside_backend(script_path: Path, backend: str) -> None:
     key = str(script_path)
     if key in _SCRIPT_HOST_NOTICES:
         return
-    if len(_SCRIPT_HOST_NOTICES) < _SCRIPT_HOST_NOTICES_MAX:
-        _SCRIPT_HOST_NOTICES.add(key)
+    # Record BEFORE logging, evicting the oldest entry at the cap, so the
+    # emit and the dedupe record can never disagree. Logging without
+    # recording is what made the 257th path warn on every tick.
+    while len(_SCRIPT_HOST_NOTICES) >= _SCRIPT_HOST_NOTICES_MAX:
+        _SCRIPT_HOST_NOTICES.pop(next(iter(_SCRIPT_HOST_NOTICES)))
+    _SCRIPT_HOST_NOTICES[key] = True
     logger.warning(
-        "Cron script %s runs on the scheduler host, OUTSIDE the configured "
-        "terminal.backend (%s). Script-backed cron jobs are not sandboxed by "
+        "Cron script %s runs on the scheduler host, OUTSIDE the terminal "
+        "backend in effect (%s, from TERMINAL_ENV or terminal.backend). "
+        "Script-backed cron jobs are not sandboxed by "
         "the terminal backend: this script executes with the scheduler "
         "process's environment and filesystem access (#29849).",
         script_path,
@@ -2304,7 +2331,8 @@ def _run_job_script(
     * ``terminal.backend`` is therefore NOT an isolation boundary for
       script-backed cron: the script runs with this process's environment and
       filesystem access. ``_note_script_runs_outside_backend`` logs that once
-      per script so it is visible rather than silent.
+      per script (bounded registry; see its eviction note) so it is visible
+      rather than silent.
 
     Routing execution through the configured backend is a separate change that
     needs a decision on defaults; see #29849.
@@ -2352,7 +2380,7 @@ def _run_job_script(
     # symptom was a bare "Script not found" pointing at a path the user could
     # `ls` on the remote backend seconds earlier — the message never said the
     # lookup happened on a different machine. Name the mismatch instead.
-    _backend = _configured_terminal_backend()
+    _backend = _effective_terminal_backend()
 
     if not path.exists():
         return False, (

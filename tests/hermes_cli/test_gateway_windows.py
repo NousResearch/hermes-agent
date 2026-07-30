@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import hermes_cli.config as config
 import hermes_cli.gateway as gateway
 import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.setup as setup
@@ -17,6 +18,48 @@ def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "")
     assert gateway_windows._schtasks_encoding() == "utf-8"
 
+
+
+def test_task_name_uses_valid_configured_override(monkeypatch):
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway, "_profile_suffix", lambda: "alice")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"gateway": {"windows_task_name": "Hermes-Owned_Alice"}},
+    )
+
+    assert gateway_windows.get_task_name() == "Hermes-Owned_Alice"
+
+
+def test_task_name_rejects_unsafe_configured_override(monkeypatch):
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway, "_profile_suffix", lambda: "alice")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"gateway": {"windows_task_name": "../other-task"}},
+    )
+
+    with pytest.raises(ValueError, match="gateway.windows_task_name"):
+        gateway_windows.get_task_name()
+
+
+def test_task_name_keeps_profile_default_without_override(monkeypatch):
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway, "_profile_suffix", lambda: "alice")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"gateway": {}},
+    )
+
+    assert gateway_windows.get_task_name() == "Hermes_Gateway_alice"
+
+
+def test_task_name_config_key_is_supported():
+    # Schema walk only — no freeze on DEFAULT_CONFIG literal value.
+    assert config._validate_config_key("gateway.windows_task_name") == (True, None)
+
+
+def test_schtasks_encoding_falls_back_when_locale_raises(monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("locale exploded")
 

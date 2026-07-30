@@ -332,6 +332,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_reconnect_retries",
         "_reconnecting",
         "_recycled_reason",
+        "_redaction_values",
         "_refresh_lock",
         "_registered_tool_names",
         "_resolved_identity",
@@ -415,6 +416,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # fail in-flight calls FAST when the child dies instead of waiting out the full tool timeout
         # (#81995).
         self._stdio_child_pids: set[int] = set()
+        self._redaction_values: tuple[str, ...] = ()
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
         # A stdio session is one JSON-RPC stream (a concurrent list_tools can wedge a tool

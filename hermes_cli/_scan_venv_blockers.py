@@ -92,6 +92,35 @@ def _redact_sensitive_cmdline(cmdline: str) -> str:
     return cmdline
 
 
+def _is_pausable_gateway(cmdline: str) -> bool:
+    """Return True when *cmdline* is a gateway process the updater can pause.
+
+    A running gateway shows up in the venv-holder scan as one or both halves
+    of its launcher/worker chain (``venv\\Scripts\\python.exe -m
+    hermes_cli.main gateway run`` and the uv-side interpreter re-running the
+    same argv). Reporting those as blockers dead-ends the Desktop update:
+    the preflight aborts with ``venv-blocked`` *before* spawning
+    ``hermes-setup``, so the CLI updater's own
+    ``_pause_windows_gateways_for_update()`` — which exists precisely to
+    stop these processes (and is always active: ``hermes-setup`` invokes
+    ``hermes update --yes --gateway``) — never gets the chance to run.
+
+    Only gateway invocations are exempted. Anything else running from the
+    venv (an operator's REPL, a stray script, a ``serve`` backend that
+    survived the desktop's own teardown) has no pause machinery downstream
+    and must keep blocking the handoff.
+    """
+    lowered = cmdline.lower()
+    if "hermes_cli.main" not in lowered:
+        return False
+    try:
+        tokens = [t for t in lowered.split() if t]
+        idx = tokens.index("gateway")
+    except ValueError:
+        return False
+    return len(tokens) > idx + 1 and tokens[idx + 1] == "run"
+
+
 def main() -> None:
     """Entry point.  Prints one JSON doc to stdout.  Exits 0 for valid scan."""
     try:
@@ -113,8 +142,17 @@ def main() -> None:
             "cmdline": _redact_sensitive_cmdline(cmdline),
         }
         for pid, name, cmdline in matches
+        if not _is_pausable_gateway(cmdline)
     ]
-    data = {"ok": True, "blocked": bool(processes), "processes": processes}
+    exempted = sum(1 for _pid, _name, cmdline in matches if _is_pausable_gateway(cmdline))
+    data = {
+        "ok": True,
+        "blocked": bool(processes),
+        "processes": processes,
+        # Diagnostic only: gateway processes present but not counted as
+        # blockers because the downstream updater pauses them itself.
+        "pausable_gateways": exempted,
+    }
     print(json.dumps(data))
     sys.exit(0)
 

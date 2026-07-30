@@ -44,6 +44,45 @@ _FENCE_RE = re.compile(r"^(?P<indent>\s*)(?P<fence>```+|~~~+)", re.MULTILINE)
 _BOX_DRAWING_CHARS = frozenset("┌┐└┘─│═║╔╗╚╝╠╣╦╩╬├┤┬┴┼╭╮╯╰▶◀▲▼")
 
 
+def _split_fenced_segments(markdown: str) -> list[tuple[str, str]]:
+    """Split Markdown into text and fenced-code segments."""
+    lines = markdown.split("\n")
+    segments: list[tuple[str, str]] = []
+    buf: list[str] = []
+    mode = "text"
+    fence_char: str | None = None
+    fence_len = 0
+
+    for line in lines:
+        stripped = line.lstrip()
+        if mode == "text":
+            match = re.match(r"(`{3,}|~{3,})", stripped)
+            if match is None:
+                buf.append(line)
+                continue
+
+            if buf:
+                segments.append(("text", "\n".join(buf)))
+                buf = []
+            buf.append(line)
+            fence_char = match.group(1)[0]
+            fence_len = len(match.group(1))
+            mode = "code"
+            continue
+
+        buf.append(line)
+        if fence_char is not None and stripped.startswith(fence_char * fence_len):
+            segments.append(("code", "\n".join(buf)))
+            buf = []
+            mode = "text"
+            fence_char = None
+            fence_len = 0
+
+    if buf:
+        segments.append((mode, "\n".join(buf)))
+    return segments
+
+
 def _wrap_ascii_art_code_blocks(code_segment: str) -> str:
     """Wrap a fenced code segment in ascii-guard-ignore markers if it contains
     box-drawing characters. No-op otherwise, so plain bash/python code blocks
@@ -75,44 +114,6 @@ def mdx_escape_body(body: str) -> str:
     We also preserve `<br>`, `<br/>`, `<img ...>`, `<a ...>`, and a handful of
     other markup-safe tags because Docusaurus/MDX accepts them as HTML.
     """
-    # Split the body into segments by fenced code blocks, alternating
-    # (text, code, text, code, ...). A line like ``` or ~~~ opens a fence;
-    # a matching marker closes it.
-    lines = body.split("\n")
-    segments: list[tuple[str, str]] = []  # ("text"|"code", content)
-    buf: list[str] = []
-    mode = "text"
-    fence_char: str | None = None
-    fence_len = 0
-    for line in lines:
-        stripped = line.lstrip()
-        if mode == "text":
-            if stripped.startswith("```") or stripped.startswith("~~~"):
-                # Opening fence
-                if buf:
-                    segments.append(("text", "\n".join(buf)))
-                    buf = []
-                buf.append(line)
-                # Detect fence char + length
-                m = re.match(r"(`{3,}|~{3,})", stripped)
-                if m:
-                    fence_char = m.group(1)[0]
-                    fence_len = len(m.group(1))
-                mode = "code"
-            else:
-                buf.append(line)
-        else:  # code mode
-            buf.append(line)
-            if fence_char is not None and stripped.startswith(fence_char * fence_len):
-                # Closing fence
-                segments.append(("code", "\n".join(buf)))
-                buf = []
-                mode = "text"
-                fence_char = None
-                fence_len = 0
-    if buf:
-        segments.append((mode, "\n".join(buf)))
-
     def escape_text(text: str) -> str:
         # Walk inline-code runs (backticks) and leave them alone.
         # Pattern matches runs of backticks, then the matched content, then the
@@ -215,7 +216,7 @@ def mdx_escape_body(body: str) -> str:
         return "".join(out)
 
     processed: list[str] = []
-    for kind, content in segments:
+    for kind, content in _split_fenced_segments(body):
         if kind == "code":
             processed.append(_wrap_ascii_art_code_blocks(content))
         else:
@@ -234,7 +235,7 @@ def rewrite_relative_links(body: str, meta: dict[str, Any]) -> str:
     source_dir = "skills" if meta["source_kind"] == "bundled" else "optional-skills"
     base = f"https://github.com/NousResearch/hermes-agent/blob/main/{source_dir}/{meta['rel_path']}"
 
-    def sub_link(m: re.Match) -> str:
+    def sub_link(m: re.Match[str]) -> str:
         text = m.group(1)
         url = m.group(2).strip()
         # Skip URLs that already start with a scheme or //
@@ -248,7 +249,42 @@ def rewrite_relative_links(body: str, meta: dict[str, Any]) -> str:
         full = f"{base}/{url_clean}"
         return f"[{text}]({full})"
 
-    return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", sub_link, body)
+    def rewrite_text(text: str) -> str:
+        """Rewrite prose links while preserving inline-code examples."""
+        rewritten: list[str] = []
+        cursor = 0
+        while cursor < len(text):
+            code_start = text.find("`", cursor)
+            if code_start == -1:
+                rewritten.append(
+                    re.sub(r"\[([^\]]+)\]\(([^)]+)\)", sub_link, text[cursor:])
+                )
+                break
+
+            rewritten.append(
+                re.sub(
+                    r"\[([^\]]+)\]\(([^)]+)\)",
+                    sub_link,
+                    text[cursor:code_start],
+                )
+            )
+            code_end = code_start
+            while code_end < len(text) and text[code_end] == "`":
+                code_end += 1
+            delimiter = text[code_start:code_end]
+            matching_end = text.find(delimiter, code_end)
+            if matching_end == -1:
+                rewritten.append(text[code_start:])
+                break
+            matching_end += len(delimiter)
+            rewritten.append(text[code_start:matching_end])
+            cursor = matching_end
+        return "".join(rewritten)
+
+    return "\n".join(
+        content if kind == "code" else rewrite_text(content)
+        for kind, content in _split_fenced_segments(body)
+    )
 
 
 def parse_skill_md(path: Path) -> dict[str, Any]:

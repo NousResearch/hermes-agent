@@ -15,7 +15,13 @@ import { Codicon } from '@/components/ui/codicon'
 import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
-import { $repoStatus, $repoWorktrees } from '@/store/coding-status'
+import {
+  $repoStatus,
+  $repoWorktrees,
+  registerRepoStatusCwd,
+  repoStatusForCwd,
+  repoWorktreesForCwd
+} from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
 import { $newWorktreeRequest } from '@/store/projects'
 
@@ -62,14 +68,21 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const { t } = useI18n()
   const s = t.statusStack.coding
   const p = t.sidebar.projects
-  const status = useStore($repoStatus)
-  const worktrees = useStore($repoWorktrees)
+  const resolvedRepoPath = repoPath?.trim() || undefined
+  // Per-cwd slice when this surface knows its worktree (tiles); otherwise the
+  // primary main-pane computed — so a blank/missing repoPath still paints.
+  const status = useStore(resolvedRepoPath ? repoStatusForCwd(resolvedRepoPath) : $repoStatus)
+  const worktrees = useStore(resolvedRepoPath ? repoWorktreesForCwd(resolvedRepoPath) : $repoWorktrees)
+
+  // While mounted, keep this worktree in the coding-status refresh set so the
+  // turn-settle / tool-complete / focus edges re-probe it too (tiles otherwise
+  // only refreshed when the MAIN cwd probe happened to cover them).
+  useEffect(() => registerRepoStatusCwd(resolvedRepoPath), [resolvedRepoPath])
 
   // Shared worktree dialog — replaces the old inline dialog. Opened by the
   // dropdown menu's "branch off" items and the global ⌘⇧B hotkey.
   const [worktreeOpen, setWorktreeOpen] = useState(false)
   const [worktreeBase, setWorktreeBase] = useState<string | undefined>(undefined)
-  const resolvedRepoPath = repoPath?.trim() || undefined
 
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {

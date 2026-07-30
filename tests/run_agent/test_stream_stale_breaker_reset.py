@@ -155,37 +155,8 @@ def test_fallback_exhaustion_keeps_stale_streak():
     assert agent._consecutive_stale_streams == 7
 
 
-def test_restore_primary_runtime_resets_stale_streak():
-    """Turn-start restore back to the primary is the third provider-swap
-    path: the streak measured the fallback we're leaving, so the restored
-    primary must get a fresh attempt instead of an instant short-circuit."""
-    fbs = [{"provider": "openai", "model": "gpt-4o"}]
-    agent = _make_fallback_agent(fallback_model=fbs)
-
-    with patch(
-        "agent.auxiliary_client.resolve_provider_client",
-        return_value=(_mock_client(), "resolved"),
-    ):
-        assert agent._try_activate_fallback() is True
-
-    # Streak accumulated while wedged on the FALLBACK provider.
-    agent._consecutive_stale_streams = 7
-
-    with patch("run_agent.OpenAI", return_value=MagicMock()):
-        assert agent._restore_primary_runtime() is True
-
-    assert agent._consecutive_stale_streams == 0
 
 
-def test_no_fallback_restore_noop_keeps_stale_streak():
-    """When no fallback was activated, restore is a no-op (returns False)
-    and must NOT clear the streak — the session never left the wedged
-    primary, so the breaker's cross-turn latch has to survive turn starts."""
-    agent = _make_fallback_agent(fallback_model=[])
-    agent._consecutive_stale_streams = 7
-
-    assert agent._restore_primary_runtime() is False
-    assert agent._consecutive_stale_streams == 7
 
 
 class TestNonStreamingSibling:

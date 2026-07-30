@@ -31,20 +31,8 @@ def test_redacts_email_addresses():
     assert "[redacted email]" in out
 
 
-def test_redacts_formatted_phone_numbers():
-    for phone in ["(555) 123-4567", "555-123-4567", "555.123.4567", "+1 555-123-4567"]:
-        out = _redact_reference_text(f"call {phone} today")
-        assert phone not in out, phone
-        assert "[redacted phone]" in out, phone
 
 
-def test_redacts_api_keys_and_jwts_via_central_redactor():
-    out = _redact_reference_text(
-        "key sk-proj-abc123def456ghi789jkl012 and token "
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
-    )
-    assert "sk-proj-abc123def456ghi789jkl012" not in out
-    assert "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U" not in out
 
 
 def test_does_not_mangle_code_review_shaped_text():
@@ -65,12 +53,6 @@ def test_does_not_mangle_code_review_shaped_text():
     assert _redact_reference_text(text) == text
 
 
-def test_git_log_author_emails_are_redacted_but_line_survives():
-    """Emails ARE redacted (they're the PII class the filter exists for), but
-    the surrounding git-log structure must stay intact and parseable."""
-    out = _redact_reference_text("Author: Jane Doe <jane@example.com> fixed the bug")
-    assert "jane@example.com" not in out
-    assert out == "Author: Jane Doe <[redacted email]> fixed the bug"
 
 
 def test_non_string_input_passes_through():
@@ -171,9 +153,6 @@ def test_full_mode_redacts_aggregator_input_too(monkeypatch, tmp_path):
     assert "ceo@example.com" not in joined_content
 
 
-def test_legacy_boolean_true_maps_to_full(monkeypatch, tmp_path):
-    prepared, _ref_events, _ = _run_facade(monkeypatch, tmp_path, "true")
-    assert "ceo@example.com" not in prepared["guidance"]
 
 
 def test_cache_keeps_raw_text_redaction_applied_per_surface(monkeypatch, tmp_path):

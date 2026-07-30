@@ -91,6 +91,7 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 //           or reference identity the runtime already guarantees.
 //   timestamp  — presentation-only (sort/age display), never affects transcript equality
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
+//   rowId — durable backend identity; stable for a given row, never changes what's painted
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -99,8 +100,9 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim'] as const
-const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim', 'reactions'] as const
+
+const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts', 'rowId'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -173,6 +175,20 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   return aKeys.every(k => aPrimitive[k] === bPrimitive[k])
 }
 
+export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMessage['reactions']): boolean {
+  const aList = a ?? []
+  const bList = b ?? []
+
+  if (aList === bList) {
+    return true
+  }
+
+  return (
+    aList.length === bList.length &&
+    aList.every((reaction, index) => reaction.emoji === bList[index].emoji && reaction.author === bList[index].author)
+  )
+}
+
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
@@ -183,7 +199,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.branchGroupId !== b.branchGroupId ||
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
-    (a.interim ?? false) !== (b.interim ?? false)
+    (a.interim ?? false) !== (b.interim ?? false) ||
+    !chatReactionsEquivalent(a.reactions, b.reactions)
   ) {
     return false
   }
@@ -258,6 +275,19 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
       previous.attachmentRefs?.length
     ) {
       preserved = { ...preserved, attachmentRefs: [...previous.attachmentRefs] }
+    }
+
+    // Reactions and the row id come from the same authoritative rows as the
+    // text, but a live/optimistic row that hasn't round-tripped yet carries
+    // neither. Carry the cached copy forward so a reaction doesn't blink off
+    // mid-turn. NEW object every time — the runtime repository's WeakMap
+    // caches normalized ThreadMessages by ChatMessage identity.
+    if (sameTurn && preserved.rowId === undefined && previous.rowId !== undefined) {
+      preserved = { ...preserved, rowId: previous.rowId }
+    }
+
+    if (sameTurn && preserved.reactions === undefined && previous.reactions?.length) {
+      preserved = { ...preserved, reactions: [...previous.reactions] }
     }
 
     const previousImages = embeddedImageUrls(previousText)

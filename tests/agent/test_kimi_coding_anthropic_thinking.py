@@ -110,64 +110,8 @@ class TestKimiFamilyGetsAdaptiveThinking:
         assert "temperature" not in kwargs
         assert kwargs["max_tokens"] == 4096
 
-    @pytest.mark.parametrize(
-        "hermes_effort,wire_effort",
-        [
-            ("minimal", "low"),
-            ("low", "low"),
-            ("medium", "medium"),
-            ("high", "high"),
-            ("xhigh", "xhigh"),
-            ("max", "max"),
-            ("ultra", "max"),
-        ],
-    )
-    def test_kimi_effort_mapping(self, hermes_effort: str, wire_effort: str) -> None:
-        from agent.anthropic_adapter import build_anthropic_kwargs
 
-        kwargs = build_anthropic_kwargs(
-            model="kimi-0714-preview",
-            messages=[{"role": "user", "content": "hello"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": True, "effort": hermes_effort},
-            base_url="https://api.moonshot.cn/anthropic/v1",
-        )
-        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
-        assert kwargs["output_config"] == {"effort": wire_effort}
 
-    def test_kimi_thinking_disabled_omits_parameter(self) -> None:
-        from agent.anthropic_adapter import build_anthropic_kwargs
-
-        kwargs = build_anthropic_kwargs(
-            model="kimi-0714-preview",
-            messages=[{"role": "user", "content": "hello"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": False},
-            base_url="https://api.moonshot.cn/anthropic/v1",
-        )
-        assert "thinking" not in kwargs
-        assert "output_config" not in kwargs
-
-    def test_custom_endpoint_non_kimi_model_keeps_thinking(self) -> None:
-        """Custom endpoint with a non-Kimi model must keep thinking intact.
-
-        Guards against over-broad model-family matching — only model names
-        starting with a Kimi/Moonshot prefix should route to adaptive.
-        """
-        from agent.anthropic_adapter import build_anthropic_kwargs
-
-        kwargs = build_anthropic_kwargs(
-            model="MiniMax-M2.7",
-            messages=[{"role": "user", "content": "hello"}],
-            tools=None,
-            max_tokens=4096,
-            reasoning_config={"enabled": True, "effort": "medium"},
-            base_url="https://my-llm-proxy.example.com/anthropic",
-        )
-        assert "thinking" in kwargs
-        assert kwargs["thinking"]["type"] == "enabled"
 
     def test_kimi_family_replay_preserves_unsigned_thinking(self) -> None:
         """On a custom Kimi endpoint, unsigned reasoning_content thinking

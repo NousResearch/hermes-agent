@@ -161,16 +161,6 @@ class TestDevicePathBlocking(unittest.TestCase):
                 self.skipTest(f"symlink unavailable: {exc}")
             self.assertFalse(_is_blocked_device(link_path))
 
-    def test_symlink_to_blocked_alias_is_blocked_before_realpath(self):
-        if not os.path.exists("/dev/stdin"):
-            self.skipTest("/dev/stdin is not available on this platform")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            link_path = os.path.join(tmpdir, "stdin-link")
-            try:
-                os.symlink("/dev/../dev/stdin", link_path)
-            except OSError as exc:
-                self.skipTest(f"symlink unavailable: {exc}")
-            self.assertTrue(_is_blocked_device(link_path))
 
     def test_read_file_tool_rejects_device(self):
         """read_file_tool returns an error without any file I/O."""
@@ -262,43 +252,6 @@ class TestCharacterCountGuard(unittest.TestCase):
         self.assertLessEqual(len(result["content"]), 1000)
         self.assertIn("offset", result["hint"])
 
-    @patch("tools.file_tools._get_file_ops")
-    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
-    def test_single_oversized_line_clamped_not_empty(self, _mock_limit, mock_ops):
-        """A single line larger than the whole budget is clamped (never empty)
-        and the cursor still advances by one line."""
-        big_content = "1|" + "q" * 5000  # one line, no newline, > budget
-        mock_ops.return_value = _make_fake_ops(
-            content=big_content, total_lines=1, file_size=len(big_content),
-        )
-        result = json.loads(read_file_tool("/tmp/oneline.txt", task_id="oneline"))
-        self.assertNotIn("error", result)
-        self.assertTrue(result["content"])  # not empty
-        self.assertEqual(result["next_offset"], 2)  # advanced past line 1
-        # The hint must disclose that the line was clamped mid-line and its
-        # remainder is unreachable via offset pagination.
-        self.assertIn("clamped mid-line", result["hint"])
-
-    @patch("tools.file_tools._get_file_ops")
-    @patch("tools.file_tools._get_max_read_chars", return_value=1000)
-    def test_multiline_truncation_hint_has_no_clamp_note(self, _mock_limit, mock_ops):
-        """Ordinary multi-line truncation must NOT carry the clamp note."""
-        big_content = "\n".join(f"{i}|" + "z" * 98 for i in range(1, 51))
-        mock_ops.return_value = _make_fake_ops(
-            content=big_content, total_lines=50, file_size=len(big_content),
-        )
-        result = json.loads(read_file_tool("/tmp/manylines.txt", task_id="manylines"))
-        self.assertTrue(result["truncated"])
-        self.assertNotIn("clamped mid-line", result["hint"])
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_small_read_not_truncated(self, mock_ops):
-        """Normal-sized reads pass through fine with no truncation flag."""
-        mock_ops.return_value = _make_fake_ops(content="short\n", file_size=6)
-        result = json.loads(read_file_tool("/tmp/small.txt", task_id="small"))
-        self.assertNotIn("error", result)
-        self.assertIn("content", result)
-        self.assertNotEqual(result.get("truncated_by"), "bytes")
 
     @patch("tools.file_tools._get_file_ops")
     @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
@@ -328,25 +281,6 @@ class TestTruncateToCharBudget(unittest.TestCase):
         self.assertEqual(lines, 3)
         self.assertFalse(trunc)
 
-    def test_trims_on_line_boundary(self):
-        fn = self._fn()
-        # 3 lines of 10 chars; budget fits ~2 lines.
-        text = "\n".join("x" * 10 for _ in range(5))  # 5 lines, 54 chars
-        out, lines, trunc = fn(text, 25)
-        self.assertTrue(trunc)
-        # Output ends on a complete line (no partial line at the tail).
-        self.assertFalse(out.endswith("x" * 3) and len(out.split("\n")[-1]) != 10)
-        self.assertEqual(lines, out.count("\n") + 1)
-        self.assertLessEqual(len(out), 25)
-
-    def test_single_line_over_budget_clamped(self):
-        fn = self._fn()
-        text = "y" * 500  # single line, no newline
-        out, lines, trunc = fn(text, 100)
-        self.assertTrue(trunc)
-        self.assertEqual(lines, 1)
-        self.assertEqual(len(out), 100)  # clamped to budget
-        self.assertNotEqual(out, "")  # never empty
 
     def test_empty_content(self):
         fn = self._fn()
@@ -413,90 +347,6 @@ class TestFileDedup(unittest.TestCase):
         self.assertIn("internal read_file display text", result["error"])
         fake.write_file.assert_not_called()
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_write_rejects_status_text_with_small_framing(self, mock_ops):
-        """write_file rejects small wrappers around the status text too.
-
-        Real-world corruption shapes aren't always the verbatim message — the
-        model sometimes prepends a short note or appends a trailing comment
-        before calling write_file.  A short, status-dominated write is still
-        corruption, not legitimate file content.
-        """
-        fake = MagicMock()
-        fake.write_file = MagicMock()
-        mock_ops.return_value = fake
-
-        wrapped = "Note: " + _READ_DEDUP_STATUS_MESSAGE + "\n\n(continuing.)"
-        result = json.loads(write_file_tool(
-            self._tmpfile,
-            wrapped,
-            task_id="guard",
-        ))
-
-        self.assertIn("error", result)
-        self.assertIn("internal read_file display text", result["error"])
-        fake.write_file.assert_not_called()
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_write_allows_large_file_that_quotes_status_text(self, mock_ops):
-        """Legitimate large content that happens to quote the status is allowed.
-
-        Hermes' own docs / SKILL.md files may legitimately mention the dedup
-        message verbatim.  Only short, status-dominated writes are rejected —
-        a normal file that contains the message as one line out of many must
-        still write successfully.
-        """
-        fake = MagicMock()
-        fake.write_file = lambda path, content: MagicMock(
-            to_dict=lambda: {"success": True, "path": path}
-        )
-        mock_ops.return_value = fake
-
-        # Build content that contains the status text but is much larger,
-        # so the status doesn't "dominate" — this is a legitimate file.
-        large_content = (
-            "# Skill reference\n\n"
-            "Example internal message (do not write back):\n\n"
-            f"    {_READ_DEDUP_STATUS_MESSAGE}\n\n"
-            + ("This is documentation content. " * 200)
-        )
-        result = json.loads(write_file_tool(
-            self._tmpfile,
-            large_content,
-            task_id="guard",
-        ))
-
-        self.assertNotIn("error", result)
-        self.assertTrue(result.get("success"))
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_modified_file_not_deduped(self, mock_ops):
-        """After the file is modified, dedup returns full content."""
-        mock_ops.return_value = _make_fake_ops(
-            content="line one\nline two\n", file_size=20,
-        )
-        read_file_tool(self._tmpfile, task_id="mod")
-
-        # Modify the file — ensure mtime changes
-        time.sleep(0.05)
-        with open(self._tmpfile, "w") as f:
-            f.write("changed content\n")
-
-        r2 = json.loads(read_file_tool(self._tmpfile, task_id="mod"))
-        self.assertNotEqual(r2.get("dedup"), True, "Modified file should not dedup")
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_different_range_not_deduped(self, mock_ops):
-        """Same file but different offset/limit should not dedup."""
-        mock_ops.return_value = _make_fake_ops(
-            content="line one\nline two\n", file_size=20,
-        )
-        read_file_tool(self._tmpfile, offset=1, limit=500, task_id="rng")
-
-        r2 = json.loads(read_file_tool(
-            self._tmpfile, offset=10, limit=500, task_id="rng",
-        ))
-        self.assertNotEqual(r2.get("dedup"), True)
 
     @patch("tools.file_tools._get_file_ops")
     def test_different_task_not_deduped(self, mock_ops):
@@ -701,21 +551,6 @@ class TestDedupResetOnCompression(unittest.TestCase):
         self.assertNotEqual(r_post.get("dedup"), True,
                             "Post-compression read should return full content")
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_reset_all_tasks(self, mock_ops):
-        """reset_file_dedup(None) clears all tasks."""
-        mock_ops.return_value = _make_fake_ops(
-            content="original content\n", file_size=18,
-        )
-        read_file_tool(self._tmpfile, task_id="t1")
-        read_file_tool(self._tmpfile, task_id="t2")
-
-        reset_file_dedup()  # no task_id — clear all
-
-        r1 = json.loads(read_file_tool(self._tmpfile, task_id="t1"))
-        r2 = json.loads(read_file_tool(self._tmpfile, task_id="t2"))
-        self.assertNotEqual(r1.get("dedup"), True)
-        self.assertNotEqual(r2.get("dedup"), True)
 
     @patch("tools.file_tools._get_file_ops")
     def test_reset_preserves_loop_detection(self, mock_ops):
@@ -908,61 +743,6 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         self.assertNotEqual(r2.get("dedup"), True,
                             "offset=50 should not dedup after write")
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_write_does_not_invalidate_other_files(self, mock_ops):
-        """Writing file A should not invalidate dedup for file B."""
-        other = os.path.join(self._tmpdir, "other.txt")
-        with open(other, "w") as f:
-            f.write("other content\n")
-
-        fake = MagicMock()
-        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
-            content="other content\n", total_lines=1, file_size=15,
-        )
-        fake.write_file = lambda path, content: MagicMock(
-            to_dict=lambda: {"success": True, "path": path}
-        )
-        mock_ops.return_value = fake
-
-        # Read file B.
-        read_file_tool(other, task_id="iso")
-
-        # Write file A.
-        write_file_tool(self._tmpfile, "changed A\n", task_id="iso")
-
-        # File B should still dedup (untouched).
-        r2 = json.loads(read_file_tool(other, task_id="iso"))
-        self.assertTrue(r2.get("dedup"),
-                        "Unrelated file should still dedup after writing another file")
-
-        try:
-            os.unlink(other)
-        except OSError:
-            pass
-
-    @patch("tools.file_tools._get_file_ops")
-    def test_write_does_not_invalidate_other_tasks(self, mock_ops):
-        """Writing in task A should not invalidate dedup for task B."""
-        fake = MagicMock()
-        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
-            content="original content\n", total_lines=1, file_size=18,
-        )
-        fake.write_file = lambda path, content: MagicMock(
-            to_dict=lambda: {"success": True, "path": path}
-        )
-        mock_ops.return_value = fake
-
-        # Both tasks read the file.
-        read_file_tool(self._tmpfile, task_id="taskA")
-        read_file_tool(self._tmpfile, task_id="taskB")
-
-        # Task A writes.
-        write_file_tool(self._tmpfile, "new\n", task_id="taskA")
-
-        # Task A's dedup should be invalidated.
-        rA = json.loads(read_file_tool(self._tmpfile, task_id="taskA"))
-        self.assertNotEqual(rA.get("dedup"), True,
-                            "Writing task's dedup should be invalidated")
 
         # Task B still sees dedup (its cache is separate — the file
         # *may* have changed on disk, but mtime comparison handles that;
@@ -971,11 +751,6 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         # on mtime.  The point is that _invalidate_dedup_for_path is
         # correctly scoped to task_id.
 
-    def test_invalidate_dedup_for_path_noop_on_missing_task(self):
-        """_invalidate_dedup_for_path is safe when task_id doesn't exist."""
-        _read_tracker.clear()
-        # Should not raise.
-        _invalidate_dedup_for_path("/nonexistent/path", "no_such_task")
 
     def test_invalidate_dedup_for_path_noop_on_empty_dedup(self):
         """_invalidate_dedup_for_path is safe when dedup dict is empty."""

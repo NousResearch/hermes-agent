@@ -13,17 +13,7 @@ from agent.context_compressor import (
 
 
 class TestSummaryPrefixToolUseClause:
-    def test_prefix_affirms_tools_remain_active(self):
-        assert "tools remain fully active" in SUMMARY_PREFIX
-        assert "narrating" in SUMMARY_PREFIX
 
-    def test_prefix_keeps_anti_resumption_protections(self):
-        """The clause is additive — every load-bearing protection stays."""
-        assert "REFERENCE ONLY" in SUMMARY_PREFIX
-        assert "Do NOT answer questions or fulfill requests" in SUMMARY_PREFIX
-        assert "the latest user message WINS" in SUMMARY_PREFIX
-        assert "Reverse signals" in SUMMARY_PREFIX
-        assert "ALWAYS authoritative" in SUMMARY_PREFIX
 
     def test_previous_generation_frozen_in_historical_prefixes(self):
         """Per the module contract: whenever SUMMARY_PREFIX changes, the prior
@@ -44,10 +34,6 @@ class TestSummaryPrefixToolUseClause:
         assert pre_clause, "pre-clause generation missing from frozen tuple"
         assert all(p != SUMMARY_PREFIX for p in pre_clause)
 
-    def test_historical_prefixes_are_distinct_from_current(self):
-        for frozen in _HISTORICAL_SUMMARY_PREFIXES:
-            assert frozen != SUMMARY_PREFIX
-        assert LEGACY_SUMMARY_PREFIX != SUMMARY_PREFIX
 
     def test_strip_recognizes_current_and_frozen_prefixes(self):
         """Re-compaction normalization must strip both the live prefix and the

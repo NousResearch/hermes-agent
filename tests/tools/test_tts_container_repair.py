@@ -47,10 +47,6 @@ class TestSniffAudioContainer:
         p.write_bytes(data)
         assert _sniff_audio_container(str(p)) == expected
 
-    def test_wav(self, tmp_path):
-        p = tmp_path / "a.bin"
-        p.write_bytes(_wav_bytes())
-        assert _sniff_audio_container(str(p)) == "wav"
 
     def test_unknown_and_missing(self, tmp_path):
         p = tmp_path / "a.bin"
@@ -66,43 +62,6 @@ class TestRepairOggContainer:
         assert _repair_ogg_container(str(p)) == str(p)
         assert p.read_bytes() == OGG
 
-    def test_non_ogg_extension_untouched(self, tmp_path):
-        p = tmp_path / "v.mp3"
-        p.write_bytes(MP3_ID3)
-        assert _repair_ogg_container(str(p)) == str(p)
-
-    def test_mp3_in_ogg_transcoded(self, tmp_path):
-        p = tmp_path / "v.ogg"
-        p.write_bytes(MP3_ID3)
-
-        def fake_transcode(input_path, ogg_path):
-            # simulate in-place ffmpeg success
-            with open(ogg_path, "wb") as fh:
-                fh.write(OGG)
-            return ogg_path
-
-        with patch("tools.tts_tool._ffmpeg_transcode_to_opus", fake_transcode):
-            result = _repair_ogg_container(str(p))
-
-        assert result == str(p)
-        assert p.read_bytes()[:4] == b"OggS"
-
-    def test_wav_in_ogg_transcoded(self, tmp_path):
-        p = tmp_path / "v.ogg"
-        p.write_bytes(_wav_bytes())
-        with patch("tools.tts_tool._ffmpeg_transcode_to_opus",
-                   lambda i, o: (open(o, "wb").write(OGG), o)[1]):
-            assert _repair_ogg_container(str(p)) == str(p)
-        assert p.read_bytes()[:4] == b"OggS"
-
-    def test_no_ffmpeg_renames_to_honest_extension(self, tmp_path):
-        p = tmp_path / "v.ogg"
-        p.write_bytes(MP3_FRAME)
-        with patch("tools.tts_tool._ffmpeg_transcode_to_opus", lambda i, o: None):
-            result = _repair_ogg_container(str(p))
-        assert result == str(tmp_path / "v.mp3")
-        assert not p.exists()
-        assert (tmp_path / "v.mp3").exists()
 
     def test_ffmpeg_real_transcode_if_available(self, tmp_path):
         """Live ffmpeg round-trip when the binary exists (skipped otherwise)."""

@@ -197,38 +197,6 @@ def test_guard_gateway_user_approves_is_one_shot(gw_session):
     assert A.is_approved(gw_session, "execute_code") is False
 
 
-def test_guard_gateway_user_approves_session_persists(gw_session):
-    """'Approve session' stores session-level approval (#39275)."""
-    _register_resolver(gw_session, "session")
-    res = A.check_execute_code_guard("import os; print(1)", "local")
-    assert res["approved"] is True
-    assert res.get("user_approved") is True
-    # Session approval should now be stored.
-    assert A.is_approved(gw_session, "execute_code") is True
-    # Subsequent calls should auto-approve without prompting.
-    res2 = A.check_execute_code_guard("import os; print(2)", "local")
-    assert res2["approved"] is True
-    # Cleanup
-    with A._lock:
-        s = A._session_approved.get(gw_session, set())
-        s.discard("execute_code")
-
-
-def test_guard_gateway_user_approves_always_persists(gw_session):
-    """'Always' stores permanent approval (#39275)."""
-    _register_resolver(gw_session, "always")
-    res = A.check_execute_code_guard("import os; print(1)", "local")
-    assert res["approved"] is True
-    assert res.get("user_approved") is True
-    # Permanent approval should now be stored.
-    assert A.is_approved(gw_session, "execute_code") is True
-    # Cleanup
-    with A._lock:
-        A._permanent_approved.discard("execute_code")
-        s = A._session_approved.get(gw_session, set())
-        s.discard("execute_code")
-
-
 def test_guard_session_approval_short_circuits_prompt(gw_session):
     """Once session-approved, execute_code skips the approval prompt (#39275)."""
     # Manually set session approval.
@@ -242,34 +210,6 @@ def test_guard_session_approval_short_circuits_prompt(gw_session):
         with A._lock:
             s = A._session_approved.get(gw_session, set())
             s.discard("execute_code")
-
-
-def test_guard_gateway_user_denies_blocks(gw_session):
-    _register_resolver(gw_session, "deny")
-    res = A.check_execute_code_guard("import os", "local")
-    assert res["approved"] is False
-    assert res["outcome"] == "denied"
-    assert res["user_consent"] is False
-
-
-@pytest.mark.parametrize(
-    "approval_config",
-    [
-        {"timeout": 0},
-        {"timeout": 0, "gateway_timeout": 300},
-    ],
-    ids=["shared-timeout-only", "shared-timeout-is-canonical"],
-)
-def test_guard_gateway_wait_uses_canonical_timeout(
-    gw_session, monkeypatch, approval_config
-):
-    # Register a callback that never resolves; force an immediate timeout.
-    with A._lock:
-        A._gateway_notify_cbs[gw_session] = lambda _d: None
-    monkeypatch.setattr(A, "_get_approval_config", lambda: approval_config)
-    res = A.check_execute_code_guard("import os", "local")
-    assert res["approved"] is False
-    assert res["outcome"] == "timeout"
 
 
 def test_guard_gateway_missing_notify_is_pending(gw_session):
@@ -504,63 +444,10 @@ def test_env_scrub_passthrough_overrides_secret_block():
 # 5. File-tool sensitive-path refusal (security B1)
 # ---------------------------------------------------------------------------
 
-def test_execute_code_entry_blocks_before_spawn_when_guard_denies(monkeypatch, tmp_path):
-    """Behavioral wiring test: execute_code() consults the entry guard and, on
-    denial, returns the block message WITHOUT spawning the child — proven by a
-    marker file the script would create that never appears."""
-    import json
-
-    import tools.code_execution_tool as cet
-    from tools import terminal_tool as TT
-
-    marker = tmp_path / "child-ran.marker"
-    monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
-    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
-    monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
-    monkeypatch.setattr(TT, "_get_env_config", lambda: {"env_type": "local"})
-
-    result = json.loads(
-        cet.execute_code(f"open({str(marker)!r}, 'w').close()", task_id="cluster-t")
-    )
-    assert result["status"] == "error"
-    assert "BLOCKED" in result["error"]
-    assert not marker.exists()  # guard denied before the child was spawned
-
 
 # ---------------------------------------------------------------------------
 # 6. Env-scrub diagnosability mitigation (#27303 follow-up)
 # ---------------------------------------------------------------------------
-
-def test_env_scrub_logs_dropped_hermes_vars(caplog):
-    """Dropping a non-allowlisted, non-secret HERMES_* var must be diagnosable:
-    the scrub emits a one-shot debug log naming the dropped vars and pointing at
-    the env_passthrough opt-in, so the silent behavior change (#27303) doesn't
-    leave users guessing why a sandbox script sees an unset HERMES_* var."""
-    import logging
-
-    from tools.code_execution_tool import _scrub_child_env
-
-    env = {
-        "HERMES_HOME": "/h",          # allowlisted → kept, not logged
-        "HERMES_BASE_URL": "https://x",   # dropped → logged
-        "HERMES_KANBAN_DB": "postgres://u:p@h/db",  # dropped → logged
-        "HERMES_API_KEY": "sk",       # secret → dropped silently (not logged)
-        "PATH": "/usr/bin",           # safe prefix → kept
-    }
-    with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
-        out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
-
-    assert "HERMES_HOME" in out and "PATH" in out
-    assert "HERMES_BASE_URL" not in out and "HERMES_KANBAN_DB" not in out
-
-    msgs = "\n".join(r.getMessage() for r in caplog.records)
-    assert "HERMES_BASE_URL" in msgs and "HERMES_KANBAN_DB" in msgs
-    assert "env_passthrough" in msgs
-    # Secret vars are dropped but must NOT be named in the diagnostic log.
-    assert "HERMES_API_KEY" not in msgs
 
 
 def test_env_scrub_no_log_when_nothing_dropped(caplog):

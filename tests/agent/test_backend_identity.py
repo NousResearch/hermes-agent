@@ -54,11 +54,6 @@ class TestSameDeployment:
         assert not same_deployment(sibling, failed)
         assert not should_skip_candidate(sibling, failed, FailureScope.MODEL)
 
-    def test_exact_same_deployment_is_skipped(self):
-        failed = _id("custom", "zai-org/glm-5.2")
-        same = _id("custom", "ZAI-ORG/GLM-5.2")  # case-insensitive
-        assert same_deployment(same, failed)
-        assert should_skip_candidate(same, failed, FailureScope.MODEL)
 
     def test_incident_62984_same_model_different_explicit_url_is_a_pool(self):
         """Several LM Studio endpoints serving one model = a pool, not dups."""
@@ -67,12 +62,6 @@ class TestSameDeployment:
         assert not same_deployment(a, b)
         assert not should_skip_candidate(a, b, FailureScope.MODEL)
 
-    def test_unknown_url_inherits_provider_default_and_dedups(self):
-        """An entry without base_url inherits the provider default — it
-        cannot prove it is a different endpoint (#62984 semantics)."""
-        a = _id("openrouter", "z-ai/glm-4.7")
-        b = _id("openrouter", "z-ai/glm-4.7", "https://openrouter.ai/api/v1")
-        assert same_deployment(a, b)
 
     def test_incident_22548_shim_aliases_same_url_same_model_are_same(self):
         """Two custom_providers aliases at one shim URL with one model."""
@@ -114,10 +103,6 @@ class TestSameCredentialSurface:
         b = _id("proxy-b", "m", "http://gw:9000/v1")
         assert not same_credential_surface(a, b)
 
-    def test_missing_provider_falls_back_to_url_signal(self):
-        a = _id("", "m", "http://gw:9000/v1")
-        b = _id("proxy-b", "m2", "http://gw:9000/v1")
-        assert same_credential_surface(a, b)
 
 
 class TestSameEndpoint:

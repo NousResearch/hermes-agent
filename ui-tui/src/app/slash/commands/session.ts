@@ -104,10 +104,11 @@ export const sessionCommands: SlashCommand[] = [
     help: 'change or show model',
     name: 'model',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('change models')) {
-        return
-      }
-
+      // No busy guard here (unlike session switching). A model change is a
+      // session-scoped config.set: idle it switches immediately; mid-turn the
+      // gateway QUEUES it and applies it at the next turn start (returning
+      // deferred:true) instead of rejecting. Either way the pick sticks without
+      // interrupting the stream or waiting on the swap.
       if (!arg.trim()) {
         return patchOverlayState({ modelPicker: true })
       }
@@ -145,7 +146,7 @@ export const sessionCommands: SlashCommand[] = [
                 return ctx.transcript.sys('error: invalid response: model switch')
               }
 
-              ctx.transcript.sys(`model → ${r.value}`)
+              ctx.transcript.sys(r.deferred ? `model → ${r.value} (applies next turn)` : `model → ${r.value}`)
               ctx.local.maybeWarn(r)
 
               patchUiState(state => ({

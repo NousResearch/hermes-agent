@@ -18,6 +18,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
@@ -182,13 +183,13 @@ def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
 def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     """Generate a deterministic call_id from tool call content.
 
-    Used as a fallback when the API doesn't provide a call_id.
+    Thin wrapper over the single policy owner
+    ``agent.message_sanitization.deterministic_call_id`` (audit F4) — kept
+    as a module-level name because run_agent and tests import it from here.
     Deterministic IDs prevent cache invalidation — random UUIDs would
     make every API call's prefix unique, breaking OpenAI's prompt cache.
     """
-    seed = f"{fn_name}:{arguments}:{index}"
-    digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
-    return f"call_{digest}"
+    return deterministic_call_id(fn_name, arguments, index)
 
 
 def _clamp_responses_call_id(call_id: str) -> str:

@@ -107,11 +107,9 @@ scripts/run_tests.sh tests/path/to/test_file.py::test_name --trace
 scripts/run_tests.sh tests/path/to/test_file.py --showlocals --tb=long
 ```
 
-Note: `scripts/run_tests.sh` uses xdist (`-n 4`) by default, and pdb does NOT work under xdist. Add `-p no:xdist` or run a single test with `-n 0`:
+Note: `scripts/run_tests.sh` runs each test file in a captured subprocess via `run_tests_parallel.py` (no xdist), so interactive pdb does NOT work under the wrapper. Run pytest directly for `--pdb`:
 
 ```bash
-scripts/run_tests.sh tests/foo_test.py::test_bar --pdb -p no:xdist
-# or
 source .venv/bin/activate
 python -m pytest tests/foo_test.py::test_bar --pdb
 ```
@@ -276,7 +274,7 @@ nc 127.0.0.1 4444
 ## Debugging Hermes-specific Processes
 
 ### Tests
-See Recipe 3. Always add `-p no:xdist` or run single tests without xdist.
+See Recipe 3. The wrapper captures subprocess output, so run pytest directly for interactive pdb.
 
 ### `run_agent.py` / CLI — one-shot
 Easiest: add `breakpoint()` near the suspect line, then run `hermes` normally. Control returns to your terminal at the pause point.
@@ -308,7 +306,7 @@ Long-lived. Use `remote-pdb` at a handler, or `debugpy` with `--wait-for-client`
 
 ## Common Pitfalls
 
-1. **pdb under pytest-xdist silently does nothing.** You won't see the prompt, the test just hangs. Always use `-p no:xdist` or `-n 0`.
+1. **pdb under a parallel/output-capturing runner silently does nothing.** You won't see the prompt, the test just hangs (true of pytest-xdist and of `scripts/run_tests.sh`'s captured per-file subprocesses). Run pytest directly on a single file for interactive debugging.
 
 2. **`breakpoint()` in CI / non-TTY contexts hangs the process.** Safe locally; never commit it. Add a pre-commit grep as a safety net.
 
@@ -333,7 +331,7 @@ Long-lived. Use `remote-pdb` at a handler, or `debugpy` with `--wait-for-client`
 
 - [ ] After `pip install debugpy`, confirm: `python -c "import debugpy; print(debugpy.__version__)"`
 - [ ] For remote debug, confirm the port is actually listening: `ss -tlnp | grep 5678`
-- [ ] First breakpoint actually hits (if it doesn't, you likely have `PYTHONBREAKPOINT=0`, you're under xdist, or execution finished before attach)
+- [ ] First breakpoint actually hits (if it doesn't, you likely have `PYTHONBREAKPOINT=0`, you're under a parallel/capturing runner, or execution finished before attach)
 - [ ] `where` / `w` shows the expected call stack
 - [ ] Post-debug cleanup: no stray `breakpoint()` / `set_trace()` in committed code
   ```bash
@@ -354,10 +352,10 @@ breakpoint()
 
 **"This test passes in isolation but fails in the suite."**
 ```bash
-scripts/run_tests.sh tests/the_test.py --pdb -p no:xdist
-# But if it only fails WITH other tests:
+scripts/run_tests.sh tests/the_test.py   # confirm it fails under the isolated runner first
+# For interactive debugging, or if it only fails WITH other tests:
 source .venv/bin/activate
-python -m pytest tests/ -x --pdb -p no:xdist
+python -m pytest tests/ -x --pdb
 # Now it pdb-traps at the exact failing test after state accumulated.
 ```
 

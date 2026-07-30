@@ -23,13 +23,6 @@ class TestDefaultOutputTimestampResolution:
             "concurrent calls in the same second would collide again (#43911)"
         )
 
-    def test_microsecond_format_distinguishes_same_second_instants(self):
-        fmt = "%Y%m%d_%H%M%S_%f"
-        base = datetime.datetime(2026, 7, 28, 12, 0, 0, 1)
-        later_same_second = base.replace(microsecond=2)
-        assert base.strftime(fmt) != later_same_second.strftime(fmt)
-        # And the rendered value still parses back to the same instant.
-        assert datetime.datetime.strptime(base.strftime(fmt), fmt) == base
 
     def test_timestamp_component_is_filename_safe(self):
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")

@@ -2517,6 +2517,10 @@ def test_gateway_session_recovery_ignores_bug_ended_newer_rows(db):
     Those two end reasons are known-bug artifacts, not deliberate
     conversation boundaries, so their existence says nothing about the user
     having moved on (#63207 kept them recoverable for the same reason).
+
+    The newer reaped row deliberately has no messages: it is not itself a
+    recovery candidate, so this can only return a row if the superseded
+    guard's exemption lets the *older* open row through.
     """
     db.create_session(
         "live-open-session",
@@ -2541,7 +2545,6 @@ def test_gateway_session_recovery_ignores_bug_ended_newer_rows(db):
         chat_id="chat-1",
         chat_type="dm",
     )
-    db.append_message("newer-reaped-session", "user", "reaped")
     db.end_session("newer-reaped-session", "ws_orphan_reap")
 
     recovered = db.find_latest_gateway_session_for_peer(
@@ -2551,10 +2554,8 @@ def test_gateway_session_recovery_ignores_bug_ended_newer_rows(db):
         chat_id="chat-1",
         chat_type="dm",
     )
-    # The newer bug-ended row itself is the best candidate; the point is
-    # recovery still returns a row instead of None.
     assert recovered is not None
-    assert recovered["id"] == "newer-reaped-session"
+    assert recovered["id"] == "live-open-session"
 
 
 def test_gateway_session_recovery_peer_fallback_skips_superseded_rows(db):
@@ -2601,6 +2602,101 @@ def test_gateway_session_recovery_peer_fallback_skips_superseded_rows(db):
 
 
 
+
+
+def test_gateway_session_recovery_preserves_resumed_target(db):
+    """A /resume'd session must stay recoverable despite its switch row.
+
+    switch_session() ends the *outgoing* session as ``session_switch`` and
+    reopens the older target in place; reopen_session() keeps the target's
+    original started_at. The newer switch row records the user deliberately
+    moving *to* the older session, so it must not supersede it — otherwise
+    recovery after a lost sessions.json drops the resumed conversation.
+    """
+    db.create_session(
+        "resumed-target-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("resumed-target-session", "user", "original thread")
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?",
+        (time.time() - 7 * 86400, "resumed-target-session"),
+    )
+    db._conn.commit()
+    db.end_session("resumed-target-session", "session_reset")
+
+    db.create_session(
+        "outgoing-switched-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("outgoing-switched-session", "user", "newer thread")
+
+    # /resume the old target: switch_session() ends the outgoing session as
+    # session_switch and reopens the target row in place.
+    db.end_session("outgoing-switched-session", "session_switch")
+    db.reopen_session("resumed-target-session")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered is not None
+    assert recovered["id"] == "resumed-target-session"
+
+
+def test_gateway_session_recovery_peer_fallback_preserves_resumed_target(db):
+    """The peer-tuple fallback applies the same session_switch exemption.
+
+    Legacy rows without session_key can be /resume targets too; the fallback
+    guard must not let their own switch row supersede them.
+    """
+    db.create_session(
+        "legacy-resumed-target",
+        "telegram",
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("legacy-resumed-target", "user", "original thread")
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id = ?",
+        (time.time() - 7 * 86400, "legacy-resumed-target"),
+    )
+    db._conn.commit()
+    db.end_session("legacy-resumed-target", "session_reset")
+
+    db.create_session(
+        "legacy-outgoing-switched",
+        "telegram",
+        user_id="user-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("legacy-outgoing-switched", "user", "newer thread")
+
+    db.end_session("legacy-outgoing-switched", "session_switch")
+    db.reopen_session("legacy-resumed-target")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered is not None
+    assert recovered["id"] == "legacy-resumed-target"
 
 
 def test_find_session_by_origin_matching_rules(db):

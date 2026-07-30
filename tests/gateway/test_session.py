@@ -1,5 +1,7 @@
 """Tests for gateway session management."""
 import json
+import time
+
 import pytest
 from dataclasses import replace
 from datetime import datetime
@@ -489,6 +491,66 @@ class TestSessionStoreSwitchSession:
         resumed = db.get_session(target_session_id)
         assert resumed["ended_at"] is None
         assert resumed["end_reason"] is None
+        db.close()
+
+
+class TestSessionStoreStaleRecoveryAfterResume:
+    """Recovery after routing-index loss must honor a prior /resume.
+
+    The outgoing session that /resume ends as ``session_switch`` is newer
+    than the resumed target; find_latest_gateway_session_for_peer()'s
+    superseded guard must not treat it as the user having moved on, or a
+    lost sessions.json silently drops the resumed conversation.
+    """
+
+    def test_lost_index_recovers_resumed_target(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+            user_name="tester",
+        )
+
+        # Session A with history, backdated a week.
+        entry_a = store.get_or_create_session(source)
+        session_a = entry_a.session_id
+        db.append_message(session_a, "user", "original thread")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - 7 * 86400, session_a),
+        )
+        db._conn.commit()
+
+        # /new: newer session B with its own history.
+        entry_b = store.reset_session(entry_a.session_key)
+        assert entry_b is not None
+        session_b = entry_b.session_id
+        db.append_message(session_b, "user", "newer thread")
+
+        # /resume A: B ends as session_switch, A reopens in place.
+        switched = store.switch_session(entry_a.session_key, session_a)
+        assert switched is not None and switched.session_id == session_a
+        assert db.get_session(session_b)["end_reason"] == "session_switch"
+        assert db.get_session(session_a)["ended_at"] is None
+
+        # Restart with a lost routing index: same DB, empty sessions dir.
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            restarted = SessionStore(
+                sessions_dir=tmp_path / "sessions-after-restart", config=config
+            )
+        restarted._db = db
+        restarted._loaded = True
+
+        recovered = restarted.get_or_create_session(source)
+        assert recovered.session_id == session_a
         db.close()
 
 

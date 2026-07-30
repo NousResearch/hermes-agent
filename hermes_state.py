@@ -3033,9 +3033,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         interrupts a mid-run agent can leave the old row dangling open
         (``ended_at IS NULL``), and recovering it weeks later silently splices
         its stale trailing user turn onto the next inbound message.  A row is
-        superseded when ANY newer session exists for the same peer, except
-        newer rows ended by the two known-bug reasons above — those never
-        represent the user deliberately moving on.
+        superseded when ANY newer session exists for the same peer, except:
+
+        - newer rows ended by the two known-bug reasons above — those never
+          represent the user deliberately moving on; and
+        - newer rows ended by ``session_switch`` — ``/resume`` ends the
+          *outgoing* session with that reason and reopens an **older** target
+          row in place (``reopen_session()`` keeps its original
+          ``started_at``), so a switch row records the user deliberately
+          moving *to* an older session, never past it.  Treating it as
+          superseding would leave every explicitly resumed session
+          unrecoverable.
         """
         if not session_key:
             return None
@@ -3055,7 +3063,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         AND newer.source = sessions.source
                         AND newer.started_at > sessions.started_at
                         AND (newer.end_reason IS NULL
-                             OR newer.end_reason NOT IN ('agent_close', 'ws_orphan_reap'))
+                             OR newer.end_reason NOT IN
+                                 ('agent_close', 'ws_orphan_reap', 'session_switch'))
                   )
                 ORDER BY started_at DESC
                 LIMIT 1
@@ -3091,7 +3100,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         AND COALESCE(newer.thread_id, '') = COALESCE(sessions.thread_id, '')
                         AND newer.started_at > sessions.started_at
                         AND (newer.end_reason IS NULL
-                             OR newer.end_reason NOT IN ('agent_close', 'ws_orphan_reap'))
+                             OR newer.end_reason NOT IN
+                                 ('agent_close', 'ws_orphan_reap', 'session_switch'))
                   )
                 ORDER BY started_at DESC
                 LIMIT 1

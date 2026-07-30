@@ -2652,6 +2652,12 @@ OPTIONAL_ENV_VARS = {
     "MATTERMOST_REQUIRE_MENTION": _msg(
         "Require @mention in Mattermost channels (default: true). Set to false to respond to "
         "all messages.", "Require @mention in channels", None),
+    "MATTERMOST_AUTO_THREAD": _msg(
+        "Override Mattermost channel/group auto-threading (default: false)",
+        "Auto-thread Mattermost channel messages", None, advanced=True),
+    "MATTERMOST_DM_AUTO_THREAD": _msg(
+        "Override Mattermost direct-message auto-threading (default: false)",
+        "Auto-thread Mattermost direct messages", None, advanced=True),
     "MATTERMOST_FREE_RESPONSE_CHANNELS": _msg(
         "Comma-separated Mattermost channel IDs where bot responds without @mention",
         "Free-response channel IDs (comma-separated)", None),

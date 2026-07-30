@@ -81,21 +81,131 @@ class TestMattermostConfigLoading:
         assert home.chat_id == "ch_abc123"
         assert home.name == "General"
 
+    def test_load_gateway_config_bridges_auto_thread_settings(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "mattermost:\n"
+            "  auto_thread: true\n"
+            "  dm_auto_thread: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("MATTERMOST_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATTERMOST_DM_AUTO_THREAD", raising=False)
+
+        # Importing the bundled plugin registers its YAML bridge.
+        import plugins.platforms.mattermost.adapter  # noqa: F401
+        from gateway.config import load_gateway_config
+
+        load_gateway_config()
+
+        assert os.getenv("MATTERMOST_AUTO_THREAD") == "true"
+        assert os.getenv("MATTERMOST_DM_AUTO_THREAD") == "false"
+
 
 # ---------------------------------------------------------------------------
 # Adapter format / truncate
 # ---------------------------------------------------------------------------
 
-def _make_adapter():
+def _make_adapter(extra=None):
     """Create a MattermostAdapter with mocked config."""
     from plugins.platforms.mattermost.adapter import MattermostAdapter
+    adapter_extra = {"url": "https://mm.example.com"}
+    adapter_extra.update(extra or {})
     config = PlatformConfig(
         enabled=True,
         token="test-token",
-        extra={"url": "https://mm.example.com"},
+        extra=adapter_extra,
     )
     adapter = MattermostAdapter(config)
     return adapter
+
+
+class TestMattermostThreadConfig:
+    def test_threading_defaults_to_flat(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATTERMOST_DM_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATTERMOST_REPLY_MODE", raising=False)
+
+        adapter = _make_adapter()
+
+        assert adapter._auto_thread is False
+        assert adapter._dm_auto_thread is False
+
+    def test_legacy_thread_mode_enables_both_policies(self, monkeypatch, caplog):
+        monkeypatch.delenv("MATTERMOST_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATTERMOST_DM_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATTERMOST_REPLY_MODE", raising=False)
+
+        with caplog.at_level("WARNING"):
+            adapter = _make_adapter({"reply_mode": "thread"})
+
+        assert adapter._auto_thread is True
+        assert adapter._dm_auto_thread is True
+        assert "deprecated" in caplog.text
+
+    def test_new_config_overrides_legacy_thread_mode(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATTERMOST_DM_AUTO_THREAD", raising=False)
+
+        adapter = _make_adapter(
+            {
+                "reply_mode": "thread",
+                "auto_thread": False,
+                "dm_auto_thread": False,
+            }
+        )
+
+        assert adapter._auto_thread is False
+        assert adapter._dm_auto_thread is False
+
+    def test_new_env_overrides_config_and_legacy(self, monkeypatch):
+        monkeypatch.setenv("MATTERMOST_AUTO_THREAD", "false")
+        monkeypatch.setenv("MATTERMOST_DM_AUTO_THREAD", "true")
+
+        adapter = _make_adapter(
+            {
+                "reply_mode": "thread",
+                "auto_thread": True,
+                "dm_auto_thread": False,
+            }
+        )
+
+        assert adapter._auto_thread is False
+        assert adapter._dm_auto_thread is True
+
+    def test_yaml_bridge_sets_both_auto_thread_values(self, monkeypatch):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        monkeypatch.delenv("MATTERMOST_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATTERMOST_DM_AUTO_THREAD", raising=False)
+
+        _apply_yaml_config(
+            {},
+            {"auto_thread": True, "dm_auto_thread": False},
+        )
+
+        assert os.getenv("MATTERMOST_AUTO_THREAD") == "true"
+        assert os.getenv("MATTERMOST_DM_AUTO_THREAD") == "false"
+
+    def test_yaml_bridge_does_not_override_environment(self, monkeypatch):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        monkeypatch.setenv("MATTERMOST_AUTO_THREAD", "false")
+        monkeypatch.setenv("MATTERMOST_DM_AUTO_THREAD", "true")
+
+        _apply_yaml_config(
+            {},
+            {"auto_thread": True, "dm_auto_thread": False},
+        )
+
+        assert os.getenv("MATTERMOST_AUTO_THREAD") == "false"
+        assert os.getenv("MATTERMOST_DM_AUTO_THREAD") == "true"
 
 
 class TestMattermostFormatMessage:
@@ -164,8 +274,9 @@ class TestMattermostSend:
 
     @pytest.mark.asyncio
     async def test_send_with_thread_reply(self):
-        """When reply_mode is 'thread', reply_to should become root_id."""
-        self.adapter._reply_mode = "thread"
+        """When auto_thread is enabled, reply_to should become root_id."""
+        self.adapter._auto_thread = True
+        self.adapter._remember_channel_type("channel_1", "channel")
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
@@ -197,7 +308,6 @@ class TestMattermostSend:
     @pytest.mark.asyncio
     async def test_send_with_thread_reply_resolves_to_root(self):
         """A reply post must be resolved to the original thread root."""
-        self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(
             return_value={"id": "user_reply", "root_id": "thread_root"}
         )
@@ -243,7 +353,6 @@ class TestMattermostSend:
 
     @pytest.mark.asyncio
     async def test_thread_metadata_avoids_redundant_root_lookup(self):
-        self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock()
 
         self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
@@ -258,7 +367,6 @@ class TestMattermostSend:
 
     @pytest.mark.asyncio
     async def test_thread_metadata_falls_back_when_reply_lookup_fails(self):
-        self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={})
 
         self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
@@ -272,7 +380,6 @@ class TestMattermostSend:
 
     @pytest.mark.asyncio
     async def test_send_typing_uses_thread_parent_id(self):
-        self.adapter._reply_mode = "thread"
         self.adapter._api_post = AsyncMock(return_value={})
 
         await self.adapter.send_typing(
@@ -286,8 +393,9 @@ class TestMattermostSend:
         )
 
     @pytest.mark.asyncio
-    async def test_send_typing_ignores_thread_when_reply_mode_off(self):
-        self.adapter._reply_mode = "off"
+    async def test_send_typing_preserves_explicit_thread_when_auto_thread_off(self):
+        self.adapter._auto_thread = False
+        self.adapter._dm_auto_thread = False
         self.adapter._api_post = AsyncMock(return_value={})
 
         await self.adapter.send_typing(
@@ -297,14 +405,13 @@ class TestMattermostSend:
 
         self.adapter._api_post.assert_awaited_once_with(
             "users//typing",
-            {"channel_id": "channel_1"},
+            {"channel_id": "channel_1", "parent_id": "thread_root"},
         )
 
 
     @pytest.mark.asyncio
     async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
-        self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
         self.adapter._last_post_status = 400
         self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
@@ -324,7 +431,8 @@ class TestMattermostSend:
     @pytest.mark.asyncio
     async def test_notify_send_with_invalid_thread_root_falls_back_flat_with_warning(self):
         """Notify-worthy replies may fall back flat so the answer is not lost."""
-        self.adapter._reply_mode = "thread"
+        self.adapter._auto_thread = True
+        self.adapter._remember_channel_type("channel_1", "channel")
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
         self.adapter._last_post_status = 400
         self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
@@ -352,7 +460,6 @@ class TestMattermostSend:
     @pytest.mark.asyncio
     async def test_progress_send_with_broken_thread_and_no_recorded_error_stays_quiet(self):
         """Same rule when no post error was recorded: still no flat fallback."""
-        self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
         self.adapter._api_post = AsyncMock(return_value={})
 
@@ -366,6 +473,131 @@ class TestMattermostSend:
         assert self.adapter._api_post.call_count == 1
         payload = self.adapter._api_post.call_args_list[0][0][1]
         assert payload["root_id"] == "bad_root"
+
+
+class TestMattermostAutoThreadRouting:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    @pytest.mark.asyncio
+    async def test_uncached_channel_uses_channel_auto_thread_policy(self):
+        self.adapter._auto_thread = True
+        self.adapter._dm_auto_thread = False
+        self.adapter._api_get = AsyncMock(
+            side_effect=[
+                {"id": "top_post", "root_id": ""},
+                {"id": "channel_1", "type": "O"},
+            ]
+        )
+
+        self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
+        await self.adapter.send(
+            "channel_1", "Reply!",
+            "top_post",
+            None,
+        )
+
+        assert self.adapter._api_post.await_args.args[1].get("root_id") == "top_post"
+        assert self.adapter._channel_type_cache["channel_1"] == "channel"
+        assert [entry.args for entry in self.adapter._api_get.await_args_list] == [
+            ("posts/top_post",),
+            ("channels/channel_1",),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_uncached_channel_can_disable_auto_thread(self):
+        self.adapter._auto_thread = False
+        self.adapter._dm_auto_thread = True
+        self.adapter._api_get = AsyncMock(
+            side_effect=[
+                {"id": "top_post", "root_id": ""},
+                {"id": "channel_1", "type": "O"},
+            ]
+        )
+
+        self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
+        await self.adapter.send(
+            "channel_1", "Reply!",
+            "top_post",
+            None,
+        )
+
+        assert "root_id" not in self.adapter._api_post.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_uncached_dm_uses_dm_auto_thread_policy(self):
+        self.adapter._auto_thread = False
+        self.adapter._dm_auto_thread = True
+        self.adapter._api_get = AsyncMock(
+            side_effect=[
+                {"id": "dm_post", "root_id": ""},
+                {"id": "dm_channel", "type": "D"},
+            ]
+        )
+
+        self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
+        await self.adapter.send(
+            "dm_channel", "Reply!",
+            "dm_post",
+            None,
+        )
+
+        assert self.adapter._api_post.await_args.args[1].get("root_id") == "dm_post"
+        assert self.adapter._channel_type_cache["dm_channel"] == "dm"
+
+    @pytest.mark.asyncio
+    async def test_uncached_dm_can_disable_auto_thread(self):
+        self.adapter._auto_thread = True
+        self.adapter._dm_auto_thread = False
+        self.adapter._api_get = AsyncMock(
+            side_effect=[
+                {"id": "dm_post", "root_id": ""},
+                {"id": "dm_channel", "type": "D"},
+            ]
+        )
+
+        self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
+        await self.adapter.send(
+            "dm_channel", "Reply!",
+            "dm_post",
+            None,
+        )
+
+        assert "root_id" not in self.adapter._api_post.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_explicit_dm_thread_metadata_is_always_preserved(self):
+        self.adapter._auto_thread = False
+        self.adapter._dm_auto_thread = False
+        self.adapter._api_get = AsyncMock()
+
+        self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
+        await self.adapter.send(
+            "dm_channel", "Reply!",
+            "dm_reply",
+            {"thread_id": "dm_root", "chat_type": "dm"},
+        )
+
+        assert self.adapter._api_post.await_args.args[1].get("root_id") == "dm_root"
+        self.adapter._api_get.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_existing_reply_root_is_preserved_without_metadata(self):
+        self.adapter._auto_thread = False
+        self.adapter._dm_auto_thread = False
+        self.adapter._api_get = AsyncMock(
+            return_value={"id": "dm_reply", "root_id": "dm_root"}
+        )
+
+        self.adapter._api_post = AsyncMock(return_value={"id": "sent"})
+        await self.adapter.send(
+            "dm_channel", "Reply!",
+            "dm_reply",
+            None,
+        )
+
+        assert self.adapter._api_post.await_args.args[1].get("root_id") == "dm_root"
+        self.adapter._api_get.assert_awaited_once_with("posts/dm_reply")
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +636,55 @@ class TestMattermostWebSocketParsing:
         # @mention is stripped from the message text
         assert msg_event.text == "Hello from Matrix!"
         assert msg_event.message_id == "post_abc"
+
+    @pytest.mark.parametrize(
+        (
+            "channel_type",
+            "root_id",
+            "auto_thread",
+            "dm_auto_thread",
+            "expected_thread_id",
+        ),
+        [
+            ("O", "", True, False, "post_policy"),
+            ("O", "", False, True, None),
+            ("D", "", False, True, "post_policy"),
+            ("D", "", True, False, None),
+            ("D", "existing_dm_root", False, False, "existing_dm_root"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_inbound_thread_policy(
+        self,
+        channel_type,
+        root_id,
+        auto_thread,
+        dm_auto_thread,
+        expected_thread_id,
+    ):
+        self.adapter._auto_thread = auto_thread
+        self.adapter._dm_auto_thread = dm_auto_thread
+        message = "DM message" if channel_type == "D" else "@hermes-bot channel message"
+        post_data = {
+            "id": "post_policy",
+            "user_id": "user_123",
+            "channel_id": "chan_policy",
+            "message": message,
+            "root_id": root_id,
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == expected_thread_id
 
 
     @pytest.mark.asyncio
@@ -508,6 +789,21 @@ class TestMattermostFileUpload:
     def setup_method(self):
         self.adapter = _make_adapter()
         self.adapter._session = MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_missing_local_file_remains_a_silent_noop(self, tmp_path):
+        self.adapter._api_post = AsyncMock()
+
+        result = await self.adapter._send_local_file(
+            "channel_1",
+            str(tmp_path / "missing-secret.txt"),
+            None,
+            None,
+        )
+
+        assert result.success is True
+        assert result.message_id is None
+        self.adapter._api_post.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("tools.url_safety.is_safe_url", return_value=True)
@@ -672,7 +968,7 @@ class TestMattermostMediaTypes:
 @pytest.mark.asyncio
 async def test_mattermost_top_level_channel_post_is_thread_root():
     adapter = _make_adapter()
-    adapter._reply_mode = "thread"
+    adapter._auto_thread = True
     adapter._bot_user_id = "bot_user_id"
     adapter._bot_username = "hermes-bot"
     adapter.handle_message = AsyncMock()
@@ -749,6 +1045,48 @@ def default_profile_env(monkeypatch):
 
 
 class TestMultiplexProfileScope:
+
+    def test_scoped_thread_yaml_load_seeds_extra_without_env_leak(
+        self, tmp_path, monkeypatch, multiplex_scope
+    ):
+        from gateway.config import load_gateway_config
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MATTERMOST_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("MATTERMOST_DM_AUTO_THREAD", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            "mattermost:\n  auto_thread: true\n  dm_auto_thread: false\n",
+            encoding="utf-8",
+        )
+        multiplex_scope()
+
+        config = load_gateway_config().platforms[Platform.MATTERMOST]
+        assert config.extra["auto_thread"] is True
+        assert config.extra["dm_auto_thread"] is False
+        adapter = MattermostAdapter(config)
+        assert (adapter._auto_thread, adapter._dm_auto_thread) == (True, False)
+        assert "MATTERMOST_AUTO_THREAD" not in os.environ
+        assert "MATTERMOST_DM_AUTO_THREAD" not in os.environ
+
+    @pytest.mark.parametrize("scoped_env, extra, expected", [
+        ({}, {}, (False, False)),
+        ({}, {"auto_thread": True, "dm_auto_thread": False}, (True, False)),
+        ({"MATTERMOST_AUTO_THREAD": "false", "MATTERMOST_DM_AUTO_THREAD": "true"},
+         {"auto_thread": True, "dm_auto_thread": False}, (False, True)),
+        ({"MATTERMOST_REPLY_MODE": "thread"}, {}, (True, True)),
+    ])
+    def test_thread_policy_uses_only_own_profile(
+        self, monkeypatch, multiplex_scope, scoped_env, extra, expected
+    ):
+        monkeypatch.setenv("MATTERMOST_AUTO_THREAD", "true")
+        monkeypatch.setenv("MATTERMOST_DM_AUTO_THREAD", "false")
+        monkeypatch.setenv("MATTERMOST_REPLY_MODE", "thread")
+        multiplex_scope(scoped_env)
+
+        adapter = _make_adapter(extra)
+
+        assert (adapter._auto_thread, adapter._dm_auto_thread) == expected
 
     @pytest.mark.asyncio
     async def test_ws_event_gating_uses_scoped_settings_not_default(

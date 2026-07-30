@@ -144,3 +144,33 @@ def test_complete_task_without_claim_lock_preserves_legacy_behavior(
         assert task is not None
         assert task.status == "done"
         assert task.result == "done"
+
+
+def test_complete_task_accepts_matching_claim_lock_on_running_task(
+    kanban_home: Path,
+) -> None:
+    """The happy path of the fenced branch: right lock, completable status.
+
+    The two tests above only pin what the fence *rejects*. Without this one a
+    predicate that rejected everything — or that dropped a legitimate status
+    from the IN list — would still pass the suite while breaking every worker
+    that completes its own claimed task.
+    """
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="owned work", assignee="worker")
+        claimed = kb.claim_task(conn, task_id, claimer="worker:current")
+        assert claimed is not None
+        conn.commit()
+
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result="finished",
+            expected_claim_lock="worker:current",
+        )
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "done"
+        assert task.result == "finished"
+        assert task.claim_lock is None

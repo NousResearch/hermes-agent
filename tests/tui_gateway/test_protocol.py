@@ -88,7 +88,6 @@ def test_shared_fixture_cleanup_uses_full_session_teardown(server, monkeypatch):
 
     assert server._sessions == {}
     assert closed == {"worker": 1, "agent": 1, "lease": 1}
->>>>>>> theirs
 
 
 @pytest.fixture()

@@ -18,12 +18,12 @@ import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/messa
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseLoadingIndicator, StreamStallIndicator } from '@/components/assistant-ui/thread/status'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
+import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
-import type { ChatMessage } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, GitForkIcon, Loader2Icon, RefreshCwIcon, SmilePlusIcon, VolumeXIcon, XIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
@@ -32,14 +32,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
-import { toggleMessageReaction } from '@/store/reactions'
-import { $reactionsEnabled } from '@/store/reactions-enabled'
-import { $agentReactions, $localReactions, mergeReactions, setLocalReaction } from '@/store/reactions-local'
 import { $voicePlayback } from '@/store/voice-playback'
-import type { MessageReaction } from '@/types/hermes'
-
-// Stable empty identity — a fresh [] per render would re-run every consumer.
-const EMPTY_REACTIONS: MessageReaction[] = []
 
 interface MessageActionProps {
   messageId: string
@@ -92,12 +85,17 @@ export const AssistantMessage: FC<{
 
   const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`)
 
+  // Double-click the reply to heart it (iMessage). Undefined while reactions
+  // are off, so the root carries no listener at all.
+  const onDoubleClick = useTapbackDoubleClick(messageId, 'assistant')
+
   return (
     <MessagePrimitive.Root
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
       data-streaming={isRunning ? 'true' : undefined}
+      onDoubleClick={onDoubleClick}
       ref={enterRef}
     >
       <div
@@ -144,38 +142,15 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
   const { t } = useI18n()
   const copy = t.assistant.thread
 
-  const reactions = useAuiState(s => {
-    const custom = (s.message.metadata?.custom ?? {}) as { reactions?: MessageReaction[] }
-
-    return custom.reactions ?? EMPTY_REACTIONS
-  })
-
-  const rowId = useAuiState(s => {
-    const custom = (s.message.metadata?.custom ?? {}) as { rowId?: number }
-
-    return custom.rowId
-  })
-
   const [pickerOpen, setPickerOpen] = useState(false)
-  const reactionsEnabled = useStore($reactionsEnabled)
-  const localAll = useStore($localReactions)
-  const agentLive = useStore($agentReactions)
+  const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'assistant')
 
-  const shownReactions = mergeReactions(
-    reactions,
-    localAll[messageId],
-    rowId !== undefined ? agentLive[rowId] : undefined
-  )
-
-  const react = useCallback(
+  const pickEmoji = useCallback(
     (emoji: null | string) => {
       setPickerOpen(false)
-      // Flip the UI immediately — a tapback is direct manipulation and must
-      // never wait on a round-trip. Persistence follows in the background.
-      setLocalReaction(messageId, emoji)
-      void toggleMessageReaction({ id: messageId, role: 'assistant', rowId, reactions } as ChatMessage, emoji)
+      react(emoji)
     },
-    [messageId, reactions, rowId]
+    [react]
   )
 
   return (
@@ -224,7 +199,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
       {(reactionsEnabled || shownReactions.length > 0) && (
         <ReactionPicker
           onOpenChange={setPickerOpen}
-          onSelect={react}
+          onSelect={pickEmoji}
           open={pickerOpen}
           selected={shownReactions.find(reaction => reaction.author === 'user')?.emoji}
         >

@@ -4425,7 +4425,6 @@ class TestRunConversation:
             result["final_response"]
             == "Based on the search results, the best next step is to update the config."
         )
-
         third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]
         assert third_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in third_call_messages[-1]["content"]
@@ -4442,6 +4441,47 @@ class TestRunConversation:
         agent.model = model
         unpunctuated = SimpleNamespace(content="Based on the results the best next step is to update the config", tool_calls=None)
         assert agent._should_treat_stop_as_truncated("stop", unpunctuated, [{"role": "tool", "content": "r"}]) is False
+
+    @pytest.mark.parametrize(
+        "sign_off",
+        ["✨", "✅"],
+        ids=["sparkles", "check"],
+    )
+    def test_ollama_glm_stop_with_emoji_sign_off_does_not_continue(self, agent, sign_off):
+        """Regression for #70131 — a complete Ollama/GLM post-tool `stop`
+        response ending in a Dingbats emoji (✨ U+2728 / ✅ U+2705) must not
+        be reclassified as truncated.  Before the Unicode-category fix,
+        ``_has_natural_response_ending`` returned False for these, so
+        ``_should_treat_stop_as_truncated`` injected a continuation prompt
+        and issued an extra API call for a response that was already whole.
+        """
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "glm-5.1:cloud"
+
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+        )
+        complete_stop = _mock_response(
+            content=f"Done — the config is updated {sign_off}",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [tool_turn, complete_stop]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 2
+        assert result["final_response"] == f"Done — the config is updated {sign_off}"
 
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""

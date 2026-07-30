@@ -1056,6 +1056,62 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
+    def _source_from_reaction_for_auth(self, update):
+        """Build the SessionSource for a ``message_reaction`` update's actor.
+
+        Mirrors ``_source_from_message_for_auth`` but for reactions, which
+        carry the reactor (``user``, or ``actor_chat`` for an anonymous admin)
+        and ``chat`` but no ``Message``. Chat type is resolved as far as the
+        reaction shape allows so the shared authorization decision
+        (``_is_source_authorized``) matches the message intake outcome (the
+        runner treats group and forum identically, so the lack of a thread id
+        on reactions does not change the decision). Reactions expose no thread
+        id, so ``thread_id`` is None.
+
+        Raises ``ValueError`` for a non-reaction update (no ``message_reaction``)
+        so the post-auth gate in ``_on_platform_update`` fails closed (drops the
+        event via its try/except) rather than resolving an empty identity and
+        authorizing it. This keeps a future event type from silently bypassing
+        auth before its own source extraction is wired.
+        """
+        from gateway.session import SessionSource
+
+        mr = getattr(update, "message_reaction", None)
+        if mr is None:
+            raise ValueError(
+                "gateway_platform_event source extraction requires a "
+                "message_reaction update"
+            )
+        user = getattr(mr, "user", None) or getattr(mr, "actor_chat", None)
+        chat = getattr(mr, "chat", None)
+        user_id = str(getattr(user, "id", "")).strip() or None
+        user_name = (
+            str(
+                getattr(user, "username", "")
+                or getattr(user, "full_name", "")
+                or getattr(user, "title", "")
+            ).strip()
+            or None
+        )
+
+        chat_id = str(getattr(chat, "id", "")).strip() or user_id
+        chat_type = str(getattr(chat, "type", "dm")).strip().lower() or "dm"
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            # Reactions carry no message_thread_id; a forum supergroup is the
+            # only forum signal available without the underlying message.
+            chat_type = "forum" if getattr(chat, "is_forum", False) is True else "group"
+
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id or "",
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=None,
+        )
+
     def _telegram_auth_env_configured(self) -> bool:
         """Return True when Telegram auth env vars make an early decision safe."""
         keys = (
@@ -1114,7 +1170,19 @@ class TelegramAdapter(BasePlatformAdapter):
         Unknown DMs with an allowlist still pass through when pairing is the
         effective unauthorized-DM behavior (explicit platform override).
         """
-        source = self._source_from_message_for_auth(message)
+        return self._is_source_authorized(self._source_from_message_for_auth(message))
+
+    def _is_source_authorized(self, source) -> bool:
+        """Authorization decision shared by message intake and the
+        ``gateway_platform_event`` observer (#64176 post-auth requirement).
+
+        Same logic the message intake prefilter applies once a SessionSource is
+        resolved: adapter ``allow_from`` is the sole authority when set, then a
+        test-only callback override, then the runner's context-aware auth (only
+        when an allowlist is configured), then the env allowlist. Returns True
+        for an empty identity or an unconfigured allowlist so the cold path and
+        pairing flow still run, matching intake exactly.
+        """
         user_id = source.user_id
         # No identity at all → genuine group service message (pin, delete,
         # new_chat_members, etc.). Defer to the cold path. Channel posts
@@ -1139,7 +1207,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Test/custom injection only. The class method named
         # _is_callback_user_authorized is for inline button callbacks and must
-        # not be treated as a user-id-only shortcut for real messages — only
+        # not be treated as a user-id-only shortcut for real messages; only
         # honor an instance-level override (set in tests).
         if authorized is None:
             callback_auth = self.__dict__.get("_is_callback_user_authorized")
@@ -3684,11 +3752,13 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _on_platform_update(self, update, context) -> None:
         """Catch-all PTB handler firing ``gateway_platform_event`` per inbound update.
 
-        Normalizes the update into a stable envelope (no raw SDK objects — see
-        #64176) and fires the observer hook. Registered in a dedicated high
-        group so it observes alongside — never displaces — the core handlers.
-        Normalization is wrapped so a malformed update can't raise into PTB
-        dispatch — the observer can't break the adapter.
+        Normalizes the update into a stable envelope (no raw SDK objects; see
+        #64176), authorizes the actor on the same decision as inbound gateway
+        traffic, then fires the observer hook. Registered in a dedicated high
+        group so it observes alongside, never displaces, the core handlers.
+        Normalization and authorization are each wrapped so a malformed update
+        or a missing auth context can't raise into PTB dispatch: the observer
+        can't break the adapter.
         """
         try:
             event = self._normalize_platform_event(update)
@@ -3696,6 +3766,19 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] gateway_platform_event normalize error: %s", self.name, exc)
             return
         if event is None:
+            return
+        # Post-auth gate (#64176): the catch-all sees every inbound update, so a
+        # reaction from a sender the message intake would reject must not reach
+        # plugins. Reuse the intake's authorization decision verbatim. Fail
+        # closed (drop the event) if the decision itself raises.
+        try:
+            authorized = self._is_source_authorized(
+                self._source_from_reaction_for_auth(update)
+            )
+        except Exception as exc:
+            logger.debug("[%s] gateway_platform_event auth error: %s", self.name, exc)
+            return
+        if not authorized:
             return
         self._fire_gateway_hook("gateway_platform_event", **event)
 
@@ -3738,6 +3821,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 "thread_id": None,
             },
         }
+
+    def _register_handlers(self, app) -> None:
+        """Register every PTB handler on ``app``.
+
+        Single source of truth for handler registration. ``connect`` calls this,
+        and any future rebuild path that re-creates the Application would call
+        it too, keeping the ``gateway_platform_event`` observer (group 99) in
+        lockstep with the core handlers. Today reconnect reuses the existing
+        Application, so handlers already persist; this method exists so there is
+        one place to add a handler and one re-registration point if a rebuild is
+        ever introduced. This is the #64176 review's "share registration between
+        initial and rebuild paths" ask.
+        """
+        app.add_handler(TelegramMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_text_message
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.COMMAND,
+            self._handle_command
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_location_message
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            self._handle_media_message
+        ))
+        # Handle inline keyboard button callbacks (update prompts)
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        # gateway_platform_event observer (see _on_platform_update); group 99 so
+        # it observes alongside, never displaces, the core handlers.
+        app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
@@ -3951,28 +4068,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
-            # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            # gateway_platform_event observer (see _on_platform_update); group 99
-            # so it observes alongside — never displaces — the core handlers.
-            self._app.add_handler(TypeHandler(Update, self._on_platform_update), group=99)
+            # Register handlers via the single registration site (#64176).
+            self._register_handlers(self._app)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable

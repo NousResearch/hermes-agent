@@ -161,7 +161,6 @@ export const uk = defineLocale({
     search: 'Пошук',
     searchTitle: 'Пошук сесій, переглядів та дій',
     swapSidebarSides: 'Поміняти сторони бічної панелі',
-    swapSidebarSidesTitle: 'Поміняти місцями сесії та файловий оглядач',
     hideRightSidebar: 'Сховати праву бічну панель',
     showRightSidebar: 'Показати праву бічну панель',
     muteHaptics: 'Вимкнути тактильний відгук',
@@ -637,8 +636,7 @@ export const uk = defineLocale({
       saving: 'Збереження'
     },
     envActions: {
-      actionsFor: label => `Дії для ${label}`,
-      credentialActions: 'Дії з обліковими даними',
+      actions: 'Дії',
       docs: 'Документація',
       hideValue: 'Сховати значення',
       revealValue: 'Показати значення',
@@ -1155,9 +1153,9 @@ export const uk = defineLocale({
     showAllProfiles: 'Показати всі профілі',
     switchToProfile: name => `Перейти до ${name}`,
     manageProfiles: 'Керування профілями...',
-    actionsFor: name => `Дії для ${name}`,
+    actions: 'Дії',
     color: 'Колір...',
-    colorFor: name => `Колір для ${name}`,
+    colorFor: 'Колір для профілю',
     setColor: color => `Встановити колір ${color}`,
     autoColor: 'Авто',
     noProfiles: 'Профілів ще немає.',
@@ -1287,7 +1285,6 @@ export const uk = defineLocale({
     showRuns: 'Показати виконання',
     hideRuns: 'Сховати виконання',
     runHistory: 'Історія виконань',
-    actionsFor: title => `Дії для ${title}`,
     actionsTitle: 'Дії cron-задачі',
     resume: 'Відновити',
     pause: 'Призупинити',
@@ -1400,7 +1397,6 @@ export const uk = defineLocale({
       archive: 'Архівувати',
       newWindow: 'Нове вікно',
       copyIdFailed: 'Не вдалося скопіювати ID сесії',
-      actionsFor: title => `Дії для ${title}`,
       sessionActions: 'Дії сесії',
       sessionRunning: 'Сесія виконується',
       needsInput: 'Потрібне введення',
@@ -1752,8 +1748,7 @@ export const uk = defineLocale({
       search: 'Пошук моделей',
       noModels: 'Моделей не знайдено',
       editModels: 'Редагувати моделі…',
-      fast: 'Швидка',
-      medium: 'Середня'
+      fast: 'Швидка'
     },
     modelOptions: {
       noOptions: 'Немає опцій для цієї моделі',
@@ -1816,10 +1811,8 @@ export const uk = defineLocale({
       cron: 'Cron',
       openCron: 'Відкрити cron-задачі',
       turnRunning: 'Виконується',
-      currentTurnElapsed: 'Час поточного ходу',
       contextUsage: 'Використання контексту',
       session: 'Сесія',
-      runtimeSessionElapsed: 'Час сесії виконання',
       yoloOn: 'YOLO увімкнено — авто-схвалення небезпечних команд. Клік для вимкнення. Shift+клік перемикає глобально.',
       yoloOff: 'YOLO вимкнено — клік для авто-схвалення небезпечних команд. Shift+клік перемикає глобально.',
       modelNone: 'немає',
@@ -1998,7 +1991,6 @@ export const uk = defineLocale({
       continueLabel: 'Продовжити'
     },
     tool: {
-      code: 'Код',
       copyCode: 'Копіювати код',
       renderingImage: 'Відображення зображення',
       copyOutput: 'Копіювати вивід',

@@ -1465,7 +1465,17 @@ def init_agent(
 
         set_current_session_id(agent.session_id)
     except Exception:
-        os.environ["HERMES_SESSION_ID"] = agent.session_id
+        # Preserve the root-agent legacy fallback, but never let delegated
+        # construction publish a child ID process-wide even if the ContextVar
+        # bridge itself failed to import.
+        try:
+            from agent.delegation_context import is_delegated_child_context
+
+            delegated_child = is_delegated_child_context()
+        except Exception:
+            delegated_child = False
+        if not delegated_child:
+            os.environ["HERMES_SESSION_ID"] = agent.session_id
 
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()

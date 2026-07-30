@@ -937,6 +937,31 @@ def test_run_stream_backlog_is_bounded():
     stream.detach(q)
 
 
+def test_run_stream_evicts_and_wakes_slow_subscriber_on_overflow():
+    """A connected client that stops draining must not retain unbounded events."""
+    from gateway.platforms.api_server import (
+        _RUN_STREAM_SUBSCRIBER_OVERFLOW,
+        _RunStream,
+    )
+
+    became_empty = []
+    stream = _RunStream(on_subscribers_empty=lambda: became_empty.append(True))
+    q, _ = stream.attach(last_seq=-1)
+
+    assert _RunStream.SUBSCRIBER_QUEUE_LIMIT < _RunStream.BACKLOG_LIMIT
+    for i in range(_RunStream.SUBSCRIBER_QUEUE_LIMIT + 1):
+        stream.put_nowait({"event": "message.delta", "delta": str(i)})
+
+    assert q.maxsize == _RunStream.SUBSCRIBER_QUEUE_LIMIT
+    assert q not in stream.subscribers
+    assert became_empty == [True]
+    assert q.qsize() == 1
+    _, control = q.get_nowait()
+    assert control is _RUN_STREAM_SUBSCRIBER_OVERFLOW
+    replayed_seqs = [seq for seq, _ in stream.attach(last_seq=-1)[1]]
+    assert replayed_seqs == list(range(_RunStream.SUBSCRIBER_QUEUE_LIMIT + 1))
+
+
 def test_run_stream_ignores_events_after_sentinel():
     """Once the terminal sentinel lands, later emissions are dropped."""
     from gateway.platforms.api_server import _RunStream
@@ -950,3 +975,99 @@ def test_run_stream_ignores_events_after_sentinel():
     assert [d.get("event") for _, d in replay if d] == ["run.completed"]
     assert replay[-1][1] is None
     stream.detach(q)
+
+
+@pytest.mark.asyncio
+async def test_run_events_prepare_failure_detaches_subscription(adapter):
+    """A failed SSE handshake must not leave a ghost subscriber behind."""
+    from gateway.platforms.api_server import _RunStream
+
+    run_id = "run_prepare_failure"
+    stream = _RunStream()
+    adapter._run_streams[run_id] = stream
+    adapter._run_streams_created[run_id] = time.time()
+    request = MagicMock()
+    request.match_info = {"run_id": run_id}
+    request.headers = {}
+    request.query = {}
+
+    with pytest.raises(ConnectionResetError):
+        with patch.object(
+            web.StreamResponse,
+            "prepare",
+            side_effect=ConnectionResetError("client disconnected during prepare"),
+        ):
+            await adapter._handle_run_events(request)
+
+    assert not stream.subscribers
+    assert run_id not in adapter._run_stream_subscribers
+
+
+@pytest.mark.asyncio
+async def test_slow_subscriber_closes_then_reconnect_replays_contiguously(adapter):
+    """Overflow closes the stalled handler without creating a replay gap."""
+    from gateway.platforms.api_server import _RunStream
+
+    class TinyRunStream(_RunStream):
+        BACKLOG_LIMIT = 4
+        SUBSCRIBER_QUEUE_LIMIT = 2
+
+    class FakeStreamResponse:
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            self.writes = []
+            self.__class__.instances.append(self)
+
+        async def prepare(self, request):
+            return None
+
+        async def write(self, data):
+            self.writes.append(data.decode())
+
+    run_id = "run_slow_subscriber"
+    stream = TinyRunStream(
+        on_subscribers_empty=lambda: adapter._run_stream_subscribers.discard(
+            run_id
+        )
+    )
+    adapter._run_streams[run_id] = stream
+    adapter._run_streams_created[run_id] = time.time()
+
+    first_request = MagicMock()
+    first_request.match_info = {"run_id": run_id}
+    first_request.headers = {}
+    first_request.query = {}
+
+    with patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        FakeStreamResponse,
+    ):
+        first_handler = asyncio.create_task(
+            adapter._handle_run_events(first_request)
+        )
+        for _ in range(10):
+            if stream.subscribers:
+                break
+            await asyncio.sleep(0)
+        assert stream.subscribers
+
+        for i in range(3):
+            stream.put_nowait({"event": "message.delta", "delta": str(i)})
+
+        await asyncio.wait_for(first_handler, timeout=1.0)
+        assert not stream.subscribers
+        assert run_id not in adapter._run_stream_subscribers
+        assert FakeStreamResponse.instances[0].writes == []
+
+        stream.put_nowait(None)
+        reconnect_request = MagicMock()
+        reconnect_request.match_info = {"run_id": run_id}
+        reconnect_request.headers = {"Last-Event-ID": "-1"}
+        reconnect_request.query = {}
+        await adapter._handle_run_events(reconnect_request)
+
+    replay_body = "".join(FakeStreamResponse.instances[1].writes)
+    replayed = _parse_sse_frames(replay_body)
+    assert [seq for seq, _ in replayed] == [0, 1, 2]
+    assert [event["delta"] for _, event in replayed] == ["0", "1", "2"]

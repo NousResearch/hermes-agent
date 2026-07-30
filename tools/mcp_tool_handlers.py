@@ -325,7 +325,7 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
             if recovered is not None:
                 return recovered
         on_final_failure(exc)
-        return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"))
+        return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}", server._redaction_values))
 
 
 @asynccontextmanager
@@ -494,7 +494,7 @@ def _content_dual_emits_structured(result, structured) -> bool:
     return False
 
 
-def _render_call_tool_result(result, server_name: str) -> str:
+def _render_call_tool_result(result, server_name: str, redaction_values=()) -> str:
     """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
     (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
@@ -505,8 +505,9 @@ def _render_call_tool_result(result, server_name: str) -> str:
     reorganisation costs only tokens, so data-preservation wins. No richness or size heuristic is
     used. ``structuredContent`` fills ``result`` when the blocks rendered effectively empty
     (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
+
     if mcp_field(result, "is_error", "isError", False):
-        return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
+        return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error"), redaction_values))
     text_result, usable_parts = _render_content_blocks(result, server_name)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
@@ -557,11 +558,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
-            return _render_call_tool_result(result, server_name)
+            return _render_call_tool_result(result, server_name, server._redaction_values)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
-            logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
+            logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name,
+                         _sanitize_error(_exc_str(exc), server._redaction_values))
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
@@ -590,7 +592,8 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
             return _dispatch(
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
-                lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label, exc))
+                lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label,
+                                         _sanitize_error(_exc_str(exc), server._redaction_values)))
         return _handler
     return _factory
 

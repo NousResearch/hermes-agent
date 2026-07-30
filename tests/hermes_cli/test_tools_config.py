@@ -9,6 +9,7 @@ import pytest
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
+    _RECENTLY_SHIPPED_TOOLSETS,
     _apply_toolset_change,
     _checklist_toolset_keys,
     _configure_provider,
@@ -553,3 +554,108 @@ def _fake_features(*, logged_in: bool, paid: bool = True):
 # ("browserbase") only the CLI, and camofox its npm package.
 
 
+# ── Toolsets that shipped after a platform's last `hermes tools` save ────────
+#
+# Saving the picker (or one toggle in the desktop Toolsets UI) replaces a
+# platform's composite (``[hermes-cli]``) with a frozen explicit list, and
+# nothing ever adds to that list — so a toolset shipped later stays off
+# forever, while everyone still on the composite inherits it on upgrade.
+# ``_RECENTLY_SHIPPED_TOOLSETS`` closes that gap for toolsets new enough that
+# absence from a saved list cannot mean the user declined them.
+#
+# Every assertion here is a subset test against that set, which passes
+# vacuously once it empties out — and empty is the steady state between
+# releases. Skip loudly rather than going quietly green.
+_requires_recently_shipped = pytest.mark.skipif(
+    not _RECENTLY_SHIPPED_TOOLSETS,
+    reason="no toolset is currently inside its first release",
+)
+
+
+def _saved_list_from_before(platform="cli"):
+    """A saved explicit list as it looked before the new toolsets existed."""
+    from hermes_cli.tools_config import (
+        _CONFIG_ONLY_TOOLSETS,
+        _toolset_allowed_for_platform,
+    )
+
+    return {
+        "platform_toolsets": {
+            platform: sorted(
+                ts_key
+                for ts_key, _, _ in CONFIGURABLE_TOOLSETS
+                if ts_key not in _RECENTLY_SHIPPED_TOOLSETS
+                and ts_key not in _DEFAULT_OFF_TOOLSETS
+                and ts_key not in _CONFIG_ONLY_TOOLSETS
+                and _toolset_allowed_for_platform(ts_key, platform)
+            )
+        }
+    }
+
+
+@_requires_recently_shipped
+def test_saved_list_gains_toolsets_that_shipped_after_it_was_written():
+    """The bug: a frozen list never gained bfl, so composite users got Nous
+    Portal video generation on upgrade and picker users silently did not."""
+    on_composite = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    on_saved_list = _get_platform_tools(
+        _saved_list_from_before(), "cli", include_default_mcp_servers=False
+    )
+
+    assert _RECENTLY_SHIPPED_TOOLSETS <= (on_composite & on_saved_list)
+
+
+@_requires_recently_shipped
+def test_unchecking_the_new_toolset_sticks():
+    """Saving records it as offered, so the next read reads absence as a
+    decline instead of turning it back on."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", enabled - _RECENTLY_SHIPPED_TOOLSETS)
+
+    reread = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & reread)
+
+
+@_requires_recently_shipped
+def test_agent_disabled_toolsets_still_wins():
+    """The other way to say no — a global suppression list applied last."""
+    config = _saved_list_from_before()
+    config["agent"] = {"disabled_toolsets": sorted(_RECENTLY_SHIPPED_TOOLSETS)}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled)
+
+
+@_requires_recently_shipped
+def test_platforms_whose_composite_excludes_it_are_left_narrow():
+    """Parity is the justification, so don't widen a deliberately small
+    composite (hermes-acp, hermes-webhook) that never carried the toolset."""
+    from toolsets import TOOLSETS, resolve_toolset
+
+    narrow = [
+        platform
+        for platform in ("acp", "webhook")
+        if f"hermes-{platform}" in TOOLSETS
+        and not any(
+            set(resolve_toolset(ts, include_registry=False))
+            <= set(resolve_toolset(f"hermes-{platform}"))
+            for ts in _RECENTLY_SHIPPED_TOOLSETS
+        )
+    ]
+    assert narrow, "expected a composite that excludes the new toolset"
+
+    for platform in narrow:
+        enabled = _get_platform_tools(
+            _saved_list_from_before(platform),
+            platform,
+            include_default_mcp_servers=False,
+        )
+        assert not (_RECENTLY_SHIPPED_TOOLSETS & enabled), platform

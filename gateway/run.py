@@ -7421,6 +7421,91 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
 
+    @staticmethod
+    def _looks_like_goal_blocking_provider_failure(text: str) -> bool:
+        """True when the turn failed due to model/provider infrastructure.
+
+        Standing goals must not self-continue on these responses: the judge
+        fail-opens to ``continue`` (no evidence of progress), which re-queues
+        synthetic goal turns and burns the full turn budget on a dead model.
+        """
+        body = str(text or "").strip()
+        if not body:
+            return False
+        # Prefer the gateway's existing short-envelope detector first.
+        if _looks_like_gateway_provider_error(body):
+            return True
+        # Only apply broader markers to short failure envelopes — long
+        # assistant prose that mentions HTTP status codes in passing must
+        # not pause the goal.
+        if len(body) > 400 or body.count("\n") > 4:
+            return False
+        lowered = body.lower()
+        markers = (
+            "the model provider failed after retries",
+            "model provider failed after retries",
+            "provider authentication failed",
+            "model provider is rate-limiting",
+            "model provider rejected the request",
+            "model not found",
+            "no longer in our configuration",
+            "no longer in nous catalog",
+            "non-retryable client error",
+            "non-retryable error",
+        )
+        if any(m in lowered for m in markers):
+            return True
+        # Model-id 404s: Model 'foo' not found
+        if "not found" in lowered and ("model '" in lowered or "model \"" in lowered):
+            return True
+        return False
+
+    def _pause_active_goal_for_session(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+        source: Any = None,
+        reason: str = "user-interrupted",
+        adapter: Any = None,
+    ) -> bool:
+        """Pause an active standing goal and drain its queued continuations.
+
+        Mirrors CLI Ctrl+C auto-pause so gateway ``/stop`` (and provider-dead
+        turns) cannot leave a Ralph loop re-queuing synthetic user messages.
+        Returns True when a goal was active and got paused.
+        """
+        paused = False
+        sid = (session_id or "").strip()
+
+        if sid:
+            try:
+                from hermes_cli.goals import GoalManager
+
+                max_turns = self._goal_max_turns_from_config()
+                mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
+                if mgr.is_active():
+                    mgr.pause(reason=reason)
+                    paused = True
+            except Exception as exc:
+                logger.debug("goal pause-on-stop failed: %s", exc)
+
+        # Always attempt to drain synthetic goal FIFO even if pause failed
+        # (e.g. goal already paused but continuations still queued).
+        try:
+            key = session_key
+            if not key and source is not None:
+                key = self._session_key_for_source(source)
+            ad = adapter
+            if ad is None and source is not None:
+                ad = self._adapter_for_source(source)
+            if key:
+                self._clear_goal_pending_continuations(key, ad)
+        except Exception as exc:
+            logger.debug("goal continuation drain on pause failed: %s", exc)
+
+        return paused
+
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
             from gateway.status import write_runtime_status
@@ -13422,6 +13507,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             interrupt_reason=_INTERRUPT_REASON_STOP,
             invalidation_reason="stop_command",
         )
+        # Parity with CLI Ctrl+C: pause standing /goal so the Ralph loop
+        # cannot re-queue synthetic continuations after the interrupt.
+        try:
+            session_entry = await self.async_session_store.get_or_create_session(source)
+            sid = getattr(session_entry, "session_id", None) or ""
+            self._pause_active_goal_for_session(
+                session_id=sid,
+                session_key=quick_key,
+                source=source,
+                reason="user-interrupted (/stop)",
+            )
+        except Exception as exc:
+            logger.debug("busy /stop goal pause failed: %s", exc)
         logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
         return EphemeralReply(t("gateway.stop.stopped"))
 
@@ -17926,6 +18024,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         if not mgr.is_active():
+            return
+
+        # Provider/infra failure short-circuit: do NOT call the judge.
+        # Judge fail-open returns "continue" on "no evidence of progress",
+        # which turns a dead model (404 / auth / rate-limit) into a tight
+        # self-continuation loop that burns the full turn budget.
+        if self._looks_like_goal_blocking_provider_failure(final_response or ""):
+            try:
+                _quick_key = self._session_key_for_source(source) if source is not None else None
+            except Exception:
+                _quick_key = None
+            self._pause_active_goal_for_session(
+                session_id=sid,
+                session_key=_quick_key,
+                source=source,
+                reason="provider/model failure (auto-paused to prevent goal spin)",
+            )
+            notice = (
+                "⏸ Goal paused — the model provider failed this turn "
+                "(e.g. missing model, auth, or rate limit). "
+                "Fix the model/provider, then `/goal resume` or `/goal clear`."
+            )
+            if source is not None:
+                await self._defer_goal_status_notice_after_delivery(source, notice)
+            logger.info(
+                "goal auto-paused after provider failure for session %s",
+                sid,
+            )
             return
 
         try:

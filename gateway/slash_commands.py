@@ -1355,11 +1355,32 @@ class GatewaySlashCommandsMixin:
         fallback.  Force-clean the session lock in all cases for safety.
 
         The session is preserved so the user can continue the conversation.
+
+        Standing ``/goal`` loops are also paused (CLI Ctrl+C parity) and any
+        queued synthetic goal continuations are drained — otherwise ``/stop``
+        only kills the current turn and the Ralph loop immediately re-queues.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        session_id = getattr(session_entry, "session_id", None) or ""
+        adapter = getattr(self, "adapters", {}).get(source.platform) if source else None
+
+        def _pause_goal() -> bool:
+            try:
+                return bool(
+                    self._pause_active_goal_for_session(
+                        session_id=session_id,
+                        session_key=session_key,
+                        source=source,
+                        reason="user-interrupted (/stop)",
+                        adapter=adapter,
+                    )
+                )
+            except Exception as exc:
+                logger.debug("/stop goal pause failed: %s", exc)
+                return False
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
@@ -1370,8 +1391,12 @@ class GatewaySlashCommandsMixin:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_pending",
             )
+            goal_paused = _pause_goal()
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
-            return EphemeralReply(t("gateway.stop.stopped_pending"))
+            msg = t("gateway.stop.stopped_pending")
+            if goal_paused:
+                msg = f"{msg}\n⏸ Goal paused — use /goal resume to continue, or /goal clear to stop."
+            return EphemeralReply(msg)
         if agent:
             # Force-clean the session lock so a truly hung agent doesn't
             # keep it locked forever.
@@ -1381,7 +1406,11 @@ class GatewaySlashCommandsMixin:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_handler",
             )
-            return EphemeralReply(t("gateway.stop.stopped"))
+            goal_paused = _pause_goal()
+            msg = t("gateway.stop.stopped")
+            if goal_paused:
+                msg = f"{msg}\n⏸ Goal paused — use /goal resume to continue, or /goal clear to stop."
+            return EphemeralReply(msg)
 
         # No run under the caller's own session key.  In a per-user thread
         # (thread_sessions_per_user=True) each participant is isolated even
@@ -1398,20 +1427,26 @@ class GatewaySlashCommandsMixin:
                     interrupt_reason=_INTERRUPT_REASON_STOP,
                     invalidation_reason="stop_command_thread_sibling",
                 )
+            goal_paused = _pause_goal()
             logger.info(
                 "STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
                 session_key,
                 len(sibling_keys),
                 ", ".join(sibling_keys),
             )
-            return EphemeralReply(t("gateway.stop.stopped"))
+            msg = t("gateway.stop.stopped")
+            if goal_paused:
+                msg = f"{msg}\n⏸ Goal paused — use /goal resume to continue, or /goal clear to stop."
+            return EphemeralReply(msg)
 
         # No running agent anywhere for this scope. A platform status
         # indicator can still be stuck — e.g. Slack's persistent
         # assistant.threads.setStatus survives a gateway restart or a turn
         # that died without a final send (#32295). Best-effort clear so
         # /stop always dismisses a phantom "is thinking...".
-        adapter = getattr(self, "adapters", {}).get(source.platform)
+        # Also pause standing goals here: between Ralph-loop turns there is
+        # often no active agent, but synthetic continuations keep firing.
+        goal_paused = _pause_goal()
         if adapter and hasattr(adapter, "_stop_typing_with_metadata"):
             try:
                 await adapter._stop_typing_with_metadata(
@@ -1426,6 +1461,12 @@ class GatewaySlashCommandsMixin:
                     exc_info=True,
                 )
 
+        if goal_paused:
+            return (
+                "⏸ No active agent task, but the standing goal was paused "
+                "and queued goal continuations were cleared. "
+                "Use /goal resume to continue, or /goal clear to stop."
+            )
         return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:

@@ -346,7 +346,7 @@ export function ChatBar({
     triggerItems,
     triggerKeyConsumedRef,
     triggerLoading
-  } = useComposerTrigger({ at, draftRef, editorRef, requestMainFocus, setComposerText, slash })
+  } = useComposerTrigger({ at, draftRef, editorRef, recordUndoPoint, requestMainFocus, setComposerText, slash })
 
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
@@ -565,6 +565,17 @@ export function ChatBar({
       if (!busy) {
         void drainNextQueued()
       }
+
+      return
+    }
+
+    // The popover is open but its items are still in flight (debounce + RPC).
+    // Tab must not fall through to the browser — it would move focus out of
+    // the composer mid-completion, which reads as the popover "eating" the
+    // keypress. Swallow it; the refresh lands with the items.
+    if (trigger && triggerLoading && triggerItems.length === 0 && event.key === 'Tab') {
+      event.preventDefault()
+      triggerKeyConsumedRef.current = true
 
       return
     }

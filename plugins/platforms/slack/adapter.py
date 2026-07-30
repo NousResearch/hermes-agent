@@ -107,6 +107,22 @@ async def _read_error_text_limited(
     return str(text)[:limit]
 
 
+def _slack_response_payload(response: Any) -> Dict[str, Any]:
+    """Return a Slack Web API response as a plain dict.
+
+    ``slack_sdk`` returns ``SlackResponse``/``AsyncSlackResponse``, which is
+    mapping-like but is **not** a ``dict``, while tests inject plain dicts.
+    Callers must normalize here instead of gating on ``isinstance(resp, dict)``
+    — such a gate is always False at runtime and silently degrades results
+    (user/channel names collapsing to raw IDs, sends reported as failures).
+    An unrecognized shape yields ``{}`` so callers keep their fallbacks.
+    """
+    if isinstance(response, dict):
+        return response
+    data = getattr(response, "data", None)
+    return data if isinstance(data, dict) else {}
+
+
 _SLACK_SPECIAL_MENTION_RE = re.compile(
     r"<!(?:everyone|channel|here)(?:\|[^>\n]*)?>", re.IGNORECASE
 )
@@ -1638,10 +1654,11 @@ class SlackAdapter(BasePlatformAdapter):
                     user=user_id,
                     text=chunk,
                 )
-                if not (isinstance(result, dict) and result.get("ok")):
+                payload = _slack_response_payload(result)
+                if not payload.get("ok"):
                     err = (
-                        result.get("error", "unknown_error")
-                        if isinstance(result, dict)
+                        payload.get("error", "unknown_error")
+                        if payload
                         else "unexpected_response"
                     )
                     return SendResult(
@@ -2256,11 +2273,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel=parent_chat_id,
                 text=seed_text,
             )
-            ts = (
-                result.get("ts")
-                if isinstance(result, dict)
-                else getattr(result, "get", lambda _k, _d=None: None)("ts")
-            )
+            ts = _slack_response_payload(result).get("ts")
             if ts:
                 return str(ts)
         except Exception as exc:
@@ -3812,11 +3825,12 @@ class SlackAdapter(BasePlatformAdapter):
                 else self._app.client
             )
             result = await client.users_info(user=user_id)
-            if not isinstance(result, dict):
+            payload = _slack_response_payload(result)
+            if not payload:
                 self._user_is_bot_cache[cache_key] = False
                 self._user_name_cache[cache_key] = user_id
                 return user_id
-            user = result.get("user", {})
+            user = payload.get("user", {})
             profile = user.get("profile", {}) if isinstance(user, dict) else {}
             self._user_is_bot_cache[cache_key] = bool(
                 user.get("is_bot")
@@ -3865,10 +3879,11 @@ class SlackAdapter(BasePlatformAdapter):
             resp = await self._get_client(
                 channel_id, team_id=team_id or None
             ).conversations_info(channel=channel_id)
-            if not isinstance(resp, dict) or not resp.get("ok"):
+            payload = _slack_response_payload(resp)
+            if not payload.get("ok"):
                 name = channel_id
             else:
-                ch = resp.get("channel") or {}
+                ch = payload.get("channel") or {}
                 if ch.get("is_im"):
                     peer_user = ch.get("user", "")
                     name = (
@@ -3992,11 +4007,12 @@ class SlackAdapter(BasePlatformAdapter):
                 else self._app.client
             )
             result = await client.users_info(user=user_id)
-            if not isinstance(result, dict):
+            payload = _slack_response_payload(result)
+            if not payload:
                 self._user_is_bot_cache[cache_key] = False
                 self._user_name_cache.setdefault(cache_key, user_id)
                 return False
-            user = result.get("user", {})
+            user = payload.get("user", {})
             profile = user.get("profile", {}) if isinstance(user, dict) else {}
             is_bot = bool(
                 user.get("is_bot")
@@ -8581,12 +8597,13 @@ async def _standalone_upload_file(
     if thread_id:
         kwargs["thread_ts"] = thread_id
     result = await client.files_upload_v2(**kwargs)
-    if isinstance(result, dict) and result.get("ok") is False:
-        return {"error": f"Slack API error: {result.get('error', 'unknown')}"}
+    payload = _slack_response_payload(result)
+    if payload.get("ok") is False:
+        return {"error": f"Slack API error: {payload.get('error', 'unknown')}"}
     # files_upload_v2 responses vary by sdk version; prefer file timestamp when present.
     message_id = None
-    if isinstance(result, dict):
-        file_obj = result.get("file") or {}
+    if payload:
+        file_obj = payload.get("file") or {}
         shares = file_obj.get("shares") or {}
         for share_bucket in shares.values():
             if isinstance(share_bucket, dict):
@@ -8596,7 +8613,7 @@ async def _standalone_upload_file(
                         break
             if message_id:
                 break
-        message_id = message_id or file_obj.get("timestamp") or result.get("ts")
+        message_id = message_id or file_obj.get("timestamp") or payload.get("ts")
     return {"success": True, "message_id": message_id, "raw": result}
 
 
@@ -8728,14 +8745,14 @@ async def _standalone_send(
             if thread_id:
                 post_kwargs["thread_ts"] = thread_id
             try:
-                post_resp = await client.chat_postMessage(**post_kwargs)
-                if isinstance(post_resp, dict) and not post_resp.get("ok", True):
-                    return {
-                        "error": f"Slack API error: {post_resp.get('error', 'unknown')}"
-                    }
-                last_message_id = (
-                    post_resp.get("ts") if isinstance(post_resp, dict) else None
+                post_payload = _slack_response_payload(
+                    await client.chat_postMessage(**post_kwargs)
                 )
+                if not post_payload.get("ok", True):
+                    return {
+                        "error": f"Slack API error: {post_payload.get('error', 'unknown')}"
+                    }
+                last_message_id = post_payload.get("ts")
             except Exception as e:
                 return {"error": f"Slack send failed: {e}"}
 
@@ -8756,8 +8773,10 @@ async def _standalone_send(
                         }
                         if thread_id:
                             fallback_kwargs["thread_ts"] = thread_id
-                        fb = await client.chat_postMessage(**fallback_kwargs)
-                        if isinstance(fb, dict) and fb.get("ok", True):
+                        fb = _slack_response_payload(
+                            await client.chat_postMessage(**fallback_kwargs)
+                        )
+                        if fb.get("ok", True):
                             last_message_id = fb.get("ts") or last_message_id
                             caption_pending = False
                     except Exception:

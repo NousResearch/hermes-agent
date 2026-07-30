@@ -706,13 +706,72 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeStatePatch | null {
+interface ApplyRuntimeInfoOptions {
+  /**
+   * Whether this runtime belongs to the session the MAIN pane is showing.
+   * Foreground (the default) mirrors into the composer atoms every main-pane
+   * surface reads.
+   *
+   * A tile or a background branch must pass `false`: it owns a different
+   * worktree, and writing its cwd into `$currentCwd` re-pointed the main
+   * composer's coding rail (and the persisted workspace cwd) at the tile's
+   * repo — the main rail painted a branch from a tree its session was never
+   * in. The returned patch still carries every field, so the caller's own
+   * per-session state is unaffected.
+   */
+  foreground?: boolean
+}
+
+/** Mirror a session's runtime state into the composer atoms the MAIN pane
+ *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
+function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
+  if (state.model !== undefined) {
+    setCurrentModel(state.model)
+  }
+
+  if (state.provider !== undefined) {
+    setCurrentProvider(state.provider)
+  }
+
+  if (state.cwd !== undefined) {
+    setCurrentCwd(state.cwd)
+  }
+
+  if (state.branch !== undefined) {
+    setCurrentBranch(state.branch)
+  }
+
+  if (state.personality !== undefined) {
+    setCurrentPersonality(state.personality)
+  }
+
+  if (state.reasoningEffort !== undefined) {
+    setCurrentReasoningEffort(state.reasoningEffort)
+  }
+
+  if (state.serviceTier !== undefined) {
+    setCurrentServiceTier(state.serviceTier)
+  }
+
+  if (state.fast !== undefined) {
+    setCurrentFastMode(state.fast)
+  }
+
+  if (state.yolo !== undefined) {
+    setYoloActive(state.yolo)
+  }
+}
+
+export function applyRuntimeInfo(
+  info: SessionRuntimeInfo | undefined,
+  { foreground = true }: ApplyRuntimeInfoOptions = {}
+): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
 
-  const sessionState: SessionRuntimeStatePatch = {}
-
+  // App/profile-level reporting is session-independent — a tile's runtime
+  // reports backend skew and credential warnings just as usefully.
   reportBackendContract(info.desktop_contract)
 
   if (info.approval_mode !== undefined) {
@@ -723,54 +782,50 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
 
   reportInstallMethodWarning(info.install_warning)
 
+  const sessionState: SessionRuntimeStatePatch = {}
+
   if (typeof info.model === 'string') {
-    setCurrentModel(info.model)
     sessionState.model = info.model
   }
 
   if (typeof info.provider === 'string') {
-    setCurrentProvider(info.provider)
     sessionState.provider = info.provider
   }
 
   if (info.cwd) {
-    setCurrentCwd(info.cwd)
     sessionState.cwd = info.cwd
   }
 
   if (info.branch !== undefined) {
-    setCurrentBranch(info.branch || '')
     sessionState.branch = info.branch || ''
   }
 
   if (typeof info.personality === 'string') {
-    const personality = normalizePersonalityValue(info.personality)
-    setCurrentPersonality(personality)
-    sessionState.personality = personality
+    sessionState.personality = normalizePersonalityValue(info.personality)
   }
 
   if (typeof info.reasoning_effort === 'string') {
-    setCurrentReasoningEffort(info.reasoning_effort)
     sessionState.reasoningEffort = info.reasoning_effort
   }
 
   if (typeof info.service_tier === 'string') {
-    setCurrentServiceTier(info.service_tier)
     sessionState.serviceTier = info.service_tier
   }
 
   if (typeof info.fast === 'boolean') {
-    setCurrentFastMode(info.fast)
     sessionState.fast = info.fast
   }
 
   if (typeof info.yolo === 'boolean') {
-    setYoloActive(info.yolo)
     sessionState.yolo = info.yolo
   }
 
-  if (info.usage) {
-    setCurrentUsage(current => ({ ...current, ...info.usage }))
+  if (foreground) {
+    publishRuntimeToComposer(sessionState)
+
+    if (info.usage) {
+      setCurrentUsage(current => ({ ...current, ...info.usage }))
+    }
   }
 
   return sessionState

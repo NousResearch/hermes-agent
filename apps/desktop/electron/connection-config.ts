@@ -281,6 +281,16 @@ function normalizeSshConfig(entry) {
     out.remoteHermesPath = remoteHermesPath
   }
 
+  // A Desktop profile can be a local routing label rather than the profile
+  // name used by the remote Hermes installation. Preserve an explicit mapping
+  // when it is a valid Hermes profile identifier; otherwise fall back to the
+  // historical same-name behavior in the caller.
+  const remoteProfile = String(entry.remoteProfile || '').trim()
+
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile)) {
+    out.remoteProfile = remoteProfile
+  }
+
   return out
 }
 

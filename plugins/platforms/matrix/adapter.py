@@ -4049,6 +4049,12 @@ class MatrixAdapter(BasePlatformAdapter):
                     return
                 # Validate delegation admin identity: the reaction must come
                 # from the configured admin user, not just any room member.
+                if not prompt.admin_user_id:
+                    logger.warning(
+                        "[Matrix] admin_user_id empty in approval state — "
+                        "admin identity gate is not enforced (session_key=%s)",
+                        prompt.session_key[:16],
+                    )
                 if prompt.admin_user_id and sender and sender != prompt.admin_user_id:
                     logger.warning(
                         "[Matrix] Unauthorized approval reaction: expected admin %s, "

@@ -7163,9 +7163,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Validate delegation admin identity: the button click must come
                 # from the configured admin user AND the expected chat.
                 session_key = state["session_key"]
-                if state.get("admin_user_id") and query.from_user:
+                _stored_admin = state.get("admin_user_id", "")
+                if not _stored_admin:
+                    logger.warning(
+                        "[Telegram] admin_user_id empty in approval state — "
+                        "admin identity gate is not enforced (approval_id=%s)", approval_id,
+                    )
+                if _stored_admin and query.from_user:
                     caller_id = str(getattr(query.from_user, "id", ""))
-                    if caller_id != state["admin_user_id"]:
+                    if caller_id != _stored_admin:
                         logger.warning(
                             "[Telegram] Unauthorized approval click: "
                             "expected admin %s, got %s (approval_id=%s)",

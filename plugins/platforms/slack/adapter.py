@@ -7455,8 +7455,19 @@ class SlackAdapter(BasePlatformAdapter):
         _admin_info = self._approval_admin.pop(approval_key, None)
         if _admin_info is None and approval_key != msg_ts:
             _admin_info = self._approval_admin.pop(msg_ts, None)
+        if not _admin_info:
+            logger.warning(
+                "[Slack] admin info missing in approval state — "
+                "admin identity gate is not enforced (msg_ts=%s, action=%s)",
+                msg_ts, action_id,
+            )
         if _admin_info:
             _expected_chat_id, _expected_admin_uid = _admin_info[0], _admin_info[1]
+            if not _expected_admin_uid:
+                logger.warning(
+                    "[Slack] admin_user_id empty in approval state — "
+                    "gate not enforced (msg_ts=%s, action=%s)", msg_ts, action_id,
+                )
             if _expected_chat_id and channel_id and str(channel_id) != _expected_chat_id:
                 logger.warning(
                     "[Slack] Unauthorized approval click: expected chat %s, got %s (user=%s, action=%s)",

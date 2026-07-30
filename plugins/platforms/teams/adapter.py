@@ -1120,6 +1120,11 @@ class TeamsAdapter(BasePlatformAdapter):
         # Use .get() (NOT .pop()) so unauthorized clicks don't consume the
         # state — the real admin can still retry after a stale/failed attempt.
         expected_admin_uid = self._approval_state.get(session_key)
+        if not expected_admin_uid:
+            logger.warning(
+                "[teams] admin_user_id empty in approval state — "
+                "admin identity gate is not enforced (session_key=%s)", session_key[:16],
+            )
         if expected_admin_uid and _clicker_id and _clicker_id != expected_admin_uid:
             logger.warning(
                 "[teams] Unauthorized approval click: expected admin %s, "

@@ -2850,6 +2850,11 @@ class FeishuAdapter(BasePlatformAdapter):
         # in config), NOT open_id which is the cross-tenant application ID.
         expected_admin_uid = str(state.get("admin_user_id", "") or "")
         _clicker_uid = str(getattr(operator, "user_id", "") or "")
+        if not expected_admin_uid:
+            logger.warning(
+                "[Feishu] admin_user_id empty in approval state — "
+                "admin identity gate is not enforced (approval_id=%s)", approval_id,
+            )
         if expected_admin_uid and _clicker_uid and _clicker_uid != expected_admin_uid:
             logger.warning(
                 "[Feishu] Unauthorized approval click: expected admin %s, "

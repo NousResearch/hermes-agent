@@ -14,6 +14,7 @@ import os
 from typing import Any, Dict, Optional
 
 from agent.async_utils import safe_schedule_threadsafe
+from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
@@ -287,12 +288,16 @@ def _handle_request_gateway_restart(args: Dict[str, Any]) -> str:
     )
 
 
-def register(registry: Any) -> None:
-    """Register the tool with the global tool registry."""
-    registry.register(
-        toolset="gateway",
-        name="request_gateway_restart",
-        schema=_SCHEMA,
-        handler=_handle_request_gateway_restart,
-        check_fn=check_fn,
-    )
+# Built-in discovery contract (see tools.registry.discover_builtin_tools):
+# This module MUST register itself at module top-level so that
+# ``model_tools.discover_builtin_tools()`` picks the schema up via the
+# AST scan + importlib chain. There is intentionally NO
+# ``def register(registry): ...`` helper for callers to invoke; the
+# registry is populated exactly once when this module is first imported.
+registry.register(
+    toolset="gateway",
+    name="request_gateway_restart",
+    schema=_SCHEMA,
+    handler=_handle_request_gateway_restart,
+    check_fn=check_fn,
+)

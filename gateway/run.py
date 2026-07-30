@@ -11045,26 +11045,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         launcher_result = _LauncherResult.UNKNOWN
                         launched = False
                 else:
-                    # Service path: supervisor accepted the restart
-                    # synchronously inside _launch_detached_restart_command.
-                    try:
-                        launched = await self._launch_detached_restart_command()
-                        # Service-managed: False does NOT prove no
-                        # side-effect (the supervisor may have already
-                        # scheduled a restart). Always UNKNOWN.
-                        launcher_result = (
-                            _LauncherResult.STARTED if launched
-                            else _LauncherResult.UNKNOWN
-                        )
-                    except asyncio.CancelledError:
-                        await transaction.complete_unknown()
-                        raise
-                    except (KeyboardInterrupt, SystemExit):
-                        await transaction.complete_unknown()
-                        raise
-                    except Exception:
-                        launcher_result = _LauncherResult.UNKNOWN
-                        launched = False
+                    # Service / container / supervisor path: the OS-level
+                    # supervisor (systemd, launchd, runit, k8s, docker
+                    # restart policy) already owns process lifecycle. There
+                    # is no detached watcher helper to spawn here — the
+                    # restart is acknowledged by virtue of having claimed
+                    # the handoff gate above. The supervisor will pick up
+                    # the exit code 75 path emitted by GatewayRunner.stop()
+                    # below and respawn the gateway out of band.
+                    #
+                    # We MUST NOT call _launch_detached_restart_command()
+                    # on this branch:
+                    #   1. The detached-launcher protocol is only defined
+                    #      for the detached=True case (it spawns a Popen
+                    #      watcher that polls getppid()); under a service
+                    #      supervisor, the launcher would either find no
+                    #      ``hermes`` binary in $PATH (containers running
+                    #      a venv-mounted binary) or, worse, fork a real
+                    #      watcher that races the supervisor's own
+                    #      respawn logic — leading to two gateway
+                    #      instances fighting over the same port/socket
+                    #      (#34201).
+                    #   2. The launcher itself can raise (Popen failure,
+                    #      OSError, FileNotFoundError). Per spec section 三,
+                    #      a generic exception on the service branch must
+                    #      NOT regress to OUTCOME_UNKNOWN — there is no
+                    #      side-effect to confirm or deny, because we never
+                    #      asked the OS to do anything. The correct terminal
+                    #      state is HANDOFF_COMMITTED: we accepted the
+                    #      handoff, the supervisor will restart us.
+                    #
+                    # Therefore the launcher_result is unconditionally
+                    # STARTED here and transaction proceeds straight to
+                    # HANDOFF_COMMITTED then stop(restart=True,
+                    # detached_restart=False, service_restart=True).
+                    launcher_result = _LauncherResult.STARTED
+                    launched = True
 
                 if launcher_result is _LauncherResult.STARTED:
                     tr = await transaction.complete_started()

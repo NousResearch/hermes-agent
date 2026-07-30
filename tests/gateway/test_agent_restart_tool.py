@@ -345,10 +345,27 @@ async def test_helper_committed_triggers_stop(monkeypatch, tmp_path):
 async def test_service_path_commitment_dual_environment(monkeypatch, tmp_path):
     # Test 1: Supervisor set
     monkeypatch.setenv("INVOCATION_ID", "systemd-unit-123")
+    monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
+
     runner1, _ = make_restart_runner()
     gw_loop = asyncio.get_running_loop()
     runner1._gateway_loop = gw_loop
     runner1.stop = AsyncMock()  # type: ignore[method-assign]
+
+    # Spy request_restart to capture the transaction object reliably before completion
+    captured1: dict = {}
+    orig_request_restart1 = runner1.request_restart
+
+    def spy_request_restart1(*args, **kwargs):
+        captured1["tx"] = kwargs.get("transaction")
+        return orig_request_restart1(*args, **kwargs)
+
+    runner1.request_restart = spy_request_restart1  # type: ignore[method-assign]
+
+    # Blocker 2 requirement: configure launcher to raise if called on service path.
+    # Service path must NEVER invoke _launch_detached_restart_command.
+    mock_launcher1 = AsyncMock(side_effect=AssertionError("detached launcher called on service path"))
+    runner1._launch_detached_restart_command = mock_launcher1
 
     with patch("gateway.run._hermes_home", tmp_path):
         success1, msg1 = await runner1.dispatch_gateway_restart(
@@ -356,6 +373,20 @@ async def test_service_path_commitment_dual_environment(monkeypatch, tmp_path):
         )
         assert success1 is True
         assert runner1._restart_via_service is True
+        assert runner1._restart_detached is False
+        mock_launcher1.assert_not_awaited()
+
+        # Service acknowledgement happens upon handoff claim, before stop() runs on background task.
+        tx1 = captured1.get("tx")
+        assert tx1 is not None
+        assert tx1.is_committed() is True
+
+        # Deterministically await the background restart task to complete stop()
+        await asyncio.wait_for(asyncio.shield(tx1.restart_task), timeout=2.0)
+
+        runner1.stop.assert_called_once_with(
+            restart=True, detached_restart=False, service_restart=True
+        )
 
     # Test 2: Supervisor unset
     monkeypatch.delenv("INVOCATION_ID", raising=False)
@@ -364,10 +395,17 @@ async def test_service_path_commitment_dual_environment(monkeypatch, tmp_path):
     runner2._gateway_loop = gw_loop
     runner2.stop = AsyncMock()  # type: ignore[method-assign]
 
-    async def fake_launch_ok():
-        return True
+    captured2: dict = {}
+    orig_request_restart2 = runner2.request_restart
 
-    runner2._launch_detached_restart_command = fake_launch_ok  # type: ignore[method-assign]
+    def spy_request_restart2(*args, **kwargs):
+        captured2["tx"] = kwargs.get("transaction")
+        return orig_request_restart2(*args, **kwargs)
+
+    runner2.request_restart = spy_request_restart2  # type: ignore[method-assign]
+
+    mock_launcher2 = AsyncMock(return_value=True)
+    runner2._launch_detached_restart_command = mock_launcher2
 
     with patch("gateway.run._hermes_home", tmp_path):
         success2, msg2 = await runner2.dispatch_gateway_restart(
@@ -376,6 +414,100 @@ async def test_service_path_commitment_dual_environment(monkeypatch, tmp_path):
         assert success2 is True
         assert runner2._restart_via_service is False
         assert runner2._restart_detached is True
+        mock_launcher2.assert_awaited_once()
+
+        tx2 = captured2.get("tx")
+        assert tx2 is not None
+        assert tx2.is_committed() is True
+
+        await asyncio.wait_for(asyncio.shield(tx2.restart_task), timeout=2.0)
+
+        runner2.stop.assert_called_once_with(
+            restart=True, detached_restart=True, service_restart=False
+        )
+
+
+@pytest.mark.asyncio
+async def test_service_path_ignores_launcher_exceptions(monkeypatch, tmp_path):
+    """Blocker 2: Service path does not call detached launcher even if it raises."""
+    monkeypatch.setenv("INVOCATION_ID", "systemd-unit-999")
+    monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
+
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner.stop = AsyncMock()
+
+    captured: dict = {}
+    orig_request_restart = runner.request_restart
+
+    def spy_request_restart(*args, **kwargs):
+        captured["tx"] = kwargs.get("transaction")
+        return orig_request_restart(*args, **kwargs)
+
+    runner.request_restart = spy_request_restart  # type: ignore[method-assign]
+
+    mock_launcher = AsyncMock(side_effect=RuntimeError("launcher broken"))
+    runner._launch_detached_restart_command = mock_launcher
+
+    with patch("gateway.run._hermes_home", tmp_path):
+        success, msg = await runner.dispatch_gateway_restart(
+            source=_make_source(), origin="agent_tool"
+        )
+
+    assert success is True
+    mock_launcher.assert_not_awaited()
+
+    tx = captured.get("tx")
+    assert tx is not None
+    assert tx.is_committed() is True
+
+    await asyncio.wait_for(asyncio.shield(tx.restart_task), timeout=2.0)
+
+    runner.stop.assert_called_once_with(
+        restart=True, detached_restart=False, service_restart=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_detached_path_launcher_failure_rolls_back(monkeypatch, tmp_path):
+    """Blocker 2: Detached path still calls launcher; failure means NOT_STARTED, rollback, no stop()."""
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setattr("gateway.restart.is_container_restart_context", lambda: False)
+
+    runner, _ = make_restart_runner()
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner.stop = AsyncMock()
+
+    captured: dict = {}
+    orig_request_restart = runner.request_restart
+
+    def spy_request_restart(*args, **kwargs):
+        captured["tx"] = kwargs.get("transaction")
+        return orig_request_restart(*args, **kwargs)
+
+    runner.request_restart = spy_request_restart  # type: ignore[method-assign]
+
+    mock_launcher = AsyncMock(return_value=False)
+    runner._launch_detached_restart_command = mock_launcher
+
+    with patch("gateway.run._hermes_home", tmp_path):
+        success, msg = await runner.dispatch_gateway_restart(
+            source=_make_source(), origin="agent_tool"
+        )
+
+    assert success is False
+    assert "Handoff failed" in msg
+    mock_launcher.assert_awaited_once()
+
+    tx = captured.get("tx")
+    assert tx is not None
+    assert tx.is_aborted() is True
+
+    await asyncio.wait_for(asyncio.shield(tx.restart_task), timeout=2.0)
+
+    runner.stop.assert_not_called()
+    assert runner._restart_transaction is None
 
 
 # ---------------------------------------------------------------------------

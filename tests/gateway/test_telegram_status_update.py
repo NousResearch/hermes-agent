@@ -5,6 +5,9 @@ The status-update path must:
   2. Edit that same message on subsequent calls with the same key.
   3. Fall back to sending fresh when the cached message edit fails.
   4. Keep distinct keys independent (no cross-talk).
+  5. Keep distinct Telegram thread/topic ids independent (no cross-talk).
+  6. Edit in place within the same thread/topic.
+  7. Serialize concurrent calls with the same routing key.
 """
 
 from __future__ import annotations
@@ -18,6 +21,10 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
+
+
+def _status_key(chat_id: str, status_key: str, thread_id=None, dm_topic_id=None):
+    return (chat_id, status_key, thread_id, dm_topic_id)
 
 
 def _install_fake_telegram(monkeypatch):
@@ -68,7 +75,6 @@ def adapter(monkeypatch):
 
     a = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     a._bot = MagicMock()
-    # Patch send / edit_message so tests can drive them directly.
     a.send = AsyncMock()
     a.edit_message = AsyncMock()
     return a
@@ -76,7 +82,6 @@ def adapter(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_first_call_sends_and_caches_message_id(adapter):
-    """First call for a (chat, key) pair must send and remember the id."""
     adapter.send.return_value = SendResult(success=True, message_id="100")
 
     result = await adapter.send_or_update_status("chat-1", "lifecycle", "starting")
@@ -85,12 +90,47 @@ async def test_first_call_sends_and_caches_message_id(adapter):
     assert result.message_id == "100"
     adapter.send.assert_awaited_once()
     adapter.edit_message.assert_not_awaited()
-    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
+    assert adapter._status_message_ids[_status_key("chat-1", "lifecycle")] == "100"
+
+
+@pytest.mark.asyncio
+async def test_second_call_edits_in_place(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="100")
+    adapter.edit_message.return_value = SendResult(success=True, message_id="100")
+
+    await adapter.send_or_update_status("chat-1", "lifecycle", "step 1")
+    await adapter.send_or_update_status("chat-1", "lifecycle", "step 2")
+
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_awaited_once()
+    args, kwargs = adapter.edit_message.call_args
+    assert args[0] == "chat-1"
+    assert args[1] == "100"
+    assert args[2] == "step 2"
+
+
+@pytest.mark.asyncio
+async def test_edit_failure_falls_back_to_fresh_send(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="100"),
+        SendResult(success=True, message_id="200"),
+    ]
+    adapter.edit_message.return_value = SendResult(
+        success=False, error="Bad Request: message to edit not found",
+    )
+
+    await adapter.send_or_update_status("chat-1", "lifecycle", "step 1")
+    result = await adapter.send_or_update_status("chat-1", "lifecycle", "step 2")
+
+    assert result.success is True
+    assert result.message_id == "200"
+    assert adapter.send.await_count == 2
+    assert adapter.edit_message.await_count == 1
+    assert adapter._status_message_ids[_status_key("chat-1", "lifecycle")] == "200"
 
 
 @pytest.mark.asyncio
 async def test_distinct_status_keys_do_not_collide(adapter):
-    """A different status_key gets its own message; the original isn't touched."""
     adapter.send.side_effect = [
         SendResult(success=True, message_id="100"),
         SendResult(success=True, message_id="200"),
@@ -101,7 +141,123 @@ async def test_distinct_status_keys_do_not_collide(adapter):
 
     assert adapter.send.await_count == 2
     adapter.edit_message.assert_not_awaited()
-    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
-    assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
+    assert adapter._status_message_ids[_status_key("chat-1", "lifecycle")] == "100"
+    assert adapter._status_message_ids[_status_key("chat-1", "model-switch")] == "200"
 
 
+@pytest.mark.asyncio
+async def test_distinct_chat_ids_do_not_collide(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="100"),
+        SendResult(success=True, message_id="200"),
+    ]
+
+    await adapter.send_or_update_status("chat-1", "lifecycle", "first")
+    await adapter.send_or_update_status("chat-2", "lifecycle", "second")
+
+    assert adapter.send.await_count == 2
+    adapter.edit_message.assert_not_awaited()
+    assert adapter._status_message_ids[_status_key("chat-1", "lifecycle")] == "100"
+    assert adapter._status_message_ids[_status_key("chat-2", "lifecycle")] == "200"
+
+
+@pytest.mark.asyncio
+async def test_distinct_thread_ids_do_not_collide(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="100"),
+        SendResult(success=True, message_id="200"),
+    ]
+
+    await adapter.send_or_update_status(
+        "chat-1", "provider-error", "rate limited",
+        metadata={"thread_id": "11"},
+    )
+    await adapter.send_or_update_status(
+        "chat-1", "provider-error", "rate limited",
+        metadata={"thread_id": "22"},
+    )
+
+    assert adapter.send.await_count == 2
+    adapter.edit_message.assert_not_awaited()
+    assert adapter._status_message_ids[_status_key("chat-1", "provider-error", "11")] == "100"
+    assert adapter._status_message_ids[_status_key("chat-1", "provider-error", "22")] == "200"
+
+
+@pytest.mark.asyncio
+async def test_same_thread_id_edits_in_place(adapter):
+    adapter.send.return_value = SendResult(success=True, message_id="100")
+    adapter.edit_message.return_value = SendResult(success=True, message_id="100")
+
+    await adapter.send_or_update_status(
+        "chat-1", "provider-error", "rate limited",
+        metadata={"thread_id": "11"},
+    )
+    await adapter.send_or_update_status(
+        "chat-1", "provider-error", "still rate limited",
+        metadata={"thread_id": "11"},
+    )
+
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_awaited_once()
+    args, kwargs = adapter.edit_message.call_args
+    assert args[0] == "chat-1"
+    assert args[1] == "100"
+    assert args[2] == "still rate limited"
+    assert kwargs["metadata"] == {"thread_id": "11"}
+
+
+@pytest.mark.asyncio
+async def test_distinct_dm_topic_ids_do_not_collide(adapter):
+    adapter.send.side_effect = [
+        SendResult(success=True, message_id="100"),
+        SendResult(success=True, message_id="200"),
+    ]
+
+    await adapter.send_or_update_status(
+        "chat-1", "lifecycle", "starting",
+        metadata={"direct_messages_topic_id": "7"},
+    )
+    await adapter.send_or_update_status(
+        "chat-1", "lifecycle", "step 2",
+        metadata={"direct_messages_topic_id": "9"},
+    )
+
+    assert adapter.send.await_count == 2
+    adapter.edit_message.assert_not_awaited()
+    assert adapter._status_message_ids[_status_key("chat-1", "lifecycle", None, "7")] == "100"
+    assert adapter._status_message_ids[_status_key("chat-1", "lifecycle", None, "9")] == "200"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_key_is_serialized(adapter):
+    import asyncio as _asyncio
+
+    send_started = _asyncio.Event()
+    release_send = _asyncio.Event()
+
+    async def slow_send(*args, **kwargs):
+        send_started.set()
+        await release_send.wait()
+        return SendResult(success=True, message_id="100")
+
+    adapter.send = AsyncMock(side_effect=slow_send)
+    adapter.edit_message.return_value = SendResult(success=True, message_id="100")
+
+    first = _asyncio.create_task(
+        adapter.send_or_update_status("chat-1", "lifecycle", "call A")
+    )
+    await send_started.wait()
+
+    second = _asyncio.create_task(
+        adapter.send_or_update_status("chat-1", "lifecycle", "call B")
+    )
+    await _asyncio.sleep(0.01)
+
+    assert not second.done(), "second call should be blocked waiting for the lock"
+    assert adapter.send.await_count == 1, "exactly one send should be in-flight"
+
+    release_send.set()
+    await _asyncio.gather(first, second)
+
+    assert adapter.send.await_count == 1
+    assert adapter.edit_message.await_count == 1

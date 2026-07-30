@@ -1494,6 +1494,50 @@ class BuzzAdapter(BasePlatformAdapter):
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        local = Path(image_path).expanduser()
+        if local.is_file():
+            args = [
+                "messages", "send",
+                "--channel", str(chat_id),
+                "--file", str(local),
+                "--content", "-",
+            ]
+            reply_target = reply_to or (metadata or {}).get("thread_id")
+            if reply_target:
+                args += ["--reply-to", str(reply_target)]
+            code, out, err = await self._run_cli(args, input_text=caption or "")
+            if code != 0:
+                return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
+            try:
+                data = json.loads(out or "{}")
+            except ValueError:
+                data = {}
+            event_id = data.get("event_id")
+            if event_id:
+                self._mark_seen(str(chat_id), str(event_id))
+            return SendResult(
+                success=bool(data.get("accepted", True)),
+                message_id=str(event_id) if event_id else None,
+                raw_response=data,
+            )
+        return await super().send_image_file(
+            chat_id=chat_id,
+            image_path=image_path,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+            **kwargs,
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_id = str(chat_id)
         state = self._channel_state.get(chat_id)

@@ -2340,6 +2340,102 @@ class TestBuzzAdapterSend:
         assert cli.calls[0][1] == "See @session:default/example."
         assert cli.calls[1][1] == "See @\u200bsession:default/example."
 
+    @pytest.mark.asyncio
+    async def test_send_image_file_existing_local_path_stays_native_upload_after_probe_flip(
+        self, tmp_path, monkeypatch
+    ):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt126b", "message": ""})
+        adapter._run_cli = cli
+
+        original_is_file = _buzz_mod.Path.is_file
+        probe_results = iter([True, False])
+
+        def sequential_is_file(path):
+            if path == img:
+                return next(probe_results, original_is_file(path))
+            return original_is_file(path)
+
+        monkeypatch.setattr(_buzz_mod.Path, "is_file", sequential_is_file)
+
+        result = await adapter.send_image_file(CHANNEL, str(img), caption="screenshot")
+
+        assert result.success is True
+        args, stdin_text = cli.calls[0]
+        assert args[:2] == ["messages", "send"]
+        assert args[args.index("--channel") + 1] == CHANNEL
+        assert args[args.index("--file") + 1] == str(img)
+        assert args[args.index("--content") + 1] == "-"
+        assert stdin_text == "screenshot"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_uses_metadata_thread_id_when_reply_to_missing(self, tmp_path):
+        img = tmp_path / "reply-shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        thread_id = "b" * 64
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt126c", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send_image_file(
+            CHANNEL,
+            str(img),
+            caption="screenshot",
+            metadata={"thread_id": thread_id},
+        )
+
+        assert result.success is True
+        args, stdin_text = cli.calls[0]
+        assert args[:2] == ["messages", "send"]
+        assert args[args.index("--channel") + 1] == CHANNEL
+        assert args[args.index("--file") + 1] == str(img)
+        assert args[args.index("--content") + 1] == "-"
+        assert args[args.index("--reply-to") + 1] == thread_id
+        assert stdin_text == "screenshot"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_missing_local_path_uses_base_fallback_notice(self, tmp_path):
+        missing = tmp_path / "missing.png"
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt127", "message": ""})
+        adapter._run_cli = cli
+
+        result = await adapter.send_image_file(CHANNEL, str(missing), caption="screenshot")
+
+        assert result.success is True
+        args, stdin_text = cli.calls[0]
+        assert args[:2] == ["messages", "send"]
+        assert "--file" not in args
+        assert str(missing) not in args
+        assert stdin_text == "screenshot\n⚠️ Couldn't deliver the image attachment."
+        assert str(missing) not in stdin_text
+
+    @pytest.mark.asyncio
+    async def test_send_multiple_images_file_url_uses_native_file_send(self, tmp_path):
+        img = tmp_path / "shot with spaces.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter()
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt127", "message": ""})
+        adapter._run_cli = cli
+
+        await adapter.send_multiple_images(CHANNEL, [(img.as_uri(), "screenshot")])
+
+        assert len(cli.calls) == 1
+        args, stdin_text = cli.calls[0]
+        assert args[:2] == ["messages", "send"]
+        assert args[args.index("--channel") + 1] == CHANNEL
+        assert args[args.index("--file") + 1] == str(img)
+        assert args[args.index("--content") + 1] == "-"
+        assert stdin_text == "screenshot"
+        assert "Couldn't deliver the image attachment." not in stdin_text
+
+
 
 
 # ── Thread anchoring ──────────────────────────────────────────────────────

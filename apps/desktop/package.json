@@ -12,9 +12,9 @@
   },
   "scripts": {
     "clean": "npm run clean:e2e && npm run clean:renderer && npm run clean:electron",
-    "clean:e2e": "tsc --build tsconfig.e2e.json --clean",
-    "clean:renderer": "tsc --build tsconfig.json --clean ",
-    "clean:electron": "tsc --build tsconfig.electron.json --clean",
+    "clean:e2e":"tsc --build tsconfig.e2e.json --clean",
+    "clean:renderer":"tsc --build tsconfig.json --clean ",
+    "clean:electron":"tsc --build tsconfig.electron.json --clean",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 npm run dev",
     "dev:mock": "node scripts/dev-mock.mjs",

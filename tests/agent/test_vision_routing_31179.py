@@ -60,13 +60,36 @@ def _write_config(home: str, text: str) -> None:
         fp.write(text)
 
 
+_RELOAD_PREFIXES = ("agent.auxiliary_client", "agent.image_routing",
+                    "tools.vision_tools", "tools.browser_tool",
+                    "hermes_cli.config")
+
+
+def _drop_reload_targets():
+    for mod in list(sys.modules.keys()):
+        if mod.startswith(_RELOAD_PREFIXES):
+            del sys.modules[mod]
+
+
+@pytest.fixture(autouse=True)
+def _module_isolation():
+    """Save/restore sys.modules entries this file reloads.
+
+    Without this, reloaded copies of agent.image_routing & friends leak
+    into sys.modules after the test, splitting module identity for any
+    later test that patches ``agent.image_routing.*`` while holding
+    function refs from the original module (issue #61597).
+    """
+    saved = {name: mod for name, mod in sys.modules.items()
+             if name.startswith(_RELOAD_PREFIXES)}
+    yield
+    _drop_reload_targets()
+    sys.modules.update(saved)
+
+
 def _fresh_modules():
     """Drop cached hermes modules so each test reloads against current env."""
-    for mod in list(sys.modules.keys()):
-        if mod.startswith(("agent.auxiliary_client", "agent.image_routing",
-                           "tools.vision_tools", "tools.browser_tool",
-                           "hermes_cli.config")):
-            del sys.modules[mod]
+    _drop_reload_targets()
 
 
 # ---------------------------------------------------------------------------

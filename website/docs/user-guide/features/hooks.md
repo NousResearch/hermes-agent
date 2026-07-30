@@ -407,6 +407,14 @@ def register(ctx):
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
+| [`pre_skill_create`](#pre_skill_create) | Before `skill_manage(action='create')` executes | `{"action": "handled"\|"redirect"\|"block", ...}` |
+| [`post_skill_create`](#post_skill_create) | After a skill is created | ignored |
+| [`pre_skill_edit`](#pre_skill_edit) | Before `skill_manage(action='edit'\|'patch')` executes | `{"action": "handled"\|"redirect"\|"block", ...}` |
+| [`post_skill_edit`](#post_skill_edit) | After a skill is edited | ignored |
+| [`pre_skill_patch`](#pre_skill_patch) | Before `skill_manage(action='patch')` executes | `{"action": "handled"\|"block", ...}` |
+| [`pre_skill_write_file`](#pre_skill_write_file) | Before `skill_manage(action='write_file')` executes | `{"action": "handled"\|"block", ...}` |
+| [`pre_skill_remove_file`](#pre_skill_remove_file) | Before `skill_manage(action='remove_file')` executes | `{"action": "handled"\|"block", ...}` |
+| [`pre_skill_delete`](#pre_skill_delete) | Before `skill_manage(action='delete')` executes | `{"action": "handled"\|"block", ...}` |
 
 ---
 

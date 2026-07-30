@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 
 import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
+import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { KbdCombo } from '@/components/ui/kbd'
@@ -60,7 +61,7 @@ import {
 } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
 import { openPetGenerate } from '@/store/pet-generate'
-import { requestStartWorkSession } from '@/store/projects'
+import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
 import { $connection } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 import {
@@ -103,6 +104,8 @@ interface PaletteItem {
   action?: string
   /** Renders a trailing check: this row IS the current setting (theme, mode). */
   active?: boolean
+  /** Static trailing combo hint for a modifier-variant select (e.g. `mod+enter`). */
+  comboHint?: string
   /** Muted text beside the label — state the row acts on (a version, a count). */
   detail?: string
   icon: IconComponent
@@ -111,6 +114,8 @@ interface PaletteItem {
   keepOpen?: boolean
   keywords?: string[]
   label: string
+  /** Label shown while ⌘/⌃ is held — previews the modifier-variant action. */
+  modLabel?: string
   /**
    * When set, ⌘/⌃-select (or ⌘-Enter) opens a new tab and ⇧⌘-select pops a
    * window — matching sidebar session rows. Plain select stays in-place.
@@ -233,18 +238,25 @@ const paletteValue = (item: PaletteItem): string => `${item.label}\u0001${item.i
 const PaletteRow = memo(function PaletteRow({
   bindings,
   item,
+  modHeld,
   onSelectMods,
   onSelectItem,
   search
 }: {
   bindings: Record<string, string[]>
   item: PaletteItem
+  modHeld: boolean
   onSelectMods: (event: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => void
   onSelectItem: (item: PaletteItem) => void
   search: string
 }) {
   const Icon = item.icon
-  const combo = item.action ? bindings[item.action]?.[0] : undefined
+  // The row's live keybind, else a static modifier-variant hint (⌘↵). One slot,
+  // so every downstream `ml-auto` fallback below keeps working unchanged.
+  const combo = (item.action ? bindings[item.action]?.[0] : undefined) ?? item.comboHint
+  // While ⌘/⌃ is held, a row with a modifier variant previews it: the label
+  // swaps to the variant's copy so Enter reads as what it will actually do.
+  const modPreview = modHeld && Boolean(item.modLabel)
 
   return (
     <CommandItem
@@ -256,12 +268,16 @@ const PaletteRow = memo(function PaletteRow({
     >
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="truncate">
-        {/* Same per-term split as scoreItem's AND matcher, so the emphasis
-            shows exactly which words earned the row its rank. */}
-        <HighlightMatches query={search.split(/\s+/)} text={item.label} />
+        {modPreview ? (
+          item.modLabel
+        ) : (
+          /* Same per-term split as scoreItem's AND matcher, so the emphasis
+             shows exactly which words earned the row its rank. */
+          <HighlightMatches query={search.split(/\s+/)} text={item.label} />
+        )}
       </span>
       {item.detail && <span className="truncate text-muted-foreground/80">{item.detail}</span>}
-      {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
+      {combo && <KbdCombo className={cn('ml-auto', modPreview ? 'opacity-90' : 'opacity-55')} combo={combo} size="sm" />}
       {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />}
       {item.active && <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />}
     </CommandItem>
@@ -271,6 +287,12 @@ const PaletteRow = memo(function PaletteRow({
 // Hermes session ids: <YYYYMMDD>_<HHMMSS>_<6 hex>. Used to offer a direct
 // "Go to session ‹id›" jump for ids that aren't in the recent-200 list.
 const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
+
+// A typed/pasted folder path: absolute (`/…`) or a Windows drive (`C:\…`).
+// Deliberately NOT `~/…`: the upsert's membership check (projectIdForCwd)
+// compares literal strings against the tree's absolute paths, so an unexpanded
+// home path would always miss and double-create.
+const FOLDER_PATH_RE = /^(\/|[A-Za-z]:[/\\]).+/
 
 type SessionRow = Awaited<ReturnType<typeof listAllProfileSessions>>['sessions'][number]
 
@@ -359,6 +381,7 @@ export function CommandPalette() {
   const pendingPage = useStore($commandPalettePage)
   const bindings = useStore($bindings)
   const worktrees = useStore($repoWorktrees)
+  const projectTree = useStore($projectTree)
   const navigate = useNavigate()
   const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
@@ -408,6 +431,33 @@ export function CommandPalette() {
       shiftKey: event.shiftKey
     }
   }
+
+  // Live ⌘/⌃-held state while the palette is open: rows with a modifier
+  // variant (projects) preview it by swapping their label. Window-level
+  // listeners because focus sits in the search input; blur clears so a
+  // ⌘-Tab away doesn't strand the preview on.
+  const [modHeld, setModHeld] = useState(false)
+
+  useEffect(() => {
+    if (!open) {
+      setModHeld(false)
+
+      return
+    }
+
+    const sync = (event: KeyboardEvent) => setModHeld(event.metaKey || event.ctrlKey)
+    const clear = () => setModHeld(false)
+
+    window.addEventListener('keydown', sync, { capture: true })
+    window.addEventListener('keyup', sync, { capture: true })
+    window.addEventListener('blur', clear)
+
+    return () => {
+      window.removeEventListener('keydown', sync, { capture: true })
+      window.removeEventListener('keyup', sync, { capture: true })
+      window.removeEventListener('blur', clear)
+    }
+  }, [open])
 
   // Server-backed sources for the type-to-search groups, fetched lazily while
   // the palette is open. react-query handles caching/dedup/staleness.
@@ -494,6 +544,36 @@ export function CommandPalette() {
   const baseGroups = useMemo<PaletteGroup[]>(() => {
     const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
     const cc = t.commandCenter
+
+    // Projects are the primary way the desktop scopes work, so they're jumpable
+    // from the palette. Plain select is a pure scope switch (sidebar enters the
+    // project — never spends main); ⌘-Enter / ⌘-click also starts a new session
+    // at the project root (stacked as a tab when main holds a chat), previewed
+    // by the label swap while ⌘ is held. Rows carry the project's own codicon,
+    // matching the sidebar. The pinned "Open folder…" row is the ⌘O upsert.
+    const projectGroup: PaletteGroup = {
+      heading: cc.projects,
+      items: [
+        {
+          action: 'workspace.openFolder',
+          icon: codiconIcon('folder-opened'),
+          id: 'project-open-folder',
+          keywords: ['open', 'folder', 'directory', 'project', 'add', 'import', 'workspace'],
+          label: cc.openFolder,
+          run: () => void openFolderAsProject()
+        },
+        ...projectTree.map(project => ({
+          comboHint: 'mod+enter',
+          icon: codiconIcon(project.icon || (project.isNoProject ? 'home' : 'folder-library')),
+          id: `project-${project.id}`,
+          keywords: ['project', 'workspace', 'go to', project.label, ...(project.path ? [project.path] : [])],
+          label: project.label,
+          modLabel: cc.newSessionInProject(project.label),
+          runWithEvent: (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) =>
+            goToProject(project.id, { newSession: Boolean(event?.metaKey || event?.ctrlKey) })
+        }))
+      ]
+    }
 
     // The active repo's worktrees → "new conversation in <branch>". This is the
     // ⌘K-typed "I want to work on <branch>" reflex: each entry seeds a fresh
@@ -599,6 +679,7 @@ export function CommandPalette() {
           }
         ]
       },
+      projectGroup,
       ...branchGroup,
       {
         heading: cc.commandCenter,
@@ -714,7 +795,7 @@ export function CommandPalette() {
           ]
         : [])
     ]
-  }, [contributedItems, go, settingsSectionLabel, t, updateVersionLabel, worktrees])
+  }, [contributedItems, go, projectTree, settingsSectionLabel, t, updateVersionLabel, worktrees])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
@@ -739,6 +820,23 @@ export function CommandPalette() {
             keywords: ['session', 'id', 'go to', directId],
             label: `${t.commandCenter.goToSession} ${directId}`,
             runWithEvent: goSession(directId)
+          }
+        ]
+      })
+    }
+
+    // Paste/type an absolute folder path → open it as a project directly (the
+    // ⌘O upsert without the native picker). Same reflex as the raw-session-id
+    // row above.
+    if (FOLDER_PATH_RE.test(directId)) {
+      result.push({
+        items: [
+          {
+            icon: codiconIcon('folder-opened'),
+            id: `open-folder-${directId}`,
+            keywords: ['open', 'folder', 'project', directId],
+            label: t.commandCenter.openFolderAt(directId),
+            run: () => void openFolderAsProject(directId)
           }
         ]
       })
@@ -1083,6 +1181,7 @@ export function CommandPalette() {
                           bindings={bindings}
                           item={item}
                           key={item.id}
+                          modHeld={modHeld}
                           onSelectItem={handleSelect}
                           onSelectMods={noteSelectMods}
                           search={search}

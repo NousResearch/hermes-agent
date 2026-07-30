@@ -3302,6 +3302,43 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
             codex_runtime._consume_codex_event_stream = original_consume
 
 
+class TestCodexAuxiliaryAdapterCompletedResponse:
+    def test_accepts_completed_response_when_stream_was_requested(self):
+        completed = SimpleNamespace(
+            status="completed",
+            id="resp_completed",
+            output=[SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="completed response",
+                )],
+            )],
+            usage=SimpleNamespace(
+                input_tokens=11,
+                output_tokens=3,
+                total_tokens=14,
+            ),
+        )
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                assert kwargs["stream"] is True
+                return completed
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.6-terra")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "review this"}],
+        )
+
+        assert response.choices[0].message.content == "completed response"
+        assert response.usage.prompt_tokens == 11
+        assert response.usage.completion_tokens == 3
+        assert response.usage.total_tokens == 14
+
+
 # ---------------------------------------------------------------------------
 # Issue #23432 — auxiliary timeout poisons cached client; later aux calls fail
 # ---------------------------------------------------------------------------

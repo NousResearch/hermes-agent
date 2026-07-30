@@ -993,7 +993,7 @@ platform_toolsets:
 #       script_timeout_seconds: 30
 #   buzz:
 #     extra:
-#       presence: true  # Advertise online while connected; refreshes the 90-second Buzz lease
+#       presence: true  # Advertise online while connected; refreshes the 180-second Buzz lease
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

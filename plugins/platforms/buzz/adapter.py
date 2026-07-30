@@ -77,12 +77,12 @@ _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
 
-# Buzz presence is a 90-second relay lease, defined upstream as three
-# 30-second heartbeats so one missed refresh does not make a healthy agent
+# Buzz presence is a 180-second relay lease, defined upstream as three
+# 60-second heartbeats so one missed refresh does not make a healthy agent
 # appear offline. Keep each publish bounded so the next fixed-rate attempt
 # still lands before the lease expires.
-_PRESENCE_RELAY_TTL = 90.0
-_PRESENCE_HEARTBEAT_INTERVAL = 30.0
+_PRESENCE_RELAY_TTL = 180.0
+_PRESENCE_HEARTBEAT_INTERVAL = 60.0
 _PRESENCE_CLI_TIMEOUT = 10.0
 _PRESENCE_OFFLINE_TIMEOUT = 2.0
 

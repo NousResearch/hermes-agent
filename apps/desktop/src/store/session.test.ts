@@ -23,6 +23,7 @@ import {
   setRememberedSessionId,
   setSelectedStoredSessionId,
   setSessions,
+  shouldMigrateComposerScope,
   touchSessionActivity,
   workspaceCwdForNewSession
 } from './session'
@@ -106,6 +107,35 @@ describe('resolveComposerSessionKey', () => {
 
   it('falls back to the live id when the tip row is not loaded yet', () => {
     expect(resolveComposerSessionKey('tip-new', [])).toBe('tip-new')
+  })
+})
+
+describe('shouldMigrateComposerScope', () => {
+  it('allows tip → lineage-root rekey within the same conversation', () => {
+    const sessions = [session({ id: 'tip-a', _lineage_root_id: 'root-a' })]
+
+    expect(shouldMigrateComposerScope('tip-a', 'root-a', sessions)).toBe(true)
+  })
+
+  it('blocks cross-session migrate when route flipped but store selection lags', () => {
+    // ChatView mid-switch: selectedStoredSessionId still A, route-driven
+    // queueSessionKey already B. Migrating would re-home A's queue onto B.
+    const sessions = [
+      session({ id: 'tip-a', _lineage_root_id: 'root-a' }),
+      session({ id: 'tip-b', _lineage_root_id: 'root-b' })
+    ]
+
+    expect(shouldMigrateComposerScope('tip-a', 'root-b', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('root-a', 'root-b', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('tip-a', 'tip-b', sessions)).toBe(false)
+  })
+
+  it('is a no-op for identical or missing keys', () => {
+    const sessions = [session({ id: 'tip-a', _lineage_root_id: 'root-a' })]
+
+    expect(shouldMigrateComposerScope('root-a', 'root-a', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope(null, 'root-a', sessions)).toBe(false)
+    expect(shouldMigrateComposerScope('root-a', null, sessions)).toBe(false)
   })
 })
 

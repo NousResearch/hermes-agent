@@ -124,7 +124,31 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     return valid, None
 
 
-def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] = None) -> None:
+def _result_is_unsuccessful(result: dict) -> bool:
+    """Return whether the agent reported an unambiguously unsuccessful turn."""
+    return bool(
+        result.get("failed")
+        or result.get("partial")
+        or result.get("completed") is False
+    )
+
+
+def _result_exit_code(response: Optional[str], result: dict) -> int:
+    """Map the structured turn outcome to the public oneshot exit contract."""
+    if _result_is_unsuccessful(result):
+        return 2
+    if not (response or "").strip():
+        return 1
+    return 0
+
+
+def _write_usage_file(
+    path: Optional[str],
+    result: dict,
+    failure: Optional[str] = None,
+    *,
+    exit_code: Optional[int] = None,
+) -> None:
     """Best-effort JSON usage report for pipelines (``-z --usage-file``).
 
     Written even on failure so callers can always account for spend. Never
@@ -134,6 +158,15 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         return
     try:
         import json
+
+        effective_exit_code = exit_code
+        if effective_exit_code is None:
+            if failure is not None:
+                effective_exit_code = 1
+            elif _result_is_unsuccessful(result):
+                effective_exit_code = 2
+            elif result.get("completed") is True:
+                effective_exit_code = 0
 
         report = {
             "estimated_cost_usd": result.get("estimated_cost_usd"),
@@ -151,6 +184,15 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             "session_id": result.get("session_id"),
             "completed": result.get("completed"),
             "failed": bool(result.get("failed")) or failure is not None,
+            "partial": bool(result.get("partial")),
+            "successful": (
+                effective_exit_code == 0
+                if effective_exit_code is not None
+                else None
+            ),
+            "exit_code": effective_exit_code,
+            "failure_reason": result.get("failure_reason"),
+            "turn_exit_reason": result.get("turn_exit_reason"),
             # Billing-audit field: the service tier this run REQUESTED via
             # request_overrides.extra_body (e.g. OpenAI "flex"). None when
             # unset. Lets batch pipelines verify the tier they think they're
@@ -270,12 +312,13 @@ def run_oneshot(
         if isinstance(failure, (KeyboardInterrupt, SystemExit)):
             _write_usage_file(usage_file, result, failure=repr(failure))
             raise failure
-        _write_usage_file(usage_file, result, failure=str(failure))
+        _write_usage_file(usage_file, result, failure=str(failure), exit_code=1)
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
         return 1
 
-    _write_usage_file(usage_file, result)
+    exit_code = _result_exit_code(response, result)
+    _write_usage_file(usage_file, result, exit_code=exit_code)
 
     if response:
         real_stdout.write(response)
@@ -289,14 +332,10 @@ def run_oneshot(
     # the exit status.  Preserve the response on stdout for operators, but
     # report the existing "agent did not complete cleanly" status even when
     # the agent managed to explain the failure.
-    if (
-        result.get("failed")
-        or result.get("partial")
-        or result.get("completed") is False
-    ):
+    if exit_code == 2:
         return 2
 
-    if not (response or "").strip():
+    if exit_code == 1:
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1

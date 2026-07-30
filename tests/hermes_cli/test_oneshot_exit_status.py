@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from hermes_cli import oneshot
@@ -42,3 +44,63 @@ def test_completed_result_with_response_remains_successful(monkeypatch, capsys):
 
     assert oneshot.run_oneshot("do the work") == 0
     assert capsys.readouterr().out == "done\n"
+
+
+def test_billing_failure_exit_matches_usage_report(monkeypatch, tmp_path):
+    usage_path = tmp_path / "usage.json"
+    billing_result = {
+        "completed": False,
+        "failed": True,
+        "partial": False,
+        "failure_reason": "billing",
+        "turn_exit_reason": "provider_error",
+    }
+    monkeypatch.setattr(
+        oneshot,
+        "_run_agent",
+        lambda *_args, **_kwargs: (
+            "Billing or credits exhausted: HTTP 402 Payment Required",
+            billing_result,
+        ),
+    )
+
+    assert (
+        oneshot.run_oneshot(
+            "do the work",
+            usage_file=str(usage_path),
+        )
+        == 2
+    )
+    report = json.loads(usage_path.read_text())
+    assert report["exit_code"] == 2
+    assert report["successful"] is False
+    assert report["failed"] is True
+    assert report["partial"] is False
+    assert report["failure_reason"] == "billing"
+    assert report["turn_exit_reason"] == "provider_error"
+
+
+def test_partial_result_preserves_raw_failed_but_reports_unsuccessful(
+    monkeypatch,
+    tmp_path,
+):
+    usage_path = tmp_path / "usage.json"
+    monkeypatch.setattr(
+        oneshot,
+        "_run_agent",
+        lambda *_args, **_kwargs: (
+            "Some work completed before the run stopped.",
+            {
+                "completed": False,
+                "failed": False,
+                "partial": True,
+            },
+        ),
+    )
+
+    assert oneshot.run_oneshot("do the work", usage_file=str(usage_path)) == 2
+    report = json.loads(usage_path.read_text())
+    assert report["exit_code"] == 2
+    assert report["successful"] is False
+    assert report["failed"] is False
+    assert report["partial"] is True

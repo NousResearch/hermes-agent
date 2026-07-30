@@ -38,6 +38,9 @@ class TestWriteUsageFile:
         assert report["model"] == "openai/gpt-5.5"
         assert report["api_calls"] == 3
         assert report["failed"] is False
+        assert report["partial"] is False
+        assert report["successful"] is True
+        assert report["exit_code"] == 0
         assert "failure" not in report
 
     def test_none_path_is_noop(self, tmp_path):
@@ -50,8 +53,9 @@ class TestWriteUsageFile:
         _write_usage_file(str(path), {}, failure="boom")
         report = json.loads(path.read_text())
         assert report["failed"] is True
+        assert report["successful"] is False
+        assert report["exit_code"] == 1
         assert report["failure"] == "boom"
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
-
 

@@ -3920,7 +3920,221 @@ class GatewayRunner(
             recovered = self._recover_telegram_topic_thread_id(source)
         except Exception:
             return source
+<<<<<<< HEAD
         return source if recovered is None else dataclasses.replace(source, thread_id=recovered)
+=======
+        if recovered is None:
+            return source
+        return dataclasses.replace(source, thread_id=recovered)
+
+    def _resolve_session_agent_runtime(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+        user_config: Optional[dict] = None,
+    ) -> tuple[str, dict]:
+        """Resolve model/runtime for a session.
+
+        Priority (highest first): session ``/model`` → ``channel_overrides`` →
+        global config/env (``_resolve_gateway_model(user_config)`` and default
+        provider resolution).
+        """
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        model = _resolve_gateway_model(user_config)
+        if resolved_session_key:
+            self._rehydrate_session_model_override(resolved_session_key)
+        _override_state = (
+            self._peek_session_state(resolved_session_key)
+            if resolved_session_key
+            else None
+        )
+        override = (
+            _override_state.conversation.model_override if _override_state else None
+        )
+        if override:
+            override_model = override.get("model", model)
+            override_runtime = {
+                "provider": override.get("provider"),
+                "api_key": override.get("api_key"),
+                "base_url": override.get("base_url"),
+                "api_mode": override.get("api_mode"),
+                "max_tokens": override.get("max_tokens"),
+                "credential_pool": override.get("credential_pool"),
+            }
+            if override_runtime.get("api_key"):
+                if override_runtime.get("credential_pool") is None:
+                    override_runtime["credential_pool"] = _credential_pool_for_provider(
+                        override.get("provider")
+                    )
+                logger.debug(
+                    "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
+                    resolved_session_key or "", model, override_model,
+                    override_runtime.get("provider"),
+                )
+                return override_model, override_runtime
+            # Override exists but has no api_key — fall through to env-based
+            # resolution and apply model/provider from the override on top.
+            logger.debug(
+                "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
+                resolved_session_key or "", model, override_model,
+            )
+        else:
+            logger.debug(
+                "No session model override: session=%s config_model=%s override_keys=%s",
+                resolved_session_key or "", model,
+                [
+                    _key
+                    for _key, _st in list(self._sessions_map().items())
+                    if _st.conversation.model_override is not None
+                ][:5] or "[]",
+            )
+
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_model = runtime_kwargs.pop("model", None)
+        if runtime_model:
+            logger.info(
+                "Runtime provider supplied explicit model override: %s -> %s",
+                model,
+                runtime_model,
+            )
+            model = runtime_model
+
+        cfg = getattr(self, "config", None)
+        if cfg and source is not None:
+            chat_id = str(source.chat_id) if source.chat_id else ""
+            thread_id = (
+                str(source.thread_id) if getattr(source, "thread_id", None) else None
+            )
+            parent_id = (
+                str(source.parent_chat_id)
+                if getattr(source, "parent_chat_id", None)
+                else None
+            )
+            ch = _get_channel_override(
+                cfg,
+                source.platform,
+                chat_id,
+                thread_id=thread_id,
+                parent_id=parent_id,
+            )
+            if ch:
+                if ch.model:
+                    model = ch.model
+                if ch.provider:
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                        ch.provider, target_model=model
+                    )
+                    ch_runtime_model = runtime_kwargs.pop("model", None)
+                    # Only adopt the provider's bundled model when the override
+                    # did not specify an explicit model.
+                    if ch_runtime_model and not ch.model:
+                        model = ch_runtime_model
+
+        if override and resolved_session_key:
+            model, runtime_kwargs = self._apply_session_model_override(
+                resolved_session_key, model, runtime_kwargs
+            )
+
+        # When the config has no model.default but a provider was resolved
+        # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
+        # fall back to the provider's first catalog model so the API call
+        # doesn't fail with "model must be a non-empty string".
+        if not model and runtime_kwargs.get("provider"):
+            try:
+                from hermes_cli.models import get_default_model_for_provider
+                model = get_default_model_for_provider(runtime_kwargs["provider"])
+                if model:
+                    logger.info(
+                        "No model configured — defaulting to %s for provider %s",
+                        model, runtime_kwargs["provider"],
+                    )
+            except Exception:
+                pass
+
+        # Final safety net (#35314): if resolution still produced an empty
+        # model — e.g. a transient config-cache miss during a post-interrupt
+        # recovery turn returned an empty user_config — reuse the last model we
+        # successfully resolved for this session (or, failing that, the most
+        # recent one resolved process-wide). Building an agent with model=""
+        # makes every API call fail HTTP 400 "No models provided" and the
+        # session goes silent until the user manually re-sends. ``getattr``
+        # guards against bare test runners built via ``object.__new__``.
+        if not model:
+            _lr_state = (
+                self._peek_session_state(resolved_session_key)
+                if resolved_session_key
+                else None
+            )
+            _lr_star = self._peek_session_state("*")
+            _recovered = (
+                (_lr_state.conversation.last_resolved_model if _lr_state else "")
+                or (_lr_star.conversation.last_resolved_model if _lr_star else "")
+            )
+            if _recovered:
+                logger.warning(
+                    "Empty model resolved for session=%s — recovering "
+                    "last-known-good model %s (config read likely returned "
+                    "empty; see #35314)",
+                    resolved_session_key or "", _recovered,
+                )
+                model = _recovered
+        elif model:
+            # Cache the good resolution for future recovery turns.
+            if resolved_session_key:
+                self._session_state(
+                    resolved_session_key
+                ).conversation.last_resolved_model = model
+            self._session_state("*").conversation.last_resolved_model = model
+
+        return model, runtime_kwargs
+
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+        """Build the effective model/runtime config for a single turn.
+
+        Always uses the session's primary model/provider.  If `/fast` is
+        enabled and the model supports Priority Processing / Anthropic fast
+        mode, attach `request_overrides` so the API call is marked
+        accordingly.
+        """
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        runtime = {
+            "api_key": runtime_kwargs.get("api_key"),
+            "base_url": runtime_kwargs.get("base_url"),
+            "provider": runtime_kwargs.get("provider"),
+            "requested_provider": runtime_kwargs.get("requested_provider"),
+            "api_mode": runtime_kwargs.get("api_mode"),
+            "command": runtime_kwargs.get("command"),
+            "args": list(runtime_kwargs.get("args") or []),
+            "credential_pool": runtime_kwargs.get("credential_pool"),
+            "max_tokens": runtime_kwargs.get("max_tokens"),
+        }
+        route = {
+            "model": model,
+            "runtime": runtime,
+            "signature": (
+                model,
+                runtime["provider"],
+                runtime["requested_provider"],
+                runtime["base_url"],
+                runtime["api_mode"],
+                runtime["command"],
+                tuple(runtime["args"]),
+            ),
+        }
+
+        service_tier = getattr(self, "_service_tier", None)
+        if not service_tier:
+            route["request_overrides"] = {}
+            return route
+>>>>>>> 22a79cd956 (fix: forward target_model in channel-override provider resolution)
 
     def _resolve_session_key_or_none(self, source, session_key: Optional[str]) -> Optional[str]:
         """``session_key`` if given, else the key for ``source`` (None when it cannot be derived)."""
@@ -4295,7 +4509,7 @@ class GatewayRunner(
         ("compression", "proactive_prune_tokens"),
         ("compression", "proactive_prune_min_result_chars"),
         ("compression", "proactive_prune_min_reclaim_tokens"),
-("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
+        ("compression", "min_tail_user_messages"), ("agent", "disabled_toolsets"),
         ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
         ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
 

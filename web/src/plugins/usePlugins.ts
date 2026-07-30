@@ -2,9 +2,9 @@
  * usePlugins hook — discovers and loads dashboard plugins.
  *
  * 1. Fetches plugin manifests from GET /api/dashboard/plugins
- * 2. Injects CSS <link> tags for plugins that declare css
- * 3. Loads plugin JS bundles via <script> tags
- * 4. Waits for plugins to call register() and resolves them
+ * 2. Loads plugin JS bundles via <script> tags
+ *    (CSS is injected route-scoped — see usePluginStylesheets)
+ * 3. Waits for plugins to call register() and resolves them
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -41,17 +41,6 @@ export function usePlugins() {
     const injectedScripts: HTMLScriptElement[] = [];
 
     for (const manifest of manifests) {
-      // Inject CSS if specified.
-      if (manifest.css) {
-        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
-        if (!document.querySelector(`link[href="${cssUrl}"]`)) {
-          const link = document.createElement("link");
-          link.rel = "stylesheet";
-          link.href = cssUrl;
-          document.head.appendChild(link);
-        }
-      }
-
       // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
       // in-memory registry while the browser would otherwise never
       // re-execute a previously cached <script> URL.

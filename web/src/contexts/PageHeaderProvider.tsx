@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { PageHeaderContext } from "./page-header-context";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
@@ -17,11 +17,15 @@ export function PageHeaderProvider({
   const [titleOverride, setTitleOverride] = useState<string | null>(null);
   const [afterTitle, setAfterTitle] = useState<ReactNode>(null);
   const [end, setEnd] = useState<ReactNode>(null);
+  const prevPathnameRef = useRef(pathname);
 
-  // Clear any per-page title / toolbar slots when the path changes. Child routes
-  // re-fill these on mount via usePageHeader.
+  // Clear per-page slots on navigation only (not the initial mount).
+  // Toolbar actions must register via useEffect so they run after this
+  // layout-phase reset — see SessionsPage / CronPage.
   /* eslint-disable react-hooks/set-state-in-effect */
   useLayoutEffect(() => {
+    if (prevPathnameRef.current === pathname) return;
+    prevPathnameRef.current = pathname;
     setTitleOverride(null);
     setAfterTitle(null);
     setEnd(null);
@@ -35,7 +39,6 @@ export function PageHeaderProvider({
   const displayTitle = titleOverride ?? defaultTitle;
 
   const isChatRoute = pathname === "/chat" || pathname === "/chat/";
-  /** Env jump-nav is wide — stack below title on small screens so KEYS stays readable. */
   const isEnvRoute =
     pathname === "/env" || pathname.startsWith("/env/");
 
@@ -50,33 +53,39 @@ export function PageHeaderProvider({
 
   return (
     <PageHeaderContext.Provider value={value}>
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+      {/*
+        CSS grid: row 1 = page chrome (fixed height), row 2 = scrollable
+        outlet. Grid avoids flex min-height bugs where main content paints
+        over the header band on narrow viewports.
+      */}
+      <div className="grid min-h-0 w-full min-w-0 flex-1 grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
         <header
           className={cn(
-            "z-1 w-full shrink-0",
+            "relative z-10 col-span-full w-full isolate",
             "box-border border-b border-current/20",
-            "bg-background-base",
-            // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
-            "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
+            "min-h-14 px-3 py-2 sm:px-6 sm:py-0",
           )}
+          style={{ backgroundColor: "var(--background-base)" }}
           role="banner"
         >
           <div
             className={cn(
-              "flex w-full min-w-0 flex-1 gap-3 px-3 sm:h-full sm:gap-3 sm:px-6",
+              "flex w-full min-w-0 gap-2 sm:min-h-14 sm:gap-3",
               isChatRoute
-                ? "flex-row items-center"
-                : "flex-col justify-center sm:flex-row sm:items-center",
+                ? "min-h-10 flex-row items-center"
+                : isEnvRoute
+                  ? "flex-col justify-center gap-2 sm:flex-row sm:items-center"
+                  : "min-h-10 flex-row items-center justify-between",
             )}
           >
             <div
               className={cn(
-                "flex min-w-0 flex-1 gap-2 sm:gap-3",
+                "flex min-w-0 gap-2 sm:gap-3",
                 afterTitle && isEnvRoute
-                  ? "flex-col items-start sm:flex-row sm:items-center"
+                  ? "flex-1 flex-col items-start sm:flex-row sm:items-center"
                   : afterTitle
-                    ? "flex-row flex-wrap items-center"
-                    : "flex-row items-center",
+                    ? "min-w-0 flex-1 flex-row flex-wrap items-center"
+                    : "min-w-0 shrink items-center",
               )}
             >
               <h1
@@ -88,6 +97,7 @@ export function PageHeaderProvider({
                       ? "shrink truncate"
                       : "truncate",
                 )}
+                style={{ mixBlendMode: "plus-lighter" }}
               >
                 {displayTitle}
               </h1>
@@ -108,10 +118,12 @@ export function PageHeaderProvider({
             {end ? (
               <div
                 className={cn(
-                  "flex min-w-0 sm:max-w-md sm:flex-1",
+                  "flex shrink-0 items-center",
                   isChatRoute
-                    ? "w-auto shrink-0 justify-end"
-                    : "w-full justify-start sm:justify-end",
+                    ? "justify-end"
+                    : isEnvRoute
+                      ? "w-full justify-start sm:w-auto sm:justify-end"
+                      : "justify-end",
                 )}
               >
                 {end}
@@ -122,9 +134,7 @@ export function PageHeaderProvider({
 
         <main
           className={cn(
-            "min-h-0 w-full min-w-0 flex-1 flex flex-col",
-            // Bottom inset for scrolled pages lives on the route outlet wrapper in
-            // `App.tsx` (`w-full min-w-0`) so it pads scrollable content, not flex chrome.
+            "relative z-0 col-span-full flex min-h-0 w-full min-w-0 flex-col",
             isChatRoute
               ? "overflow-hidden"
               : "overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",

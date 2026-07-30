@@ -1822,8 +1822,10 @@ def _profile_runtime_scope(profile_home: "Path"):
         set_secret_scope,
         reset_secret_scope,
     )
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
 
     home_token = set_hermes_home_override(str(profile_home))
+    hydrate_profile_secret_sources(Path(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
     try:
         yield

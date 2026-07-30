@@ -5034,6 +5034,19 @@ This compaction should PRIORITISE preserving all information related to the focu
                 last_summary_idx = idx
         if last_summary_idx >= head_end:
             cursor = last_summary_idx + 1
+            # Resumed session: in-memory state is gone but the marker survives.
+            # Carry its text forward so the next pass merges into the existing
+            # history instead of replacing it with a single-exchange summary.
+            if not self._micro_compact_rolling_summary.strip():
+                recovered = self._rolling_summary_from_marker(
+                    messages[last_summary_idx].get("content")
+                )
+                if recovered:
+                    self._micro_compact_rolling_summary = recovered
+                    logger.info(
+                        "Micro-compaction: recovered rolling summary from "
+                        "transcript (%d chars)", len(recovered),
+                    )
         else:
             cursor = head_end
         self._micro_compact_cursor = cursor
@@ -5363,6 +5376,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
             return result
 
+        # Whether this pass's summary will be cumulative — i.e. whether it
+        # subsumes any earlier marker. Captured before summarizing.
+        _cumulative = bool(self._micro_compact_rolling_summary.strip())
+
         # Micro-summarize one exchange
         exchange_text = self._serialize_one_exchange(messages, exchange_start, exchange_end)
         _exchange_tokens = estimate_tokens_rough(exchange_text)
@@ -5408,7 +5425,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._micro_compact_consecutive_failures = 0
         self._micro_compact_last_failure_cursor = -1
 
-        result = self._splice_micro_compact_result(messages, exchange_start, exchange_end)
+        result = self._splice_micro_compact_result(
+            messages, exchange_start, exchange_end, supersede=_cumulative,
+        )
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
         self._sync_micro_compact_to_db(result)
         self._emit_micro_compaction_telemetry(
@@ -5421,6 +5440,29 @@ This compaction should PRIORITISE preserving all information related to the focu
             duration_ms=_elapsed_ms(),
         )
         return result
+
+    @staticmethod
+    def _rolling_summary_from_marker(content: Any) -> str:
+        """Recover the rolling-summary text from a summary marker's content.
+
+        The rolling summary lives in memory, but a resumed session starts with
+        an empty one while the marker holding every previous exchange is still
+        in the transcript. Without rehydrating from it, the first post-resume
+        pass would build a marker from nothing and supersede the one carrying
+        the whole history.
+        """
+        if not isinstance(content, str) or not content.strip():
+            return ""
+        body = content
+        # rfind, not find: SUMMARY_PREFIX itself references the heading text,
+        # so the first occurrence is inside the preamble, not the real heading.
+        idx = body.rfind(HISTORICAL_TASK_HEADING)
+        if idx != -1:
+            body = body[idx + len(HISTORICAL_TASK_HEADING):]
+        end = body.find(_SUMMARY_END_MARKER)
+        if end != -1:
+            body = body[:end]
+        return body.strip()
 
     def _cursor_after_splice(
         self,
@@ -5550,6 +5592,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         messages: List[Dict[str, Any]],
         splice_start: int,
         splice_end: int,
+        supersede: bool = True,
     ) -> List[Dict[str, Any]]:
         """Replace *messages[splice_start:splice_end]* with a summary marker.
 
@@ -5584,13 +5627,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         # its own prefix/heading/end-marker scaffolding — so the transcript
         # grows with every turn instead of shrinking, which defeats the point.
         # Keep only the newest marker.
-        marker_idxs = [
-            i for i, m in enumerate(result)
-            if isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
-        ]
-        if len(marker_idxs) > 1:
-            superseded = set(marker_idxs[:-1])
-            result = [m for i, m in enumerate(result) if i not in superseded]
+        # Only drop earlier markers when this one demonstrably contains them:
+        # the rolling summary must have been non-empty going into this pass.
+        # A pass that started from nothing (a resume that could not rehydrate)
+        # produces a marker covering one exchange, and dropping the previous
+        # marker would throw away the entire compacted history.
+        if supersede:
+            marker_idxs = [
+                i for i, m in enumerate(result)
+                if isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+            ]
+            if len(marker_idxs) > 1:
+                superseded = set(marker_idxs[:-1])
+                result = [m for i, m in enumerate(result) if i not in superseded]
 
         _strip_persistence_markers(result)
         return result

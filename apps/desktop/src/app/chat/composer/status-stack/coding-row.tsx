@@ -15,11 +15,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
-import {
-  registerRepoStatusCwd,
-  repoStatusForCwd,
-  repoWorktreesForCwd
-} from '@/store/coding-status'
+import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
 import { $newWorktreeRequest } from '@/store/projects'
 

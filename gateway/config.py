@@ -403,6 +403,66 @@ PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {
 }
 
 
+def derive_account_platform_config(
+    platform: "Platform",
+    platform_config: "PlatformConfig",
+    account_block: Optional[dict],
+) -> "PlatformConfig":
+    """Derive a per-account ``PlatformConfig`` for a named bot account (#8287).
+
+    The consumer sees an ordinary ``PlatformConfig`` — the account's own token,
+    its own ``home_channel``, and account-block settings overriding the
+    platform-level ``extra`` — so adapters and the send path stay
+    account-agnostic. The ``accounts`` map itself is stripped from the derived
+    ``extra`` so a derived config can never recurse into another account.
+
+    Shared by the gateway's account-adapter startup and ``send_message``'s
+    per-account routing, so both resolve an account identically.
+    """
+    import dataclasses as _dc
+
+    merged_extra = {
+        k: v for k, v in (platform_config.extra or {}).items() if k != "accounts"
+    }
+    home_channel = platform_config.home_channel
+    token = platform_config.token
+    for key, value in (account_block or {}).items():
+        if key == "token":
+            token = value
+        elif key == "home_channel" and isinstance(value, dict):
+            # The platform is implicit inside its own account block.
+            _hc = dict(value)
+            _hc.setdefault("platform", platform.value)
+            home_channel = HomeChannel.from_dict(_hc)
+        else:
+            merged_extra[key] = value
+    return _dc.replace(
+        platform_config,
+        token=token,
+        home_channel=home_channel,
+        extra=merged_extra,
+    )
+
+
+def resolve_platform_account(
+    platform_ref: str,
+) -> tuple[str, Optional[str]]:
+    """Split a ``platform[@account]`` reference into ``(platform, account)``.
+
+    ``"telegram"`` -> ``("telegram", None)``; ``"telegram@support"`` ->
+    ``("telegram", "support")``. The account is lowercased to match the
+    normalization applied when accounts are parsed from config/env. ``default``
+    resolves to ``None`` so it is spelled the same everywhere.
+    """
+    base, sep, account = (platform_ref or "").partition("@")
+    if not sep:
+        return base, None
+    account = account.strip().lower()
+    if not account or account == "default":
+        return base, None
+    return base, account
+
+
 def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
     """Return True when *platform_value* actually binds a port for *extra* config.
 

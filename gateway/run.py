@@ -13796,36 +13796,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> "PlatformConfig":
         """Derive a per-account PlatformConfig from the platform's config (#8287).
 
-        The account adapter sees an ordinary PlatformConfig — its own token,
-        its own home_channel, and account-block settings overriding the
-        platform-level extra — so adapter internals stay account-agnostic.
-        The ``accounts`` map itself is stripped from the derived extra.
+        Thin wrapper over ``gateway.config.derive_account_platform_config``,
+        which is shared with ``send_message``'s per-account routing so both
+        resolve an account's token/home/extra identically.
         """
-        import dataclasses as _dc
+        from gateway.config import derive_account_platform_config
 
-        from gateway.config import HomeChannel as _HomeChannel
-
-        merged_extra = {
-            k: v for k, v in (platform_config.extra or {}).items()
-            if k != "accounts"
-        }
-        home_channel = platform_config.home_channel
-        token = platform_config.token
-        for key, value in (account_block or {}).items():
-            if key == "token":
-                token = value
-            elif key == "home_channel" and isinstance(value, dict):
-                # The platform is implicit inside its own account block.
-                _hc = dict(value)
-                _hc.setdefault("platform", platform.value)
-                home_channel = _HomeChannel.from_dict(_hc)
-            else:
-                merged_extra[key] = value
-        return _dc.replace(
-            platform_config,
-            token=token,
-            home_channel=home_channel,
-            extra=merged_extra,
+        return derive_account_platform_config(
+            platform, platform_config, account_block
         )
 
     def _iter_live_adapters_with_home(self, snapshot: bool = False):

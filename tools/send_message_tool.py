@@ -218,7 +218,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat). On a multi-bot gateway, prefix a named account with '@' to send through that bot's credential: 'telegram@support:123456789', or 'telegram@support' for that account's own home channel."
             },
             "message": {
                 "type": "string",
@@ -368,17 +368,14 @@ def _handle_send(args):
     chat_id = None
     thread_id = None
 
-    # Named-bot-account targets (#8287) — e.g. "telegram@support:123" — are
-    # supported for cron delivery and inbound routing, but this send path
-    # always uses the platform's default account. Reject the @account form
-    # with an actionable error rather than the opaque "Unknown platform".
-    if "@" in platform_name:
-        _base, _, _acct = platform_name.partition("@")
-        return tool_error(
-            f"send targets the default {_base} account; per-account send "
-            f"(@{_acct}) is not supported here yet. Send via the default "
-            f"account, or use a cron job with deliver='{platform_name}:<chat>'."
-        )
+    # Named-bot-account targets (#8287) — "telegram@support:123" sends through
+    # the support bot's credential. Split the account off before any platform
+    # lookup: downstream maps and the Platform enum know "telegram", not
+    # "telegram@support". The account's PlatformConfig is derived further down,
+    # once the platform's own config has been resolved.
+    from gateway.config import resolve_platform_account
+
+    platform_name, account_name = resolve_platform_account(platform_name)
 
     if target_ref:
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
@@ -443,6 +440,36 @@ def _handle_send(args):
         else:
             return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
+    # Per-account send (#8287): swap in the named account's derived config so
+    # the rest of this path — credential, home channel, platform-extra
+    # settings — belongs to that bot. Fail closed with an actionable error
+    # rather than silently falling back to the default account, which would
+    # deliver to the wrong audience.
+    if account_name:
+        _accounts = (pconfig.extra or {}).get("accounts")
+        _account_block = (
+            _accounts.get(account_name) if isinstance(_accounts, dict) else None
+        )
+        if not isinstance(_account_block, dict):
+            _known = (
+                ", ".join(sorted(_accounts)) if isinstance(_accounts, dict) and _accounts else "none"
+            )
+            return tool_error(
+                f"Unknown {platform_name} account '{account_name}'. "
+                f"Configured accounts: {_known}. Declare the account's token "
+                f"as {platform_name.upper()}_BOT_TOKEN_{account_name.upper()} "
+                f"in .env (and any per-account settings under "
+                f"platforms.{platform_name}.accounts.{account_name})."
+            )
+        if not _account_block.get("token"):
+            return tool_error(
+                f"{platform_name} account '{account_name}' has no token. Set "
+                f"{platform_name.upper()}_BOT_TOKEN_{account_name.upper()} in .env."
+            )
+        from gateway.config import derive_account_platform_config
+
+        pconfig = derive_account_platform_config(platform, pconfig, _account_block)
+
     from gateway.platforms.base import BasePlatformAdapter
 
     # Capture [[as_document]] directive before extract_media strips it.
@@ -457,7 +484,14 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
+        # A named account's own home channel wins over the platform default
+        # (#8287): "telegram@support" with no chat must reach the support
+        # bot's home, not the default bot's.
+        home = (
+            pconfig.home_channel
+            if account_name and pconfig.home_channel
+            else config.get_home_channel(platform)
+        )
         if not home and platform_name == "weixin":
             wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
             if wx_home:

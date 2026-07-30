@@ -2899,7 +2899,17 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
-    commit_subagent_spawn(len(task_list))
+    charged = commit_subagent_spawn(len(task_list))
+    rejected = len(task_list) - charged
+    if rejected > 0:
+        task_list = task_list[:charged]
+        results.append(
+            tool_result(
+                f"{rejected} task(s) rejected: per-turn subagent cap reached "
+                f"(limit {charged} spawned this turn). The remaining tasks "
+                "were not created."
+            )
+        )
 
     overall_start = time.monotonic()
     results = []

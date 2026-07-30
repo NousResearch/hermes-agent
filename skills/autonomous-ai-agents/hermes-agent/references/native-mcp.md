@@ -96,8 +96,8 @@ resolving that server's placeholders. They are not added to `os.environ` and do
 not leak to sibling MCP servers. Relative paths use `TERMINAL_CWD` when it names
 a valid directory, otherwise the Hermes process working directory; use an
 absolute path for gateways and cron jobs. A missing or unreadable file logs a
-warning and falls back to profile/process values. CLI probe errors redact exact
-values loaded from the server file.
+warning and falls back to profile/process values. CLI and dashboard probe errors
+redact exact values loaded from the server file.
 
 ## How It Works
 

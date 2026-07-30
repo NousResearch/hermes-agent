@@ -45,11 +45,18 @@ const projectActivityTime = (project: SidebarProjectTree): number =>
 export const latestProjectSessions = (project: SidebarProjectTree, limit: number): SessionInfo[] =>
   [...projectSessions(project)].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
 
+// Home is a fixture, not a project: it always leads the overview, above the
+// active project and outside any hand-picked order.
+const homeFirst = (projects: SidebarProjectTree[]): SidebarProjectTree[] =>
+  projects[0]?.isNoProject || !projects.some(project => project.isNoProject)
+    ? projects
+    : [...projects.filter(project => project.isNoProject), ...projects.filter(project => !project.isNoProject)]
+
 export function sortProjectsForOverview(
   projects: SidebarProjectTree[],
   activeProjectId: null | string
 ): SidebarProjectTree[] {
-  return [...projects].sort((a, b) => {
+  const sorted = [...projects].sort((a, b) => {
     const aActive = Boolean(activeProjectId && a.id === activeProjectId && !a.isAuto)
     const bActive = Boolean(activeProjectId && b.id === activeProjectId && !b.isAuto)
 
@@ -73,6 +80,41 @@ export function sortProjectsForOverview(
       a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
     )
   })
+
+  return homeFirst(sorted)
+}
+
+// Layer the user's manual drag-order over the deterministic sort.
+//
+// This can't just be `orderByIds`: that surfaces every id missing from the saved
+// order at the TOP, which is right for sessions (a new chat should not sink) but
+// wrong here. The overview also lists repos found by the disk scan that have
+// zero Hermes sessions, and those arrive continuously — so once the user dragged
+// anything, every freshly-scanned checkout jumped above the projects they
+// actually work in.
+//
+// Fresh projects keep their place in the deterministic sort instead: ones with
+// real activity go on top (a project you just started still surfaces), and
+// zero-session discoveries sink below the hand-ordered list.
+export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: string[]): SidebarProjectTree[] {
+  if (!orderIds.length) {
+    return projects
+  }
+
+  const byId = new Map(projects.map(project => [project.id, project]))
+  const ordered = orderIds.map(id => byId.get(id)).filter((p): p is SidebarProjectTree => Boolean(p))
+  const seen = new Set(ordered.map(project => project.id))
+  const fresh = projects.filter(project => !seen.has(project.id))
+
+  if (!fresh.length) {
+    return homeFirst(ordered)
+  }
+
+  return homeFirst([
+    ...fresh.filter(project => project.sessionCount > 0),
+    ...ordered,
+    ...fresh.filter(project => project.sessionCount <= 0)
+  ])
 }
 
 // Project drill-in lanes are git-driven: source them from `git worktree list` so

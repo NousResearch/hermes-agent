@@ -107,16 +107,97 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
 /// future desktop launches. The marker payload is `{pid}\n{started_at_unix}`
 /// so the desktop's launch gate can detect a stale marker (dead PID / past a
 /// hard ceiling) and self-heal rather than wait forever.
+///
+/// The marker is also the cross-process update lock: `hermes update` claims
+/// the same file (see `hermes_cli/update_lock.py`) so a dashboard-spawned
+/// update and this updater can't mutate one checkout at the same time.
+/// `acquire` therefore REFUSES when a live foreign owner holds it rather than
+/// overwriting — the pre-fix clobber is what let a dashboard `hermes update`
+/// keep running while install-mode bootstrap rewrote the tree underneath it.
 struct UpdateMarkerGuard {
     path: PathBuf,
+    /// False when a live foreign updater already owns the marker: we hold no
+    /// claim, so `Drop` must not delete their marker.
+    owned: bool,
+}
+
+/// Never treat a marker older than this as a live update. Mirrors
+/// UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts and
+/// UPDATE_MARKER_MAX_AGE_SECONDS in hermes_cli/update_lock.py — all three read
+/// this one file, so a shorter ceiling in any of them would steal a lock the
+/// others still consider live.
+const UPDATE_MARKER_MAX_AGE_SECS: u64 = 20 * 60;
+
+/// The pid + age of a confirmed-live update holding the marker.
+struct MarkerOwner {
+    pid: u32,
+    age_secs: u64,
+}
+
+/// Read the marker and report a live owner, if any. `None` for every "no live
+/// update" case — absent, unreadable, malformed, dead pid, past the ceiling —
+/// matching `readLiveUpdateMarker` in the Electron gate. Never panics.
+fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let mut lines = raw.lines();
+    let pid: u32 = lines.next()?.trim().parse().ok()?;
+    let started_at: u64 = lines.next().unwrap_or("").trim().parse().unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let age_secs = now.saturating_sub(started_at);
+    if age_secs > UPDATE_MARKER_MAX_AGE_SECS || !pid_is_alive(pid) {
+        return None;
+    }
+    Some(MarkerOwner { pid, age_secs })
+}
+
+/// True when a process with `pid` currently exists.
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // Either the pid is gone or we lack rights to open it. A pid we
+            // can't inspect is treated as dead so an unopenable straggler
+            // can't wedge every future update.
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
+#[cfg(not(windows))]
+fn pid_is_alive(pid: u32) -> bool {
+    // signal 0 delivers nothing; it only probes existence/permission.
+    // ESRCH => dead. EPERM => alive but owned by another user.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 impl UpdateMarkerGuard {
-    /// Write the marker. Best-effort: a write failure must NOT abort the
-    /// update (the gate degrades to "no marker => proceed", i.e. exactly the
-    /// pre-fix behavior), so we log and carry on with a guard that still
-    /// attempts cleanup of whatever may exist at the path.
-    fn acquire(path: PathBuf) -> Self {
+    /// Claim the marker, or report the live updater that already owns it.
+    ///
+    /// Writing is best-effort: a write failure must NOT abort the update (the
+    /// gate degrades to "no marker => proceed", i.e. exactly the pre-marker
+    /// behavior), so we log and carry on with a guard that still attempts
+    /// cleanup of whatever may exist at the path.
+    fn acquire(path: PathBuf) -> Result<Self, MarkerOwner> {
+        if let Some(owner) = live_marker_owner(&path) {
+            return Err(owner);
+        }
         let pid = std::process::id();
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -128,17 +209,32 @@ impl UpdateMarkerGuard {
         if let Err(err) = std::fs::write(&path, format!("{pid}\n{started_at}")) {
             tracing::warn!(?path, %err, "could not write update-in-progress marker");
         }
-        Self { path }
+        Ok(Self { path, owned: true })
+    }
+
+    /// Release the marker as soon as every mutating stage has completed.
+    ///
+    /// The updater still owns a Tauri/Cocoa event loop while it relaunches the
+    /// desktop, and that loop can outlive `app.exit(0)`. Relying on `Drop`
+    /// alone therefore leaves a *successful* update looking active — a live
+    /// pid holding a fresh marker — which blocks desktop startup and every
+    /// other updater for the full age ceiling. Idempotent: `Drop` still runs
+    /// and tolerates an already-removed marker.
+    fn complete(&self) {
+        if !self.owned {
+            return;
+        }
+        if let Err(err) = std::fs::remove_file(&self.path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(path = ?self.path, %err, "could not remove completed update marker");
+            }
+        }
     }
 }
 
 impl Drop for UpdateMarkerGuard {
     fn drop(&mut self) {
-        if let Err(err) = std::fs::remove_file(&self.path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(path = ?self.path, %err, "could not remove update-in-progress marker");
-            }
-        }
+        self.complete();
     }
 }
 
@@ -152,7 +248,39 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // it, that backend re-locks the venv shim, our `force_kill_other_hermes`
     // straggler-cleanup kills it, and the relaunch/kill cycle loops. The guard
     // removes the marker on every exit path (incl. early returns / panics).
-    let _update_marker = UpdateMarkerGuard::acquire(crate::paths::update_in_progress_marker());
+    //
+    // The same marker is the cross-process update lock (hermes_cli/
+    // update_lock.py claims it too), so a live foreign owner means another
+    // updater — most often a dashboard-spawned `hermes update` — is already
+    // mutating this checkout. Refuse instead of running a second one over it.
+    let _update_marker = match UpdateMarkerGuard::acquire(
+        crate::paths::update_in_progress_marker(),
+    ) {
+        Ok(guard) => guard,
+        Err(owner) => {
+            let mins = owner.age_secs / 60;
+            let secs = owner.age_secs % 60;
+            let elapsed = if mins > 0 {
+                format!("{mins}m {secs}s")
+            } else {
+                format!("{secs}s")
+            };
+            let msg = format!(
+                "Another Hermes update is already running (PID {}, started {} ago). \
+                 Wait for it to finish, or close the window or dashboard tab that \
+                 started it, then try again.",
+                owner.pid, elapsed
+            );
+            emit(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: msg.clone(),
+                },
+            );
+            return Err(anyhow!(msg));
+        }
+    };
 
     let update_branch = update_branch_from_args(std::env::args().skip(1))
         .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
@@ -453,6 +581,12 @@ async fn run_update(app: AppHandle) -> Result<()> {
             marker: None,
         },
     );
+    // Every install-tree mutation is finished. Release the lock BEFORE the
+    // relaunch: this process can stay wedged in its native event loop even
+    // after a successful app.exit(), and a live pid on a fresh marker would
+    // make a completed update look active — blocking desktop startup and
+    // every other updater until the age ceiling expires.
+    _update_marker.complete();
 
     if let Some(target_app) = launch_target {
         if let Err(err) = launch_macos_app_and_exit(&app, &target_app).await {
@@ -477,7 +611,24 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
     }
 
+    // The launch helpers normally request exit themselves, but their failure
+    // paths must still close a successful updater. A native event loop can
+    // ignore that graceful request, so arm a process-exit fallback now that
+    // all update state and the marker have been settled.
+    exit_after_success(&app);
     Ok(())
+}
+
+/// Ask the app to exit, with a hard `process::exit` fallback for a native
+/// event loop that ignores the graceful request. Without it a finished updater
+/// can linger as a live pid forever.
+fn exit_after_success(app: &AppHandle) {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        tracing::warn!("graceful updater exit timed out; forcing process exit");
+        std::process::exit(0);
+    });
+    app.exit(0);
 }
 
 /// Poll until the venv shim AND packaged desktop app bundle are no longer locked
@@ -1102,7 +1253,8 @@ mod tests {
         let marker = dir.join(".hermes-update-in-progress");
 
         {
-            let _g = UpdateMarkerGuard::acquire(marker.clone());
+            let _g = UpdateMarkerGuard::acquire(marker.clone())
+                .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
             assert!(marker.exists(), "marker must exist while the guard is held");
             let body = std::fs::read_to_string(&marker).unwrap();
             let pid_line = body.lines().next().unwrap();
@@ -1127,13 +1279,105 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join(".hermes-update-in-progress");
 
-        let guard = UpdateMarkerGuard::acquire(marker.clone());
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
         // Simulate an external cleanup (e.g. the desktop pruned a marker it
         // judged stale) before our guard drops — Drop must not panic.
         std::fs::remove_file(&marker).unwrap();
         drop(guard);
 
         assert!(!marker.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acquire_refuses_while_a_live_updater_owns_the_marker() {
+        let dir = unique_tmp_dir("marker-contended");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+
+        // A live updater (us) holds it. A second updater must NOT clobber the
+        // marker and run concurrently over the same checkout — that race is
+        // what let a dashboard `hermes update` and install-mode bootstrap
+        // mutate one tree at once.
+        let held = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("first acquire must succeed"));
+        let owner = UpdateMarkerGuard::acquire(marker.clone())
+            .err()
+            .expect("second acquire must be refused while the first is live");
+        assert_eq!(owner.pid, std::process::id());
+
+        // The refused guard must not delete the live owner's marker.
+        assert!(marker.exists(), "refused acquire must leave the marker intact");
+        drop(held);
+        assert!(!marker.exists(), "the real owner still cleans up on drop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acquire_reclaims_a_marker_owned_by_a_dead_pid() {
+        let dir = unique_tmp_dir("marker-dead-pid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+
+        // pid 1 exists everywhere, so fabricate a dead one: a very large pid
+        // that no live process owns. A crashed updater must never wedge every
+        // future update.
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        std::fs::write(&marker, format!("4294967294\n{started_at}")).unwrap();
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("a dead owner must not block acquisition"));
+        let body = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            body.lines().next().unwrap().trim().parse::<u32>().unwrap(),
+            std::process::id(),
+            "reclaiming rewrites the marker with our pid"
+        );
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acquire_reclaims_a_marker_past_the_age_ceiling() {
+        let dir = unique_tmp_dir("marker-stale-age");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+
+        // Our own (live) pid, but started well past the ceiling: a wedged
+        // updater must not hold the lock forever.
+        let long_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+            .saturating_sub(UPDATE_MARKER_MAX_AGE_SECS + 60);
+        std::fs::write(&marker, format!("{}\n{long_ago}", std::process::id())).unwrap();
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("a marker past the ceiling must be reclaimable"));
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn completed_update_releases_marker_before_guard_drop() {
+        let dir = unique_tmp_dir("marker-complete");
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+
+        let guard = UpdateMarkerGuard::acquire(marker.clone())
+            .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
+        guard.complete();
+
+        assert!(
+            !marker.exists(),
+            "a successful update must unblock desktop startup before relaunch/exit"
+        );
+        drop(guard);
+        assert!(!marker.exists(), "Drop stays idempotent after completion");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

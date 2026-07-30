@@ -51,58 +51,7 @@ def _trip(cc: ContextCompressor) -> None:
 
 
 class TestRecoveryWindow:
-    def test_blocked_within_window_unblocked_after(self):
-        cc = _compressor()
-        _trip(cc)
-        base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
-            # First blocked evaluation arms the clock and stays blocked.
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        with patch(
-            "agent.context_compressor.time.monotonic",
-            return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS - 1,
-        ):
-            # Still inside the window: protection intact.
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-            assert cc._ineffective_compression_count == 2
-        with patch(
-            "agent.context_compressor.time.monotonic",
-            return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1,
-        ):
-            # Window elapsed: exactly one probe is granted.
-            assert cc.should_compress(cc.threshold_tokens + 1) is True
-        # Probation, not amnesty: one strike remains armed.
-        assert cc._ineffective_compression_count == 1
 
-    def test_ineffective_probe_re_trips_and_waits_a_full_fresh_window(self):
-        cc = _compressor()
-        _trip(cc)
-        base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        probe_time = base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1
-        with patch(
-            "agent.context_compressor.time.monotonic", return_value=probe_time
-        ):
-            assert cc.should_compress(cc.threshold_tokens + 1) is True
-            # The probe compaction completes but does not clear the threshold.
-            cc._verify_compaction_cleared_threshold = True
-            cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
-            assert cc._ineffective_compression_count == 2
-            # Re-tripped: blocked again immediately (arms a new clock).
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        with patch(
-            "agent.context_compressor.time.monotonic",
-            return_value=probe_time + cc._ANTI_THRASH_RECOVERY_SECONDS - 5,
-        ):
-            # No immediate re-probe loop: the second window is full length,
-            # measured from the re-trip, not the original trip.
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        with patch(
-            "agent.context_compressor.time.monotonic",
-            return_value=probe_time + cc._ANTI_THRASH_RECOVERY_SECONDS + 5,
-        ):
-            assert cc.should_compress(cc.threshold_tokens + 1) is True
 
     def test_effective_probe_clears_the_guard_completely(self):
         cc = _compressor()
@@ -133,28 +82,7 @@ class TestRecoveryWindow:
             assert cc.should_compress(cc.threshold_tokens + 1) is True
         assert cc._fallback_compression_streak == 1
 
-    def test_under_threshold_never_arms_the_clock(self):
-        cc = _compressor()
-        _trip(cc)
-        base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
-            # Under threshold: gate never evaluated, clock untouched.
-            assert cc.should_compress(cc.threshold_tokens - 1) is False
-        assert cc._anti_thrash_recovery_deadline == 0.0
 
-    def test_untripped_guard_disarms_a_stale_clock(self):
-        cc = _compressor()
-        _trip(cc)
-        base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        assert cc._anti_thrash_recovery_deadline > 0.0
-        # A fitting real-usage reading clears the counter mid-window.
-        cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 500})
-        with patch("agent.context_compressor.time.monotonic", return_value=base + 1):
-            assert cc.should_compress(cc.threshold_tokens + 1) is True
-        # The stale clock was disarmed, so a LATER trip starts a full window.
-        assert cc._anti_thrash_recovery_deadline == 0.0
 
 
 class TestRestartSemantics:

@@ -151,15 +151,17 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
         data-slot="aui_msg-actions"
       >
         <MessageAge />
-        <TooltipIconButton
-          onClick={() => {
-            triggerHaptic('selection')
-            onBranchInNewChat?.(messageId)
-          }}
-          tooltip={copy.branchNewChat}
-        >
-          <GitForkIcon className="size-3.5" />
-        </TooltipIconButton>
+        {onBranchInNewChat && (
+          <TooltipIconButton
+            onClick={() => {
+              triggerHaptic('selection')
+              onBranchInNewChat(messageId)
+            }}
+            tooltip={copy.branchNewChat}
+          >
+            <GitForkIcon className="size-3.5" />
+          </TooltipIconButton>
+        )}
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
         <ReadAloudButton getText={getMessageText} messageId={messageId} />
         <ActionBarPrimitive.Reload asChild>

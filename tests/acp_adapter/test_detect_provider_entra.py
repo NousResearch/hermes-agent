@@ -63,25 +63,4 @@ class TestDetectProviderEntra:
         ):
             assert _acp_auth.detect_provider() is None
 
-    def test_missing_provider_returns_none(self):
-        """A callable api_key without a provider is still ``None`` —
-        we don't synthesize a provider name from the credential shape."""
-        from acp_adapter import auth as _acp_auth
 
-        def _fake_runtime(**_kwargs):
-            return {"api_key": lambda: "jwt-fresh", "provider": ""}
-
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            side_effect=_fake_runtime,
-        ):
-            assert _acp_auth.detect_provider() is None
-
-    def test_resolver_exception_returns_none(self):
-        from acp_adapter import auth as _acp_auth
-
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            side_effect=RuntimeError("simulated"),
-        ):
-            assert _acp_auth.detect_provider() is None

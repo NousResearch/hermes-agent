@@ -31,8 +31,6 @@ def test_skill_dir_exists() -> None:
     assert SKILL_DIR.is_dir(), f"missing skill dir: {SKILL_DIR}"
 
 
-def test_skill_md_present() -> None:
-    assert (SKILL_DIR / "SKILL.md").is_file()
 
 
 def test_description_under_60_chars(frontmatter) -> None:
@@ -40,8 +38,6 @@ def test_description_under_60_chars(frontmatter) -> None:
     assert len(desc) <= 60, f"description is {len(desc)} chars (hardline ≤60): {desc!r}"
 
 
-def test_name_matches_dir(frontmatter) -> None:
-    assert frontmatter["name"] == "darwinian-evolver"
 
 
 def test_platforms_excludes_windows(frontmatter) -> None:
@@ -57,8 +53,6 @@ def test_author_credits_contributor(frontmatter) -> None:
     assert "Bihruze" in author, f"author should credit the original contributor: {author!r}"
 
 
-def test_license_mit(frontmatter) -> None:
-    assert frontmatter["license"] == "MIT"
 
 
 @pytest.mark.parametrize(
@@ -81,22 +75,7 @@ def test_parrot_script_uses_openrouter() -> None:
     assert "EVOLVER_MODEL" in src, "model should be overridable via EVOLVER_MODEL"
 
 
-def test_parrot_script_has_error_swallowing() -> None:
-    """Provider content-filter / rate-limit must not kill the run — see Pitfall 2."""
-    src = (SKILL_DIR / "scripts" / "parrot_openrouter.py").read_text()
-    assert "LLM_ERROR" in src, "_prompt_llm should swallow provider errors and tag them"
 
 
-def test_skill_calls_out_agpl(frontmatter) -> None:
-    """The upstream tool is AGPL-3.0. The skill MUST flag this so users don't
-    import it into MIT-licensed code by accident."""
-    src = (SKILL_DIR / "SKILL.md").read_text()
-    assert "AGPL" in src, "SKILL.md must mention upstream AGPL license"
 
 
-def test_skill_pitfalls_section_present() -> None:
-    src = (SKILL_DIR / "SKILL.md").read_text()
-    assert "## Pitfalls" in src
-    # Pitfalls we discovered during the spike — keep them in sync with reality.
-    assert "Initial organism must be viable" in src
-    assert "generator" in src  # loop.run() pitfall

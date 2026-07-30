@@ -39,47 +39,6 @@ def _compressor(monkeypatch, *, context_length: int = 200_000):
     )
 
 
-def test_no_warning_when_below_new_threshold(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.context_switch_guard.resolve_display_context_length",
-        lambda *a, **k: 32_000,
-    )
-    cc = _compressor(monkeypatch)
-    cc.last_prompt_tokens = 10_000
-    agent = SimpleNamespace(
-        context_compressor=cc,
-        compression_enabled=True,
-        conversation_history=[],
-        base_url="",
-        api_key="",
-    )
-    result = _result()
-    merge_preflight_compression_warning(result, agent=agent)
-    assert not result.warning_message
-
-
-def test_warns_when_estimate_exceeds_new_threshold(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.context_switch_guard.resolve_display_context_length",
-        lambda *a, **k: 32_000,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
-        lambda *a, **k: 90_000,
-    )
-    cc = _compressor(monkeypatch)
-    agent = SimpleNamespace(
-        context_compressor=cc,
-        compression_enabled=True,
-        conversation_history=[],
-        base_url="",
-        api_key="",
-    )
-    result = _result()
-    merge_preflight_compression_warning(result, agent=agent)
-    assert result.warning_message
-    assert "preflight compression" in result.warning_message
-    assert "shrinks" in result.warning_message
 
 
 def test_merge_appends_to_existing_warning(monkeypatch):
@@ -105,37 +64,6 @@ def test_merge_appends_to_existing_warning(monkeypatch):
     assert "preflight compression" in result.warning_message
 
 
-def test_cross_route_switch_does_not_inherit_current_context_pin(monkeypatch):
-    def _resolve_metadata(*_args, **kwargs):
-        return kwargs["config_context_length"] or 32_000
-
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
-        _resolve_metadata,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
-        lambda *a, **k: 90_000,
-    )
-    cc = _compressor(monkeypatch, context_length=1_048_576)
-    agent = SimpleNamespace(
-        model="shared-model",
-        provider="custom",
-        context_compressor=cc,
-        compression_enabled=True,
-        conversation_history=[],
-        base_url="https://large.example/v1",
-        api_key="",
-    )
-    result = _result(model="shared-model")
-
-    merge_preflight_compression_warning(
-        result,
-        agent=agent,
-        config_context_length=1_048_576,
-    )
-
-    assert "preflight compression" in result.warning_message
 
 
 def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):

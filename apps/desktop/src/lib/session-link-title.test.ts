@@ -4,11 +4,7 @@ import { getSession } from '@/hermes'
 import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import {
-  __resetSessionLinkTitleCache,
-  fetchSessionLinkTitle,
-  lookupLocalSessionTitle
-} from './session-link-title'
+import { __resetSessionLinkTitleCache, fetchSessionLinkTitle, lookupLocalSessionTitle } from './session-link-title'
 import { sessionRefCacheKey } from './session-refs'
 
 vi.mock('@/hermes', () => ({

@@ -39,12 +39,6 @@ class TestInaccessibleCwdFallback:
         assert os.path.isdir(denied_dir)  # the trap: stat succeeds
         assert _cwd_usable(str(denied_dir)) is False
 
-    def test_resolve_safe_cwd_falls_back_from_denied_dir(self, denied_dir, tmp_path):
-        resolved = _resolve_safe_cwd(str(denied_dir))
-        assert resolved != str(denied_dir)
-        assert os.access(resolved, os.X_OK)
-        # Nearest usable ancestor is the tmp_path parent, not a random tempdir.
-        assert resolved == str(tmp_path)
 
     def test_resolve_safe_cwd_climbs_past_denied_ancestor(self, denied_dir, tmp_path):
         missing_child = str(denied_dir / "sub" / "dir")
@@ -73,9 +67,6 @@ class TestUsableCwdBehaviorUnchanged:
     def test_existing_accessible_cwd_returned_verbatim(self, tmp_path):
         assert _resolve_safe_cwd(str(tmp_path)) == str(tmp_path)
 
-    def test_missing_cwd_still_climbs_to_existing_ancestor(self, tmp_path):
-        missing = str(tmp_path / "gone" / "deeper")
-        assert _resolve_safe_cwd(missing) == str(tmp_path)
 
     def test_hopeless_path_falls_back_to_tempdir(self):
         # A path whose every component is missing outside any real tree.

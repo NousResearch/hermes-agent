@@ -44,14 +44,70 @@ describe('detectTrigger', () => {
   it('does not treat file-style paths as slash triggers', () => {
     expect(detectTrigger('src/foo/bar')).toBeNull()
     expect(detectTrigger('/path/to/file')).toBeNull()
+    // Mid-message paths stay excluded too: a path keeps going past the command
+    // token, so the trailing-anchored inline trigger never matches it.
+    expect(detectTrigger('check src/foo/bar')).toBeNull()
+    expect(detectTrigger('look at /usr/local/bin')).toBeNull()
+    expect(detectTrigger('and/or')).toBeNull()
   })
 
-  it('does not trigger slash popover mid-message', () => {
-    expect(detectTrigger('hello /')).toBeNull()
-    expect(detectTrigger('hello /skill')).toBeNull()
+  it('keeps the at-mention live while walking into subfolders', () => {
+    // A `/` inside the query is path navigation, not the end of the token —
+    // the popover has to stay open so the next directory level can load.
+    expect(detectTrigger('@./')).toEqual({ kind: '@', query: './', tokenLength: 3 })
+    expect(detectTrigger('@./src')).toEqual({ kind: '@', query: './src', tokenLength: 6 })
+    expect(detectTrigger('@~/Desktop/')).toEqual({ kind: '@', query: '~/Desktop/', tokenLength: 11 })
+    expect(detectTrigger('@/usr/local')).toEqual({ kind: '@', query: '/usr/local', tokenLength: 11 })
+    expect(detectTrigger('@apps/desktop/src')).toEqual({
+      kind: '@',
+      query: 'apps/desktop/src',
+      tokenLength: 17
+    })
+  })
+
+  it('treats a chip edge as a token boundary, like whitespace', () => {
+    // U+FFFC is textBeforeCaret's placeholder for a committed pill. Upstream
+    // assistant-ui's Lexical DirectivePlugin gets the same semantics from node
+    // boundaries: typing a trigger right after a chip (no space) still opens
+    // the popover, and a chip inside a token ends it.
+    expect(detectTrigger('\uFFFC@Desk')).toEqual({ kind: '@', query: 'Desk', tokenLength: 5 })
+    // Not position 0, so it's an inline reference — not a command invocation.
+    expect(detectTrigger('\uFFFC/cle')).toEqual({ inline: true, kind: '/', query: 'cle', tokenLength: 4 })
+    // The placeholder itself never leaks into a query.
+    expect(detectTrigger('@a\uFFFCb')).toBeNull()
+  })
+
+  it('keeps the at-mention live for a typed ref kind with a path', () => {
+    expect(detectTrigger('@file:src/main.tsx')).toEqual({
+      kind: '@',
+      query: 'file:src/main.tsx',
+      tokenLength: 18
+    })
+    expect(detectTrigger('@folder:apps/')).toEqual({ kind: '@', query: 'folder:apps/', tokenLength: 13 })
+  })
+
+  it('still ends the at-mention token at whitespace', () => {
+    // The token is whitespace-delimited; a path doesn't change that.
+    expect(detectTrigger('@./src and more')).toBeNull()
+    expect(detectTrigger('look at @apps/desktop')).toEqual({
+      kind: '@',
+      query: 'apps/desktop',
+      tokenLength: 13
+    })
+  })
+
+  it('treats a mid-message slash as an inline reference', () => {
+    // Skills have to be reachable anywhere in a prompt, not just at position 0.
+    expect(detectTrigger('hello /')).toEqual({ kind: '/', inline: true, query: '', tokenLength: 1 })
+    expect(detectTrigger('hello /clean')).toEqual({ kind: '/', inline: true, query: 'clean', tokenLength: 6 })
+    expect(detectTrigger('text\n/skill')).toEqual({ kind: '/', inline: true, query: 'skill', tokenLength: 6 })
+  })
+
+  it('does not carry arg completion into an inline slash reference', () => {
+    // Only a position-0 slash is a real invocation, so `/personality alic`
+    // mid-message is prose — the trigger ends at the command token.
     expect(detectTrigger('hello there /personality alic')).toBeNull()
-    expect(detectTrigger('text\n/skill')).toBeNull()
-    expect(detectTrigger('multi word message /')).toBeNull()
+    expect(detectTrigger('run /tools enable foo')).toBeNull()
   })
 
   it('still anchors at-mention triggers strictly at the token edge', () => {

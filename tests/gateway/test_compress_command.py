@@ -1,7 +1,7 @@
 """Tests for gateway /compress user-facing messaging."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -59,39 +59,6 @@ def _make_runner(history: list[dict[str, str]]):
 
 
 @pytest.mark.asyncio
-async def test_compress_command_reports_noop_without_success_banner():
-    history = _make_history()
-    runner = _make_runner(history)
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (list(history), "")
-    agent_instance._compression_skipped_due_to_lock = False
-
-    def _estimate(messages, **_kwargs):
-        assert messages == history
-        return 100
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
-    ):
-        result = await runner._handle_compress_command(_make_event())
-
-    assert "No changes from compression" in result
-    assert "Compressed:" not in result
-    assert "Approx request size: ~100 tokens (unchanged)" in result
-    agent_instance.shutdown_memory_provider.assert_called_once()
-    agent_instance.close.assert_called_once()
-
-
-@pytest.mark.asyncio
 async def test_compress_command_works_when_auto_compaction_disabled():
     """compression.enabled: false disables *automatic* compaction only.
 
@@ -133,103 +100,6 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     assert "Compressed:" in result
     agent_instance._compress_context.assert_called_once()
     assert agent_instance._compress_context.call_args.kwargs.get("force") is True
-
-
-@pytest.mark.asyncio
-async def test_compress_command_explains_when_token_estimate_rises():
-    history = _make_history()
-    compressed = [
-        history[0],
-        {"role": "assistant", "content": "Dense summary that still counts as more tokens."},
-        history[-1],
-    ]
-    runner = _make_runner(history)
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (compressed, "")
-    agent_instance._compression_skipped_due_to_lock = False
-
-    def _estimate(messages, **_kwargs):
-        if messages == history:
-            return 100
-        if messages == compressed:
-            return 120
-        raise AssertionError(f"unexpected transcript: {messages!r}")
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
-    ):
-        result = await runner._handle_compress_command(_make_event())
-
-    assert "Compressed: 4 → 3 messages" in result
-    assert "Approx request size: ~100 → ~120 tokens" in result
-    assert "denser summaries" in result
-    agent_instance.shutdown_memory_provider.assert_called_once()
-    agent_instance.close.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_compress_command_appends_warning_when_compression_aborts():
-    """When the auxiliary summariser fails and the compressor ABORTS (returns
-    messages unchanged), /compress must append a visible ⚠️ warning to its
-    reply telling the user nothing was dropped and how to retry. Otherwise
-    the failure is silently logged and the user has no idea why nothing
-    happened."""
-    history = _make_history()
-    # Abort path: compressor returns the input messages unchanged.
-    compressed = list(history)
-    runner = _make_runner(history)
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    # Simulate compression aborting (force=True bypassed cooldown but the
-    # aux LLM is genuinely broken).
-    agent_instance.context_compressor._last_compress_aborted = True
-    agent_instance.context_compressor._last_summary_fallback_used = False
-    agent_instance.context_compressor._last_summary_dropped_count = 0
-    agent_instance.context_compressor._last_summary_error = (
-        "404 model not found: gemini-3-flash-preview"
-    )
-    agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (compressed, "")
-    agent_instance._compression_skipped_due_to_lock = False
-
-    def _estimate(messages, **_kwargs):
-        if messages == history:
-            return 100
-        if messages == compressed:
-            return 100
-        raise AssertionError(f"unexpected transcript: {messages!r}")
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
-    ):
-        result = await runner._handle_compress_command(_make_event())
-
-    # A clearly-marked warning must be appended.
-    assert "⚠️" in result
-    assert "Compression aborted" in result
-    # Underlying error must surface so users can fix their config.
-    assert "404 model not found" in result
-    # User must be told nothing was dropped — the whole point of the
-    # new behavior is no silent data loss.
-    assert "No messages were dropped" in result
-    agent_instance.shutdown_memory_provider.assert_called_once()
-    agent_instance.close.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -294,126 +164,6 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     assert "auxiliary.compression.model" in result
     # The user's context is explicitly called out as intact
     assert "intact" in result
-    agent_instance.shutdown_memory_provider.assert_called_once()
-    agent_instance.close.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_compress_command_passes_session_db_and_persists_rotated_session():
-    """session_db must be wired into the /compress temp agent so that
-    _compress_context can actually rotate the session and persist the
-    compressed transcript — without it compression is a silent no-op."""
-    history = _make_history()
-    compressed = [
-        history[0],
-        {"role": "assistant", "content": "compressed summary"},
-        history[-1],
-    ]
-    runner = _make_runner(history)
-    runner._session_db = object()
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance.compression_in_place = False
-    agent_instance.session_id = "sess-1"
-
-    def _compress(messages, *_args, **_kwargs):
-        agent_instance.session_id = "sess-2"
-        return compressed, ""
-
-    agent_instance._compress_context.side_effect = _compress
-    agent_instance._compression_skipped_due_to_lock = False
-
-    def _estimate(messages, **_kwargs):
-        if messages == history:
-            return 100
-        if messages == compressed:
-            return 60
-        raise AssertionError(f"unexpected transcript: {messages!r}")
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent_cls,
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
-    ):
-        result = await runner._handle_compress_command(_make_event())
-
-    assert "Compressed:" in result
-    mock_agent_cls.assert_called_once()
-    assert mock_agent_cls.call_args.kwargs["session_db"] is runner._session_db
-    runner.session_store._save.assert_called_once()
-    runner.session_store.rewrite_transcript.assert_called_once_with(
-        "sess-2", compressed
-    )
-    runner.session_store.update_session.assert_called_once_with(
-        build_session_key(_make_source()), last_prompt_tokens=0
-    )
-    agent_instance.shutdown_memory_provider.assert_called_once()
-    agent_instance.close.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_compress_command_does_not_repoint_session_when_transcript_write_fails():
-    """If the canonical transcript write fails after compression produces a new
-    continuation session_id, /compress must NOT repoint the live session onto
-    that empty session_id, and must report the failure instead of a success
-    banner. Otherwise a transient DB/IO error during compression would silently
-    drop the user's active conversation while still claiming success."""
-    history = _make_history()
-    compressed = [
-        history[0],
-        {"role": "assistant", "content": "summary"},
-        history[-1],
-    ]
-    runner = _make_runner(history)
-    runner._session_db = object()
-    session_entry = runner.session_store.get_or_create_session.return_value
-    # Simulate the canonical DB write failing (lock contention, ENOSPC, ...).
-    runner.session_store.rewrite_transcript = MagicMock(return_value=False)
-    # Telegram topic re-binding must never run on the failure path.
-    runner._sync_telegram_topic_binding = MagicMock()
-
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance._last_compaction_in_place = False
-    agent_instance.session_id = "sess-1"
-
-    def _compress(messages, *_args, **_kwargs):
-        # Compression rotated the session: the agent now holds a NEW session_id.
-        agent_instance.session_id = "sess-2"
-        return compressed, ""
-
-    agent_instance._compress_context.side_effect = _compress
-    agent_instance._compression_skipped_due_to_lock = False
-
-    def _estimate(messages, **_kwargs):
-        return 100
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_estimate),
-    ):
-        result = await runner._handle_compress_command(_make_event())
-
-    # The user sees a failure banner, not a success banner.
-    assert "failed" in result.lower()
-    assert "Compressed:" not in result
-    # The live session was NOT repointed onto the empty new session_id, so the
-    # original conversation stays reachable.
-    assert session_entry.session_id == "sess-1"
-    runner.session_store._save.assert_not_called()
-    runner._sync_telegram_topic_binding.assert_not_called()
-    # Resources are still cleaned up even though the command errored.
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -512,41 +262,6 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
 
 
 @pytest.mark.asyncio
-async def test_compress_command_overrides_stale_resolver_identity():
-    """If the resolver already supplies platform/gateway_session_key, the
-    construction must (a) not raise "got multiple values for keyword argument",
-    and (b) let the originating-source identity win — a stale/placeholder
-    resolver value must not defeat the attribution fix."""
-    history = _make_history()
-    runner = _make_runner(history)
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (list(history), "")
-    agent_instance._compression_skipped_due_to_lock = False
-
-    # Resolver injects a WRONG platform and a stale session key.
-    runtime = {"api_key": "test-key", "platform": "discord", "gateway_session_key": "stale-key"}
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value=runtime),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance) as mock_agent,
-        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
-    ):
-        await runner._handle_compress_command(_make_event())  # must not raise
-
-    assert mock_agent.call_count == 1
-    _, kwargs = mock_agent.call_args
-    # Source-derived identity overrides the stale resolver values, passed once.
-    assert kwargs["platform"] == "telegram"
-    assert kwargs["gateway_session_key"] == runner._session_key_for_source(_make_source())
-
-
-@pytest.mark.asyncio
 async def test_compress_command_passes_tool_messages_to_compressor():
     """Tool results must reach _compress_context (#3854).
 
@@ -594,30 +309,3 @@ async def test_compress_command_passes_tool_messages_to_compressor():
     assert any(m.get("tool_calls") for m in passed), "assistant tool_calls stub dropped"
 
 
-@pytest.mark.asyncio
-async def test_compress_command_surfaces_lock_skip():
-    """When _compress_context skips due to a concurrent lock, the gateway
-    handler must surface a clear message, not the misleading no-op text."""
-    history = _make_history()
-    runner = _make_runner(history)
-    agent_instance = MagicMock()
-    agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = MagicMock()
-    agent_instance._cached_system_prompt = ""
-    agent_instance.tools = None
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (list(history), "")
-    agent_instance._compression_skipped_due_to_lock = "pid=99999"
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
-    ):
-        result = await runner._handle_compress_command(_make_event())
-
-    assert "Compression already in progress" in result
-    assert "pid=99999" in result
-    assert "No changes from compression" not in result

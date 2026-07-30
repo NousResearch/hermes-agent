@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import type { BillingBlock } from '@hermes/shared'
+import { type BillingBlock, skillInvocationText } from '@hermes/shared'
 
 import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
@@ -301,6 +301,15 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
     return textContent
   }
 
+  // A `/skill` turn is stored expanded (the whole skill body). Current
+  // gateways project it to the invocation before it ever reaches us; this is
+  // the fallback for an older backend that still ships the raw payload.
+  const invocation = skillInvocationText(textContent)
+
+  if (invocation) {
+    return invocation
+  }
+
   const marker = textContent.match(ATTACHED_CONTEXT_MARKER_RE)
 
   if (!marker || marker.index === undefined) {
@@ -311,7 +320,12 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   const attachedContext = textContent.slice(marker.index + marker[0].length)
   const refs = [...new Set(Array.from(attachedContext.matchAll(CONTEXT_REF_RE)).map(match => match[0]))]
 
-  return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
+  // The prose keeps the `@file:` token the user typed, so it already chips in
+  // place. Only hoist a ref the prose is missing — a turn persisted by an older
+  // backend that stripped the tokens. Re-listing an inline ref would chip twice.
+  const missing = refs.filter(ref => !visibleText.includes(ref))
+
+  return [missing.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
 function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {

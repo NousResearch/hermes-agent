@@ -1041,6 +1041,36 @@ def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypa
     )]
     assert "result" not in events[0][2]
 
+def test_tui_subagent_event_exposes_parent_tool_call_id(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+
+    server._on_tool_progress(
+        "parent-runtime",
+        "subagent.start",
+        preview="starting",
+        task_index=0,
+        subagent_id="subagent-1",
+        child_session_id="child-session-1",
+        parent_tool_call_id="call-parent-1",
+    )
+
+    assert events == [(
+        "subagent.start",
+        "parent-runtime",
+        {
+            "goal": "",
+            "task_count": 1,
+            "task_index": 0,
+            "subagent_id": "subagent-1",
+            "child_session_id": "child-session-1",
+            "parent_tool_call_id": "call-parent-1",
+            "text": "starting",
+        },
+    )]
+
 
 def test_tui_clarify_lifecycle_events_emit_when_tool_progress_off(monkeypatch):
     events: list[tuple[str, str, dict]] = []

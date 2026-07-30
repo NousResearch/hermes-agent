@@ -2298,6 +2298,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
 
         hook_calls = []
+        delegate_dispatch_calls = []
         monkeypatch.setattr(
             "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
@@ -2328,10 +2329,15 @@ class TestAgentRuntimePostHookOwnershipSync:
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
+
+        def _fake_delegate_dispatch(args, **kwargs):
+            delegate_dispatch_calls.append((args, kwargs))
+            return '{"ok":true}'
+
         monkeypatch.setattr(
             agent,
             "_dispatch_delegate_task",
-            lambda args: '{"ok":true}',
+            _fake_delegate_dispatch,
         )
         agent._memory_manager = None
 
@@ -2367,6 +2373,14 @@ class TestAgentRuntimePostHookOwnershipSync:
             f"{tool_name}-sequential",
         ]
         assert all(call["tool_name"] == tool_name for call in post_calls)
+        if tool_name == "delegate_task":
+            assert [
+                call_kwargs["parent_tool_call_id"]
+                for _args, call_kwargs in delegate_dispatch_calls
+            ] == [
+                "delegate_task-concurrent",
+                "delegate_task-sequential",
+            ]
 
     def test_post_hook_ownership_contract_lists_exercised_tools(self):
         from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES

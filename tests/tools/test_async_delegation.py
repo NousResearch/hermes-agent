@@ -575,6 +575,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
     fake_child._subagent_id = "s1"
+    fake_child.session_id = "child-session-1"
 
     gate = threading.Event()
 
@@ -598,6 +599,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     out = dt.delegate_task(
         goal="the real task", context="ctx",
         background=True, parent_agent=parent,
+        parent_tool_call_id="call-parent-1",
     )
 
     import json
@@ -605,6 +607,12 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert parsed["status"] == "dispatched"
     assert parsed["mode"] == "background"
     assert parsed["delegation_id"].startswith("deleg_")
+    assert parsed["parent_tool_call_id"] == "call-parent-1"
+    assert parsed["children"] == [{
+        "task_index": 0,
+        "subagent_id": "s1",
+        "child_session_id": "child-session-1",
+    }]
     # Non-blocking invariant: delegate_task returned while the child is STILL
     # blocked on the closed gate, so no completion event exists yet.
     assert process_registry.completion_queue.empty()
@@ -618,6 +626,8 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert evt.get("is_batch") is True
     assert len(evt["results"]) == 1
     assert evt["results"][0]["summary"] == "done: the real task"
+    assert evt["parent_tool_call_id"] == "call-parent-1"
+    assert evt["children"] == parsed["children"]
     text = format_process_notification(evt)
     assert text is not None
     assert "the real task" in text
@@ -760,4 +770,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-

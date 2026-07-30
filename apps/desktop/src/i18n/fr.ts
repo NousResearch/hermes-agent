@@ -1643,6 +1643,26 @@ export const fr: Translations = {
     failedUpdate: name => `Échec de la mise à jour de ${name}`,
     failedSave: name => `Échec de l'enregistrement de ${name}`,
     failedClear: key => `Échec de l'effacement de ${key}`,
+    pendingRequests: count => `Demandes en attente (${count})`,
+    pendingAria: count =>
+      `${count} ${count === 1 ? "demande d'appairage en attente" : "demandes d'appairage en attente"}`,
+    approvedUsers: count => `Utilisateurs approuvés (${count})`,
+    approve: 'Approuver',
+    approving: 'Approbation…',
+    revoke: 'Révoquer',
+    revoking: 'Révocation…',
+    revokeAria: name => `Révoquer l'accès de ${name}`,
+    revokeTitle: "Révoquer l'accès",
+    revokeDesc: name =>
+      `${name} perdra l'accès et ne sera plus reconnu à partir de son prochain message.`,
+    approvedUser: name => `${name} approuvé`,
+    approvedHint: 'Cet utilisateur sera reconnu automatiquement à partir de son prochain message.',
+    revokedUser: name => `Accès de ${name} révoqué`,
+    failedApprove: name => `Échec de l'approbation de ${name}`,
+    failedRevoke: name => `Échec de la révocation de l'accès de ${name}`,
+    pairingLockedOut:
+      "Trop d'échecs d'approbation — cette plateforme est temporairement verrouillée. Réessayez plus tard.",
+    waitingSince: minutes => (minutes < 1 ? "à l'instant" : `il y a ${minutes} min`),
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Jeton du bot',
@@ -3064,6 +3084,7 @@ export const fr: Translations = {
       statusError: 'Erreur',
       statusRecovered: 'Récupéré',
       statusDone: 'Terminé',
+      memoryWriteNoted: 'Écriture en mémoire enregistrée',
       actions: {
         read: 'Lu',
         reading: 'Lecture en cours',

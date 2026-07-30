@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -57,6 +57,10 @@ vi.mock('@/store/profile', () => ({
   setActiveProfile: vi.fn()
 }))
 
+// The one non-default profile these tests act on. Its name doubles as the row's
+// accessible name, so the delete helper queries by it rather than a literal.
+const NAMED_PROFILE = 'work'
+
 function makeProfile(name: string, isDefault = false): ProfileInfo {
   return {
     has_env: false,
@@ -77,18 +81,41 @@ function realClick(el: HTMLElement) {
   fireEvent.click(el)
 }
 
-// Open the (only non-default) row's actions menu → Delete → confirm.
+// ProfilesView loads its list in a mount effect (refreshProfiles → setProfiles),
+// so the first paint is the loader and the rows commit a microtask later. Flush
+// that inside act() so the rows exist before anything queries them, and so the
+// mount setState isn't left unwrapped.
+async function renderProfilesView() {
+  await act(async () => {
+    render(<ProfilesView onClose={vi.fn()} />)
+  })
+}
+
+// PanelListRow labels BOTH the row's select target and its kebab with the
+// profile name (`menuLabel={profile.name}`), so the name alone matches two
+// buttons. Only the kebab is a menu trigger, so `expanded` disambiguates.
+function findRowMenu(profileName: string) {
+  return screen.findByRole('button', { expanded: false, name: profileName })
+}
+
+// Open the (only non-default) row's actions menu → Delete → confirm. The
+// confirm click kicks off an async chain (deleteProfile → onDeleted refresh →
+// setProfiles, plus the re-home writes), so settle it inside act() to flush
+// those updates deterministically instead of leaking them past the assertions.
 async function deleteTheNamedProfile() {
-  realClick(await screen.findByRole('button', { name: 'Actions' }))
+  realClick(await findRowMenu(NAMED_PROFILE))
   fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
-  fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+  const confirm = await screen.findByRole('button', { name: 'Delete' })
+  await act(async () => {
+    fireEvent.click(confirm)
+  })
 }
 
 describe('ProfilesView', () => {
   it('opens the shared create dialog with the SOUL.md field (parity with the rail)', async () => {
     vi.mocked(refreshProfiles).mockResolvedValue([])
 
-    render(<ProfilesView onClose={vi.fn()} />)
+    await renderProfilesView()
 
     realClick(await screen.findByRole('button', { name: 'New profile' }))
 
@@ -99,13 +126,13 @@ describe('ProfilesView', () => {
   })
 
   it('re-homes to default when the active profile is deleted', async () => {
-    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile('work')])
-    activeGateway.set('work')
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
+    activeGateway.set(NAMED_PROFILE)
 
-    render(<ProfilesView onClose={vi.fn()} />)
+    await renderProfilesView()
     await deleteTheNamedProfile()
 
-    await waitFor(() => expect(deleteProfile).toHaveBeenCalledWith('work'))
+    await waitFor(() => expect(deleteProfile).toHaveBeenCalledWith(NAMED_PROFILE))
     await waitFor(() => expect(selectProfile).toHaveBeenCalledWith('default'))
     expect(setActiveProfile).toHaveBeenCalledWith('default')
   })
@@ -113,13 +140,13 @@ describe('ProfilesView', () => {
   it('leaves the active profile alone when a different profile is deleted', async () => {
     vi.mocked(selectProfile).mockClear()
     vi.mocked(setActiveProfile).mockClear()
-    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile('work')])
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
     activeGateway.set('default')
 
-    render(<ProfilesView onClose={vi.fn()} />)
+    await renderProfilesView()
     await deleteTheNamedProfile()
 
-    await waitFor(() => expect(deleteProfile).toHaveBeenCalledWith('work'))
+    await waitFor(() => expect(deleteProfile).toHaveBeenCalledWith(NAMED_PROFILE))
     // The dialog closes once the delete settles; a non-active delete must not re-home.
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull())
     expect(selectProfile).not.toHaveBeenCalled()

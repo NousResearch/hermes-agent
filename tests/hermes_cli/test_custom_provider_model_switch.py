@@ -154,6 +154,7 @@ class TestCustomProviderModelSwitch:
         mock_fetch.assert_called_once_with(
             "sk-live-example-provider",
             "https://api.example-provider.test/v1",
+            headers=None,
             timeout=8.0,
         )
         config = yaml.safe_load(config_path.read_text()) or {}

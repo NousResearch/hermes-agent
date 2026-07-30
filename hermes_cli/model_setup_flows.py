@@ -1516,6 +1516,7 @@ def _model_flow_named_custom(config, provider_info):
     from hermes_cli.models import (
         fetch_api_models,
         fetch_ollama_local_models,
+        _get_ollama_native_headers,
         should_use_ollama_native_catalog,
     )
 
@@ -1581,19 +1582,35 @@ def _model_flow_named_custom(config, provider_info):
             if provider_key.lower() == "ollama" or name.strip().lower() == "ollama"
             else "custom"
         )
-        native_headers = normalize_extra_headers(provider_info.get("extra_headers")) or None
+        native_headers = normalize_extra_headers(provider_info.get("extra_headers")) or {}
+        if native_catalog_provider == "ollama":
+            resolved_headers = _get_ollama_native_headers(base_url, api_key=api_key)
+            resolved_headers.update(native_headers)
+            native_headers = resolved_headers
+        native_headers_arg = native_headers or None
         if should_use_ollama_native_catalog(
-            native_catalog_provider, base_url, headers=native_headers
+            native_catalog_provider, base_url, headers=native_headers_arg
         ):
             # Match the slash-command picker guardrail: an explicit models:
             # list remains authoritative instead of being replaced by tags.
-            models = configured_models or fetch_ollama_local_models(
-                base_url,
-                timeout=8.0,
-                headers=native_headers,
-            )
+            if configured_models:
+                models = configured_models
+            else:
+                models = fetch_ollama_local_models(
+                    base_url,
+                    timeout=8.0,
+                    headers=native_headers_arg,
+                )
+                if models is None:
+                    # A failed native probe is not authoritative; try the
+                    # existing OpenAI-compatible catalog before manual entry.
+                    models = fetch_api_models(
+                        api_key, base_url, headers=native_headers_arg, **fetch_kwargs
+                    )
         else:
-            models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+            models = fetch_api_models(
+                api_key, base_url, headers=native_headers_arg, **fetch_kwargs
+            )
         # If the probe came back empty but the operator configured an explicit
         # list, fall back to it rather than forcing manual entry.
         if not models and configured_models:

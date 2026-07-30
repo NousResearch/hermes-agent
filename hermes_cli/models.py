@@ -3712,7 +3712,7 @@ def cached_provider_model_ids(
 
     if normalized == "ollama":
         base_url = _get_ollama_base_url()
-        headers = _get_ollama_request_headers() or None
+        headers = _get_ollama_native_headers(base_url) or None
         probe_key = _ollama_probe_cache_key(
             _root_for_ollama_native_api(base_url), headers
         )
@@ -5354,6 +5354,14 @@ def validate_requested_model(
             ollama_base_url, headers=ollama_headers
         )
         if ollama_models is None:
+            # A failed native probe is not authoritative; fall back to the
+            # existing OpenAI-compatible catalog before accepting blindly.
+            ollama_models = probe_api_models(
+                api_key,
+                ollama_base_url,
+                request_headers=ollama_headers,
+            ).get("models")
+        if ollama_models is None:
             return {
                 "accepted": True,
                 "persist": True,
@@ -5389,9 +5397,18 @@ def validate_requested_model(
     if normalized == "custom" or normalized.startswith("custom:"):
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
-            probe = probe_api_models(api_key, base_url, api_mode=api_mode)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                api_mode=api_mode,
+                request_headers=headers,
+            )
         else:
-            probe = probe_api_models(api_key, base_url)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                request_headers=headers,
+            )
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):

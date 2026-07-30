@@ -273,7 +273,7 @@ element.textContent = userInput;
 
 **test-driven-development：** 本流水线验证是否遵循了 TDD 纪律 — 测试存在、测试通过、无回归。
 
-**writing-plans：** 验证实现是否符合计划需求。
+**plan：** 验证实现是否符合计划需求。
 
 ## 注意事项
 

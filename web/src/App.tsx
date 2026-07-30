@@ -100,7 +100,7 @@ import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
-import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
+import { PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
@@ -110,10 +110,10 @@ import {
   DASHBOARD_PATH,
   buildBuiltinNavOrder,
   hasRootDashboardPlugin,
-  shouldDeferBuiltinRootRoute,
   shouldIncludePluginPageTitle,
   shouldUseExactNavMatch,
 } from "@/lib/dashboard-navigation";
+import { buildRoutes } from "@/lib/dashboard-routes";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -317,76 +317,6 @@ function partitionSidebarNav(
     else pluginItems.push(item);
   }
   return { coreItems, pluginItems };
-}
-
-function buildRoutes(
-  builtinRoutes: Record<string, ComponentType>,
-  manifests: PluginManifest[],
-  pluginsLoading: boolean,
-): Array<{
-  key: string;
-  path: string;
-  element: ReactNode;
-}> {
-  const byOverride = new Map<string, PluginManifest>();
-  const addons: PluginManifest[] = [];
-
-  for (const m of manifests) {
-    if (m.tab.override) {
-      byOverride.set(m.tab.override, m);
-    } else {
-      addons.push(m);
-    }
-  }
-
-  const routes: Array<{
-    key: string;
-    path: string;
-    element: ReactNode;
-  }> = [];
-
-  for (const [path, Component] of Object.entries(builtinRoutes)) {
-    const om = byOverride.get(path);
-    if (om) {
-      routes.push({
-        key: `override:${om.name}`,
-        path,
-        element: <PluginPage name={om.name} />,
-      });
-    } else {
-      routes.push({
-        key: `builtin:${path}`,
-        path,
-        element: shouldDeferBuiltinRootRoute(path, pluginsLoading)
-          ? null
-          : <Component />,
-      });
-    }
-  }
-
-  for (const m of addons) {
-    if (m.tab.hidden) continue;
-    if (m.tab.path === "/plugins") continue;
-    if (builtinRoutes[m.tab.path]) continue;
-    routes.push({
-      key: `plugin:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
-  }
-
-  for (const m of manifests) {
-    if (!m.tab.hidden) continue;
-    if (m.tab.path === "/plugins") continue;
-    if (builtinRoutes[m.tab.path] || m.tab.override) continue;
-    routes.push({
-      key: `plugin:hidden:${m.name}`,
-      path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
-  }
-
-  return routes;
 }
 
 const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";

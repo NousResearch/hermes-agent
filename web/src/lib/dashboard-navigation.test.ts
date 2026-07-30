@@ -36,6 +36,9 @@ describe("dashboard shell navigation", () => {
 
   it("detects only plugins that override the root route", () => {
     expect(hasRootDashboardPlugin([{ tab: { override: "/" } }])).toBe(true);
+    expect(
+      hasRootDashboardPlugin([{ tab: { hidden: true, override: "/" } }]),
+    ).toBe(false);
     expect(hasRootDashboardPlugin([{ tab: { override: "/chat" } }])).toBe(false);
     expect(hasRootDashboardPlugin([{ tab: {} }])).toBe(false);
   });

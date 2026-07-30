@@ -8,7 +8,10 @@ interface DashboardOverrideManifest {
 export function hasRootDashboardPlugin(
   manifests: readonly DashboardOverrideManifest[],
 ): boolean {
-  return manifests.some((manifest) => manifest.tab.override === DASHBOARD_PATH);
+  return manifests.some(
+    (manifest) =>
+      !manifest.tab.hidden && manifest.tab.override === DASHBOARD_PATH,
+  );
 }
 
 export function shouldIncludePluginPageTitle(

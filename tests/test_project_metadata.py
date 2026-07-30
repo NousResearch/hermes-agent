@@ -69,7 +69,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "fal",
         "edge-tts", "tts-premium",
         "voice",  # faster-whisper / sounddevice / numpy
-        "modal", "daytona",
+        "modal", "daytona", "vercel",
         "messaging", "slack", "matrix", "dingtalk", "feishu",
         "honcho", "hindsight",
         "supermemory", "mem0",

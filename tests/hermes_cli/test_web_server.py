@@ -1287,6 +1287,20 @@ class TestWebServerEndpoints:
 class TestBuildSchemaFromConfig:
 
 
+    def test_overrides_applied(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        # terminal.backend should be a select with options
+        if "terminal.backend" in CONFIG_SCHEMA:
+            entry = CONFIG_SCHEMA["terminal.backend"]
+            assert entry["type"] == "select"
+            assert "options" in entry
+            assert "local" in entry["options"]
+            assert "vercel_sandbox" in entry["options"]
+        runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
+        assert runtime_entry["type"] == "select"
+        assert "node24" in runtime_entry["options"]
+        assert "python3.13" in runtime_entry["options"]
+        assert len(runtime_entry["options"]) >= 3
 
 
 

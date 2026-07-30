@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
 import json
 import os
@@ -40,6 +40,7 @@ class TestProviderRegistry:
         ("stepfun", "StepFun Step Plan", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
+        ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
     ])
@@ -53,6 +54,67 @@ class TestProviderRegistry:
 
 
 
+    def test_copilot_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["copilot"]
+        assert pconfig.api_key_env_vars == ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+        assert pconfig.base_url_env_var == "COPILOT_API_BASE_URL"
+
+    def test_kimi_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["kimi-coding"]
+        # KIMI_API_KEY is the primary env var; KIMI_CODING_API_KEY is a
+        # secondary fallback for Kimi Code sk-kimi- keys so users don't
+        # have to overload the same variable.
+        assert "KIMI_API_KEY" in pconfig.api_key_env_vars
+        assert "KIMI_CODING_API_KEY" in pconfig.api_key_env_vars
+        assert pconfig.base_url_env_var == "KIMI_BASE_URL"
+
+    def test_minimax_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["minimax"]
+        assert pconfig.api_key_env_vars == ("MINIMAX_API_KEY",)
+        assert pconfig.base_url_env_var == "MINIMAX_BASE_URL"
+
+    def test_stepfun_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["stepfun"]
+        assert pconfig.api_key_env_vars == ("STEPFUN_API_KEY",)
+        assert pconfig.base_url_env_var == "STEPFUN_BASE_URL"
+
+    def test_minimax_cn_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["minimax-cn"]
+        assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
+        assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
+
+    def test_ai_gateway_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["ai-gateway"]
+        assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
+        assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
+
+    def test_kilocode_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["kilocode"]
+        assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
+        assert pconfig.base_url_env_var == "KILOCODE_BASE_URL"
+
+    def test_gmi_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["gmi"]
+        assert pconfig.api_key_env_vars == ("GMI_API_KEY",)
+        assert pconfig.base_url_env_var == "GMI_BASE_URL"
+
+    def test_huggingface_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["huggingface"]
+        assert pconfig.api_key_env_vars == ("HF_TOKEN",)
+        assert pconfig.base_url_env_var == "HF_BASE_URL"
+
+    def test_base_urls(self):
+        assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
+        assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
+        assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
+        assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
+        assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
+        assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
+        assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
+        assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
+        assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
+        assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""
@@ -107,9 +169,130 @@ class TestResolveProvider:
 
 
 
+    def test_explicit_ai_gateway(self):
+        assert resolve_provider("ai-gateway") == "ai-gateway"
+
+    def test_explicit_gmi(self):
+        assert resolve_provider("gmi") == "gmi"
 
 
 
+    def test_alias_zhipu(self):
+        assert resolve_provider("zhipu") == "zai"
+
+    def test_alias_kimi(self):
+        assert resolve_provider("kimi") == "kimi-coding"
+
+    def test_alias_moonshot(self):
+        assert resolve_provider("moonshot") == "kimi-coding"
+
+    def test_alias_step(self):
+        assert resolve_provider("step") == "stepfun"
+
+    def test_alias_minimax_underscore(self):
+        assert resolve_provider("minimax_cn") == "minimax-cn"
+
+    def test_alias_aigateway(self):
+        assert resolve_provider("aigateway") == "ai-gateway"
+
+    def test_alias_vercel(self):
+        assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_gmi_cloud(self):
+        assert resolve_provider("gmi-cloud") == "gmi"
+
+    def test_explicit_kilocode(self):
+        assert resolve_provider("kilocode") == "kilocode"
+
+    def test_alias_kilo(self):
+        assert resolve_provider("kilo") == "kilocode"
+
+    def test_alias_kilo_code(self):
+        assert resolve_provider("kilo-code") == "kilocode"
+
+    def test_alias_kilo_gateway(self):
+        assert resolve_provider("kilo-gateway") == "kilocode"
+
+    def test_alias_case_insensitive(self):
+        assert resolve_provider("GLM") == "zai"
+        assert resolve_provider("Z-AI") == "zai"
+        assert resolve_provider("Kimi") == "kimi-coding"
+
+    def test_alias_github_copilot(self):
+        assert resolve_provider("github-copilot") == "copilot"
+
+    def test_alias_github_models(self):
+        assert resolve_provider("github-models") == "copilot"
+
+    def test_alias_github_copilot_acp(self):
+        assert resolve_provider("github-copilot-acp") == "copilot-acp"
+        assert resolve_provider("copilot-acp-agent") == "copilot-acp"
+
+    def test_explicit_huggingface(self):
+        assert resolve_provider("huggingface") == "huggingface"
+
+    def test_alias_hf(self):
+        assert resolve_provider("hf") == "huggingface"
+
+    def test_alias_hugging_face(self):
+        assert resolve_provider("hugging-face") == "huggingface"
+
+    def test_alias_huggingface_hub(self):
+        assert resolve_provider("huggingface-hub") == "huggingface"
+
+    def test_unknown_provider_raises(self):
+        with pytest.raises(AuthError):
+            resolve_provider("nonexistent-provider-xyz")
+
+    def test_auto_detects_glm_key(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "test-glm-key")
+        assert resolve_provider("auto") == "zai"
+
+    def test_auto_detects_zai_key(self, monkeypatch):
+        monkeypatch.setenv("ZAI_API_KEY", "test-zai-key")
+        assert resolve_provider("auto") == "zai"
+
+    def test_auto_detects_z_ai_key(self, monkeypatch):
+        monkeypatch.setenv("Z_AI_API_KEY", "test-z-ai-key")
+        assert resolve_provider("auto") == "zai"
+
+    def test_auto_detects_kimi_key(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "test-kimi-key")
+        assert resolve_provider("auto") == "kimi-coding"
+
+    def test_auto_detects_stepfun_key(self, monkeypatch):
+        monkeypatch.setenv("STEPFUN_API_KEY", "test-stepfun-key")
+        assert resolve_provider("auto") == "stepfun"
+
+    def test_auto_detects_minimax_key(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-mm-key")
+        assert resolve_provider("auto") == "minimax"
+
+    def test_auto_detects_minimax_cn_key(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-mm-cn-key")
+        assert resolve_provider("auto") == "minimax-cn"
+
+    def test_auto_detects_ai_gateway_key(self, monkeypatch):
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
+        assert resolve_provider("auto") == "ai-gateway"
+
+    def test_auto_detects_gmi_key(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "test-gmi-key")
+        assert resolve_provider("auto") == "gmi"
+
+    def test_auto_detects_kilocode_key(self, monkeypatch):
+        monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
+        assert resolve_provider("auto") == "kilocode"
+
+    def test_auto_detects_hf_token(self, monkeypatch):
+        monkeypatch.setenv("HF_TOKEN", "hf_test_token")
+        assert resolve_provider("auto") == "huggingface"
+
+    def test_openrouter_takes_priority_over_glm(self, monkeypatch):
+        """OpenRouter API key should win over GLM in auto-detection."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        assert resolve_provider("auto") == "openrouter"
 
     def test_auto_does_not_select_copilot_from_github_token(self, monkeypatch):
         # AWS Bedrock auto-detection (via boto3's credential chain) runs at
@@ -195,6 +378,19 @@ class TestResolveApiKeyProviderCredentials:
 
 
 
+    def test_resolve_ai_gateway_with_key(self, monkeypatch):
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-secret-key")
+        creds = resolve_api_key_provider_credentials("ai-gateway")
+        assert creds["provider"] == "ai-gateway"
+        assert creds["api_key"] == "gw-secret-key"
+        assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
+
+    def test_resolve_kilocode_with_key(self, monkeypatch):
+        monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
+        creds = resolve_api_key_provider_credentials("kilocode")
+        assert creds["provider"] == "kilocode"
+        assert creds["api_key"] == "kilo-secret-key"
+        assert creds["base_url"] == "https://api.kilo.ai/api/gateway"
 
 
 
@@ -217,6 +413,78 @@ class TestRuntimeProviderResolution:
 
 
 
+    def test_runtime_minimax(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="minimax")
+        assert result["provider"] == "minimax"
+        assert result["api_key"] == "mm-key"
+
+    def test_runtime_ai_gateway(self, monkeypatch):
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="ai-gateway")
+        assert result["provider"] == "ai-gateway"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gw-key"
+        assert "ai-gateway.vercel.sh" in result["base_url"]
+
+    def test_runtime_kilocode(self, monkeypatch):
+        monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="kilocode")
+        assert result["provider"] == "kilocode"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "kilo-key"
+        assert "kilo.ai" in result["base_url"]
+
+    def test_runtime_gmi(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="gmi")
+        assert result["provider"] == "gmi"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gmi-key"
+        assert result["base_url"] == "https://api.gmi-serving.com/v1"
+
+    def test_runtime_auto_detects_api_key_provider(self, monkeypatch):
+        monkeypatch.setenv("KIMI_API_KEY", "auto-kimi-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="auto")
+        assert result["provider"] == "kimi-coding"
+        assert result["api_key"] == "auto-kimi-key"
+
+    def test_runtime_copilot_uses_gh_cli_token(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="copilot")
+        assert result["provider"] == "copilot"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gho_cli_secret"
+        assert result["base_url"] == "https://api.githubcopilot.com"
+
+    def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "gpt-5.4"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: [
+                {
+                    "id": "gpt-5.4",
+                    "supported_endpoints": ["/responses"],
+                    "capabilities": {"type": "chat"},
+                }
+            ],
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot")
+
+        assert result["provider"] == "copilot"
+        assert result["api_mode"] == "codex_responses"
 
     def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")

@@ -5233,12 +5233,15 @@ class AIAgent:
         apply_user_headers: bool = True,
     ) -> None:
         from agent.auxiliary_client import (
+            _AI_GATEWAY_HEADERS,
             build_nvidia_nim_headers,
             build_or_headers,
         )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
+        elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
+            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):
@@ -6438,6 +6441,8 @@ class AIAgent:
         known reasoning-capable model families and direct Nous Portal.
         """
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
+            return True
+        if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
             return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")

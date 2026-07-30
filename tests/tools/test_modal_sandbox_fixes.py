@@ -7,6 +7,7 @@ Covers the bugs discovered while setting up TBLite evaluation:
 4. ensurepip fix in Modal image builder
 5. No swe-rex dependency — uses native Modal SDK
 6. /home/ added to host prefix check
+7. Vercel sandbox cwd normalization
 """
 
 import os
@@ -84,6 +85,95 @@ class TestCwdHandling:
         assert config["host_cwd"] is None
         assert config["docker_mount_cwd_to_workspace"] is False
 
+    def test_users_path_maps_to_workspace_for_docker_when_enabled(self, monkeypatch):
+        """Docker should map the host cwd into /workspace only when explicitly enabled."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/workspace"
+        assert config["host_cwd"] == "/Users/someone/projects"
+        assert config["docker_mount_cwd_to_workspace"] is True
+
+    def test_windows_path_replaced_for_modal(self, monkeypatch):
+        """TERMINAL_CWD=C:\\Users\\... should be replaced for modal."""
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        monkeypatch.setenv("TERMINAL_CWD", "C:\\Users\\someone\\projects")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root"
+
+    def test_host_path_replaced_for_vercel_sandbox(self, monkeypatch):
+        """Host paths should be discarded for Vercel Sandbox."""
+        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/vercel/sandbox"
+
+    def test_relative_path_replaced_for_vercel_sandbox(self, monkeypatch):
+        """Relative cwd should not map into a remote Vercel sandbox."""
+        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+        monkeypatch.setenv("TERMINAL_CWD", "src")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/vercel/sandbox"
+
+    def test_default_cwd_is_workspace_root_for_vercel_sandbox(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/vercel/sandbox"
+
+    @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona"])
+    def test_default_cwd_is_root_for_container_backends(self, backend, monkeypatch):
+        """Container backends should default to /root, not ~."""
+        monkeypatch.setenv("TERMINAL_ENV", backend)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root", (
+            f"Backend {backend}: expected /root default, got {config['cwd']}"
+        )
+
+    def test_docker_default_cwd_maps_current_directory_when_enabled(self, monkeypatch):
+        """Docker should use /workspace when cwd mounting is explicitly enabled."""
+        monkeypatch.setattr("tools.terminal_tool.os.getcwd", lambda: "/home/user/project")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/workspace"
+        assert config["host_cwd"] == "/home/user/project"
+
+    def test_local_backend_uses_getcwd(self, monkeypatch):
+        """Local backend should use os.getcwd(), not /root."""
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == os.getcwd()
+
+    def test_create_environment_passes_docker_host_cwd_and_flag(self, monkeypatch):
+        """Docker host cwd and mount flag should reach DockerEnvironment."""
+        captured = {}
+        sentinel = object()
+
+        def _fake_docker_environment(**kwargs):
+            captured.update(kwargs)
+            return sentinel
+
+        monkeypatch.setattr(_tt_mod, "_DockerEnvironment", _fake_docker_environment)
+
+        env = _tt_mod._create_environment(
+            env_type="docker",
+            image="python:3.11",
+            cwd="/workspace",
+            timeout=60,
+            container_config={"docker_mount_cwd_to_workspace": True},
+            host_cwd="/home/user/project",
+        )
+
+        assert env is sentinel
+        assert captured["cwd"] == "/workspace"
+        assert captured["host_cwd"] == "/home/user/project"
+        assert captured["auto_mount_cwd"] is True
 
     def test_ssh_preserves_home_paths(self, monkeypatch):
         """SSH backend should NOT replace /home/ paths (they're valid remotely)."""

@@ -1236,6 +1236,16 @@ def _patch_skill(
     if org_note:
         result["org_sharing"] = org_note
         result["message"] = f"{result['message']} {org_note}"
+
+    # post_skill_patch hook (observer only)
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook as _invoke_post_hook
+        if has_hook("post_skill_patch"):
+            _invoke_post_hook("post_skill_patch", name=name,
+                              path=str(skill_dir), success=True)
+    except Exception:
+        pass
+
     return result
 
 
@@ -1354,6 +1364,14 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if is_consolidation:
         message += f" Content absorbed into '{absorbed_target}'."
 
+    # post_skill_delete hook (observer only)
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook as _invoke_post_hook
+        if has_hook("post_skill_delete"):
+            _invoke_post_hook("post_skill_delete", name=name, success=True)
+    except Exception:
+        pass
+
     return {
         "success": True,
         "message": message,
@@ -1442,6 +1460,16 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if org_note:
         result["org_sharing"] = org_note
         result["message"] = f"{result['message']} {org_note}"
+
+    # post_skill_write_file hook (observer only)
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook as _invoke_post_hook
+        if has_hook("post_skill_write_file"):
+            _invoke_post_hook("post_skill_write_file", name=name,
+                              file_path=file_path, success=True)
+    except Exception:
+        pass
+
     return result
 
 
@@ -1504,6 +1532,15 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     parent = target.parent
     if parent != skill_dir and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
+
+    # post_skill_remove_file hook (observer only)
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook as _invoke_post_hook
+        if has_hook("post_skill_remove_file"):
+            _invoke_post_hook("post_skill_remove_file", name=name,
+                              file_path=file_path, success=True)
+    except Exception:
+        pass
 
     return {
         "success": True,

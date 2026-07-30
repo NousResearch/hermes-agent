@@ -809,3 +809,38 @@ def test_delete_handled(tmp_path, captured_hooks):
 
     assert result["success"] is True
     assert result.get("hook_handled") is True
+
+
+# ─── Misbehaving hook tests ─────────────────────────────────────────────
+
+def test_patch_misbehaving_hook_falls_through(tmp_path):
+    """A raising pre_skill_patch hook is logged and falls through."""
+    from tools.skill_manager_tool import _patch_skill
+    from hermes_cli.plugins import get_plugin_manager
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_patch", []).append(
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            (skills_dir / "test-skill").mkdir(parents=True)
+            (skills_dir / "test-skill" / "SKILL.md").write_text(SKILL_CONTENT)
+            result = _patch_skill("test-skill", "test skill", "patched skill")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+
+
+
+
+def test_all_post_hooks_are_registered_as_valid():
+    """All 4 post-hook names are in VALID_HOOKS."""
+    from hermes_cli.plugins import VALID_HOOKS
+    for hook in (
+        "post_skill_patch", "post_skill_write_file",
+        "post_skill_remove_file", "post_skill_delete",
+    ):
+        assert hook in VALID_HOOKS, f"{hook} not in VALID_HOOKS"

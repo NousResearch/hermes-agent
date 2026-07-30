@@ -2208,8 +2208,9 @@ DEFAULT_CONFIG = {
         # through tools.slash_confirm — native yes/no buttons on Telegram,
         # Discord, and Slack; text fallback elsewhere.  Users click "Always
         # Approve" to silence the prompt permanently; that flips this key to
-        # false.  TUI has its own modal overlay (HERMES_TUI_NO_CONFIRM=1 to
-        # opt out there).
+        # false.  TUI also honors this setting for its /clear, /new, and /reset
+        # modal; HERMES_TUI_NO_CONFIRM=1 force-skips that modal regardless of
+        # the configured value.
         "destructive_slash_confirm": True,
     },
 

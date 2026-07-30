@@ -226,7 +226,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
       // In flow in the dock column, directly above the composer. The dock is
       // bottom-anchored, so this grows upward over the thread without needing
       // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto pb-2"
+      className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
       onPointerDownCapture={() => blurComposerInput()}
     >
       {/* The card paints the shared --composer-fill (rest / scrolled / focused

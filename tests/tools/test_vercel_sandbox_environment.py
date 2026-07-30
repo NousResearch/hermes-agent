@@ -163,6 +163,13 @@ class _FakeSDK:
 
     def create(self, **kwargs):
         self.create_kwargs.append(kwargs)
+        source = kwargs.get("source")
+        if (
+            isinstance(source, dict)
+            and source.get("type") == "snapshot"
+            and kwargs.get("runtime") is not None
+        ):
+            raise ValueError("source: snapshot source cannot be combined with runtime")
         if self.create_side_effects:
             effect = self.create_side_effects.pop(0)
             if isinstance(effect, Exception):
@@ -534,6 +541,7 @@ class TestSnapshotPersistence:
             "type": "snapshot",
             "snapshot_id": "snap_saved",
         }
+        assert "runtime" not in vercel_sdk.create_kwargs[0]
         assert vercel_module._load_snapshots() == {"task-123": "snap_saved"}
 
     def test_restore_failure_prunes_snapshot_and_falls_back_to_fresh_sandbox(
@@ -555,6 +563,7 @@ class TestSnapshotPersistence:
             "snapshot_id": "snap_stale",
         }
         assert "source" not in vercel_sdk.create_kwargs[1]
+        assert vercel_sdk.create_kwargs[1]["runtime"] == "node22"
         assert vercel_module._load_snapshots() == {}
 
     def test_cleanup_stops_when_snapshot_fails_without_storing_metadata(

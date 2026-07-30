@@ -597,7 +597,15 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     if _kdb is None:
         return
 
-    _orig_connect = _kdb.connect
+    # The sys.modules probe can observe the module MID-IMPORT: a fixture
+    # boundary firing while another test's lazy `import hermes_cli.kanban_db`
+    # is still executing sees a partially initialized module whose `connect`
+    # doesn't exist yet (AttributeError flake, caught in a full-suite run).
+    # A half-imported module has no callers yet either — nothing to guard
+    # this round; the next test's fixture will patch the completed module.
+    _orig_connect = getattr(_kdb, "connect", None)
+    if _orig_connect is None:
+        return
 
     def _guarded_connect(db_path=None, *args, **kwargs):
         if db_path is not None:

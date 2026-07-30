@@ -340,7 +340,19 @@ CREATE TABLE IF NOT EXISTS messages (
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
     display_kind TEXT,
-    display_metadata TEXT
+    display_metadata TEXT,
+    topic_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS session_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    title TEXT NOT NULL,
+    summary TEXT,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at REAL NOT NULL,
+    last_active_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (

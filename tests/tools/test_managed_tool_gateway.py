@@ -192,10 +192,6 @@ class TestManagedMediaUploader:
     BASE_URL = f"{GATEWAY}/api/bfl"
     UPLOAD_PATH = "/api/uploads/bfl"
 
-    @staticmethod
-    def _builder(vendor):
-        return f"https://{vendor}-gateway.example.com"
-
     def _uploader(self, **kwargs):
         return managed_tool_gateway.build_managed_media_uploader(
             kwargs.pop("server_url", self.BASE_URL),

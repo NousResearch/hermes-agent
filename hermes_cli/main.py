@@ -5071,6 +5071,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _upgrade_pip_before_lazy_refresh,
     _validate_critical_files_syntax,
     _venv_core_imports_healthy,
+    _venv_launcher_ancestors,
     _wait_for_windows_update_gateway_exit,
     _warn_incomplete_gateway_fleet_restart,
     _web_build_toolchain_ready,

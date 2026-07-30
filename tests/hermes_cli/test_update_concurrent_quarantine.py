@@ -270,6 +270,138 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     assert "Restart manually after update" not in captured
 
 
+# ---------------------------------------------------------------------------
+# venv-side launcher ancestors (the uv launcher/worker split)
+#
+# A gateway started through the venv shim is two processes:
+#   venv\Scripts\python.exe (launcher)  ->  uv\python\...\python.exe (worker)
+# The gateway's PID file records the WORKER, so find_gateway_pids() (and the
+# pause set built from it) only ever sees the worker. The venv-holder guard
+# matches on the venv path prefix, so it only ever sees the LAUNCHER. The two
+# sets were disjoint: a gateway the updater had just stopped still tripped the
+# guard, aborting every update ("venv-blocked: N process(es) hold the install").
+# ---------------------------------------------------------------------------
+
+
+def _fake_psutil_tree(tree, venv_exe, worker_exe):
+    """Build a psutil stand-in where ``tree`` maps worker pid -> parent pid.
+
+    Parents whose pid is even are venv-side (``venv_exe``); odd parents are
+    unrelated ancestors (``worker_exe``) that must NOT be returned.
+    """
+
+    class FakeProc:
+        def __init__(self, pid):
+            self.pid = pid
+            if pid not in tree and pid not in tree.values():
+                raise ValueError(f"no such pid {pid}")
+
+        def parent(self):
+            ppid = tree.get(self.pid)
+            return FakeProc(ppid) if ppid else None
+
+        def parents(self):
+            return []
+
+        def exe(self):
+            # Parents of workers are the launchers under test.
+            return venv_exe if self.pid % 2 == 0 else worker_exe
+
+    mod = types.SimpleNamespace(Process=FakeProc)
+    return mod
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_venv_launcher_ancestors_returns_venv_side_parent(_winp, monkeypatch):
+    """The worker's venv-side parent is reported so the guard set is covered."""
+    venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
+    worker_exe = r"C:\Users\x\AppData\Roaming\uv\python\cpython-3.11\python.exe"
+
+    # worker 200 -> launcher 100 (even == venv-side)
+    fake = _fake_psutil_tree({200: 100}, venv_exe, worker_exe)
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+
+    assert cli_main._venv_launcher_ancestors([200]) == [100]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_venv_launcher_ancestors_ignores_non_venv_parents(_winp, monkeypatch):
+    """A Scheduled Task's cmd.exe / an operator shell is not a venv holder."""
+    venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
+    worker_exe = r"C:\Windows\System32\cmd.exe"
+
+    # worker 200 -> parent 101 (odd == NOT venv-side)
+    fake = _fake_psutil_tree({200: 101}, venv_exe, worker_exe)
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+
+    assert cli_main._venv_launcher_ancestors([200]) == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_venv_launcher_ancestors_is_empty_without_pids(_winp):
+    """No mapped gateways means nothing to walk up from."""
+    assert cli_main._venv_launcher_ancestors([]) == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_pause_kill_set_covers_venv_guard_abort_set(
+    _winp,
+    monkeypatch,
+    tmp_path,
+):
+    """INVARIANT: whatever the venv guard would abort on must be stopped.
+
+    This is the contract the two PID-resolution paths must satisfy. Before the
+    launcher walk existed, ``terminated`` held only the uv-side worker while
+    the guard reported the venv-side launcher, so the update aborted forever
+    despite a "successful" pause.
+    """
+    import hermes_cli.gateway as gateway_mod
+    import gateway.status as status_mod
+
+    venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
+    worker_exe = r"C:\Users\x\AppData\Roaming\uv\python\cpython-3.11\python.exe"
+
+    profile_home = tmp_path / "profiles" / "default"
+    profile_home.mkdir(parents=True)
+    # The PID file records the WORKER (even-numbered parent 400 is its launcher).
+    worker_pid, launcher_pid = 500, 400
+    profile_proc = SimpleNamespace(
+        profile="default", path=profile_home, pid=worker_pid
+    )
+
+    monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda **_k: [worker_pid])
+    monkeypatch.setattr(
+        gateway_mod, "find_profile_gateway_processes", lambda **_k: [profile_proc]
+    )
+    monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
+    # Graceful drain succeeds: the worker exits, leaving zero survivors. This is
+    # precisely the case that used to leave the launcher alive and abort.
+    monkeypatch.setattr(
+        cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, *, timeout: set()
+    )
+
+    fake = _fake_psutil_tree({worker_pid: launcher_pid}, venv_exe, worker_exe)
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+
+    terminated = []
+    monkeypatch.setattr(
+        status_mod,
+        "terminate_pid",
+        lambda pid, force=False: terminated.append(int(pid)),
+    )
+
+    cli_main._pause_windows_gateways_for_update()
+
+    # What the downstream venv-holder guard would report as blocking.
+    guard_would_abort_on = {launcher_pid}
+    assert guard_would_abort_on.issubset(set(terminated)), (
+        f"pause stopped {sorted(terminated)} but the venv guard aborts on "
+        f"{sorted(guard_would_abort_on)} — disjoint sets abort the update"
+    )
+
+
+
 
 
 

@@ -2683,6 +2683,72 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
     return "\n".join(lines)
 
+def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
+    """Return venv-interpreter ancestors of *pids* that hold the install open.
+
+    On Windows a gateway started through the venv shim is a **two-process
+    chain**: ``venv\\Scripts\\python.exe`` (the launcher, which keeps native
+    ``.pyd`` files from the venv mapped) spawns the actual interpreter from
+    uv's managed CPython directory (``AppData\\Roaming\\uv\\python\\...``).
+    The gateway writes its PID file from the *child*, so
+    ``find_gateway_pids()`` — and therefore this module's pause set — only
+    ever sees the uv-side worker.
+
+    ``_detect_venv_python_processes()`` matches on the venv path prefix, so
+    the guard downstream of the pause sees the *launcher* instead. The two
+    sets are disjoint, which meant a paused gateway still tripped the
+    venv-holder guard and aborted the update every time (the Desktop
+    "venv-blocked: N process(es) hold the install" dead-end, where the
+    reported holder is a gateway the updater believes it already stopped).
+
+    Walking one hop up from each mapped gateway PID and keeping ancestors
+    that live under the project venv closes the gap. Only the venv-side
+    parent is returned — unrelated ancestors (the Scheduled Task's
+    ``cmd.exe``, an operator's shell) are ignored so we never widen the
+    blast radius beyond the gateway's own launcher. Never raises.
+    """
+    if not _m()._is_windows() or not pids:
+        return []
+    try:
+        import psutil
+    except Exception:
+        return []
+
+    venv_dir = _m().PROJECT_ROOT / "venv"
+    try:
+        venv_prefix = str(venv_dir.resolve()).lower().rstrip(os.sep) + os.sep
+    except OSError:
+        venv_prefix = str(venv_dir).lower().rstrip(os.sep) + os.sep
+
+    # Never return ourselves or our own ancestry: a CLI ``hermes update``
+    # runs from the venv python and would otherwise nominate itself.
+    skip: set[int] = {os.getpid()}
+    try:
+        for anc in psutil.Process().parents():
+            skip.add(int(anc.pid))
+    except Exception:
+        pass
+
+    found: list[int] = []
+    for pid in pids:
+        try:
+            parent = psutil.Process(int(pid)).parent()
+        except Exception:
+            continue
+        if parent is None:
+            continue
+        ppid = int(parent.pid)
+        if ppid in skip or ppid in found or ppid in set(pids):
+            continue
+        try:
+            exe = (parent.exe() or "").lower()
+        except Exception:
+            continue
+        if exe.startswith(venv_prefix):
+            found.append(ppid)
+    return found
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -2783,8 +2849,18 @@ def _pause_windows_gateways_for_update() -> dict | None:
             logger.debug("Could not capture argv for unmapped gateway %s: %s", pid, exc)
         unmapped.append({"pid": int(pid), "argv": argv})
 
+    # A gateway's graceful drain above targets the PID that wrote the PID file
+    # (the uv-side worker). On Windows that worker's parent is usually the
+    # venv-side ``python.exe`` launcher, which keeps venv ``.pyd`` files mapped
+    # and is what ``_detect_venv_python_processes()`` reports downstream. Left
+    # alive, it trips the venv-holder guard and aborts the update even though
+    # the gateway itself is stopped. Force-kill those launchers alongside the
+    # survivors; ``terminate_pid(force=True)`` is a tree kill, so a launcher
+    # that outlived its worker takes any stragglers with it.
+    launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
+
     force_killed = []
-    for pid in sorted(set(survivors).union(unmapped_pids)):
+    for pid in sorted(set(survivors).union(unmapped_pids).union(launcher_pids)):
         try:
             terminate_pid(int(pid), force=True)
             force_killed.append(int(pid))

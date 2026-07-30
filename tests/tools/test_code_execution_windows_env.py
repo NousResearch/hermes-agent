@@ -276,7 +276,7 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
     })
     # Connection-string credential regex matching _SCRUB_CONNSTR_RE.
     _SCRUB_CONNSTR_RE = re.compile(
-        r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
+        r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]*:)([^@\s]+)(@)",
         re.IGNORECASE,
     )
     out = {}
@@ -832,6 +832,17 @@ class TestValueLevelConnectionStringScrubbing:
             is_passthrough=_no_passthrough, is_windows=False,
         )
         assert "TMP_REDIS_URL" not in scrubbed
+
+    def test_blocks_redis_url_empty_username(self):
+        """redis://:token@host — empty username must still be matched."""
+        scrubbed = _scrub_child_env(
+            {
+                "TMP_REDIS_TOKEN_URL": "redis://:redistoken9999@redis-cluster.example.com:6379",
+                "PATH": "/bin",
+            },
+            is_passthrough=_no_passthrough, is_windows=False,
+        )
+        assert "TMP_REDIS_TOKEN_URL" not in scrubbed
 
     def test_does_not_block_normal_url(self):
         scrubbed = _scrub_child_env(

@@ -162,7 +162,7 @@ _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
 # ``postgresql://user:password@host/db`` or ``redis://:token@host``.
 # Reused from agent/redact.py (inlined here to avoid circular imports).
 _SCRUB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]+:)([^@\s]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]*:)([^@\s]+)(@)",
     re.IGNORECASE,
 )
 

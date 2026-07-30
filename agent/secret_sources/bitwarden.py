@@ -692,9 +692,18 @@ def _bws_child_env(access_token: str, server_url: str = "") -> Dict[str, str]:
         if val is not None:
             env[key] = val
     env["BWS_ACCESS_TOKEN"] = access_token
-    # Region / self-hosted support.
+    # Region / self-hosted support. When the config provides a server_url
+    # use it; otherwise preserve any inherited BWS_SERVER_URL from the
+    # host environment (manual override / non-interactive source —
+    # hermes_cli/secrets_cli.py supports this). The allowlist loop above
+    # does NOT include BWS_SERVER_URL so an inherited value is NOT
+    # picked up automatically.
     if server_url:
         env["BWS_SERVER_URL"] = server_url
+    else:
+        inherited = os.environ.get("BWS_SERVER_URL")
+        if inherited:
+            env["BWS_SERVER_URL"] = inherited
     return env
 
 

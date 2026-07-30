@@ -640,6 +640,14 @@ class TestBwsChildEnv:
         env = bw._bws_child_env(access_token="0.t")
         assert "BWS_SERVER_URL" not in env
 
+    def test_preserves_inherited_server_url(self, monkeypatch):
+        """When server_url is empty but BWS_SERVER_URL is in the host env,
+        it must be preserved — hermes_cli/secrets_cli.py supports this as
+        a non-interactive source."""
+        monkeypatch.setenv("BWS_SERVER_URL", "https://vault.bitwarden.eu")
+        env = bw._bws_child_env(access_token="0.t")
+        assert env["BWS_SERVER_URL"] == "https://vault.bitwarden.eu"
+
     def test_does_not_leak_credential_vars(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-leak-check")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leak")

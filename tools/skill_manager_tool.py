@@ -34,6 +34,7 @@ Directory layout for user skills:
 
 import json
 import logging
+import os
 import re
 import shutil
 import contextvars as _ctxvars
@@ -997,6 +998,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     _add_description_prompt_preview(result, content)
     _attach_lint_findings(result, skill_md)
 
+    _add_description_prompt_preview(result, content)
+
     # ── post_skill_create hook (observer only) ──
     try:
         if has_hook("post_skill_create"):
@@ -1120,7 +1123,6 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         result["org_sharing"] = org_note
         result["message"] = f"{result['message']} {org_note}"
     _add_description_prompt_preview(result, content)
-    return result
 
     # ── post_skill_edit hook (observer only) ──
     try:

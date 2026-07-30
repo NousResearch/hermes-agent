@@ -186,6 +186,47 @@ async def test_login_codex_dedupes_active_conversation_flow(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_login_codex_handler_cancellation_retains_dedupe_until_worker_exits(
+    monkeypatch,
+):
+    runner, _adapter = _runner()
+    started = threading.Event()
+    release = threading.Event()
+    exited = threading.Event()
+
+    def blocking_login(on_verification):
+        on_verification(_prompt("CANCEL-CODE"))
+        started.set()
+        release.wait(timeout=5)
+        exited.set()
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.login_openai_codex_to_pool",
+        blocking_login,
+    )
+
+    handler = asyncio.create_task(runner._handle_login_command(_event()))
+    assert await asyncio.to_thread(started.wait, 5)
+    flow_key = next(iter(runner._active_codex_login_flows))
+    worker = runner._active_codex_login_workers[flow_key]
+
+    handler.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await handler
+
+    assert flow_key in runner._active_codex_login_flows
+    assert runner._active_codex_login_workers[flow_key] is worker
+    duplicate = await runner._handle_login_command(_event())
+    assert "already active" in duplicate
+
+    release.set()
+    assert await asyncio.to_thread(exited.wait, 5)
+    assert await worker is True
+    assert runner._active_codex_login_flows == set()
+    assert runner._active_codex_login_workers == {}
+
+
+@pytest.mark.asyncio
 async def test_login_codex_failure_clears_dedupe_without_disclosing_exception(
     monkeypatch, caplog
 ):
@@ -211,6 +252,7 @@ async def test_login_codex_failure_clears_dedupe_without_disclosing_exception(
     assert "PRIVATE-TOKEN" not in first
     assert "PRIVATE-TOKEN" not in caplog.text
     assert runner._active_codex_login_flows == set()
+    assert runner._active_codex_login_workers == {}
     assert second == "Codex login complete. The account was added to this profile."
 
 

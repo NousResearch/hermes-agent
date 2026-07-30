@@ -17773,6 +17773,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if active_flows is None:
             active_flows = set()
             self._active_codex_login_flows = active_flows
+        active_workers = getattr(self, "_active_codex_login_workers", None)
+        if active_workers is None:
+            active_workers = {}
+            self._active_codex_login_workers = active_workers
         if flow_key in active_flows:
             return (
                 "A Codex login code is already active for this conversation. "
@@ -17801,31 +17805,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if getattr(result, "success", True) is False:
                 raise RuntimeError("private device-code delivery failed")
 
-        active_flows.add(flow_key)
-        try:
+        async def _run_login_worker() -> bool:
             from hermes_cli.auth import login_openai_codex_to_pool
 
-            if getattr(self.config, "multiplex_profiles", False):
-                with _profile_runtime_scope(profile_home):
+            try:
+                if getattr(self.config, "multiplex_profiles", False):
+                    with _profile_runtime_scope(profile_home):
+                        await asyncio.to_thread(
+                            login_openai_codex_to_pool,
+                            _send_verification,
+                        )
+                else:
                     await asyncio.to_thread(
                         login_openai_codex_to_pool,
                         _send_verification,
                     )
-            else:
-                await asyncio.to_thread(
-                    login_openai_codex_to_pool,
-                    _send_verification,
+                return True
+            except Exception:
+                logger.warning(
+                    "Codex device-code login failed for %s:%s",
+                    source.platform.value if source.platform else "?",
+                    source.user_id,
                 )
+                return False
+            finally:
+                active_flows.discard(flow_key)
+                current_worker = asyncio.current_task()
+                if active_workers.get(flow_key) is current_worker:
+                    active_workers.pop(flow_key, None)
+
+        active_flows.add(flow_key)
+        worker = asyncio.create_task(_run_login_worker())
+        active_workers[flow_key] = worker
+
+        # Shield the owned worker so cancelling this message handler does not
+        # release the dedupe key while asyncio.to_thread continues running.
+        # Handler cancellation still propagates to the caller immediately.
+        completed = await asyncio.shield(worker)
+        if completed:
             return "Codex login complete. The account was added to this profile."
-        except Exception:
-            logger.warning(
-                "Codex device-code login failed for %s:%s",
-                source.platform.value if source.platform else "?",
-                source.user_id,
-            )
-            return "Codex login did not complete. Send `/login codex` to request a new code."
-        finally:
-            active_flows.discard(flow_key)
+        return "Codex login did not complete. Send `/login codex` to request a new code."
 
 
 

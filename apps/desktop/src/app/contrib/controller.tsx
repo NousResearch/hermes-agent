@@ -27,8 +27,6 @@ import {
   revealTreePane,
   setPaneCollapsed,
   setTreePaneHidden,
-  setTreeSideCollapsed,
-  treeSideOfPane,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -629,18 +627,6 @@ registerPaneCloser('files', () =>
 // the side, unhide, front — a NEW target while already visible still fronts.
 const revealPreview = () => {
   dockPaneBeside('preview', 'files')
-
-  // The preview shares a collapsible column with the file tree, and
-  // revealTreePane un-collapses a column through its bound store — here ⌘J /
-  // $fileBrowserOpen, which IS the tree's toggle. Going through it would open
-  // the tree every time a preview opened. Un-collapse the column directly and
-  // leave the toggle alone, so a preview can appear on its own.
-  const side = treeSideOfPane('preview')
-
-  if (side) {
-    setTreeSideCollapsed(side, false)
-  }
-
   revealTreePane('preview')
 }
 

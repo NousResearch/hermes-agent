@@ -4966,12 +4966,19 @@ def set_config_value(key: str, value: str, force: bool = False):
     # untouched key (#63039) — the same guarantee cli.py's save_config_value
     # already gives via atomic_roundtrip_yaml_update. Files the round-trip
     # parser rejects but PyYAML tolerates (e.g. duplicate keys) fall back to
-    # the historical plain dump so the write itself never regresses.
+    # the historical plain dump so the write itself never regresses. Only
+    # RoundTripUnsupportedError falls back — filesystem/atomic-write failures
+    # propagate, so a failed write can never masquerade as a successful
+    # (comment-stripping) rewrite.
     ensure_hermes_home()
-    from utils import atomic_roundtrip_yaml_apply, atomic_yaml_write
+    from utils import (
+        RoundTripUnsupportedError,
+        atomic_roundtrip_yaml_apply,
+        atomic_yaml_write,
+    )
     try:
         atomic_roundtrip_yaml_apply(config_path, _config_before_write, user_config)
-    except Exception:
+    except RoundTripUnsupportedError:
         atomic_yaml_write(config_path, user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
@@ -5102,12 +5109,17 @@ def unset_config_value(key: str):
         sys.exit(1)
 
     ensure_hermes_home()
-    from utils import atomic_roundtrip_yaml_apply, atomic_yaml_write
+    from utils import (
+        RoundTripUnsupportedError,
+        atomic_roundtrip_yaml_apply,
+        atomic_yaml_write,
+    )
     try:
         atomic_roundtrip_yaml_apply(config_path, _config_before_write, user_config)
-    except Exception:
+    except RoundTripUnsupportedError:
         # Same fallback contract as set_config_value: files the round-trip
-        # parser rejects still get the historical plain dump.
+        # parser rejects still get the historical plain dump; write failures
+        # propagate rather than silently stripping comments.
         atomic_yaml_write(config_path, user_config, sort_keys=False)
     print(f"✓ Unset {key} from {config_path}")
 

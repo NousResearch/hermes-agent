@@ -503,6 +503,19 @@ def _apply_yaml_diff(doc: Any, before: Any, after: Any) -> None:
                 doc[key] = _rt_safe_scalar(new_val)
 
 
+class RoundTripUnsupportedError(ValueError):
+    """The round-trip writer cannot represent this document.
+
+    Raised by :func:`atomic_roundtrip_yaml_apply` ONLY for conditions where
+    falling back to a plain (comment-stripping) dump is legitimate: ruamel
+    being unavailable, or the round-trip parser rejecting a document that
+    PyYAML tolerates (e.g. duplicate keys).  Genuine write failures — temp
+    file creation, fsync, atomic replace — propagate as-is so callers never
+    mask a failed write by "successfully" rewriting the file without its
+    comments.
+    """
+
+
 def atomic_roundtrip_yaml_apply(
     path: Union[str, Path],
     before: Any,
@@ -515,12 +528,19 @@ def atomic_roundtrip_yaml_apply(
     Companion to :func:`atomic_roundtrip_yaml_update` for callers that compute
     the full post-write mapping through existing (plain-dict) mutation and
     normalisation helpers and need multi-key semantics — nested writes, list
-    index writes, and key deletions — in one atomic replace.  Raises on files
-    the round-trip parser rejects (e.g. duplicate keys, which PyYAML
-    tolerates); callers decide whether to fall back to a plain dump.
+    index writes, and key deletions — in one atomic replace.
+
+    Raises :class:`RoundTripUnsupportedError` when the document cannot go
+    through the round-trip parser (duplicate keys, ruamel unavailable) — the
+    only condition where a plain-dump fallback is appropriate.  Filesystem
+    and atomic-write failures propagate unchanged.
     """
-    from ruamel.yaml import YAML
-    from ruamel.yaml.comments import CommentedMap
+    try:
+        from ruamel.yaml import YAML
+        from ruamel.yaml.comments import CommentedMap
+        from ruamel.yaml.error import YAMLError
+    except ImportError as exc:
+        raise RoundTripUnsupportedError(f"ruamel.yaml unavailable: {exc}") from exc
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -532,8 +552,16 @@ def atomic_roundtrip_yaml_apply(
     yaml_rt.indent(mapping=2, sequence=4, offset=2)
 
     if path.exists():
-        with path.open("r", encoding="utf-8") as f:
-            doc = yaml_rt.load(f) or CommentedMap()
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                doc = yaml_rt.load(f) or CommentedMap()
+        except YAMLError as exc:
+            # PyYAML tolerates documents ruamel's round-trip parser rejects
+            # (duplicate keys being the common case) — signal "unsupported",
+            # not "failed", so callers may fall back to the historical dump.
+            raise RoundTripUnsupportedError(
+                f"round-trip parser rejected {path.name}: {exc}"
+            ) from exc
     else:
         doc = CommentedMap()
     if not isinstance(doc, CommentedMap):

@@ -260,21 +260,38 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
         return "image/bmp"
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
-    # HEIF/HEIC/AVIF — ISO-BMFF container: bytes 4-8 are the box type 'ftyp',
-    # bytes 8-12 the major brand. iPhone photos/screenshots are HEIC (often
-    # mislabeled .jpg by upload pipelines). None of the vision providers ingest
-    # HEIF, but _normalize_to_supported_image re-encodes it to PNG via
+    # HEIF/HEIC/AVIF — ISO-BMFF container: bytes 0-4 are the box size, 4-8 the
+    # box type 'ftyp', 8-12 the major brand, 12-16 the minor version, and every
+    # 4 bytes after that a compatible brand. iPhone photos/screenshots are HEIC
+    # (often mislabeled .jpg by upload pipelines). None of the vision providers
+    # ingest HEIF, but _normalize_to_supported_image re-encodes it to PNG via
     # pillow-heif (same soft-dependency pattern as SVG). Sniffed here so it
     # reaches that step instead of being rejected as "not a recognized image".
+    #
+    # The major brand alone is not sufficient to tell AVIF from HEIC: AVIF files
+    # are routinely stamped with the generic still-image brand 'mif1' as major
+    # and identify their codec only in the compatible-brand list. Scanning that
+    # list keeps us from handing an AV1-coded file to the HEVC branch.
     if len(header) >= 12 and header[4:8] == b"ftyp":
-        brand = header[8:12]
-        if brand in (
+        major = header[8:12]
+        # Bound the brand scan by the declared box size when it's sane, so we
+        # never read brands out of a following box; fall back to the sniffed
+        # header window otherwise (truncated reads, bogus size fields).
+        box_size = int.from_bytes(header[:4], "big")
+        limit = box_size if 16 <= box_size <= len(header) else len(header)
+        compatibles = {
+            header[i:i + 4] for i in range(16, limit - 3, 4)
+        }
+        brands = {major} | compatibles
+        # AV1-coded brands win over the generic HEIF ones when both appear.
+        if brands & {b"avif", b"avis", b"av01"}:
+            return "image/avif"
+        if brands & {
             b"heic", b"heix", b"heim", b"heis",  # HEVC-coded HEIF still/sequence
             b"hevc", b"hevx",
-            b"mif1", b"msf1",                     # generic HEIF image / sequence
-            b"avif", b"avis",                     # AV1-coded (AVIF)
-        ):
-            return "image/avif" if brand.startswith(b"avi") else "image/heic"
+            b"mif1", b"msf1",                    # generic HEIF image / sequence
+        }:
+            return "image/heic"
     return None
 
 
@@ -374,24 +391,29 @@ def _normalize_to_supported_image(
         )
 
     # Other non-supported raster formats (BMP, TIFF, HEIF/HEIC/AVIF, ...):
-    # re-encode via Pillow. HEIF/AVIF need the pillow-heif plugin registered
-    # first (Pillow has no built-in HEIF codec); it's a soft dependency, so a
-    # HEIF image with the plugin missing gets an actionable error rather than a
-    # generic failure — same posture as the SVG-without-rasterizer branch.
+    # re-encode via Pillow.
+    #
+    # HEIF/AVIF need a codec Pillow's core doesn't always carry, but the two
+    # formats are served by DIFFERENT optional backends and must not be gated on
+    # one another:
+    #   * HEIC/HEIF (HEVC-coded) — needs the pillow-heif plugin registered.
+    #   * AVIF (AV1-coded) — Pillow >= 11.3 ships a native AvifImagePlugin, and
+    #     pillow-heif wheels are frequently built with NO AV1 codec at all
+    #     (``libheif_info()['AVIF'] == ''``). Demanding pillow-heif for AVIF
+    #     would reject files Pillow can already decode and point the user at a
+    #     library that cannot help.
+    # So: register whatever backend is available, then let the decode attempt
+    # below be the actual arbiter, and only emit a codec-specific error if the
+    # decode really fails. Same soft-dependency posture as the SVG branch.
     if detected_mime in ("image/heic", "image/avif"):
         try:
             import pillow_heif  # type: ignore
             pillow_heif.register_heif_opener()
         except Exception:
-            return (
-                None,
-                None,
-                f"This is a {'HEIC/HEIF' if detected_mime == 'image/heic' else 'AVIF'} "
-                "image (common for iPhone photos), which vision models cannot read "
-                "directly, and the pillow-heif decoder is not installed. Install it "
-                "(`pip install pillow-heif`) and re-run vision_analyze, or convert the "
-                "image to PNG/JPEG first.",
-            )
+            # Not fatal on its own — Pillow may still decode this file (always
+            # true for AVIF on Pillow >= 11.3). Fall through to the decode.
+            logger.debug("pillow-heif unavailable; relying on Pillow for %s",
+                         detected_mime)
     try:
         from PIL import Image as _PILImage
         with _PILImage.open(image_path) as _img:
@@ -403,6 +425,27 @@ def _normalize_to_supported_image(
     except Exception as _exc:
         logger.warning("Failed to normalize %s image to PNG: %s",
                        detected_mime, _exc)
+        # Codec-specific guidance: name the backend that actually serves this
+        # format, rather than blaming a single library for both.
+        if detected_mime == "image/heic":
+            return (
+                None,
+                None,
+                "This is a HEIC/HEIF image (common for iPhone photos), which "
+                "vision models cannot read directly, and no HEIF decoder is "
+                "available. Install one (`pip install pillow-heif`) and re-run "
+                "vision_analyze, or convert the image to PNG/JPEG first.",
+            )
+        if detected_mime == "image/avif":
+            return (
+                None,
+                None,
+                "This is an AVIF image, which vision models cannot read "
+                "directly, and no AV1 decoder is available. Upgrade Pillow "
+                "(>= 11.3 bundles AVIF support) or install a pillow-heif build "
+                "with an AV1 codec, then re-run vision_analyze — or convert the "
+                "image to PNG/JPEG first.",
+            )
     return (
         None,
         None,

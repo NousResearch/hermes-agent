@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
+import { fr } from './fr'
 import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, localeConfigValue, normalizeLocale } from './languages'
 
 describe('desktop i18n languages', () => {
+  it('keeps every fixed French sidebar navigation label non-empty', () => {
+    expect(fr.sidebar.nav).toMatchObject({
+      'new-session': 'Nouvelle session',
+      artifacts: 'Artefacts',
+      cron: 'Tâches planifiées',
+      messaging: 'Messagerie',
+      skills: 'Capacités'
+    })
+  })
+
   it('normalizes supported locale aliases', () => {
     expect(normalizeLocale('en')).toBe('en')
     expect(normalizeLocale('EN-US')).toBe('en')

@@ -133,16 +133,38 @@ test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
   assert.equal(profileRemoteOverride(null, 'coder'), null)
 })
 
-test('SSH remains separate from URL-shaped remote modes', () => {
+test('SSH remains separate from URL-shaped remote modes and preserves an explicit remote profile', () => {
   assert.equal(modeIsRemoteLike('ssh'), false)
-  const config = { profiles: { coder: { mode: 'ssh', host: 'alice@box:2222', keyPath: '/key' } } }
+
+  const config = {
+    profiles: { coder: { mode: 'ssh', host: 'alice@box:2222', keyPath: '/key', remoteProfile: 'default' } }
+  }
+
   assert.equal(profileRemoteOverride(config, 'coder'), null)
+
   assert.deepEqual(profileSshOverride(config, 'coder'), {
     mode: 'ssh',
     host: 'box',
     user: 'alice',
     port: 2222,
-    keyPath: '/key'
+    keyPath: '/key',
+    remoteProfile: 'default'
+  })
+})
+
+test('normalizeSshConfig rejects unsafe remote profile mappings', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'writer_2' }), {
+    mode: 'ssh',
+    host: 'box',
+    remoteProfile: 'writer_2'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'bad profile' }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: '' }), {
+    mode: 'ssh',
+    host: 'box'
   })
 })
 

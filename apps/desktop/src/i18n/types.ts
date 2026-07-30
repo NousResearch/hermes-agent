@@ -659,7 +659,7 @@ export interface Translations {
       disableServer: (name: string) => string
       serverEnabled: (name: string) => string
       serverDisabled: (name: string) => string
-      toggleFailed: (name: string) => string
+      toggleFailed: (name: string, enabled: boolean) => string
       tabServers: string
       tabCatalog: string
       catalogLoading: string
@@ -868,7 +868,7 @@ export interface Translations {
     visionModelLink: string
     toolsetsEnabled: (enabled: number, total: number) => string
     configureToolset: (label: string) => string
-    toggleToolset: (label: string) => string
+    toggleToolset: (label: string, enabled: boolean) => string
     skillsLoadFailed: string
     toolsetsRefreshFailed: string
     skillEnabled: string
@@ -1027,7 +1027,7 @@ export interface Translations {
       installed: string
       generatedTag: string
       adoptFailed: string
-      toggleFailed: string
+      toggleFailed: (enabled: boolean) => string
       noneAvailable: string
     }
     generatePet: {
@@ -1249,7 +1249,7 @@ export interface Translations {
     deleteDescPrefix: string
     deleteDescSuffix: string
     deleteFailed: (name: string) => string
-    toggleFailed: (name: string) => string
+    toggleFailed: (name: string, enabled: boolean) => string
     newSubscription: string
     restarting: string
     restartNeeded: string
@@ -1592,7 +1592,7 @@ export interface Translations {
       forceRemove: string
       enter: (label: string) => string
       reorder: (label: string) => string
-      toggle: (label: string) => string
+      toggle: (label: string, open: boolean) => string
       back: string
     }
     newSessionIn: (label: string) => string
@@ -2509,7 +2509,7 @@ export interface Translations {
     sidebar: {
       title: string
       description: string
-      toggle: string
+      toggle: (open: boolean) => string
     }
   }
 }

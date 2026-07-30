@@ -16,21 +16,12 @@ import {
   type SlashChipKind,
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
-import {
-  desktopSlashCommandArgumentMode,
-  isDesktopSlashCommand,
-  resolveDesktopCommand
-} from '@/lib/desktop-slash-commands'
+
+import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
 export const REF_RE = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
-
-/** A committed leading slash command: `/name` followed by whitespace. The
- *  whitespace requirement is what separates a committed command (chips always
- *  serialize with their auto-inserted trailing space) from one still being
- *  typed, which must stay editable text. */
-const LEADING_SLASH_COMMAND_RE = /^\/[a-zA-Z][\w-]*(?=\s)/
 
 const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }
 
@@ -123,42 +114,59 @@ function appendTextWithBreaks(target: DocumentFragment | HTMLElement, text: stri
   })
 }
 
-export function appendComposerContents(target: DocumentFragment | HTMLElement, text: string) {
-  let cursor = 0
-
+/** Every span of `text` that renders as a chip, in source order. */
+function chipSpans(text: string, options: SlashCommandScanOptions) {
   REF_RE.lastIndex = 0
 
-  for (const match of text.matchAll(REF_RE)) {
-    const index = match.index ?? 0
-    appendTextWithBreaks(target, text.slice(cursor, index))
-    target.append(refChipElement(match[1] || 'file', match[2] || ''))
-    cursor = index + match[0].length
+  const refs = Array.from(text.matchAll(REF_RE)).map(match => {
+    const start = match.index ?? 0
+
+    return { end: start + match[0].length, node: () => refChipElement(match[1] || 'file', match[2] || ''), start }
+  })
+
+  const commands = slashCommandMatches(text, options).map(match => ({
+    end: match.end,
+    node: () => slashChipElement(match.command, match.kind),
+    start: match.start
+  }))
+
+  return [...refs, ...commands].sort((a, b) => a.start - b.start)
+}
+
+/** Build the chip/text DOM for `text`. Directives hydrate back to their pills —
+ *  `@kind:value` refs and `/command` invocations both — so text that arrives
+ *  whole (a paste, a restored draft, an undo step, a rebuilt line) carries the
+ *  same chips the typed path would have committed. */
+export function appendComposerContents(
+  target: DocumentFragment | HTMLElement,
+  text: string,
+  options: SlashCommandScanOptions = {}
+) {
+  let cursor = 0
+
+  for (const span of chipSpans(text, options)) {
+    // A `@` ref wins an overlap: a command token can't contain an `@`, so the
+    // only way spans collide is a slash inside a quoted ref value
+    // (`` @url:`a /clean` ``), which belongs to that value.
+    if (span.start < cursor) {
+      continue
+    }
+
+    appendTextWithBreaks(target, text.slice(cursor, span.start))
+    target.append(span.node())
+    cursor = span.end
   }
 
   appendTextWithBreaks(target, text.slice(cursor))
 }
 
-export function renderComposerContents(target: HTMLElement, text: string) {
+export function renderComposerContents(target: HTMLElement, text: string, options?: SlashCommandScanOptions) {
   target.replaceChildren()
 
-  // A leading `/command` hydrates back to its pill — parity with REF_RE for
-  // `@` refs, so a full re-render from serialized text (draft restore, undo,
-  // the trigger commit fallback) doesn't demote a committed command chip to
-  // plain text. Only commands with NO argument stage qualify (skills, quick
-  // commands, no-arg built-ins): their committed pill is exactly the bare
-  // `/name`, so the boundary is unambiguous. Arg-taking commands (`/goal ship
-  // it`, `/personality alice`) stay text — their tail may be prose that was
-  // never committed. The trailing whitespace is load-bearing too: a committed
-  // pill always serializes with its auto-inserted space, while a half-typed
-  // `/wor` must stay editable text.
-  const command = LEADING_SLASH_COMMAND_RE.exec(text)?.[0]
-
-  if (command && isDesktopSlashCommand(command) && desktopSlashCommandArgumentMode(command) === null) {
-    target.append(slashChipElement(command, resolveDesktopCommand(command) ? 'command' : 'skill'))
-    text = text.slice(command.length)
-  }
-
-  appendComposerContents(target, text)
+  // Defaults to live editing, where a token ending the text is still being
+  // typed (`/wor`) and must stay editable. Callers repainting inert text (a
+  // restored draft, a sent message opened for edit) pass `trailingCommitted`.
+  appendComposerContents(target, text, options)
 }
 
 /** Caret range when the selection lives inside `editor`; else null. */
@@ -173,20 +181,79 @@ function composerSelectionRange(editor: HTMLElement) {
   return { range, selection }
 }
 
-/** Insert text at the caret (replacing any selection), with any `@kind:value`
- *  directives in it landing as chips. Pastes use this instead of
- *  `execCommand('insertText')` — Chromium's editing pipeline is ~O(n²) on large
- *  multiline blobs. */
+/** Serialized text from the editor's start up to (`container`, `offset`).
+ *
+ *  Chips are ATOMIC here: each contributes an object-replacement placeholder
+ *  rather than leaking its label text, and a <br> contributes a newline. That
+ *  makes a chip edge read as a token boundary, which is what both trigger
+ *  detection and directive recognition need. */
+export function serializeTextBefore(editor: HTMLElement, container: Node, offset: number): string {
+  const probe = document.createRange()
+
+  probe.selectNodeContents(editor)
+  probe.setEnd(container, offset)
+
+  const scratch = document.createElement('div')
+
+  scratch.append(probe.cloneContents())
+
+  for (const chip of scratch.querySelectorAll('[data-ref-text]')) {
+    chip.replaceWith('\uFFFC')
+  }
+
+  for (const br of scratch.querySelectorAll('br')) {
+    br.replaceWith('\n')
+  }
+
+  return scratch.textContent ?? ''
+}
+
+/** True when the insertion point starts a token — the editor's start, or after
+ *  whitespace or a chip. `foo` + a pasted `/clean` is `foo/clean`, not a
+ *  command; `foo ` + the same paste is. */
+function atTokenBoundary(editor: HTMLElement, range: Range | null): boolean {
+  // No caret means the insert lands at the end, so the question is about the
+  // editor's last character either way.
+  const before = range
+    ? serializeTextBefore(editor, range.startContainer, range.startOffset)
+    : serializeTextBefore(editor, editor, editor.childNodes.length)
+
+  const last = before.slice(-1)
+
+  return !last || /[\s\uFFFC]/.test(last)
+}
+
+/** Insert text at the caret (replacing any selection), with any directives in
+ *  it landing as chips. Pastes use this instead of `execCommand('insertText')`
+ *  — Chromium's editing pipeline is ~O(n²) on large multiline blobs.
+ *
+ *  The text arrives whole rather than typed, so a `/command` ending it is
+ *  complete rather than half-written and chips like the rest. */
 export function insertComposerContentsAtCaret(editor: HTMLElement, text: string) {
   const hit = composerSelectionRange(editor)
   const fragment = document.createDocumentFragment()
 
-  appendComposerContents(fragment, text)
+  // Before measuring the boundary — a replaced selection puts the insertion
+  // point where the selection started, not where it ended.
+  if (hit) {
+    hit.range.deleteContents()
+  }
+
+  appendComposerContents(fragment, text, {
+    boundaryBefore: atTokenBoundary(editor, hit?.range ?? null),
+    trailingCommitted: true
+  })
+
+  // A slash pill ending the insert gets the trailing space the typed commit
+  // path appends, or the next full re-render reads it as a half-typed token
+  // and demotes it. `@` refs need no marker — REF_RE re-chips them either way.
+  if ((fragment.lastChild as HTMLElement | null)?.dataset?.slashKind) {
+    fragment.append(document.createTextNode(' '))
+  }
 
   const tail = fragment.lastChild
 
   if (hit) {
-    hit.range.deleteContents()
     hit.range.insertNode(fragment)
   } else {
     editor.append(fragment)

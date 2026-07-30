@@ -789,6 +789,12 @@ class TestSafeFloat:
         assert _safe_float("corrupted") == 0.0
         assert _safe_float("not a number") == 0.0
 
+    def test_safe_int_corrupted_string_returns_zero(self):
+        from agent.insights import _safe_int
+        assert _safe_int("corrupted") == 0
+        assert _safe_int("not a number") == 0
+        assert _safe_int(None) == 0
+
     def test_numeric_string_coerces(self):
         assert _safe_float("3.14") == 3.14
         assert _safe_float("42") == 42.0
@@ -879,6 +885,51 @@ class TestInsightsCorruptedCost:
                   0.0001, 0.0, "included"))
         except Exception:
             pytest.skip("session_model_usage table not available")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        assert report["overview"]["total_input_tokens"] >= 0
+
+
+    def test_corrupted_input_tokens_in_usage_does_not_crash(self, db):
+        """_safe_int neutralizes corrupted input_tokens in _accumulate path."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        try:
+            db._conn.execute("""
+                INSERT INTO session_model_usage
+                (session_id, model, billing_provider, billing_base_url,
+                 api_call_count, input_tokens, output_tokens,
+                 cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                 estimated_cost_usd, actual_cost_usd, cost_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, ("s1", "gpt-4o", "openai", "",
+                  1, "corrupted", 500, 0, 0, 0,
+                  0.0, 0.0, "included"))
+        except Exception:
+            pytest.skip("session_model_usage table not available")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        assert report["overview"]["total_input_tokens"] >= 0
+
+    def test_corrupted_aggregate_input_tokens_does_not_crash(self, db):
+        """_safe_int guards aggregate sessions.input_tokens in platform breakdown."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        # Inject corrupted token value into the sessions aggregate row
+        db._conn.execute(
+            "UPDATE sessions SET input_tokens = ? WHERE id = 's1'",
+            ("corrupted",)
+        )
         db._conn.commit()
 
         engine = InsightsEngine(db)

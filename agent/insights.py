@@ -102,6 +102,14 @@ def _safe_float(val):
         return 0.0
 
 
+def _safe_int(val):
+    """Coerce to int, returning 0 for non-numeric values (defensive)."""
+    try:
+        return int(val) if val is not None else 0
+    except (ValueError, TypeError):
+        return 0
+
+
 class InsightsEngine:
     """
     Analyzes session history and produces usage insights.
@@ -685,13 +693,6 @@ class InsightsEngine:
             "actual_cost_usd": 0.0,
         })
 
-        def _safe_int(val):
-            """Coerce to int, returning 0 for non-numeric values (defensive)."""
-            try:
-                return int(val) if val is not None else 0
-            except (ValueError, TypeError):
-                return 0
-
         for r in usage_rows:
             totals: Dict[str, Any] = usage_totals[r["session_id"]]
             for key in (
@@ -703,9 +704,10 @@ class InsightsEngine:
             totals["actual_cost_usd"] += _safe_float(r["actual_cost_usd"])
             d = _accumulate(
                 r["model"], r["billing_provider"], r.get("billing_base_url"),
-                r["session_id"], r["input_tokens"] or 0, r["output_tokens"] or 0,
-                r["cache_read_tokens"] or 0, r["cache_write_tokens"] or 0,
-                r["reasoning_tokens"] or 0,
+                r["session_id"],
+                _safe_int(r["input_tokens"]), _safe_int(r["output_tokens"]),
+                _safe_int(r["cache_read_tokens"]), _safe_int(r["cache_write_tokens"]),
+                _safe_int(r["reasoning_tokens"]),
                 stored_cost=(
                     r["estimated_cost_usd"]
                     if r.get("cost_status") or r.get("cost_source")
@@ -793,10 +795,10 @@ class InsightsEngine:
             d = platform_data[source]
             d["sessions"] += 1
             d["messages"] += s.get("message_count") or 0
-            inp = s.get("input_tokens") or 0
-            out = s.get("output_tokens") or 0
-            cache_read = s.get("cache_read_tokens") or 0
-            cache_write = s.get("cache_write_tokens") or 0
+            inp = _safe_int(s.get("input_tokens"))
+            out = _safe_int(s.get("output_tokens"))
+            cache_read = _safe_int(s.get("cache_read_tokens"))
+            cache_write = _safe_int(s.get("cache_write_tokens"))
             d["input_tokens"] += inp
             d["output_tokens"] += out
             d["cache_read_tokens"] += cache_read

@@ -130,7 +130,7 @@ dependencies = [
   # _normalize_to_supported_image can re-encode HEIF/AVIF to PNG before embed.
   # Ships prebuilt wheels bundling libheif for the common platforms (no system
   # libs needed), so it's safe in the base install alongside Pillow.
-  "pillow-heif==1.4.0",
+  "pillow-heif>=1.4.0,<2",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on

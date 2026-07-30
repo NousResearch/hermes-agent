@@ -617,6 +617,10 @@ class InProcessCronScheduler(CronScheduler):
         agent execution to that profile's home — mirroring how
         ``_profile_runtime_scope`` scopes the multiplexed inbound path and
         ``web_server.py`` scopes per-profile cron API calls.
+
+        Failures are isolated per profile: a tick that raises for one profile
+        neither skips the profiles after it in ``profile_homes`` nor marks them
+        as failing in their own heartbeats.
         """
         import logging
         from cron.scheduler import tick as cron_tick
@@ -654,36 +658,59 @@ class InProcessCronScheduler(CronScheduler):
 
         consecutive_failures = 0
         while not stop_event.is_set():
-            ok = False
-            _tick_error = None
-            try:
-                if can_dispatch is not None and not can_dispatch():
-                    logger.debug("Cron dispatch paused while gateway drains existing work")
-                else:
-                    for entry in profile_homes:
-                        home = entry[1] if isinstance(entry, tuple) else entry
-                        home_token = set_hermes_home_override(str(home))
-                        try:
-                            with use_cron_store(home):
-                                cron_tick(
-                                    verbose=False,
-                                    adapters=adapters,
-                                    loop=loop,
-                                    sync=False,
-                                    can_dispatch=can_dispatch,
-                                )
-                        finally:
-                            reset_hermes_home_override(home_token)
-                ok = True
-            except BaseException as e:
-                logger.error("Cron tick error: %s", e, exc_info=True)
-                _tick_error = f"{type(e).__name__}: {e}"
-                # EMFILE: reclaim fds + exponential backoff (#87644).
-                consecutive_failures = _note_tick_failure(e, consecutive_failures)
+            # One outcome per profile for this cycle: (entry, ok, error|None).
+            # Keeping the result per profile is what stops a failure in one
+            # store from being attributed to — or blocking — the others.
+            outcomes = []
+            if can_dispatch is not None and not can_dispatch():
+                logger.debug("Cron dispatch paused while gateway drains existing work")
+                # Nothing was attempted this cycle; treat it as clean, matching
+                # the single-profile path above.
+                outcomes = [(entry, True, None) for entry in profile_homes]
             else:
-                _tick_error = None
-            # Record per-profile heartbeat after each tick cycle.
-            for entry in profile_homes:
+                for entry in profile_homes:
+                    home = entry[1] if isinstance(entry, tuple) else entry
+                    home_token = set_hermes_home_override(str(home))
+                    try:
+                        with use_cron_store(home):
+                            cron_tick(
+                                verbose=False,
+                                adapters=adapters,
+                                loop=loop,
+                                sync=False,
+                                can_dispatch=can_dispatch,
+                            )
+                        outcomes.append((entry, True, None))
+                    except BaseException as e:
+                        # Isolate per profile. tick() has no catch-all of its
+                        # own — its body is try/finally — so anything raised
+                        # inside it lands here; without this the remaining
+                        # profiles in profile_homes are skipped for the cycle,
+                        # and a persistent per-profile failure (e.g. a
+                        # root-rewritten jobs.json) starves them indefinitely.
+                        # BaseException for the same reason the single-profile
+                        # path catches it (#32612): a SystemExit out of a
+                        # provider SDK must not kill the ticker thread.
+                        logger.error(
+                            "Cron tick error (profile at %s): %s",
+                            home, e, exc_info=True,
+                        )
+                        outcomes.append((entry, False, f"{type(e).__name__}: {e}"))
+                        # EMFILE: reclaim fds + exponential backoff (#87644).
+                        # Per-profile integration: fd exhaustion is
+                        # process-wide, but attribution stays per profile —
+                        # the failing profile carries the error record, and
+                        # the counter still feeds the shared backoff wait.
+                        consecutive_failures = _note_tick_failure(
+                            e, consecutive_failures
+                        )
+                    finally:
+                        reset_hermes_home_override(home_token)
+
+            # Record each profile's OWN result, so `hermes cron status` cannot
+            # report a healthy profile as failing because a different profile
+            # raised.
+            for entry, ok, tick_error in outcomes:
                 home = entry[1] if isinstance(entry, tuple) else entry
                 home_token = set_hermes_home_override(str(home))
                 try:
@@ -694,10 +721,10 @@ class InProcessCronScheduler(CronScheduler):
                         # (#68483).
                         if ok:
                             clear_ticker_error()
-                        elif _tick_error:
-                            record_ticker_error(_tick_error)
+                        elif tick_error:
+                            record_ticker_error(tick_error)
                 finally:
                     reset_hermes_home_override(home_token)
-            if ok:
+            if all(ok for _, ok, _ in outcomes):
                 consecutive_failures = 0
             stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))

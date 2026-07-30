@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import stat
 import threading
 import time
@@ -268,6 +269,7 @@ def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
         popen_calls.append((args, kwargs))
         return object()
 
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: False)
     monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
     monkeypatch.setattr(openviking_module.subprocess, "Popen", fake_popen)
 
@@ -278,6 +280,69 @@ def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
     args, kwargs = popen_calls[0]
     assert args == ["/usr/local/bin/openviking-server", "--host", "127.0.0.1", "--port", "1934"]
     assert kwargs["start_new_session"] is True
+
+
+def test_start_local_openviking_server_does_not_spawn_when_port_already_open(monkeypatch):
+    """A live listener means a second server would just die on DataDirectoryLocked."""
+    probed = []
+
+    def fake_probe(host, port):
+        probed.append((host, port))
+        return True
+
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", fake_probe)
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    monkeypatch.setattr(
+        openviking_module.subprocess,
+        "Popen",
+        MagicMock(side_effect=AssertionError("must not spawn while a server is already listening")),
+    )
+
+    started, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert started is True
+    assert "already running" in message
+    assert probed == [("127.0.0.1", 1934)]
+
+
+def test_start_local_openviking_server_reports_running_server_without_cli_on_path(monkeypatch):
+    """The port probe outranks PATH: a reachable server is started, whoever launched it."""
+    monkeypatch.setattr(openviking_module, "_local_openviking_port_is_open", lambda host, port: True)
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        openviking_module.subprocess,
+        "Popen",
+        MagicMock(side_effect=AssertionError("must not spawn")),
+    )
+
+    started, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert started is True
+    assert "already running" in message
+
+
+def test_start_local_openviking_server_rejects_unparseable_url_before_probing(monkeypatch):
+    monkeypatch.setattr(
+        openviking_module,
+        "_local_openviking_port_is_open",
+        MagicMock(side_effect=AssertionError("must not probe an unparseable endpoint")),
+    )
+
+    started, message = openviking_module._start_local_openviking_server("http://127.0.0.1:not-a-port")
+
+    assert started is False
+    assert "Could not parse local OpenViking URL" in message
+
+
+def test_local_openviking_port_is_open_detects_listener_and_closed_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        _host, port = listener.getsockname()
+        assert openviking_module._local_openviking_port_is_open("127.0.0.1", port) is True
+
+    # Socket closed: the same port no longer accepts connections.
+    assert openviking_module._local_openviking_port_is_open("127.0.0.1", port) is False
 
 
 def test_https_local_endpoint_is_not_runtime_autostart_eligible(monkeypatch):

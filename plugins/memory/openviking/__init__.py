@@ -33,6 +33,7 @@ import mimetypes
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
@@ -126,6 +127,10 @@ _GENERATED_MEMORY_SUMMARY_FILENAMES = {
 }
 _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOCAL_OPENVIKING_AUTOSTART_TIMEOUT = 60.0
+# Pre-spawn liveness probe budget. A loopback TCP connect either completes or
+# is refused in well under this; it exists only so a wedged listener cannot
+# block the autostart path.
+_LOCAL_OPENVIKING_PROBE_TIMEOUT = 2.0
 # After a refresh attempt fails for a given (unchanged) config, skip re-probing
 # for this long. Keeps "unavailable endpoints reconnect on a later access"
 # true while preventing every provider access from paying a 3s health probe
@@ -1240,14 +1245,36 @@ def _openviking_server_log_path() -> Path:
     return home / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
 
 
+def _local_openviking_port_is_open(host: str, port: int) -> bool:
+    """Return True when something already accepts TCP connections on host:port.
+
+    Used as a pre-spawn guard only. A successful connect proves a listener owns
+    the port, which is enough to know a second ``openviking-server`` would lose
+    the data-directory lock — it deliberately says nothing about whether that
+    listener is healthy.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=_LOCAL_OPENVIKING_PROBE_TIMEOUT):
+            return True
+    except OSError:
+        return False
+
+
 def _start_local_openviking_server(endpoint: str) -> tuple[bool, str]:
-    server_cmd = shutil.which("openviking-server")
-    if not server_cmd:
-        return False, "openviking-server was not found on PATH. Start it manually, then retry."
     try:
         host, port = _local_openviking_bind(endpoint)
     except ValueError as e:
         return False, f"Could not parse local OpenViking URL: {e}"
+    # Health probes can time out client-side while the server is up and well.
+    # Spawning on that signal alone produces a process that immediately dies on
+    # DataDirectoryLocked, and — because the probe keeps timing out — repeats
+    # every cooldown window. Treat an occupied port as "already started": both
+    # callers only need the server running, not started by us.
+    if _local_openviking_port_is_open(host, port):
+        return True, f"openviking-server is already running on {host}:{port}."
+    server_cmd = shutil.which("openviking-server")
+    if not server_cmd:
+        return False, "openviking-server was not found on PATH. Start it manually, then retry."
     log_path = _openviking_server_log_path()
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)

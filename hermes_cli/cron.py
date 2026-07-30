@@ -311,12 +311,35 @@ def cron_status():
             if hb_age is not None:
                 print(f"  Ticker heartbeat: {int(hb_age)}s ago")
     else:
-        print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
-        print()
-        print("  To enable automatic execution:")
-        print("    hermes gateway install    # Install as a user service")
-        print("    sudo hermes gateway install --system  # Linux servers: boot-time system service")
-        print("    hermes gateway            # Or run in foreground")
+        # No gateway process — but the desktop backend runs its own ticker
+        # thread that is invisible to find_gateway_pids. A fresh heartbeat
+        # means a ticker IS alive and jobs ARE firing, so the blanket "will
+        # NOT fire" report is itself a false positive (issue #53119).
+        # Mirror the same staleness threshold used by the create/list
+        # warning so the two views agree on what "alive" means.
+        from cron.jobs import get_ticker_heartbeat_age, TICKER_INTERVAL_SECONDS
+
+        STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # = 200s at 60s default
+        hb_age = get_ticker_heartbeat_age()
+        if hb_age is not None and hb_age <= STALE_AFTER:
+            # A ticker is alive (desktop backend), just not the gateway.
+            print(color(
+                "✓ Cron ticker is running — jobs will fire automatically",
+                Colors.GREEN,
+            ))
+            print(f"  Ticker heartbeat: {int(hb_age)}s ago")
+            print(color(
+                "  (No gateway process detected; the ticker is hosted by the "
+                "desktop dashboard backend or another non-gateway process.)",
+                Colors.DIM,
+            ))
+        else:
+            print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
+            print()
+            print("  To enable automatic execution:")
+            print("    hermes gateway install    # Install as a user service")
+            print("    sudo hermes gateway install --system  # Linux servers: boot-time system service")
+            print("    hermes gateway            # Or run in foreground")
 
     print()
 

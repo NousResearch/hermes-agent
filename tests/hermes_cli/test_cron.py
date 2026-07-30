@@ -307,6 +307,8 @@ class TestExternalCronProviderStatus:
             "hermes_cli.cron._active_cron_provider_name", lambda: "builtin"
         )
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        # No gateway process AND no heartbeat -> historical "not running" report.
+        monkeypatch.setattr("cron.jobs.get_ticker_heartbeat_age", lambda: None)
         cron_command(Namespace(cron_command="status"))
         out = capsys.readouterr().out
         # Built-in path is the historical ticker-based report.
@@ -340,6 +342,56 @@ class TestExternalCronProviderStatus:
         out = capsys.readouterr().out
         assert "Created job" in out
         assert "Gateway is not running" not in out
+
+
+class TestCronStatusDesktopTicker:
+    """`cron status` must recognize a live desktop ticker when no gateway
+    process is visible, mirroring the create/list warning fix (issue #53119).
+
+    Before this fix, `cron status` evaluated heartbeat state only inside
+    ``if pids:`` and otherwise unconditionally reported "will NOT fire" --
+    contradicting the create/list views that correctly suppressed the warning.
+    """
+
+    def test_status_reports_ticker_when_desktop_alive_no_gateway(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        """No gateway PID but a fresh heartbeat -> status reports the ticker
+        is running, NOT that jobs will not fire."""
+        create_job(prompt="Ping", schedule="every 2m")
+        monkeypatch.setattr(
+            "hermes_cli.cron._active_cron_provider_name", lambda: "builtin"
+        )
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        # Fresh heartbeat -- well under the 200s staleness threshold.
+        monkeypatch.setattr("cron.jobs.get_ticker_heartbeat_age", lambda: 8.0)
+        cron_command(Namespace(cron_command="status"))
+        out = capsys.readouterr().out
+        assert "Cron ticker is running" in out
+        assert "jobs will fire" in out
+        assert "Ticker heartbeat: 8s ago" in out
+        # Must NOT claim jobs will not fire.
+        assert "will NOT fire" not in out
+        assert "Gateway is not running" not in out
+        # Still surfaces the active-job summary.
+        assert "active job(s)" in out
+
+    def test_status_reports_not_firing_when_heartbeat_stale_no_gateway(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        """No gateway PID and a STALE heartbeat -> status correctly reports
+        jobs will not fire (the ticker is dead)."""
+        create_job(prompt="Ping", schedule="every 2m")
+        monkeypatch.setattr(
+            "hermes_cli.cron._active_cron_provider_name", lambda: "builtin"
+        )
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        # 600s old -- far past the 200s STALE_AFTER threshold.
+        monkeypatch.setattr("cron.jobs.get_ticker_heartbeat_age", lambda: 600.0)
+        cron_command(Namespace(cron_command="status"))
+        out = capsys.readouterr().out
+        assert "will NOT fire" in out
+        assert "Cron ticker is running" not in out
 
 
 def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):

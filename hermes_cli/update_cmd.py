@@ -3046,6 +3046,89 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         # Never let lockfile cleanup block an update.
         pass
 
+def _normalize_managed_eol(git_cmd, repo_root):
+    """Take a managed checkout off ``core.autocrlf=true`` without leaving it dirty.
+
+    Git for Windows ships ``core.autocrlf=true`` in its system config, which
+    renormalizes this repo's LF text files to CRLF in the working tree. That
+    breaks ``git checkout`` on update with "Your local changes would be
+    overwritten", so ``install.ps1`` pins ``core.autocrlf=false`` on the managed
+    clone (#67730). Checkouts created before that landed never got the pin and
+    cannot receive it — the bootstrap installer reuses its build-pinned
+    ``install.ps1`` forever — so ``hermes update``, which ships with the checkout
+    itself, is the only path left that can fix them.
+
+    The pin and the cleanup are one operation. Under ``autocrlf=true`` git
+    compares normalized content, so a CRLF working tree reads clean; pinning
+    alone would expose every text file as modified and hand the update an
+    autostash of the whole tree. So the pin is written only after the tree is
+    verified clean under it, and a checkout we cannot fully normalize is left
+    exactly as it was. Best-effort: never blocks an update.
+    """
+    # -c, not config: evaluate the tree as it WOULD look pinned, without
+    # persisting anything we might not be able to follow through on.
+    probe = git_cmd + ["-c", "core.autocrlf=false"]
+
+    def _dirty(*extra):
+        out = subprocess.run(
+            probe + ["diff", "-z", "--name-only", *extra],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if out.returncode != 0:
+            return None
+        return {p for p in out.stdout.split("\0") if p}
+
+    def _eol_only():
+        all_dirty, real_dirty = _dirty(), _dirty("--ignore-cr-at-eol")
+        if all_dirty is None or real_dirty is None:
+            return None
+        return all_dirty - real_dirty
+
+    try:
+        effective = subprocess.run(
+            git_cmd + ["config", "--get", "core.autocrlf"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        # Only "true" rewrites LF to CRLF on checkout. Unset, false, and input
+        # all leave the working tree alone, so there is nothing to repair.
+        if effective.stdout.strip().lower() != "true":
+            return
+
+        eol_only = _eol_only()
+        if eol_only is None:
+            return
+        if eol_only:
+            # Pathspec over stdin, not argv: a fully renormalized checkout is
+            # thousands of paths, well past the Windows command-line limit.
+            subprocess.run(
+                probe
+                + ["checkout", "--pathspec-from-file=-", "--pathspec-file-nul", "--"],
+                cwd=repo_root,
+                input="\0".join(sorted(eol_only)),
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                check=False,
+            )
+            if _eol_only():
+                # Still dirty — persisting the pin here would only surface churn
+                # we failed to clear. Leave the checkout as we found it.
+                return
+            print(f"→ Normalized line-ending churn ({len(eol_only)} file(s))")
+
+        subprocess.run(
+            git_cmd + ["config", "core.autocrlf", "false"],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+        )
+    except Exception:
+        # Never let line-ending cleanup block an update.
+        pass
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -3173,6 +3256,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # switches fragile. Restoring them first lets the common case (only
     # lockfile churn) update with a clean tree.
     _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
+    # Same rationale, different generator: line-ending churn is machine-made
+    # dirt on a managed checkout, so clear it (and stop generating it) before
+    # the stash/branch logic rather than autostashing the entire tree.
+    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
 
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)

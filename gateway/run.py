@@ -1506,6 +1506,19 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     """
     paths: set = set()
     tool_name_by_call_id: Dict[str, str] = {}
+
+    def _add_text_media_paths(content: str) -> None:
+        for match in _TOOL_MEDIA_RE.finditer(content):
+            path = match.group(1).strip().rstrip('",}')
+            if path:
+                paths.add(path)
+        # The regex alone misses quoted and spaced paths that the delivery
+        # pipeline's extract_media grammar accepts — collect through the same
+        # extractor so the dedup set sees every path that could actually have
+        # been delivered.
+        media_files, _ = BasePlatformAdapter.extract_media(content)
+        paths.update(path for path, _is_voice in media_files)
+
     for msg in agent_history:
         if msg.get("role") == "assistant":
             for call in msg.get("tool_calls") or []:
@@ -1519,19 +1532,13 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         if role == "assistant":
             content = str(msg.get("content", "") or "")
             if "MEDIA:" in content:
-                for match in _TOOL_MEDIA_RE.finditer(content):
-                    p = match.group(1).strip().rstrip('",}')
-                    if p:
-                        paths.add(p)
+                _add_text_media_paths(content)
             continue
         if role not in {"tool", "function"}:
             continue
         content = str(msg.get("content", "") or "")
         if "MEDIA:" in content:
-            for match in _TOOL_MEDIA_RE.finditer(content):
-                p = match.group(1).strip().rstrip('",}')
-                if p:
-                    paths.add(p)
+            _add_text_media_paths(content)
             continue
         cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
         if tool_name_by_call_id.get(cid) == "image_generate":

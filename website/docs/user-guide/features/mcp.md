@@ -184,7 +184,8 @@ from `env_file` take precedence when resolving this server's `${VAR}`
 placeholders; explicit literal values already present in `env` or `headers`
 remain unchanged. If the file is missing or unreadable, Hermes logs a warning
 and falls back to the active profile secret scope or process environment. CLI
-and dashboard probe errors redact exact values loaded from the server file.
+and dashboard probe errors, catalog probes, and runtime discovery logs redact
+exact values loaded from the server file.
 
 Relative paths resolve from `TERMINAL_CWD` when it points to a valid directory,
 otherwise from the Hermes process working directory. Prefer an absolute path

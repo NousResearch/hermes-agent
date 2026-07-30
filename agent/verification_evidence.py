@@ -755,3 +755,24 @@ def verification_status_readonly(
         return _unverified_status(session_id=sid, root=root_str)
     finally:
         conn.close()
+
+
+def verification_status_readonly_for_cwd(
+    *,
+    session_id: str | None,
+    cwd: str | Path | None,
+) -> dict[str, Any]:
+    """Return verification state for a cwd without creating or migrating a ledger."""
+
+    try:
+        from agent.coding_context import project_facts_for
+
+        facts = project_facts_for(cwd)
+    except Exception:
+        facts = None
+    if not facts:
+        return {"status": "not_applicable", "evidence": None}
+
+    sid = str(session_id or "default")
+    root = str(facts.get("root") or Path(cwd or ".").resolve())
+    return verification_status_readonly(session_id=sid, root=root, db_path=_db_path())

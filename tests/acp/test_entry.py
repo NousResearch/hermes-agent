@@ -128,3 +128,88 @@ def test_shield_stdin_redirects_fd0_to_devnull(tmp_path):
     assert "INHERITED:b''" in out
     # The transport keeps the real stdin through the private duplicate.
     assert r"TRANSPORT:b'protocol-line\n'" in out
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="STD_INPUT_HANDLE inheritance is Windows-specific",
+)
+def test_shield_stdin_denies_the_pipe_to_a_real_descendant(tmp_path):
+    """A spawned descendant must inherit NUL, not the JSON-RPC pipe.
+
+    The fd-0 probe above cannot prove this on Windows: a child launched with
+    ``stdin=None`` inherits the process-wide ``STD_INPUT_HANDLE``, not fd 0,
+    so only an actual descendant exercises the guarantee this shield makes.
+    """
+    import subprocess
+    import sys as _sys
+
+    payload = tmp_path / "descendant_probe.py"
+    payload.write_text(
+        "import subprocess, sys\n"
+        "from acp_adapter import entry\n"
+        "entry._shield_stdin_from_children()\n"
+        # Launch a real grandchild with stdin=None so it inherits whatever
+        # this process hands down — fd 0 on POSIX, STD_INPUT_HANDLE on Windows.
+        "child = subprocess.run(\n"
+        "    [sys.executable, '-c',\n"
+        "     'import os,sys; sys.stdout.write(repr(os.read(0, 16)))'],\n"
+        "    capture_output=True, timeout=30,\n"
+        ")\n"
+        "print('CHILD:' + child.stdout.decode('utf-8', 'replace'))\n"
+        # The transport must still own the real stream afterwards.
+        "print('TRANSPORT:' + repr(sys.stdin.buffer.readline()))\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [_sys.executable, str(payload)],
+        input=b"protocol-line\n",
+        capture_output=True,
+        timeout=60,
+    )
+
+    out = result.stdout.decode("utf-8", "replace")
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    # The descendant saw EOF: it cannot consume or block on the protocol pipe.
+    assert "CHILD:b''" in out
+    assert r"TRANSPORT:b'protocol-line\n'" in out
+
+
+def test_shield_stdin_rolls_back_when_the_win32_handle_redirect_fails(tmp_path):
+    """A failed ``SetStdHandle`` must not leave a half-shielded process.
+
+    fd 0 is repointed at NUL *before* the Win32 std-handle redirect. If that
+    redirect fails and we carry on, children still inherit the real pipe via
+    ``STD_INPUT_HANDLE`` while the log claims the stdin was shielded. Restore
+    the original fd 0 instead, so the process is left in a known state.
+    """
+    import subprocess
+    import sys as _sys
+
+    payload = tmp_path / "failing_redirect_probe.py"
+    payload.write_text(
+        "import os, sys\n"
+        "from acp_adapter import entry\n"
+        # Simulate SetStdHandle returning FALSE, on any platform.
+        "entry._point_win32_stdin_at = lambda fd: False\n"
+        "entry._shield_stdin_from_children()\n"
+        # Rolled back: fd 0 is the original stream again, not NUL.
+        "print('FD0:' + repr(os.read(0, 32)))\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [_sys.executable, str(payload)],
+        input=b"protocol-line\n",
+        capture_output=True,
+        timeout=60,
+    )
+
+    out = result.stdout.decode("utf-8", "replace")
+    err = result.stderr.decode("utf-8", "replace")
+    assert result.returncode == 0, err
+    # Rollback restored the original stdin on fd 0 rather than leaving NUL.
+    assert r"FD0:b'protocol-line\n'" in out, out
+    # And the failure was reported rather than logged as a success.
+    assert "shielded" not in err.lower(), err

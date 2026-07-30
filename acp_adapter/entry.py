@@ -215,6 +215,41 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
         return 1
 
 
+def _point_win32_stdin_at(fd: int) -> bool:
+    """Repoint the process-wide Win32 ``STD_INPUT_HANDLE`` at *fd*.
+
+    This is the handle a child launched with ``stdin=None`` actually inherits
+    on Windows — fd 0 alone does not shield anything there — so its success is
+    load-bearing rather than advisory.
+
+    Returns True when there is nothing to do (non-Windows) or the redirect
+    succeeded, False when the Win32 call reported failure.
+    """
+    if sys.platform != "win32":
+        return True
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    STD_INPUT_HANDLE = -10
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # Without explicit argtypes ctypes passes the HANDLE as a C int, which
+    # truncates on 64-bit Windows.
+    kernel32.SetStdHandle.argtypes = [wintypes.DWORD, wintypes.HANDLE]
+    kernel32.SetStdHandle.restype = wintypes.BOOL
+
+    if not kernel32.SetStdHandle(STD_INPUT_HANDLE, msvcrt.get_osfhandle(fd)):
+        logging.getLogger(__name__).warning(
+            "SetStdHandle(STD_INPUT_HANDLE) failed (WinError %d); "
+            "child processes would still inherit the ACP stdin pipe",
+            ctypes.get_last_error(),
+        )
+        return False
+    return True
+
+
 def _shield_stdin_from_children() -> None:
     """Keep the ACP JSON-RPC stdin out of every child process.
 
@@ -242,14 +277,15 @@ def _shield_stdin_from_children() -> None:
         devnull_fd = os.open(os.devnull, os.O_RDONLY)
         os.dup2(devnull_fd, original_fd)
         os.close(devnull_fd)
-        if sys.platform == "win32":
-            import ctypes
-            import msvcrt
-
-            STD_INPUT_HANDLE = -10
-            ctypes.windll.kernel32.SetStdHandle(
-                STD_INPUT_HANDLE, msvcrt.get_osfhandle(original_fd)
-            )
+        if not _point_win32_stdin_at(original_fd):
+            # Half-shielded is the worst outcome: fd 0 reads NUL, but children
+            # still inherit the real pipe through STD_INPUT_HANDLE, and the
+            # log would claim the stdin was shielded. Put fd 0 back so the
+            # process is left in the state it started in, unshielded and
+            # consistent, and let the caller proceed without the shield.
+            os.dup2(private_fd, original_fd)
+            os.close(private_fd)
+            return
         # The ACP transport reads sys.stdin.buffer; hand it the private copy.
         sys.stdin = io.TextIOWrapper(
             io.BufferedReader(io.FileIO(private_fd, "rb")),

@@ -113,6 +113,30 @@ class TestScopeIsolation:
 class TestEnvFileParsing:
     """load_env_file parses without mutating os.environ."""
 
+    def test_load_env_file_unescapes_quoted_values(self, tmp_path):
+        """Values written by save_env_value must round-trip byte-exactly.
+
+        Regression: load_env_file stripped only the outer quotes, leaving
+        the writer's \\" and \\\\ escapes literal — credentials containing
+        '\"' or '\\' worked interactively but were corrupted under scoped
+        (cron / multiplex) resolution.
+        """
+        from hermes_cli.config import _quote_env_value
+
+        original = 'tok"en\\with spaces'
+        (tmp_path / ".env").write_text(f"MY_TOKEN={_quote_env_value(original)}\n")
+        assert ss.load_env_file(tmp_path / ".env") == {"MY_TOKEN": original}
+
+    def test_load_env_file_single_quotes_and_plain_values(self, tmp_path):
+        (tmp_path / ".env").write_text(
+            "PLAIN=abc123\nQUOTED='single quoted'\nEMPTY=\n"
+        )
+        assert ss.load_env_file(tmp_path / ".env") == {
+            "PLAIN": "abc123",
+            "QUOTED": "single quoted",
+            "EMPTY": "",
+        }
+
 
 
 

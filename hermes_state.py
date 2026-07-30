@@ -234,6 +234,30 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
+# Import-time snapshot used by _default_db_path() to detect a deliberately
+# re-pointed DEFAULT_DB_PATH (tests monkeypatch the constant directly).
+_IMPORT_DEFAULT_DB_PATH = DEFAULT_DB_PATH
+
+
+def _default_db_path() -> Path:
+    """Resolve the default state DB path at call time.
+
+    ``DEFAULT_DB_PATH`` is computed when this module is first imported, which
+    freezes the developer's real ``~/.hermes`` even when a test fixture later
+    redirects ``HERMES_HOME`` — importing this module during collection was
+    enough to point every default ``SessionDB()`` at the real state.db.
+
+    Precedence:
+
+    1. A deliberately re-pointed ``DEFAULT_DB_PATH`` (differs from the
+       import-time snapshot — the established test escape hatch) wins.
+    2. Otherwise resolve ``get_hermes_home()`` fresh so a runtime
+       ``HERMES_HOME`` redirect takes effect regardless of import order.
+    """
+    if DEFAULT_DB_PATH != _IMPORT_DEFAULT_DB_PATH:
+        return DEFAULT_DB_PATH
+    return get_hermes_home() / "state.db"
+
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
 # ---------------------------------------------------------------------------
@@ -1765,7 +1789,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or _default_db_path()
         self.read_only = read_only
 
         self._lock = threading.Lock()

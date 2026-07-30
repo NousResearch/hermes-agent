@@ -320,8 +320,9 @@ def _finalize_child_env(env: dict) -> dict:
     # Non-interactive git: never hang a tool subprocess on credential prompts
     # (clone/fetch/push over https). Users can still set credentials via
     # git credential helpers or URL-embedded tokens; GIT_TERMINAL_PROMPT=0 only
-    # disables interactive stdin prompts.
-    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    # disables interactive stdin prompts. Assign unconditionally so an
+    # inherited GIT_TERMINAL_PROMPT=1 cannot re-enable prompts.
+    env["GIT_TERMINAL_PROMPT"] = "0"
     return env
 
 
@@ -819,8 +820,9 @@ def _make_run_env(env: dict) -> dict:
         run_env.update(published)
         run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
     # See _finalize_child_env — same non-interactive git policy for the
-    # primary terminal run path, after the Bot Desktop overlay.
-    run_env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    # primary terminal run path, after the Bot Desktop overlay. Assign
+    # unconditionally so an inherited GIT_TERMINAL_PROMPT=1 cannot re-enable prompts.
+    run_env["GIT_TERMINAL_PROMPT"] = "0"
     return run_env
 
 

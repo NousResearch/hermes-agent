@@ -18,6 +18,12 @@ export interface PaletteContribution {
   icon?: IconComponent
   keywords?: string[]
   run: () => void
+  /**
+   * Muted text after the label — the live state the row acts on. A function
+   * because contributions register once at boot while that state keeps moving;
+   * the palette re-reads it on open.
+   */
+  detail?: () => string
 }
 
 /** Contributed palette rows, with stable render keys. */
@@ -25,4 +31,27 @@ export function usePaletteContributions(): Array<PaletteContribution & { key: st
   return useContributions(PALETTE_AREA)
     .map(c => ({ key: `${c.source ?? 'core'}:${c.id}`, ...(c.data as PaletteContribution) }))
     .filter(item => Boolean(item.label && item.run))
+}
+
+/**
+ * A binary setting as one palette row: `Toggle status bar` with the live state
+ * trailing in muted text. The verb says what the row does, the detail says
+ * which way it will go — neither alone is enough.
+ */
+export function paletteToggle(
+  spec: Omit<PaletteContribution, 'detail' | 'run'> & {
+    get: () => boolean
+    set: (enabled: boolean) => void
+  }
+) {
+  const { get, keywords = [], set, ...rest } = spec
+
+  const data: PaletteContribution = {
+    ...rest,
+    detail: () => (get() ? 'on' : 'off'),
+    keywords: [...keywords, 'on', 'off', 'enable', 'disable'],
+    run: () => set(!get())
+  }
+
+  return { id: data.id, area: PALETTE_AREA, data }
 }

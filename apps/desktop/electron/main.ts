@@ -2609,9 +2609,17 @@ let quitConfirmedWithActiveWork = false
 // the desktop never touches its own bits while running. Returns null when the
 // updater isn't staged (e.g. a dev/source run that never went through the
 // installer); callers degrade gracefully.
+//
+// hermes-setup is the Tauri Windows-installer self-copy path. On macOS/Linux
+// the drag-and-drop .app uses applyUpdatesPosixInApp instead, so a stale
+// hermes-setup (e.g. from an old macOS install, #74836) must not route the
+// update into the Windows-style handoff.
 function resolveUpdaterBinary() {
-  const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
-  const candidate = path.join(HERMES_HOME, name)
+  if (!IS_WINDOWS) {
+    return null
+  }
+
+  const candidate = path.join(HERMES_HOME, 'hermes-setup.exe')
 
   return fileExists(candidate) ? candidate : null
 }

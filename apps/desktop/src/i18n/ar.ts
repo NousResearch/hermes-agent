@@ -911,7 +911,7 @@ export const ar = defineLocale({
     needsKeys: 'يحتاج مفاتيح',
     toolsetsEnabled: (enabled, total) => `${enabled} من ${total} مفعلة`,
     configureToolset: label => `ضبط ${label}`,
-    toggleToolset: label => `تبديل ${label}`,
+    toggleToolset: (label, enabled) => `${enabled ? 'تشغيل' : 'إيقاف'} ${label}`,
     skillsLoadFailed: 'فشل تحميل المهارات',
     toolsetsRefreshFailed: 'فشل تحديث مجموعات الأدوات',
     skillEnabled: 'تم تفعيل المهارة',
@@ -976,7 +976,7 @@ export const ar = defineLocale({
       installed: 'مثبّت',
       generatedTag: 'مُولّد',
       adoptFailed: 'تعذّر تبنّي ذلك الحيوان الأليف.',
-      toggleFailed: 'تعذّر تبديل الحيوان الأليف.',
+      toggleFailed: enabled => `تعذّر ${enabled ? 'تشغيل' : 'إيقاف'} الحيوان الأليف.`,
       noneAvailable: 'لا توجد حيوانات أليفة متاحة — اختر واحدا أدناه لتثبيته.'
     },
     generatePet: {
@@ -1607,7 +1607,7 @@ export const ar = defineLocale({
       forceRemove: 'إزالة بالقوة',
       enter: label => `فتح ${label}`,
       reorder: label => `إعادة ترتيب ${label}`,
-      toggle: label => `تبديل جلسات ${label}`,
+      toggle: (label, open) => `${open ? 'إظهار' : 'إخفاء'} جلسات ${label}`,
       back: 'كل المشاريع'
     },
     newSessionIn: label => `جلسة جديدة في ${label}`,
@@ -2598,7 +2598,7 @@ export const ar = defineLocale({
     sidebar: {
       title: 'الشريط الجانبي',
       description: 'تنقل التطبيق',
-      toggle: 'تبديل الشريط الجانبي'
+      toggle: open => `${open ? 'إظهار' : 'إخفاء'} الشريط الجانبي`
     }
   }
 })

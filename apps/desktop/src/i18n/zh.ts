@@ -973,7 +973,7 @@ export const zh: Translations = {
       disableServer: name => `禁用 ${name}`,
       serverEnabled: name => `${name} 已启用 — 对新会话生效。`,
       serverDisabled: name => `${name} 已禁用 — 对新会话生效。`,
-      toggleFailed: name => `切换 ${name} 失败`,
+      toggleFailed: (name, enabled) => `${enabled ? '开启' : '关闭'} ${name} 失败`,
       tabServers: '服务器',
       tabCatalog: '目录',
       catalogLoading: '正在加载 MCP 目录…',
@@ -1194,7 +1194,7 @@ export const zh: Translations = {
     visionModelLink: '在 设置 → 模型 中选择视觉模型',
     toolsetsEnabled: (enabled, total) => `已启用 ${enabled}/${total} 个工具集`,
     configureToolset: label => `配置 ${label}`,
-    toggleToolset: label => `切换 ${label} 工具集`,
+    toggleToolset: (label, enabled) => `${enabled ? '开启' : '关闭'} ${label} 工具集`,
     skillsLoadFailed: '技能加载失败',
     toolsetsRefreshFailed: '工具集刷新失败',
     skillEnabled: '技能已启用',
@@ -1361,7 +1361,7 @@ export const zh: Translations = {
       installed: '已安装',
       generatedTag: '生成',
       adoptFailed: '无法领养该宠物。',
-      toggleFailed: '无法切换宠物显示。',
+      toggleFailed: enabled => `无法${enabled ? '开启' : '关闭'}宠物显示。`,
       noneAvailable: '暂无可用宠物——请在下方选择一个安装。'
     },
     generatePet: {
@@ -1688,7 +1688,7 @@ export const zh: Translations = {
     deleteDescPrefix: '这将永久移除 ',
     deleteDescSuffix: '。此操作无法撤销。',
     deleteFailed: (name: string) => `删除“${name}”失败`,
-    toggleFailed: (name: string) => `更新“${name}”失败`,
+    toggleFailed: (name, enabled) => `${enabled ? '开启' : '关闭'}“${name}”失败`,
     newSubscription: '新建订阅',
     restarting: '网关正在重启…',
     restartNeeded: 'Webhook 已启用，但网关仍需重启后接收器才能上线。',
@@ -2084,7 +2084,7 @@ export const zh: Translations = {
       forceRemove: '强制移除',
       enter: label => `打开 ${label}`,
       reorder: label => `重新排序 ${label}`,
-      toggle: label => `展开/收起 ${label} 会话`,
+      toggle: (label, open) => `${open ? '展开' : '收起'} ${label} 会话`,
       back: '全部项目'
     },
     newSessionIn: label => `在 ${label} 中新建会话`,
@@ -3111,7 +3111,7 @@ export const zh: Translations = {
     sidebar: {
       title: '侧边栏',
       description: '显示移动端侧边栏。',
-      toggle: '切换侧边栏'
+      toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
   }
 }

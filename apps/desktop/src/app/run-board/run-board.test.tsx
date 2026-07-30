@@ -1,9 +1,9 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { TodoItem } from '@/lib/todos'
-import { setActiveSessionId } from '@/store/session'
-import { clearSessionTodos, setSessionTodos } from '@/store/todos'
+import { setActiveSessionId, setBusy } from '@/store/session'
+import { $runBoardRefresh, clearSessionTodos, setSessionTodos } from '@/store/todos'
 
 import { deriveRunBoardState, RunBoardPane } from './run-board'
 
@@ -12,8 +12,10 @@ const todo = (id: string, content: string, status: TodoItem['status']): TodoItem
 afterEach(() => {
   cleanup()
   setActiveSessionId(null)
+  setBusy(false)
   clearSessionTodos('session-a')
   clearSessionTodos('session-b')
+  $runBoardRefresh.set(null)
 })
 
 describe('deriveRunBoardState', () => {
@@ -80,5 +82,115 @@ describe('RunBoardPane', () => {
     render(<RunBoardPane />)
 
     expect(screen.getByText('No task plan yet')).toBeTruthy()
+  })
+
+  it('exposes a manual refresh control in the board header', () => {
+    setActiveSessionId('session-a')
+
+    render(<RunBoardPane />)
+
+    expect(screen.getByRole('button', { name: 'Refresh run board' })).toBeTruthy()
+  })
+
+  it('coalesces repeated refresh clicks while reconciliation is pending', async () => {
+    let finish!: () => void
+
+    const refresh = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          finish = resolve
+        })
+    )
+
+    $runBoardRefresh.set(refresh)
+    setActiveSessionId('session-a')
+    render(<RunBoardPane />)
+    const button = screen.getByRole('button', { name: 'Refresh run board' })
+
+    fireEvent.click(button)
+    fireEvent.click(button)
+
+    expect(refresh).toHaveBeenCalledTimes(1)
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText('Refreshing…')).toBeTruthy()
+
+    finish()
+    await screen.findByText('Refreshed')
+    expect((button as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('does not refresh persisted state while the active turn is busy', () => {
+    const refresh = vi.fn(() => Promise.resolve())
+
+    $runBoardRefresh.set(refresh)
+    setActiveSessionId('session-a')
+    setBusy(true)
+    render(<RunBoardPane />)
+    const button = screen.getByRole('button', { name: 'Refresh run board' })
+
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(button)
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('surfaces refresh failure without discarding the current plan', async () => {
+    $runBoardRefresh.set(() => Promise.reject(new Error('gateway offline')))
+    setSessionTodos('session-a', [todo('active', 'Preserve interrupted work', 'in_progress')])
+    setActiveSessionId('session-a')
+    render(<RunBoardPane />)
+    const button = screen.getByRole('button', { name: 'Refresh run board' })
+
+    fireEvent.click(button)
+
+    await screen.findByText('Refresh failed')
+    expect(screen.getByText('Preserve interrupted work')).toBeTruthy()
+    expect((button as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('clears feedback when the displayed session changes', async () => {
+    $runBoardRefresh.set(() => Promise.resolve())
+    setActiveSessionId('session-a')
+    render(<RunBoardPane />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh run board' }))
+    await screen.findByText('Refreshed')
+
+    act(() => setActiveSessionId('session-b'))
+
+    expect(screen.queryByText('Refreshed')).toBeNull()
+  })
+
+  it('lets the displayed session refresh while another session read is pending', async () => {
+    let finishFirst!: () => void
+
+    const refresh = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>(resolve => {
+            finishFirst = resolve
+          })
+      )
+      .mockResolvedValueOnce(undefined)
+
+    $runBoardRefresh.set(refresh)
+    setActiveSessionId('session-a')
+    render(<RunBoardPane />)
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh run board' }))
+
+    act(() => setActiveSessionId('session-b'))
+
+    const secondButton = screen.getByRole('button', { name: 'Refresh run board' })
+
+    expect((secondButton as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(secondButton)
+    await screen.findByText('Refreshed')
+    expect(refresh).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      finishFirst()
+      await Promise.resolve()
+    })
+    expect(screen.getByText('Refreshed')).toBeTruthy()
   })
 })

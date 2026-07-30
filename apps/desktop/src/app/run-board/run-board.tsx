@@ -1,12 +1,13 @@
 import { useStore } from '@nanostores/react'
+import { useRef, useState } from 'react'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
 import type { TodoItem } from '@/lib/todos'
 import { cn } from '@/lib/utils'
-import { $activeSessionId } from '@/store/session'
-import { $todosBySession } from '@/store/todos'
+import { $activeSessionId, $busy } from '@/store/session'
+import { $runBoardRefresh, $todosBySession } from '@/store/todos'
 
 export type RunBoardKind = 'active' | 'blockedNeedsYou' | 'blockedTechnical' | 'done' | 'empty' | 'ready' | 'waiting'
 
@@ -100,10 +101,49 @@ function TaskGlyph({ status }: { status: TodoItem['status'] }) {
 export function RunBoardPane() {
   const { t } = useI18n()
   const activeSessionId = useStore($activeSessionId)
+  const busy = useStore($busy)
   const todosBySession = useStore($todosBySession)
+  const refreshRunBoard = useStore($runBoardRefresh)
+  const refreshPendingSessionsRef = useRef(new Set<string>())
+  const [refreshPendingSessions, setRefreshPendingSessions] = useState<ReadonlySet<string>>(new Set())
+  const [refreshResults, setRefreshResults] = useState<Record<string, 'error' | 'success'>>({})
+
   const todos = activeSessionId ? (todosBySession[activeSessionId] ?? []) : []
   const state = deriveRunBoardState(todos)
   const copy = t.runBoard
+  const refreshPending = activeSessionId ? refreshPendingSessions.has(activeSessionId) : false
+  const visibleRefreshResult = activeSessionId ? refreshResults[activeSessionId] : undefined
+
+  const refresh = async () => {
+    if (busy || !activeSessionId || !refreshRunBoard || refreshPendingSessionsRef.current.has(activeSessionId)) {
+      return
+    }
+
+    const refreshSessionId = activeSessionId
+
+    refreshPendingSessionsRef.current.add(refreshSessionId)
+    setRefreshPendingSessions(new Set(refreshPendingSessionsRef.current))
+    setRefreshResults(current => {
+      const next = { ...current }
+
+      delete next[refreshSessionId]
+
+      return next
+    })
+
+    try {
+      const result = await refreshRunBoard()
+
+      if (result !== 'superseded') {
+        setRefreshResults(current => ({ ...current, [refreshSessionId]: 'success' }))
+      }
+    } catch {
+      setRefreshResults(current => ({ ...current, [refreshSessionId]: 'error' }))
+    } finally {
+      refreshPendingSessionsRef.current.delete(refreshSessionId)
+      setRefreshPendingSessions(new Set(refreshPendingSessionsRef.current))
+    }
+  }
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-(--ui-bg-base)" data-testid="run-board">
@@ -111,6 +151,32 @@ export function RunBoardPane() {
         <div className="mb-2 flex items-center gap-1.5 text-(--ui-text-secondary)">
           <Codicon className="text-(--ui-text-muted)" name="checklist" size="0.82rem" />
           <h2 className="text-[0.68rem] font-semibold uppercase tracking-[0.12em]">{copy.title}</h2>
+          <span
+            aria-live="polite"
+            className={cn(
+              'ml-auto truncate text-[0.62rem]',
+              visibleRefreshResult === 'error' ? 'text-red-300' : 'text-(--ui-text-muted)'
+            )}
+          >
+            {refreshPending
+              ? copy.refreshing
+              : visibleRefreshResult === 'error'
+                ? copy.refreshFailed
+                : visibleRefreshResult
+                  ? copy.refreshed
+                  : ''}
+          </span>
+          <button
+            aria-busy={refreshPending}
+            aria-label={copy.refresh}
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded text-(--ui-text-muted) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary) disabled:pointer-events-none disabled:opacity-45"
+            disabled={busy || !activeSessionId || !refreshRunBoard || refreshPending}
+            onClick={() => void refresh()}
+            title={copy.refresh}
+            type="button"
+          >
+            <Codicon name="refresh" size="0.82rem" spinning={refreshPending} />
+          </button>
         </div>
         <div className="flex items-center justify-between gap-2">
           <span

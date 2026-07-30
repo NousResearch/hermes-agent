@@ -1736,6 +1736,10 @@ export interface Translations {
     empty: string
     progress: (done: number, total: number) => string
     ready: string
+    refresh: string
+    refreshed: string
+    refreshFailed: string
+    refreshing: string
     supportNeeded: (answer: string) => string
     supportNo: string
     supportYes: string

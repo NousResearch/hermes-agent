@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TodoItem } from '@/lib/todos'
 
-import { $todosBySession, clearSessionTodos, setSessionTodos, todosForHydration } from './todos'
+import {
+  $todosBySession,
+  applyHydratedSessionTodos,
+  clearSessionTodos,
+  refreshSessionTodos,
+  setSessionTodos,
+  todosForHydration
+} from './todos'
 
 const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
 
@@ -58,5 +65,49 @@ describe('todosForHydration (durable plan restore)', () => {
 
   it('returns null when there is nothing stored', () => {
     expect(todosForHydration(null)).toBeNull()
+  })
+})
+
+describe('applyHydratedSessionTodos', () => {
+  afterEach(() => clearSessionTodos('s1'))
+
+  it('rejects a stale response when a newer live plan arrived during refresh', () => {
+    const before = [todo('before', 'in_progress')]
+    const live = [todo('live', 'in_progress')]
+
+    setSessionTodos('s1', before)
+    setSessionTodos('s1', live)
+
+    expect(applyHydratedSessionTodos('s1', before, [todo('stale', 'pending')])).toBe('superseded')
+    expect($todosBySession.get().s1).toBe(live)
+  })
+})
+
+describe('refreshSessionTodos', () => {
+  afterEach(() => clearSessionTodos('s1'))
+
+  it('restores persisted in-progress state without executing or completing it', async () => {
+    const restored = [todo('interrupted', 'in_progress')]
+
+    expect(
+      await refreshSessionTodos(
+        's1',
+        async () => restored,
+        () => true
+      )
+    ).toBe('applied')
+    expect($todosBySession.get().s1).toBe(restored)
+    expect($todosBySession.get().s1?.[0]?.status).toBe('in_progress')
+  })
+
+  it('drops the response when the user switches sessions while it is pending', async () => {
+    expect(
+      await refreshSessionTodos(
+        's1',
+        async () => [todo('stale', 'pending')],
+        () => false
+      )
+    ).toBe('superseded')
+    expect($todosBySession.get().s1).toBeUndefined()
   })
 })

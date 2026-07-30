@@ -47,6 +47,7 @@ import {
 import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
+  $busy,
   $connection,
   $currentCwd,
   $freshDraftReady,
@@ -63,7 +64,13 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
-import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import {
+  $runBoardRefresh,
+  clearSessionTodos,
+  refreshSessionTodos,
+  setSessionTodos,
+  todosForHydration
+} from '@/store/todos'
 import { armWakeWord } from '@/store/wake-word'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -346,6 +353,44 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
+
+  /** Manual Run Board reconciliation is deliberately read-only: fetch the
+   * latest persisted todo call for the active session and guardedly apply it.
+   * It never resumes a session, submits a prompt, or invokes a tool. */
+  const refreshRunBoard = useCallback(async () => {
+    const storedSessionId = selectedStoredSessionIdRef.current
+    const runtimeSessionId = activeSessionIdRef.current
+
+    if (!storedSessionId || !runtimeSessionId) {
+      throw new Error('No active stored session to refresh')
+    }
+
+    if ($busy.get()) {
+      return 'superseded'
+    }
+
+    const storedProfile = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
+
+    return refreshSessionTodos(
+      runtimeSessionId,
+      async () => {
+        const latest = await getSessionMessages(storedSessionId, storedProfile)
+        const messages = toChatMessages(latest.messages)
+
+        return todosForHydration(latestSessionTodos(messages))
+      },
+      () =>
+        !$busy.get() &&
+        selectedStoredSessionIdRef.current === storedSessionId &&
+        activeSessionIdRef.current === runtimeSessionId
+    )
+  }, [activeSessionIdRef, selectedStoredSessionIdRef])
+
+  useEffect(() => {
+    $runBoardRefresh.set(refreshRunBoard)
+
+    return () => $runBoardRefresh.set(null)
+  }, [refreshRunBoard])
 
   // Refresh the open messaging transcript (inbound platform turns arrive via
   // the background gateway, not the desktop websocket). Signature-gated so a

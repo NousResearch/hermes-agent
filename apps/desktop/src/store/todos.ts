@@ -11,6 +11,13 @@ import type { TodoItem } from '@/lib/todos'
  */
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 
+/** Contrib wiring provides the authoritative active-session reconciliation
+ * handler. The pane consumes it without importing the controller that mounts
+ * the pane, avoiding a circular dependency. */
+export type RunBoardRefreshResult = 'applied' | 'superseded' | 'unchanged'
+
+export const $runBoardRefresh = atom<(() => Promise<RunBoardRefreshResult | void>) | null>(null)
+
 export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
 
@@ -33,6 +40,45 @@ export function setSessionTodos(sid: string, todos: TodoItem[]) {
   }
 
   $todosBySession.set({ ...$todosBySession.get(), [sid]: todos })
+}
+
+/** Apply persisted board state only if the session's live plan is still the
+ * exact snapshot observed when the request began. A live todo tool update wins
+ * over an older response, and a transcript with no todo call cannot erase a
+ * renderer-only plan that may not have persisted yet. */
+export function applyHydratedSessionTodos(
+  sid: string,
+  expected: TodoItem[] | undefined,
+  hydrated: TodoItem[] | null
+): RunBoardRefreshResult {
+  if ($todosBySession.get()[sid] !== expected) {
+    return 'superseded'
+  }
+
+  if (hydrated === null) {
+    return 'unchanged'
+  }
+
+  setSessionTodos(sid, hydrated)
+
+  return 'applied'
+}
+
+/** Re-fetch one session's persisted board without exposing any run/resume API.
+ * The request is invalidated if foreground identity changes before it settles. */
+export async function refreshSessionTodos(
+  sid: string,
+  load: () => Promise<TodoItem[] | null>,
+  isCurrent: () => boolean
+): Promise<RunBoardRefreshResult> {
+  const expected = $todosBySession.get()[sid]
+  const hydrated = await load()
+
+  if (!isCurrent()) {
+    return 'superseded'
+  }
+
+  return applyHydratedSessionTodos(sid, expected, hydrated)
 }
 
 export function clearSessionTodos(sid: string) {

@@ -49,6 +49,14 @@ test('persists independently after streamed messages and turn completion', async
   await expect(board).toContainText('Support needed: No')
   await expect(board).toContainText('Note finding')
 
+  const refresh = board.getByRole('button', { name: 'Refresh run board' })
+
+  await expect(refresh).toBeEnabled()
+  await refresh.click()
+  await expect(board).toContainText('Refreshed')
+  await expect(board).toContainText('DONE')
+  await expect(board).toContainText('Note finding')
+
   const bounds = await board.boundingBox()
 
   expect(bounds).not.toBeNull()

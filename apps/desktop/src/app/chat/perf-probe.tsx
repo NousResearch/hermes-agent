@@ -10,8 +10,7 @@ import {
   selectTerminal,
   type TerminalEntry
 } from '@/app/right-sidebar/terminal/terminals'
-import type { HermesRepoStatus } from '@/global'
-import { $repoStatus } from '@/store/coding-status'
+import { $repoStatusByCwd } from '@/store/coding-status'
 import { $gateway } from '@/store/gateway'
 import { $currentCwd, $messages, setBusy, setCurrentCwdTransient, setMessages } from '@/store/session'
 
@@ -125,7 +124,7 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
     | {
         activeTerminalId: null | string
         cwd: string
-        repoStatus: HermesRepoStatus | null
+        repoStatusByCwd: ReturnType<typeof $repoStatusByCwd.get>
         takeover: boolean
         terminals: readonly TerminalEntry[]
       } = null
@@ -143,7 +142,7 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
     setTerminalTakeover(rightPaneBaseline.takeover)
     $terminals.set(rightPaneBaseline.terminals)
     $activeTerminalId.set(rightPaneBaseline.activeTerminalId)
-    $repoStatus.set(rightPaneBaseline.repoStatus)
+    $repoStatusByCwd.set(rightPaneBaseline.repoStatusByCwd)
     setCurrentCwdTransient(rightPaneBaseline.cwd)
     rightPaneBaseline = null
   }
@@ -216,20 +215,24 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
         untracked: kind === 'added'
       }
 
-      $repoStatus.set({
-        added: 0,
-        ahead: 0,
-        behind: 0,
-        branch: 'perf',
-        changed: 1,
-        conflicted: kind === 'conflicted' ? 1 : 0,
-        defaultBranch: 'main',
-        detached: false,
-        files: [file],
-        removed: 0,
-        staged: 0,
-        unstaged: kind === 'modified' ? 1 : 0,
-        untracked: kind === 'added' ? 1 : 0
+      const cwd = $currentCwd.get().trim()
+      $repoStatusByCwd.set({
+        ...$repoStatusByCwd.get(),
+        [cwd]: {
+          added: 0,
+          ahead: 0,
+          behind: 0,
+          branch: 'perf',
+          changed: 1,
+          conflicted: kind === 'conflicted' ? 1 : 0,
+          defaultBranch: 'main',
+          detached: false,
+          files: [file],
+          removed: 0,
+          staged: 0,
+          unstaged: kind === 'modified' ? 1 : 0,
+          untracked: kind === 'added' ? 1 : 0
+        }
       })
     },
     rightPaneReset: resetRightPane,
@@ -239,7 +242,7 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
       rightPaneBaseline = {
         activeTerminalId: $activeTerminalId.get(),
         cwd: $currentCwd.get(),
-        repoStatus: $repoStatus.get(),
+        repoStatusByCwd: $repoStatusByCwd.get(),
         takeover: $terminalTakeover.get(),
         terminals: $terminals.get()
       }

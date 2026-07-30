@@ -1069,15 +1069,19 @@ class TestCapabilitiesEndpoint:
                 }
             },
         )
+        profile_key = "profile-key-for-test"
+        monkeypatch.setattr(adapter, "_expected_api_key", lambda: profile_key)
         app = _create_app(adapter)
         token = _api_request_profile.set("coder")
         try:
             async with TestClient(TestServer(app)) as cli:
-                capabilities = await cli.get("/v1/capabilities")
+                headers = {"Authorization": f"Bearer {profile_key}"}
+                capabilities = await cli.get("/v1/capabilities", headers=headers)
                 capabilities_payload = await capabilities.json()
                 response = await cli.post(
                     "/v1/commands/default-only",
                     json={"args": ""},
+                    headers=headers,
                 )
         finally:
             _api_request_profile.reset(token)
@@ -3625,4 +3629,3 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
-

@@ -830,6 +830,116 @@ export const en: Translations = {
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
+      },
+      moaTitle: 'Mixture of Agents',
+      moaDesc:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+      moaEnabled: 'Enabled',
+      moaPreset: 'Preset',
+      moaSetDefault: 'Set default',
+      moaDelete: 'Delete',
+      moaNewPreset: 'new preset',
+      moaAddPreset: 'Add preset',
+      moaDefault: name => `Default: ${name}`,
+      moaReference: n => `Reference ${n}`,
+      moaRemove: 'Remove',
+      moaAddRefModel: 'Add reference model',
+      moaAggregator: 'Aggregator',
+    },
+    customEndpoints: {
+      title: 'Custom Endpoints',
+      emptyTitle: 'No custom endpoints',
+      emptyDescription: 'Add an OpenAI-compatible endpoint below.',
+      addTitle: 'Add Endpoint',
+      editTitle: 'Edit Endpoint',
+      active: 'Active',
+      apiKeySet: 'API key set',
+      use: 'Use',
+      deleteEndpoint: 'Delete endpoint',
+      deleteConfirm: name => `Delete ${name}?`,
+      newEndpoint: 'New endpoint',
+      couldNotLoad: 'Could not load custom endpoints',
+      endpointSaved: 'Custom endpoint saved.',
+      saveFailed: 'Save failed',
+      validationFailed: 'Validation failed',
+      activationFailed: 'Activation failed',
+      deleteFailed: 'Delete failed',
+      endpointReachable: 'Endpoint is reachable.',
+      endpointReachableModels: n => `Endpoint is reachable. Found ${n} models.`,
+      endpointValidationFailed: 'Endpoint validation failed.',
+      test: 'Test',
+      save: 'Save',
+      fields: {
+        name: 'Name',
+        providerId: 'Provider ID',
+        endpointUrl: 'Endpoint URL',
+        defaultModel: 'Default Model',
+        context: 'Context',
+        apiKey: 'API Key',
+        apiKeyPlaceholder: 'Optional',
+        apiKeyNewPlaceholder: 'Leave blank to keep current key',
+        useNewChats: 'Use for new chats',
+        discoverModels: 'Discover models'
+      }
+    },
+    billing: {
+      title: 'Billing',
+      preview: 'preview',
+      summary: {
+        balance: 'Balance',
+        plan: 'Plan',
+        autoRefill: 'Auto-refill'
+      },
+      sections: {
+        plan: 'Plan',
+        paymentAndCredits: 'Payment & credits',
+        usage: 'Usage'
+      },
+      usage: {
+        title: 'Usage'
+      },
+      buyCredits: {
+        title: 'Buy credits now',
+        buyButton: 'Buy',
+        processing: 'Processing… checking settlement',
+        added: amount => `${amount} added. Balance is refreshing.`,
+        retry: 'Retry',
+        openPortal: 'Open portal'
+      },
+      plan: {
+        title: 'Plans',
+        changePlan: 'Change plan',
+        viewPlans: 'View plans',
+        backAria: 'Back to billing',
+        current: 'Current plan',
+        scheduled: 'Scheduled',
+        empty: 'No plans are available to change to right now.',
+        undo: 'Undo',
+        undoing: 'Undoing…',
+        downgrade: 'Downgrade',
+        confirmDowngrade: 'Confirm downgrade',
+        tryAgain: 'Try again',
+        checkingChange: 'Checking this change…',
+        cannotChange: 'That change cannot be made here.',
+        alreadyOn: name => `You are already on ${name} — nothing to change.`,
+        notScheduleable: 'This change cannot be scheduled here.',
+        scheduling: 'Scheduling…',
+        cancel: 'Cancel',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `Change to ${targetName} — takes effect ${effectiveAt}. No charge now; you keep your current plan until then.${creditsDelta ? ` Monthly credits change: ${creditsDelta}.` : ''}`
+      },
+      autoReload: {
+        threshold: 'Threshold',
+        reloadTo: 'Reload to',
+        turnOffConfirm: 'Turn off auto-refill?',
+        turnOff: 'Turn off',
+        disable: 'Disable',
+        updated: 'Auto-refill updated.',
+        turnedOff: 'Auto-refill turned off.',
+        manage: 'Manage',
+        save: 'Save',
+        saving: 'Saving…',
+        cancel: 'Cancel'
       }
     },
     providers: {

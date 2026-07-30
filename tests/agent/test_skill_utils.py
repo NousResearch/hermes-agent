@@ -1,8 +1,13 @@
 """Tests for agent/skill_utils.py."""
 
+import sys
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
+import pytest
+
 from agent.skill_utils import (
+    _lexical_relative_path,
     extract_skill_config_vars,
     extract_skill_conditions,
     get_disabled_skill_names,
@@ -136,6 +141,204 @@ def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monke
     relative = nested.relative_to(discovery_root)
     assert is_skill_support_path(relative, root=discovery_root) is True
     assert is_excluded_skill_path(relative, root=discovery_root) is True
+
+
+def test_pre_edit_snapshot_directories_are_excluded_without_overmatching(tmp_path):
+    """Only the explicit pre-edit snapshot artifact convention is excluded."""
+    snapshot = tmp_path / "category" / "kanban-lifecycle-pre-edit-snapshot-t_0bd96003" / "SKILL.md"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("---\nname: kanban-lifecycle\n---\n", encoding="utf-8")
+
+    top_level_snapshot = tmp_path / "hermes-kanban-pre-edit-snapshot-t_0bd96003" / "SKILL.md"
+    top_level_snapshot.parent.mkdir()
+    top_level_snapshot.write_text("---\nname: kanban-lifecycle\n---\n", encoding="utf-8")
+
+    legitimate = tmp_path / "snapshot" / "pre-edit" / "skill" / "SKILL.md"
+    legitimate.parent.mkdir(parents=True)
+    legitimate.write_text("---\nname: legitimate\n---\n", encoding="utf-8")
+
+    assert is_excluded_skill_path(snapshot) is True
+    assert is_excluded_skill_path(top_level_snapshot) is True
+    assert is_excluded_skill_path(legitimate) is False
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [legitimate]
+
+
+def test_pre_edit_snapshot_name_requires_canonical_task_id(tmp_path):
+    legitimate = tmp_path / "photo-pre-edit-snapshot-helper" / "SKILL.md"
+    legitimate.parent.mkdir(parents=True)
+    legitimate.write_text("---\nname: photo\n---\n", encoding="utf-8")
+
+    assert is_excluded_skill_path(legitimate) is False
+
+
+@pytest.mark.parametrize(
+    ("task_suffix", "excluded"),
+    [
+        ("abcdef1", False),
+        ("abcdef12", True),
+        ("abcdef123", False),
+        ("ABCDEF12", False),
+        ("abcdef1g", False),
+    ],
+)
+def test_pre_edit_snapshot_task_suffix_is_exactly_lowercase_eight_hex(
+    tmp_path, task_suffix, excluded
+):
+    """Only canonical generated task IDs hide directories and legacy .md files."""
+    directory = tmp_path / f"ghost-pre-edit-snapshot-t_{task_suffix}"
+    directory.mkdir()
+    directory_skill = directory / "SKILL.md"
+    directory_skill.write_text("---\nname: directory\n---\n", encoding="utf-8")
+    legacy_skill = tmp_path / f"ghost-pre-edit-snapshot-t_{task_suffix}.md"
+    legacy_skill.write_text("---\nname: legacy\n---\n", encoding="utf-8")
+
+    assert is_excluded_skill_path(directory_skill) is excluded
+    assert is_excluded_skill_path(legacy_skill, root=tmp_path) is excluded
+
+
+def test_outside_explicit_root_does_not_inherit_ancestor_exclusions(tmp_path):
+    """Outside-root paths are not classified using unrelated parent segments."""
+    root = tmp_path / "configured-root"
+    root.mkdir()
+
+    outside_site_packages = tmp_path / "site-packages" / "live" / "SKILL.md"
+    outside_site_packages.parent.mkdir(parents=True)
+    outside_site_packages.write_text("---\nname: live\n---\n", encoding="utf-8")
+
+    outside_support = tmp_path / "ancestor-skill" / "references" / "live" / "SKILL.md"
+    outside_support.parent.mkdir(parents=True)
+    (outside_support.parents[2] / "SKILL.md").write_text(
+        "---\nname: ancestor\n---\n", encoding="utf-8"
+    )
+    outside_support.write_text("---\nname: live\n---\n", encoding="utf-8")
+
+    outside_snapshot = tmp_path / "ghost-pre-edit-snapshot-t_abcdef12" / "SKILL.md"
+    outside_snapshot.parent.mkdir()
+    outside_snapshot.write_text("---\nname: ghost\n---\n", encoding="utf-8")
+
+    relative_site_packages = Path("..") / "site-packages" / "live" / "SKILL.md"
+    assert is_excluded_skill_path(outside_site_packages, root=root) is False
+    assert is_skill_support_path(outside_site_packages, root=root) is False
+    assert is_excluded_skill_path(outside_support, root=root) is False
+    assert is_skill_support_path(outside_support, root=root) is False
+    assert is_excluded_skill_path(outside_snapshot, root=root) is False
+    assert is_skill_support_path(outside_snapshot, root=root) is False
+    assert is_excluded_skill_path(relative_site_packages, root=root) is False
+    assert is_skill_support_path(relative_site_packages, root=root) is False
+
+
+@pytest.mark.parametrize(
+    ("raw_path", "root", "outside"),
+    [
+        (r"C:/configured-root/live/SKILL.md", r"C:/configured-root", False),
+        (r"C:/configured-root/./site-packages/live/SKILL.md", r"C:/configured-root", False),
+        (r"C:/other/site-packages/live/SKILL.md", r"C:/configured-root", True),
+        (r"D:/site-packages/live/SKILL.md", r"C:/configured-root", True),
+        (r"D:site-packages/live/SKILL.md", r"C:/configured-root", True),
+        (r"C:../site-packages/live/SKILL.md", r"C:/configured-root", True),
+        (r"/site-packages/live/SKILL.md", r"C:/configured-root", True),
+        (r"../site-packages/live/SKILL.md", r"C:/configured-root", True),
+        (r"./site-packages/live/SKILL.md", r"C:/configured-root", False),
+        (r"\\server\share\configured-root/live/SKILL.md", r"C:/configured-root", True),
+        (r"\\?\C:\configured-root/live/SKILL.md", r"C:/configured-root", True),
+        (
+            r"\\server\share\configured-root/live/SKILL.md",
+            r"\\server\share\configured-root",
+            False,
+        ),
+    ],
+)
+def test_windows_lexical_path_matrix_is_deterministic(raw_path, root, outside):
+    """Windows anchors and relative forms never inherit the wrong root."""
+    result = _lexical_relative_path(
+        PureWindowsPath(raw_path), root=PureWindowsPath(root)
+    )
+    assert result.outside_root is outside
+
+
+def test_windows_lexical_exclusions_use_only_anchorless_relative_paths():
+    root = PureWindowsPath("C:/configured-root")
+    inside_site_packages = PureWindowsPath(
+        "C:/configured-root/site-packages/live/SKILL.md"
+    )
+    for outside_path in (
+        PureWindowsPath(r"D:site-packages/live/SKILL.md"),
+        PureWindowsPath(r"C:../site-packages/live/SKILL.md"),
+        PureWindowsPath(r"/site-packages/live/SKILL.md"),
+        PureWindowsPath(r"../site-packages/live/SKILL.md"),
+    ):
+        assert is_excluded_skill_path(outside_path, root=root) is False
+    assert is_excluded_skill_path(inside_site_packages, root=root) is True
+
+
+def test_pure_windows_support_paths_do_not_probe_host_filesystem(monkeypatch):
+    """Synthetic Windows paths on POSIX remain lexical-only."""
+    calls = []
+    monkeypatch.setattr(
+        "agent.skill_utils._support_manifest_exists",
+        lambda path: calls.append(path) or True,
+    )
+    nested = PureWindowsPath(
+        "C:/configured-root/umbrella/references/archived/SKILL.md"
+    )
+    assert is_skill_support_path(
+        nested, root=PureWindowsPath("C:/configured-root")
+    ) is False
+    assert calls == []
+
+
+def test_support_manifest_probe_can_be_injected_platform_independently(tmp_path, monkeypatch):
+    root = tmp_path / "skills"
+    nested = root / "umbrella" / "references" / "archived" / "SKILL.md"
+    nested.parent.mkdir(parents=True)
+    probe_calls = []
+    monkeypatch.setattr(
+        "agent.skill_utils._support_manifest_exists",
+        lambda path: probe_calls.append(path) or path == root / "umbrella" / "SKILL.md",
+    )
+
+    assert is_skill_support_path(nested, root=root) is True
+    assert probe_calls == [root / "umbrella" / "SKILL.md"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows paths")
+def test_native_windows_support_root_probe_uses_concrete_paths(tmp_path):
+    root = tmp_path / "skills"
+    umbrella = root / "umbrella"
+    nested = umbrella / "references" / "archived" / "SKILL.md"
+    umbrella.mkdir(parents=True)
+    nested.parent.mkdir()
+    (umbrella / "SKILL.md").write_text("---\nname: umbrella\n---\n", encoding="utf-8")
+    nested.write_text("---\nname: archived\n---\n", encoding="utf-8")
+
+    assert is_skill_support_path(nested, root=root) is True
+    assert is_excluded_skill_path(nested, root=root) is True
+
+
+def test_exclusions_are_relative_to_discovery_root(tmp_path):
+    """A snapshot-shaped profile/home parent must not hide its live skills."""
+    profile_home = tmp_path / "worker-pre-edit-snapshot-t_abcdef12"
+    skills_root = profile_home / "skills"
+    live = skills_root / "live-skill" / "SKILL.md"
+    live.parent.mkdir(parents=True)
+    live.write_text("---\nname: live-skill\n---\n", encoding="utf-8")
+
+    assert is_excluded_skill_path(live, root=skills_root) is False
+    assert is_excluded_skill_path(live) is True
+    outside = tmp_path / "outside" / "live-skill" / "SKILL.md"
+    assert is_excluded_skill_path(outside, root=skills_root) is False
+
+
+def test_legacy_snapshot_flat_files_use_only_recognized_skill_suffix(tmp_path):
+    snapshot_stem = "ghost-pre-edit-snapshot-t_abcdef12"
+    snapshot_md = tmp_path / f"{snapshot_stem}.md"
+    snapshot_txt = tmp_path / f"{snapshot_stem}.txt"
+    snapshot_md.write_text("stale", encoding="utf-8")
+    snapshot_txt.write_text("not a recognized legacy skill file", encoding="utf-8")
+
+    assert is_excluded_skill_path(snapshot_md, root=tmp_path) is True
+    assert is_excluded_skill_path(snapshot_txt, root=tmp_path) is False
+    assert list(iter_skill_index_files(tmp_path, snapshot_md.name)) == []
 
 
 # ── skill_matches_platform on Termux ──────────────────────────────────────

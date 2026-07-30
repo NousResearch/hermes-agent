@@ -116,7 +116,7 @@ hermes curator prune [--days N] # bulk-archive agent-created skills idle >= N da
 
 ## Backups and rollback
 
-Before every real curator pass, Hermes takes a tar.gz snapshot of `~/.hermes/skills/` at `~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz`. If a pass archives or consolidates something you didn't want touched, you can undo the whole run with one command:
+By default, before every real curator pass Hermes takes a tar.gz snapshot of `<HERMES_HOME>/skills/` at `<HERMES_HOME>/skill-snapshots/<utc-iso>/skills.tar.gz`. Here `<HERMES_HOME>` means the active profile home: for a named profile such as `worker_alpha`, the concrete path is `~/.hermes/profiles/worker_alpha/skill-snapshots/<utc-iso>/skills.tar.gz`. If a pass archives or consolidates something you didn't want touched, you can undo the whole run with one command:
 
 ```bash
 hermes curator rollback        # restore newest snapshot (with confirmation)
@@ -128,7 +128,7 @@ The rollback itself is reversible: before replacing the skills tree, Hermes take
 
 You can also take manual snapshots at any time with `hermes curator backup --reason "before-refactor"`. The `--reason` string lands in the snapshot's `manifest.json` and is shown in `--list`.
 
-Snapshots are pruned to `curator.backup.keep` (default 5) to keep disk usage bounded:
+Snapshots in the new `<HERMES_HOME>/skill-snapshots/` root are pruned to `curator.backup.keep` (default 5) to keep disk usage bounded. Legacy snapshots in `<HERMES_HOME>/skills/.curator_backups/` remain read-only and discoverable for rollback; they are never pruned. For the default profile that legacy path is `~/.hermes/skills/.curator_backups/`; for `worker_alpha` it is `~/.hermes/profiles/worker_alpha/skills/.curator_backups/`:
 
 ```yaml
 curator:

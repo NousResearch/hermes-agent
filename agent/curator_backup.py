@@ -1,15 +1,14 @@
 """Curator snapshot + rollback.
 
-A pre-run snapshot of ``~/.hermes/skills/`` (excluding ``.curator_backups/``
-itself) is taken before any mutating curator pass. Snapshots are tar.gz
-files under ``~/.hermes/skills/.curator_backups/<utc-iso>/`` with a
+A pre-run snapshot of ``~/.hermes/skills/`` is taken before any mutating curator pass. Snapshots are tar.gz
+files under ``~/.hermes/skill-snapshots/<utc-iso>/`` with a
 companion ``manifest.json`` describing the snapshot (reason, time, size,
 counted skill files). Rollback picks a snapshot, moves the current
 ``skills/`` tree aside into another snapshot so even the rollback itself
 is undoable, then extracts the chosen snapshot into place.
 
 The snapshot does NOT include:
-  - ``.curator_backups/`` (would recurse)
+  - legacy ``.curator_backups/`` (would recurse if an old installation still has it)
   - ``.hub/`` (hub-installed skills — managed by the hub, not us)
 
 It DOES include:
@@ -58,7 +57,8 @@ DEFAULT_KEEP = 5
 
 # Entries under skills/ that should NEVER be rolled up into a snapshot.
 # .hub/ is managed by the skills hub; rolling it back would break lockfile
-# invariants. .curator_backups is the backup dir itself — recursion bomb.
+# invariants. The legacy .curator_backups dir is also excluded so upgrades do
+# not recursively embed old snapshots in a new snapshot.
 _EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub"}
 
 # Snapshot id regex: UTC ISO with colons replaced by dashes so the filename
@@ -68,7 +68,58 @@ _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 
 
 def _backups_dir() -> Path:
+    """Return the profile-local snapshot root, outside every skills root."""
+    return get_hermes_home() / "skill-snapshots"
+
+
+def _legacy_backups_dir() -> Path:
+    """Pre-``skill-snapshots`` snapshot root used by older installations.
+
+    Read-only: new snapshots are never written here and pruning never
+    touches it. It exists so ``rollback``/``--list`` keep seeing snapshots
+    that profiles created before the root moved out of ``skills/``.
+    """
     return get_hermes_home() / "skills" / ".curator_backups"
+
+
+def _backup_roots() -> List[Path]:
+    """Snapshot roots in precedence order (new root first, legacy second)."""
+    return [_backups_dir(), _legacy_backups_dir()]
+
+
+def _has_restorable_archive(snapshot_dir: Path) -> bool:
+    archive = snapshot_dir / "skills.tar.gz"
+    if not archive.is_file():
+        return False
+    try:
+        return tarfile.is_tarfile(archive)
+    except OSError:
+        return False
+
+
+def _iter_snapshot_dirs() -> List[Path]:
+    """Every id-shaped snapshot dir across all roots, newest id first.
+
+    When the same snapshot id exists in both roots the new root wins only if
+    it is restorable; an incomplete new entry must not hide a legacy backup.
+    """
+    found: Dict[str, Path] = {}
+    for root in _backup_roots():
+        if not root.exists():
+            continue
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir():
+                continue
+            if not _ID_RE.match(child.name):
+                continue
+            if not _has_restorable_archive(child):
+                continue
+            found.setdefault(child.name, child)
+    return [found[snap_id] for snap_id in sorted(found, reverse=True)]
 
 
 def _skills_dir() -> Path:
@@ -182,7 +233,7 @@ def get_keep() -> int:
 def _count_skill_files(base: Path) -> int:
     try:
         return sum(
-            1 for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p)
+            1 for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p, root=base)
         )
     except OSError:
         return 0
@@ -296,7 +347,11 @@ def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
     outside the keep window — rollback() uses this so the mandatory
     pre-rollback safety snapshot can never evict the very snapshot being
     restored. Staging dirs (``.rollback-staging-*``) are implementation
-    detail and pruned independently on every call."""
+    detail and pruned independently on every call.
+
+    Only the current ``skill-snapshots/`` root is pruned. The legacy
+    ``skills/.curator_backups/`` root is treated as a read-only archive so a
+    post-upgrade snapshot can never evict a user's pre-upgrade snapshots."""
     protect = protect or set()
     backups = _backups_dir()
     if not backups.exists():
@@ -351,16 +406,12 @@ def list_backups() -> List[Dict[str, Any]]:
     """Return all restorable snapshots, newest first. Only entries with a
     real ``skills.tar.gz`` tarball are listed — transient
     ``.rollback-staging-*`` directories created mid-rollback are
-    implementation detail and not shown."""
-    backups = _backups_dir()
-    if not backups.exists():
-        return []
+    implementation detail and not shown.
+
+    Snapshots from the legacy ``skills/.curator_backups/`` root are included
+    so older profiles stay restorable after the root moved."""
     out: List[Dict[str, Any]] = []
-    for child in sorted(backups.iterdir(), reverse=True):
-        if not child.is_dir():
-            continue
-        if not _ID_RE.match(child.name):
-            continue
+    for child in _iter_snapshot_dirs():
         if not (child / "skills.tar.gz").exists():
             continue
         mf = _read_manifest(child)
@@ -378,24 +429,22 @@ def list_backups() -> List[Dict[str, Any]]:
 
 def _resolve_backup(backup_id: Optional[str]) -> Optional[Path]:
     """Return the path of the requested backup, or the newest one if
-    *backup_id* is None. Returns None if no match."""
-    backups = _backups_dir()
-    if not backups.exists():
-        return None
+    *backup_id* is None. Returns None if no match.
+
+    Both the current ``skill-snapshots/`` root and the legacy
+    ``skills/.curator_backups/`` root are searched; the current root wins
+    if the same id exists in both."""
     if backup_id:
-        target = backups / backup_id
-        if (
-            target.is_dir()
-            and _ID_RE.match(backup_id)
-            and (target / "skills.tar.gz").exists()
-        ):
-            return target
+        if not _ID_RE.match(backup_id):
+            return None
+        for root in _backup_roots():
+            target = root / backup_id
+            if target.is_dir() and _has_restorable_archive(target):
+                return target
         return None
-    candidates = [
-        c for c in sorted(backups.iterdir(), reverse=True)
-        if c.is_dir() and _ID_RE.match(c.name) and (c / "skills.tar.gz").exists()
-    ]
-    return candidates[0] if candidates else None
+    for candidate in _iter_snapshot_dirs():
+        return candidate
+    return None
 
 
 def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
@@ -547,7 +596,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     Strategy:
       1. Resolve the target snapshot (explicit id or newest regular).
       2. Take a safety snapshot of the CURRENT skills tree under
-         ``.curator_backups/pre-rollback-<ts>/`` so the rollback itself is
+         ``skill-snapshots/<ts>/`` so the rollback itself is
          undoable.
       3. Move all current top-level entries (except ``.curator_backups``
          and ``.hub``) into a tempdir.

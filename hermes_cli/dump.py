@@ -148,7 +148,7 @@ def _count_skills(hermes_home: Path) -> int:
         return 0
     count = 0
     for item in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(item):
+        if is_excluded_skill_path(item, root=skills_dir):
             continue
         count += 1
     return count

@@ -65,6 +65,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.skill_utils import is_excluded_skill_path
+
 logger = logging.getLogger(__name__)
 
 # Sync protocol constants
@@ -531,7 +533,7 @@ def _all_local_skill_names() -> List[str]:
         if not root.exists():
             return []
         for skill_md in root.rglob("SKILL.md"):
-            if skill_md.is_symlink():
+            if skill_md.is_symlink() or is_excluded_skill_path(skill_md, root=root):
                 continue
             name: Optional[str] = None
             try:
@@ -1656,6 +1658,8 @@ def list_org_skill_names() -> List[str]:
         if not root.is_dir():
             return names
         for skill_md in root.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md, root=root):
+                continue
             rel = skill_md.parent.relative_to(root)
             if rel.parts:
                 names.append(str(rel).replace("\\", "/"))

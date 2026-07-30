@@ -22,6 +22,8 @@ from agent.prompt_builder import (
     _dynamic_context_file_max_chars,
     _get_context_file_max_chars,
     _CONTEXT_FILE_DYNAMIC_CEILING,
+    _build_skills_manifest,
+    _load_skills_snapshot,
     DEFAULT_AGENT_IDENTITY,
     drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -35,6 +37,32 @@ from agent.prompt_builder import (
     WSL_ENVIRONMENT_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+
+
+def test_stale_v2_snapshot_with_pre_edit_artifact_is_rebuilt(tmp_path, monkeypatch):
+    import json
+    import agent.prompt_builder as prompt_builder
+
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    artifact = skills / "stale-pre-edit-snapshot-t_abcdef12"
+    artifact.mkdir()
+    skill = artifact / "SKILL.md"
+    skill.write_text("---\nname: stale\n---\n\nSTALE\n", encoding="utf-8")
+    snapshot = tmp_path / "snapshot.json"
+    monkeypatch.setattr(prompt_builder, "_skills_prompt_snapshot_path", lambda: snapshot)
+    old_manifest = {"stale-pre-edit-snapshot-t_abcdef12/SKILL.md": [
+        skill.stat().st_mtime_ns, skill.stat().st_size
+    ]}
+    snapshot.write_text(json.dumps({
+        "version": 2,
+        "manifest": old_manifest,
+        "skills": [{"name": "stale", "description": "STALE"}],
+        "category_descriptions": {},
+    }), encoding="utf-8")
+
+    assert _load_skills_snapshot(skills) is None
+    assert _build_skills_manifest(skills) == {}
 
 
 # =========================================================================

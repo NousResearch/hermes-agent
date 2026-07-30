@@ -77,9 +77,24 @@ def test_snapshot_prunes_to_keep_count(backup_env, monkeypatch):
         monkeypatch.setattr(cb, "_utc_id", lambda now=None, _f=fid: _f)
         cb.snapshot_skills(reason=f"n{i}")
 
-    remaining = sorted(p.name for p in (backup_env["skills"] / ".curator_backups").iterdir())
+    remaining = sorted(p.name for p in (backup_env["home"] / "skill-snapshots").iterdir())
     # Newest 3 kept (lex order == date order for this id format)
     assert remaining == ids[2:], f"expected newest 3, got {remaining}"
+
+
+def test_incomplete_new_snapshot_does_not_shadow_valid_legacy(backup_env):
+    cb = backup_env["cb"]
+    backup_id = "2026-05-01T00-00-00Z"
+    new = backup_env["home"] / "skill-snapshots" / backup_id
+    legacy = backup_env["skills"] / ".curator_backups" / backup_id
+    new.mkdir(parents=True)
+    legacy.mkdir(parents=True)
+    with tarfile.open(legacy / "skills.tar.gz", "w:gz"):
+        pass
+
+    assert cb.list_backups()[0]["path"] == str(legacy)
+    assert cb._resolve_backup(None) == legacy
+    assert cb._resolve_backup(backup_id) == legacy
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +143,7 @@ def test_rollback_is_itself_undoable(backup_env):
         f"{[(r.get('id'), r.get('reason')) for r in rows]}"
     )
     # And the transient staging dir must be gone (it's implementation detail)
-    backups_dir = skills / ".curator_backups"
+    backups_dir = backup_env["home"] / "skill-snapshots"
     staging_dirs = [p for p in backups_dir.iterdir() if p.name.startswith(".rollback-staging-")]
     assert staging_dirs == [], (
         f"staging dir should be cleaned up on success, got: {staging_dirs}"
@@ -337,7 +352,7 @@ def test_restore_cron_skill_links_standalone(backup_env):
     home = backup_env["home"]
 
     # Prime a snapshot dir manually with cron-jobs.json
-    backups_dir = home / "skills" / ".curator_backups" / "fake-id"
+    backups_dir = home / "skill-snapshots" / "fake-id"
     backups_dir.mkdir(parents=True)
     (backups_dir / cb.CRON_JOBS_FILENAME).write_text(json.dumps([
         {"id": "job-1", "name": "one", "skills": ["narrow-a", "narrow-b"]},
@@ -392,3 +407,105 @@ def _three_ordered_snapshots(cb, skills, monkeypatch):
 
 
 
+# ---------------------------------------------------------------------------
+# Legacy snapshot root compatibility
+#
+# Snapshots used to live under ``skills/.curator_backups/``. After the root
+# moved to ``skill-snapshots/``, existing profiles still hold restorable
+# snapshots at the old location — reads must union both roots.
+# ---------------------------------------------------------------------------
+
+LEGACY_REL = ("skills", ".curator_backups")
+
+
+def _plant_snapshot(root: Path, snap_id: str, skill_name: str, *, reason: str = "legacy") -> Path:
+    """Hand-build a restorable snapshot dir (tarball + manifest) under *root*."""
+    snap = root / snap_id
+    snap.mkdir(parents=True, exist_ok=True)
+    staging = snap / "_src"
+    _write_skill(staging, skill_name)
+    archive = snap / "skills.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.add(str(staging / skill_name), arcname=skill_name, recursive=True)
+    import shutil as _sh
+    _sh.rmtree(staging)
+    (snap / "manifest.json").write_text(
+        json.dumps({"id": snap_id, "reason": reason, "skill_files": 1}),
+        encoding="utf-8",
+    )
+    return snap
+
+
+def test_legacy_snapshot_is_listable_and_restorable(backup_env, monkeypatch):
+    """A snapshot left behind in ``skills/.curator_backups/`` stays visible to
+    --list, resolvable by id, and restorable by rollback()."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    legacy_root = backup_env["home"].joinpath(*LEGACY_REL)
+    snap_id = "2026-04-01T00-00-00Z"
+    legacy_snap = _plant_snapshot(legacy_root, snap_id, "from_legacy")
+
+    ids = [r.get("id") for r in cb.list_backups()]
+    assert snap_id in ids, f"legacy snapshot missing from list_backups(): {ids}"
+
+    assert cb._resolve_backup(snap_id) == legacy_snap
+    # No id given → newest across the union, which is the only snapshot here.
+    assert cb._resolve_backup(None) == legacy_snap
+
+    _write_skill(skills, "current_state")
+    monkeypatch.setattr(cb, "_utc_id", lambda now=None: "2026-05-09T00-00-00Z")
+    ok, msg, target = cb.rollback(snap_id)
+    assert ok, msg
+    assert target == legacy_snap
+    assert (skills / "from_legacy" / "SKILL.md").exists()
+
+
+def test_legacy_snapshots_are_never_pruned(backup_env, monkeypatch):
+    """Retention only governs the current root; legacy snapshots are a
+    read-only archive and must survive new snapshots."""
+    cb = backup_env["cb"]
+    legacy_root = backup_env["home"].joinpath(*LEGACY_REL)
+    legacy_ids = [f"2026-04-0{i}T00-00-00Z" for i in range(1, 4)]
+    for lid in legacy_ids:
+        _plant_snapshot(legacy_root, lid, "old")
+
+    _write_skill(backup_env["skills"], "alpha")
+    monkeypatch.setattr(cb, "get_keep", lambda: 1)
+    for i in range(1, 4):
+        monkeypatch.setattr(cb, "_utc_id", lambda now=None, _f=f"2026-05-0{i}T00-00-00Z": _f)
+        assert cb.snapshot_skills(reason=f"n{i}") is not None
+
+    assert sorted(p.name for p in legacy_root.iterdir()) == legacy_ids
+
+
+def test_new_snapshots_only_land_in_new_root(backup_env, monkeypatch):
+    """Writes stay in ``skill-snapshots/``; the legacy root is read-only."""
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    monkeypatch.setattr(cb, "_utc_id", lambda now=None: "2026-05-01T00-00-00Z")
+    dest = cb.snapshot_skills(reason="fresh")
+    assert dest is not None
+
+    new_root = backup_env["home"] / "skill-snapshots"
+    legacy_root = backup_env["home"].joinpath(*LEGACY_REL)
+    assert dest.parent == new_root
+    assert sorted(p.name for p in new_root.iterdir()) == ["2026-05-01T00-00-00Z"]
+    assert not legacy_root.exists(), "snapshot must not create the legacy root"
+
+
+def test_new_root_wins_when_id_exists_in_both(backup_env):
+    """Same id in both roots resolves deterministically to the current root."""
+    cb = backup_env["cb"]
+    snap_id = "2026-04-02T00-00-00Z"
+    new_root = backup_env["home"] / "skill-snapshots"
+    legacy_root = backup_env["home"].joinpath(*LEGACY_REL)
+    _plant_snapshot(legacy_root, snap_id, "legacy_copy", reason="legacy")
+    new_snap = _plant_snapshot(new_root, snap_id, "new_copy", reason="current")
+
+    assert cb._resolve_backup(snap_id) == new_snap
+    assert cb._resolve_backup(None) == new_snap
+
+    rows = [r for r in cb.list_backups() if r.get("id") == snap_id]
+    assert len(rows) == 1, f"duplicate id should collapse to one row: {rows}"
+    assert rows[0]["path"] == str(new_snap)
+    assert rows[0]["reason"] == "current"

@@ -2761,7 +2761,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
             if not skills_dir.exists():
                 continue
             for skill_md in skills_dir.rglob("SKILL.md"):
-                if is_excluded_skill_path(skill_md):
+                if is_excluded_skill_path(skill_md, root=skills_dir):
                     continue
                 slug, declared_name = _skill_slug_from_frontmatter(skill_md)
                 if not slug or not declared_name:
@@ -2780,7 +2780,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
             for skill_md in optional_dir.rglob("SKILL.md"):
-                if is_excluded_skill_path(skill_md):
+                if is_excluded_skill_path(skill_md, root=optional_dir):
                     continue
                 slug, _declared = _skill_slug_from_frontmatter(skill_md)
                 if not slug:

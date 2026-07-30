@@ -198,7 +198,7 @@ def _existing_categories() -> List[str]:
             # Has at least one nested SKILL.md (excluding dependency/cache dirs)?
             try:
                 if any(
-                    not is_excluded_skill_path(p)
+                    not is_excluded_skill_path(p, root=SKILLS_DIR)
                     for p in entry.rglob("SKILL.md")
                 ):
                     out.append(entry.name)

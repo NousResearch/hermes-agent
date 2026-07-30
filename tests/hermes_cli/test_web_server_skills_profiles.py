@@ -64,6 +64,24 @@ def _load_cfg(home):
 
 class TestProfileScopedSkills:
 
+    def test_profile_builder_does_not_disable_snapshot_artifacts(
+        self, isolated_profiles
+    ):
+        import hermes_cli.web_server as web_server
+
+        worker_home = isolated_profiles["worker_alpha"]
+        snapshot = worker_home / "skills" / "ghost-skill-pre-edit-snapshot-t_abcdef12"
+        snapshot.mkdir()
+        (snapshot / "SKILL.md").write_text(
+            "---\nname: ghost-skill\n---\n", encoding="utf-8"
+        )
+
+        disabled = web_server._disable_unselected_skills(worker_home, [])
+
+        assert disabled == 1
+        cfg = _load_cfg(worker_home)
+        assert cfg["skills"]["disabled"] == ["worker-skill"]
+
 
     def test_toggle_writes_into_target_profile_only(self, client, isolated_profiles):
         resp = client.put(

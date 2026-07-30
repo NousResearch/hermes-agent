@@ -98,7 +98,7 @@ def _build_external_skill_index() -> Set[str]:
     external_names: Set[str] = set()
     for ext_dir in get_external_skills_dirs():
         for skill_md in ext_dir.rglob("SKILL.md"):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(skill_md, root=ext_dir):
                 continue
             skill_dir = skill_md.parent
             # Index by directory name (how _find_skill resolves skills)
@@ -374,7 +374,7 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
         matches: List[Path] = []
         if SKILLS_DIR.exists():
             for skill_md in sorted(SKILLS_DIR.rglob("SKILL.md")):
-                if is_excluded_skill_path(skill_md):
+                if is_excluded_skill_path(skill_md, root=SKILLS_DIR):
                     continue
                 candidate = skill_md.parent
                 try:
@@ -417,7 +417,7 @@ def _index_installed_skill_dirs_by_name() -> Dict[str, List[Path]]:
     if not SKILLS_DIR.exists():
         return index
     for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
+        if is_excluded_skill_path(skill_md, root=SKILLS_DIR):
             continue
         candidate = skill_md.parent
         # Never reach outside the skills tree (symlinked/external dirs).
@@ -481,7 +481,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     changed = False
     installed_dir_index: Optional[Dict[str, List[Path]]] = None
     for skill_md in sorted(optional_dir.rglob("SKILL.md")):
-        if is_excluded_skill_path(skill_md):
+        if is_excluded_skill_path(skill_md, root=optional_dir):
             continue
         src = skill_md.parent
         try:
@@ -598,7 +598,7 @@ def _index_active_skills() -> Dict[str, List[Path]]:
     if not SKILLS_DIR.exists():
         return index
     for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
+        if is_excluded_skill_path(skill_md, root=SKILLS_DIR):
             continue
         skill_dir = skill_md.parent
         name = _read_skill_name(skill_md, skill_dir.name)

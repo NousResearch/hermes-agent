@@ -483,7 +483,7 @@ def _count_skills(staged: Path) -> int:
     if not skills_dir.is_dir():
         return 0
     return sum(
-        1 for p in skills_dir.rglob("SKILL.md") if not is_excluded_skill_path(p)
+        1 for p in skills_dir.rglob("SKILL.md") if not is_excluded_skill_path(p, root=skills_dir)
     )
 
 

@@ -358,7 +358,7 @@ def list_agent_created_skill_names() -> List[str]:
     # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
     for skill_md in base.rglob("SKILL.md"):
         # Skip Hermes metadata, VCS, virtualenv/dependency, and cache dirs
-        if is_excluded_skill_path(skill_md):
+        if is_excluded_skill_path(skill_md, root=base):
             continue
         # External skill dirs can be mounted below the local skills tree.
         # Discovery may see them, but autonomous lifecycle curation must not.
@@ -549,7 +549,7 @@ def list_unmanaged_skill_names() -> List[str]:
 
     names: List[str] = []
     for skill_md in base.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md) or is_external_skill_path(skill_md):
+        if is_excluded_skill_path(skill_md, root=base) or is_external_skill_path(skill_md):
             continue
         try:
             skill_md.relative_to(base)
@@ -1038,7 +1038,7 @@ def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
         if not base.exists():
             continue
         for skill_md in base.rglob("SKILL.md"):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(skill_md, root=base):
                 continue
             if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
                 return skill_md.parent
@@ -1121,7 +1121,7 @@ def usage_report() -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     seen: set = set()
     for skill_md in base.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
+        if is_excluded_skill_path(skill_md, root=base):
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         if name in seen:

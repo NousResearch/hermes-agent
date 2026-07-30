@@ -27,6 +27,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    is_excluded_skill_path,
     iter_skill_index_files,
     org_id_of_path,
     parse_frontmatter,
@@ -1397,12 +1398,15 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             d
             for d in dirs
             if d not in EXCLUDED_SKILL_DIRS
+            and not is_excluded_skill_path(Path(root) / d, root=skills_dir)
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
         for filename in ("SKILL.md", "DESCRIPTION.md"):
             if filename not in files:
                 continue
             path = os.path.join(root, filename)
+            if is_excluded_skill_path(Path(path), root=skills_dir):
+                continue
             try:
                 st = os.stat(path)
             except OSError:

@@ -788,7 +788,7 @@ def _count_skills(profile_dir: Path) -> int:
 
     count = 0
     for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
+        if is_excluded_skill_path(md, root=skills_dir):
             continue
         count += 1
     _SKILL_COUNT_CACHE[key] = (signature, now, count)

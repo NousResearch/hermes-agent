@@ -6,10 +6,13 @@ tool registration or provider resolution.
 """
 
 import logging
+import ntpath
 import os
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_config_path, get_skills_dir, is_termux
@@ -48,6 +51,18 @@ EXCLUDED_SKILL_DIRS = frozenset(
 # be scanned for active SKILL.md/DESCRIPTION.md entries, even if a Curator or
 # archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
+
+# Curator pre-edit snapshots used to be written below a live skills root. A
+# snapshot is not a skill, even when it contains copied SKILL.md frontmatter.
+# Keep this narrow so ordinary directories named ``snapshot`` or ``pre-edit``
+# remain valid skill categories.
+_PRE_EDIT_SNAPSHOT_DIR_RE = re.compile(
+    r"^[A-Za-z0-9_-]+-pre-edit-snapshot-t_[0-9a-f]{8}$"
+)
+# The legacy flat-file loader only recognizes ``.md`` files.  Apply the
+# snapshot convention to that filename's stem as well as to directory names,
+# but do not turn arbitrary future file extensions into exclusions.
+_LEGACY_SKILL_FILE_SUFFIXES = frozenset((".md",))
 
 # ── Org-shared skills (sync contract) ───────────────────────────
 # Org mirrors live under ~/.hermes/skills/_org/<org_id>/. Resolution is
@@ -99,7 +114,23 @@ def org_id_of_path(path, skills_dir: Path) -> Optional[str]:
     return None
 
 
-def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
+@dataclass(frozen=True)
+class _LexicalPathResult:
+    """Lexical path classification for a path checked against a discovery root."""
+
+    relative: PurePath
+    root: Optional[PurePath]
+    outside_root: bool
+    # Keep lexical Windows paths separate from concrete filesystem paths. A
+    # PureWindowsPath is useful for deterministic classification on POSIX, but
+    # must never be handed to the host filesystem. On native Windows, Path is
+    # both concrete and PureWindowsPath, so the concrete root remains available
+    # for the support-manifest probe.
+    filesystem_root: Optional[Path] = None
+    filesystem_path: Optional[Path] = None
+
+
+def is_excluded_skill_path(path, *, root: Optional[PurePath] = None) -> bool:
     """True if *path* should be skipped by active skill scanners.
 
     Use this on every ``SKILL.md`` path produced by direct ``rglob`` scans to
@@ -109,17 +140,102 @@ def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
 
     Accepts a Path or string.
     """
-    try:
-        parts = path.parts  # Path
-    except AttributeError:
-        from pathlib import PurePath
-        parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
-        path, root=root
+    lexical = _lexical_relative_path(path, root)
+    if lexical.outside_root:
+        return False
+    parts = lexical.relative.parts
+    return (
+        any(part in EXCLUDED_SKILL_DIRS for part in parts)
+        or any(_is_pre_edit_snapshot_component(part) for part in parts)
+        or is_skill_support_path(path, root=root)
     )
 
 
-def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
+def _lexical_relative_path(path, root: Optional[PurePath]) -> _LexicalPathResult:
+    """Return a lexical path relative to *root*, without resolving symlinks.
+
+    Absolute paths outside an explicit root and relative paths that escape via
+    ``..`` are explicitly marked outside. They must not inherit exclusions from
+    unrelated ancestors. No path is resolved, so symlink paths remain lexical.
+    """
+    path_obj = path if isinstance(path, PurePath) else Path(str(path))
+    if root is None:
+        filesystem_path = path_obj if isinstance(path_obj, Path) else None
+        return _LexicalPathResult(path_obj, None, False, filesystem_path=filesystem_path)
+
+    root_obj = root if isinstance(root, PurePath) else Path(str(root))
+    is_windows = isinstance(path_obj, PureWindowsPath) or isinstance(
+        root_obj, PureWindowsPath
+    )
+    if is_windows:
+        root_lex = PureWindowsPath(ntpath.abspath(ntpath.normpath(os.fspath(root_obj))))
+        filesystem_root = None
+        if isinstance(root_obj, Path) and isinstance(path_obj, Path):
+            filesystem_root = root_obj.absolute()
+        if path_obj.is_absolute():
+            path_lex = PureWindowsPath(
+                ntpath.abspath(ntpath.normpath(os.fspath(path_obj)))
+            )
+            try:
+                return _LexicalPathResult(
+                    path_lex.relative_to(root_lex),
+                    root_lex,
+                    False,
+                    filesystem_root,
+                )
+            except ValueError:
+                return _LexicalPathResult(
+                    path_lex, root_lex, True, filesystem_root
+                )
+        relative = PureWindowsPath(ntpath.normpath(os.fspath(path_obj)))
+        # A drive-qualified path (including drive-relative ``D:foo``), a
+        # rooted path without a drive (``\\foo``), a UNC path, or a device
+        # anchor cannot safely be interpreted relative to the configured root.
+        # Only anchorless relative paths may inherit that root's exclusions.
+        if relative.drive or relative.root:
+            return _LexicalPathResult(relative, root_lex, True, filesystem_root)
+        return _LexicalPathResult(
+            relative,
+            root_lex,
+            bool(relative.parts and relative.parts[0] == ".."),
+            filesystem_root,
+        )
+
+    root_text = os.path.abspath(os.fspath(root_obj))
+    root_lex = Path(root_text) if isinstance(root_obj, Path) else PurePath(root_text)
+    filesystem_root = root_obj.absolute() if isinstance(root_obj, Path) and isinstance(path_obj, Path) else None
+    if path_obj.is_absolute():
+        path_text = os.path.abspath(os.fspath(path_obj))
+        path_lex = Path(path_text) if isinstance(path_obj, Path) else PurePath(path_text)
+        try:
+            return _LexicalPathResult(path_lex.relative_to(root_lex), root_lex, False, filesystem_root)
+        except ValueError:
+            return _LexicalPathResult(path_lex, root_lex, True, filesystem_root)
+    relative = (
+        Path(os.path.normpath(os.fspath(path_obj)))
+        if isinstance(path_obj, Path)
+        else PurePath(os.path.normpath(os.fspath(path_obj)))
+    )
+    return _LexicalPathResult(
+        relative,
+        root_lex,
+        bool(relative.parts and relative.parts[0] == ".."),
+        filesystem_root,
+    )
+
+
+def _is_pre_edit_snapshot_component(component: str) -> bool:
+    """Match snapshot directories and recognized legacy flat-file stems."""
+    if _PRE_EDIT_SNAPSHOT_DIR_RE.fullmatch(component):
+        return True
+    suffix = Path(component).suffix.lower()
+    return (
+        suffix in _LEGACY_SKILL_FILE_SUFFIXES
+        and bool(_PRE_EDIT_SNAPSHOT_DIR_RE.fullmatch(Path(component).stem))
+    )
+
+
+def is_skill_support_path(path, *, root: Optional[PurePath] = None) -> bool:
     """True if *path* is under a support dir of an actual skill root.
 
     ``references/``, ``templates/``, ``assets/``, and ``scripts/`` are
@@ -133,19 +249,39 @@ def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
     discoverable because their ``scripts`` component is not directly under a
     directory that contains ``SKILL.md``.
     """
-    path_obj = path if isinstance(path, Path) else Path(str(path))
-    parts = path_obj.parts
+    lexical = _lexical_relative_path(path, root)
+    if lexical.outside_root:
+        return False
+    parts = lexical.relative.parts
     # Last component may be a file or candidate skill directory name. Only
     # components before the leaf can be containing support directories.
     for idx, part in enumerate(parts[:-1]):
         if part not in SKILL_SUPPORT_DIRS or idx == 0:
             continue
-        skill_root = Path(*parts[:idx])
-        if root is not None and not path_obj.is_absolute():
-            skill_root = root / skill_root
-        if (skill_root / "SKILL.md").exists():
+        if root is None:
+            if lexical.filesystem_path is None:
+                # Synthetic PurePath inputs are intentionally lexical-only.
+                # Do not probe a same-shaped path on the host OS.
+                continue
+            ancestor_depth = len(parts) - 1 - idx
+            try:
+                skill_root = lexical.filesystem_path.parents[ancestor_depth]
+            except IndexError:
+                continue
+        else:
+            if lexical.filesystem_root is None:
+                # PureWindowsPath/PurePath test inputs have no trustworthy
+                # filesystem representation for existence checks.
+                continue
+            skill_root = lexical.filesystem_root.joinpath(*parts[:idx])
+        if _support_manifest_exists(skill_root / "SKILL.md"):
             return True
     return False
+
+
+def _support_manifest_exists(path: Path) -> bool:
+    """Probe a concrete skill root; kept as a seam for pure-path tests."""
+    return path.exists()
 
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
@@ -888,10 +1024,13 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             d
             for d in dirs
             if d not in EXCLUDED_SKILL_DIRS
+            and not _is_pre_edit_snapshot_component(d)
             and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
         ]
         if filename in files:
-            matches.append(os.path.join(root, filename))
+            candidate = Path(root) / filename
+            if not is_excluded_skill_path(candidate, root=skills_dir):
+                matches.append(os.path.join(root, filename))
     for path in sorted(matches):
         yield Path(path)
 

@@ -75,9 +75,11 @@ def _category(fm: dict[str, Any], skill_md: Path) -> str:
 
 
 def _iter_skill_files(roots: list[tuple[str, Path]]):
+    from agent.skill_utils import iter_skill_index_files
+
     for source, root in roots:
         if root.exists():
-            for path in root.rglob("SKILL.md"):
+            for path in iter_skill_index_files(root, "SKILL.md"):
                 yield source, path
 
 
@@ -127,8 +129,6 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
     nodes: dict[str, SkillNode] = {}
 
     for source, skill_md in _iter_skill_files(skill_roots):
-        if any(p in {".archive", ".hub", "node_modules", ".git"} for p in skill_md.parts):
-            continue
         try:
             fm = _frontmatter(skill_md.read_text(encoding="utf-8")[:4000])
         except OSError:

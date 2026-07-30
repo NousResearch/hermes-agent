@@ -79,3 +79,16 @@ def test_full_payload_shape_and_edge_integrity(tmp_path):
     assert graph["stats"]["nodes"] == len(skill_nodes)
     assert graph["stats"]["memory_nodes"] == len(graph["memory"])
     assert all("timestamp" in n for n in graph["nodes"])
+
+
+def test_build_skill_nodes_excludes_snapshot_only_skills(tmp_path):
+    live = tmp_path / "skills" / "live-skill"
+    live.mkdir(parents=True)
+    (live / "SKILL.md").write_text("---\nname: live-skill\n---\n", encoding="utf-8")
+    snapshot = tmp_path / "skills" / "ghost-skill-pre-edit-snapshot-t_abcdef12"
+    snapshot.mkdir(parents=True)
+    (snapshot / "SKILL.md").write_text("---\nname: ghost-skill\n---\n", encoding="utf-8")
+
+    nodes = learning_graph.build_skill_nodes([("profile", tmp_path / "skills")])
+
+    assert set(nodes) == {"live-skill"}

@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import display_hermes_home
+
 
 def _fmt_ts(ts: Optional[str]) -> str:
     if not ts:
@@ -524,7 +526,7 @@ def _cmd_backup(args) -> int:
     if snap is None:
         print("curator: snapshot failed — check logs (backup disabled or IO error)")
         return 1
-    print(f"curator: snapshot created at ~/.hermes/skills/.curator_backups/{snap.name}")
+    print(f"curator: snapshot created at {display_hermes_home()}/skill-snapshots/{snap.name}")
     return 0
 
 

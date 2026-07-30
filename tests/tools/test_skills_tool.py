@@ -40,7 +40,7 @@ description: Description for {name}.
 
 {body}
 """
-    (skill_dir / "SKILL.md").write_text(content)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     return skill_dir
 
 
@@ -295,6 +295,29 @@ class TestSkillsList:
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
 
+    def test_list_view_and_lookup_agree_on_nested_support_packages(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            umbrella = _make_skill(tmp_path, "umbrella")
+            archived = umbrella / "references" / "archived"
+            archived.mkdir(parents=True)
+            (archived / "SKILL.md").write_text(
+                "---\nname: archived\n---\n\nSTALE PACKAGE\n",
+                encoding="utf-8",
+            )
+            (archived / "legacy.md").write_text(
+                "---\nname: legacy\n---\n\nSTALE LEGACY\n",
+                encoding="utf-8",
+            )
+
+            listed = json.loads(skills_list())
+            archived_view = json.loads(skill_view("archived"))
+            legacy_view = json.loads(skill_view("legacy"))
+
+        assert listed["success"] is True
+        assert [skill["name"] for skill in listed["skills"]] == ["umbrella"]
+        assert archived_view["success"] is False
+        assert legacy_view["success"] is False
+
 
 # ---------------------------------------------------------------------------
 # skill_view
@@ -302,7 +325,73 @@ class TestSkillsList:
 
 
 class TestSkillView:
-    def test_view_resolves_by_dir_name_and_frontmatter_name(self, tmp_path):
+    def test_view_ignores_direct_snapshot_artifact(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            artifact = tmp_path / "real-skill-pre-edit-snapshot-t_abcdef12"
+            artifact.mkdir()
+            (artifact / "SKILL.md").write_text(
+                "---\nname: real-skill\n---\n\nSTALE\n", encoding="utf-8"
+            )
+            result = json.loads(skill_view("real-skill-pre-edit-snapshot-t_abcdef12"))
+
+        assert result["success"] is False
+
+    def test_view_ignores_categorized_snapshot_artifact(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            artifact = tmp_path / "category" / "real-skill-pre-edit-snapshot-t_abcdef12"
+            artifact.mkdir(parents=True)
+            (artifact / "SKILL.md").write_text(
+                "---\nname: real-skill\n---\n\nSTALE\n", encoding="utf-8"
+            )
+            _make_skill(tmp_path, "real-skill", category="category")
+            result = json.loads(skill_view("category:real-skill-pre-edit-snapshot-t_abcdef12"))
+
+        assert result["success"] is False
+
+    def test_view_ignores_snapshot_only_legacy_flat_file(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            snapshot = tmp_path / "ghost-skill-pre-edit-snapshot-t_abcdef12"
+            snapshot.mkdir()
+            (snapshot / "ghost-skill.md").write_text(
+                "---\nname: ghost-skill\n---\n\nSTALE\n", encoding="utf-8"
+            )
+            result = json.loads(skill_view("ghost-skill"))
+
+        assert result["success"] is False
+
+    def test_view_prefers_live_skill_over_snapshot_legacy_collision(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "colliding-skill", body="LIVE")
+            snapshot = tmp_path / "colliding-skill-pre-edit-snapshot-t_abcdef12"
+            snapshot.mkdir()
+            (snapshot / "colliding-skill.md").write_text(
+                "---\nname: colliding-skill\n---\n\nSTALE\n", encoding="utf-8"
+            )
+            result = json.loads(skill_view("colliding-skill"))
+
+        assert result["success"] is True
+        assert "LIVE" in result["content"]
+        assert "STALE" not in result["content"]
+
+    def test_view_accepts_relative_and_categorized_legacy_flat_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            (tmp_path / "legacy-skill.md").write_text(
+                "---\nname: legacy-flat\ndescription: active\n---\n\nLIVE\n",
+                encoding="utf-8",
+            )
+            (tmp_path / "category" / "legacy-flat.md").parent.mkdir()
+            (tmp_path / "category" / "legacy-flat.md").write_text(
+                "---\nname: category-legacy-flat\ndescription: active\n---\n\nCATEGORIZED\n",
+                encoding="utf-8",
+            )
+            relative = json.loads(skill_view("legacy-skill"))
+            categorized = json.loads(skill_view("category:legacy-flat"))
+
+        assert relative["success"] is True
+        assert "LIVE" in relative["content"]
+        assert categorized["success"] is True
+        assert "CATEGORIZED" in categorized["content"]
+
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
@@ -340,7 +429,9 @@ class TestSkillView:
             skill_dir = _make_skill(tmp_path, "my-skill")
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
-            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.")
+            (refs_dir / "api.md").write_text(
+                "# API Docs\nEndpoint info.", encoding="utf-8"
+            )
 
             existing = json.loads(skill_view("my-skill", file_path="references/api.md"))
             missing = json.loads(skill_view("my-skill", file_path="references/nope.md"))
@@ -889,7 +980,9 @@ class TestSkillViewCollisionDetection:
             / "sketch.md"
         )
         support_file.parent.mkdir(parents=True, exist_ok=True)
-        support_file.write_text("# Sketch style support doc\n")
+        support_file.write_text(
+            "# Sketch style support doc\n", encoding="utf-8"
+        )
         _make_skill(local_dir, "sketch", category="creative", body="REAL SKETCH SKILL")
 
         p1, p2 = self._patch_dirs(local_dir, [external_dir])
@@ -923,3 +1016,37 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is False
         assert "Ambiguous" in result["error"]
         assert len(result["matches"]) == 2
+
+    def test_explicit_external_root_under_support_dir_keeps_flat_skill_scoped(self, tmp_path):
+        """A configured root nested in another skill's references is independent."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "umbrella")
+        external_dir = local_dir / "umbrella" / "references" / "external-root"
+        external_dir.mkdir(parents=True)
+
+        flat_skill = external_dir / "flat-skill.md"
+        flat_skill.write_text(
+            "---\nname: flat-skill\ndescription: Valid flat skill.\n---\n\nFlat body.\n",
+            encoding="utf-8",
+        )
+        listed_skill = _make_skill(external_dir, "listed-skill")
+        support_skill = listed_skill / "references" / "flat-skill.md"
+        support_skill.parent.mkdir(parents=True)
+        support_skill.write_text("---\nname: support-ghost\n---\n", encoding="utf-8")
+        snapshot_skill = external_dir / "ghost-pre-edit-snapshot-t_abcdef12" / "SKILL.md"
+        snapshot_skill.parent.mkdir()
+        snapshot_skill.write_text("---\nname: snapshot-ghost\n---\n", encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            viewed = json.loads(skill_view("flat-skill"))
+            listed = json.loads(skills_list())
+
+        assert viewed["success"] is True
+        assert viewed["name"] == "flat-skill"
+        names = {skill["name"] for skill in listed["skills"]}
+        assert listed["success"] is True
+        assert "listed-skill" in names
+        assert "support-ghost" not in names
+        assert "snapshot-ghost" not in names

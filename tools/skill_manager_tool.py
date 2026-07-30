@@ -655,7 +655,7 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
-            if is_excluded_skill_path(skill_md):
+            if is_excluded_skill_path(skill_md, root=skills_dir):
                 continue
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
@@ -794,7 +794,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
             continue
         try:
             for skill_md in skills_dir.rglob("SKILL.md"):
-                if is_excluded_skill_path(skill_md):
+                if is_excluded_skill_path(skill_md, root=skills_dir):
                     continue
                 if skill_md.parent.name == name:
                     matches.append((profile_name, skill_md.parent))

@@ -376,6 +376,25 @@ class TestDmClassification:
         assert adapter._channel_state[DM_CHANNEL]["chat_type"] == "dm"
         assert [d["message_id"] for d in adapter._dispatched] == ["e1"]
         assert adapter._dispatched[0]["chat_type"] == "dm"
+        assert adapter._dispatched[0]["thread_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_dm_reply_preserves_explicit_thread_root(self, adapter):
+        """A real inbound thread reply carries its root into SessionSource."""
+        adapter._channel_state[DM_CHANNEL]["chat_type"] = "dm"
+        event = _tagged_event(
+            "e2",
+            DM_CHANNEL,
+            content="reply in a thread",
+            p=SELF_PUBKEY,
+            reply_to="immediate-parent",
+        )
+        event["tags"].insert(1, ["e", "thread-root", "", "root"])
+
+        await self._poll_with(adapter, DM_CHANNEL, event)
+
+        assert len(adapter._dispatched) == 1
+        assert adapter._dispatched[0]["thread_id"] == "thread-root"
 
 
     @pytest.mark.asyncio
@@ -463,28 +482,60 @@ class TestBuzzAdapterSend:
         assert "evt123" in adapter._channel_state[CHANNEL]["seen"]
 
     @pytest.mark.asyncio
-    async def test_send_reply_to(self):
-        adapter = _make_adapter()
-        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
-        cli = _ScriptedCli()
-        cli.script("messages", "send", {"accepted": True, "event_id": "evt124", "message": ""})
-        adapter._run_cli = cli
-        await adapter.send(CHANNEL, "threaded", reply_to="root-event")
-        args, _stdin = cli.calls[0]
-        assert args[args.index("--reply-to") + 1] == "root-event"
-
-    @pytest.mark.asyncio
-    async def test_send_dm_does_not_create_reply_tree(self):
+    async def test_top_level_dm_ignores_gateway_reply_anchor(self):
+        """A generic reply anchor must not hide a DM response in a thread."""
         adapter = _make_adapter()
         adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
         cli = _ScriptedCli()
-        cli.script("messages", "send", {"accepted": True, "event_id": "evt-dm", "message": ""})
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt124"})
         adapter._run_cli = cli
 
-        await adapter.send(DM_CHANNEL, "flat reply", reply_to="user-event")
+        result = await adapter.send(
+            DM_CHANNEL,
+            "visible in the main DM",
+            reply_to="triggering-message",
+        )
 
+        assert result.success is True
         args, _stdin = cli.calls[0]
         assert "--reply-to" not in args
+
+    @pytest.mark.asyncio
+    async def test_threaded_dm_uses_explicit_thread_root(self):
+        adapter = _make_adapter()
+        adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt125"})
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            DM_CHANNEL,
+            "stays in the real thread",
+            reply_to="triggering-message",
+            metadata={"thread_id": "thread-root"},
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "thread-root"
+
+    @pytest.mark.asyncio
+    async def test_channel_keeps_gateway_reply_anchor(self):
+        adapter = _make_adapter()
+        adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _ScriptedCli()
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt126"})
+        adapter._run_cli = cli
+
+        result = await adapter.send(
+            CHANNEL,
+            "channel reply",
+            reply_to="triggering-message",
+        )
+
+        assert result.success is True
+        args, _stdin = cli.calls[0]
+        assert args[args.index("--reply-to") + 1] == "triggering-message"
 
     @pytest.mark.asyncio
     async def test_send_image_local_file_uses_file_flag(self, tmp_path):
@@ -500,19 +551,55 @@ class TestBuzzAdapterSend:
         assert args[args.index("--file") + 1] == str(img)
 
     @pytest.mark.asyncio
-    async def test_send_image_in_dm_does_not_create_reply_tree(self, tmp_path):
+    async def test_top_level_dm_image_ignores_gateway_reply_anchor(self, tmp_path):
         img = tmp_path / "shot.png"
         img.write_bytes(b"\x89PNG fake")
         adapter = _make_adapter()
         adapter._channel_state[DM_CHANNEL] = {"chat_type": "dm", "last_ts": 0, "seen": {}}
         cli = _ScriptedCli()
-        cli.script("messages", "send", {"accepted": True, "event_id": "evt-dm-image", "message": ""})
+        cli.script("messages", "send", {"accepted": True, "event_id": "evt127"})
         adapter._run_cli = cli
 
-        await adapter.send_image(DM_CHANNEL, str(img), reply_to="user-event")
+        result = await adapter.send_image(
+            DM_CHANNEL,
+            str(img),
+            caption="visible image",
+            reply_to="triggering-message",
+        )
 
+        assert result.success is True
         args, _stdin = cli.calls[0]
         assert "--reply-to" not in args
+
+
+# ── Inbound thread source ─────────────────────────────────────────────────
+
+
+class TestBuzzAdapterDispatch:
+
+    @pytest.mark.asyncio
+    async def test_dispatch_stamps_real_thread_on_session_source(self):
+        adapter = _make_adapter()
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+
+        await adapter._dispatch_message(
+            text="inside thread",
+            chat_id=DM_CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Chris",
+            message_id="reply-event",
+            created_at=1000,
+            thread_id="thread-root",
+        )
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_id == "reply-event"
+        assert event.source.message_id == "reply-event"
+        assert event.source.thread_id == "thread-root"
+        assert event.source.parent_chat_id == DM_CHANNEL
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────

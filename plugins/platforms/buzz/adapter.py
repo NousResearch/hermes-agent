@@ -681,19 +681,6 @@ class BuzzAdapter(BasePlatformAdapter):
 
     # ── Sending ───────────────────────────────────────────────────────────
 
-    def _reply_target_for_chat(self, chat_id: str, reply_target: Optional[str]) -> Optional[str]:
-        """Keep direct-message conversations flat while preserving channel replies.
-
-        Buzz renders ``--reply-to`` as a nested reply-tree edge.  A DM is
-        already its own conversation, so anchoring every Hermes response to
-        the triggering message creates an ever-deepening tree instead of the
-        expected linear exchange.
-        """
-        state = self._channel_state.get(str(chat_id))
-        if state and state.get("chat_type") == "dm":
-            return None
-        return reply_target
-
     async def send(
         self,
         chat_id: str,
@@ -704,12 +691,9 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = self._reply_target_for_chat(
-            chat_id,
-            reply_to or (metadata or {}).get("thread_id"),
-        )
+        reply_target = self._reply_target(chat_id, reply_to, metadata)
         if reply_target:
-            args += ["--reply-to", str(reply_target)]
+            args += ["--reply-to", reply_target]
         code, out, err = await self._run_cli(args, input_text=content)
         if code != 0:
             return SendResult(
@@ -731,6 +715,28 @@ class BuzzAdapter(BasePlatformAdapter):
             message_id=str(event_id) if event_id else None,
             raw_response=data,
         )
+
+    def _reply_target(
+        self,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Resolve Buzz threading without turning every DM response into one.
+
+        The gateway supplies the triggering message ID as ``reply_to`` for
+        most platforms. In Buzz, that creates a thread and removes the response
+        from the main DM timeline. A real inbound Buzz thread is represented by
+        ``metadata.thread_id``; only that explicit thread marker may thread a
+        DM response. Shared channels retain the gateway's existing reply
+        behavior.
+        """
+        thread_id = (metadata or {}).get("thread_id")
+        state = self._channel_state.get(str(chat_id))
+        if state and state.get("chat_type") == "dm":
+            return str(thread_id) if thread_id else None
+        target = reply_to or thread_id
+        return str(target) if target else None
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Buzz has no typing indicator API — no-op."""
@@ -779,9 +785,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
-            reply_target = self._reply_target_for_chat(chat_id, reply_to)
+            reply_target = self._reply_target(chat_id, reply_to, metadata)
             if reply_target:
-                args += ["--reply-to", str(reply_target)]
+                args += ["--reply-to", reply_target]
             code, out, err = await self._run_cli(args, input_text=caption or "")
             if code != 0:
                 return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
@@ -1146,6 +1152,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # open with "@Chip" even though no mention is required there, so the
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
+        thread_id = self._thread_id_from_event(event)
 
         await self._dispatch_message(
             text=dispatch_text,
@@ -1155,6 +1162,7 @@ class BuzzAdapter(BasePlatformAdapter):
             user_name=await self._resolve_user_name(pubkey),
             message_id=event_id,
             created_at=created_at,
+            thread_id=thread_id,
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1234,6 +1242,30 @@ class BuzzAdapter(BasePlatformAdapter):
         state["chat_type"] = "dm"
         self._channel_names.setdefault(channel_id, "DM")
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
+
+    @staticmethod
+    def _thread_id_from_event(event: dict) -> Optional[str]:
+        """Return the root of a real Buzz reply thread, if present.
+
+        Buzz uses NIP-10 ``e`` tags with ``root`` and ``reply`` markers. A
+        top-level message has no marked ``e`` tag. Prefer the root marker so
+        every message in a nested thread shares one Hermes session; fall back
+        to the immediate reply target when the event has no explicit root.
+        """
+        root_id = None
+        reply_id = None
+        for tag in event.get("tags") or []:
+            if not isinstance(tag, list) or len(tag) < 4 or tag[0] != "e":
+                continue
+            event_id = str(tag[1] or "")
+            if not event_id:
+                continue
+            marker = str(tag[3] or "").lower()
+            if marker == "root":
+                root_id = event_id
+            elif marker == "reply":
+                reply_id = event_id
+        return root_id or reply_id
 
     def _is_mentioned(self, content: str) -> bool:
         """True when the message addresses this agent (npub, hex, or name)."""
@@ -1318,6 +1350,7 @@ class BuzzAdapter(BasePlatformAdapter):
         user_name: str,
         message_id: str,
         created_at: int,
+        thread_id: Optional[str] = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1329,6 +1362,9 @@ class BuzzAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
+            thread_id=thread_id,
+            parent_chat_id=chat_id if thread_id else None,
+            message_id=message_id,
         )
 
         event = MessageEvent(

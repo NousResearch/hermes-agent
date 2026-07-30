@@ -51,7 +51,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     [
         "delegate_task",  # no recursive delegation
         "clarify",  # no user interaction
-        "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
         "cronjob",  # no scheduling more work in the parent's name
     ]
@@ -4705,6 +4704,17 @@ DELEGATE_TASK_SCHEMA = {
                     "and specific — the child sees it appended to its next "
                     "tool result mid-run (e.g. \"Stop exploring X; focus on Y "
                     "and return early results\")."
+                ),
+            },
+            "memory_mode": {
+                "type": "string",
+                "enum": ["full", "on_demand", "off"],
+                "description": (
+                    "Memory access mode for sub-agents. 'full': memory is "
+                    "injected into the system prompt. 'on_demand': memory "
+                    "tools are available but not injected into the prompt. "
+                    "'off': no memory access at all. Default for sub-agents "
+                    "is 'on_demand'."
                 ),
             },
         },

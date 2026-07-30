@@ -33,6 +33,7 @@ describe('removePane close-neighbor selection', () => {
       group(['workspace'], { active: 'workspace', id: 'main' }),
       group(['tile:1', 'tile:2', 'tile:3'], { active: 'tile:2', id: 'stack' })
     ])
+
     const next = removePane(tree, 'tile:2')
     const stack = next ? findGroup(next, 'stack') : null
 

@@ -73,6 +73,9 @@ class TestSendTelegramStandaloneProxy:
 
         proxy_url = "socks5://127.0.0.1:1080"
         monkeypatch.setenv("TELEGRAM_PROXY", proxy_url)
+        monkeypatch.delenv(
+            "HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", raising=False
+        )
         # Clear NO_PROXY so resolve_proxy_url() doesn't short-circuit on
         # leftover env from the host running the tests.
         monkeypatch.delenv("NO_PROXY", raising=False)
@@ -105,17 +108,15 @@ class TestSendTelegramStandaloneProxy:
             assert call.kwargs.get("proxy") == proxy_url, (
                 f"HTTPXRequest called without proxy={proxy_url!r}: {call.kwargs!r}"
             )
+            assert call.kwargs["media_write_timeout"] == 180.0
 
         # And the bot was actually used to send.
         bot.send_message.assert_awaited_once()
 
-    def test_no_proxy_env_uses_plain_bot(
+    def test_no_proxy_env_configures_media_write_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Without TELEGRAM_PROXY (and no inherited HTTPS_PROXY/etc), Bot()
-        is constructed plainly — no ``request``/``get_updates_request``
-        kwargs, and HTTPXRequest is not invoked at all.
-        """
+        """Direct standalone sends retain the longer media timeout."""
         from tools.send_message_tool import _send_telegram
 
         # Wipe every env var resolve_proxy_url() inspects so the host's
@@ -132,6 +133,9 @@ class TestSendTelegramStandaloneProxy:
             "no_proxy",
         ):
             monkeypatch.delenv(var, raising=False)
+        monkeypatch.delenv(
+            "HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", raising=False
+        )
         monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
         # Make sure macOS system-proxy auto-detection (scutil) can't kick in.
         monkeypatch.setattr(sys, "platform", "linux")
@@ -151,7 +155,10 @@ class TestSendTelegramStandaloneProxy:
         call_args = bot_factory.call_args.args
         # token may be passed positionally or as a kwarg; either is fine.
         assert call_kwargs.get("token", call_args[0] if call_args else None) == "tok"
-        assert "request" not in call_kwargs
-        assert "get_updates_request" not in call_kwargs
-        httpx_request_factory.assert_not_called()
+        assert "request" in call_kwargs
+        assert "get_updates_request" in call_kwargs
+        assert httpx_request_factory.call_count == 2
+        for call in httpx_request_factory.call_args_list:
+            assert "proxy" not in call.kwargs
+            assert call.kwargs["media_write_timeout"] == 180.0
         bot.send_message.assert_awaited_once()

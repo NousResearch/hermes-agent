@@ -1392,6 +1392,9 @@ def _invalidate_update_cache():
 
 def _write_marker_file(path: Path, *, label: str) -> None:
     """Drop an update-recovery breadcrumb. Never raises."""
+    if _m()._pytest_owns_live_checkout(path.parent):
+        logger.debug("Skipping %s marker under pytest (live checkout)", label)
+        return
     try:
         path.write_text(
             f"started={_time.time()}\npid={os.getpid()}\n", encoding="utf-8"

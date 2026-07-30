@@ -1109,3 +1109,43 @@ def test_undo_rewind_does_not_rearm_commit_guard():
     provider.on_session_switch("sid-123", rewound=True)
 
     assert provider._has_committed_session("sid-123") is True
+
+
+def test_in_place_compression_lifecycle_allows_a_later_commit(monkeypatch):
+    """End-to-end wiring, not a hand-set latch (#74695).
+
+    Drives the real sequence a session goes through: commit at the compression
+    boundary, same-id ``on_session_switch``, a post-compression turn via
+    ``sync_turn``, then a later commit. Before the fix the second commit never
+    reached the server, so every turn after the first compression was lost.
+    """
+    provider = _make_provider_with_session("sid-123", turn_count=3)
+    provider._ensure_client = lambda: True
+    provider._drain_writers = lambda sid, timeout=None: True
+    # Keep the async write worker out of it; the counter bump is what matters.
+    monkeypatch.setattr(provider, "_queue_memory_write", lambda *a, **k: None, raising=False)
+
+    def _commit_calls():
+        return [
+            c for c in provider._client.post.call_args_list
+            if c.args and str(c.args[0]).endswith("/commit")
+        ]
+
+    # 1. Compression commits the live session through the real path.
+    provider.on_session_end([{"role": "user", "content": "before"}])
+    assert len(_commit_calls()) == 1
+    assert provider._has_committed_session("sid-123") is True
+
+    # 2. In-place compression: same id back in, no rotation.
+    provider.on_session_switch("sid-123", reason="compression")
+
+    # 3. A genuinely new turn lands on the still-live session.
+    provider.sync_turn("after compression", "reply", session_id="sid-123")
+    assert provider._turn_count > 0
+
+    # 4. That turn must still be committable.
+    provider.on_session_end([{"role": "user", "content": "after"}])
+    assert len(_commit_calls()) == 2, (
+        "post-compression turns were never committed: "
+        f"{provider._client.post.call_args_list}"
+    )

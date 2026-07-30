@@ -92,3 +92,11 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    # --- live-thinking bubble wiring (Mattermost live-thinking feature) ----
+    #     Published by _run_agent_inner; TurnRunner reads them in
+    #     _interim_assistant_cb and the agent callback-wiring block.
+    _live_thinking_enabled: bool = False
+    _live_thinking_adapter: Any = None
+    _live_thinking_post_ids: List[str] = field(default_factory=list)
+    _live_thinking_lock: Any = None

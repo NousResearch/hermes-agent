@@ -209,6 +209,35 @@ class MattermostAdapter(BasePlatformAdapter):
         return _post_result(await self._post_message(chat_id, caption or "", reply_to, metadata, [file_id]),
                             _POST_WITH_FILE_ERROR)
 
+    async def _api_delete(self, path: str) -> Dict[str, Any]:
+        """DELETE /api/v4/{path}. Returns the parsed JSON body (e.g. {\"status\": \"OK\"})."""
+        data, _status = await self._api_delete_with_status(path)
+        return data
+
+    async def _api_delete_with_status(self, path: str) -> "tuple[Dict[str, Any], int]":
+        """DELETE /api/v4/{path}, returning (parsed JSON body, HTTP status).
+
+        Status is 0 on network error. Callers that need to distinguish error
+        classes (e.g. 501 \"feature disabled\" vs 403 \"forbidden\") should use
+        this instead of ``_api_delete``, which discards the status code.
+        """
+        import aiohttp
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.delete(
+                url,
+                headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM API DELETE %s → %s: %s", path, resp.status, body[:200])
+                    return {}, resp.status
+                return await resp.json(), resp.status
+        except aiohttp.ClientError as exc:
+            logger.error("MM API DELETE %s network error: %s", path, exc)
+            return {}, 0
+
     async def _upload_file(self, channel_id: str, file_data: bytes, filename: str,
                            content_type: str = "application/octet-stream") -> Optional[str]:
         """Upload a file and return its file ID, or None on failure."""
@@ -275,12 +304,25 @@ class MattermostAdapter(BasePlatformAdapter):
         """Send a message (or multiple chunks) to a channel; reply_to / metadata["thread_id"] is the root post."""
         if not content:
             return SendResult(success=True)
-        result = SendResult(success=True)
+        sent_ids: list = []
         for chunk in self.truncate_message(self.format_message(content), MAX_POST_LENGTH):
-            result = _post_result(await self._post_message(chat_id, chunk, reply_to, metadata), "Failed to create post")
-            if not result.success:
-                break
-        return result
+            data = await self._post_message(chat_id, chunk, reply_to, metadata)
+            if not data or "id" not in data:
+                return SendResult(success=False, error="Failed to create post")
+            sent_ids.append(data["id"])
+
+        # ``message_id`` is the LAST visible post so subsequent edits target the
+        # most recent chunk; ``continuation_message_ids`` carries the earlier
+        # chunk ids (empty for the common single-post case).  Reporting the
+        # split lets consumers (e.g. the live-thinking finalize path) tell a
+        # chunked multi-post delivery from a single post — editing the last
+        # chunk with the full answer would otherwise strand a truncated
+        # ``(1/N)`` placeholder beside a full copy.
+        return SendResult(
+            success=True,
+            message_id=sent_ids[-1] if sent_ids else None,
+            continuation_message_ids=tuple(sent_ids[:-1]),
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         data = await self._api_get(f"channels/{chat_id}")
@@ -305,6 +347,41 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
                               reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
         return await self._send_local_file(chat_id, image_path, caption, reply_to, metadata=metadata)
+
+    async def delete_message(
+        self, chat_id: str, message_id: str, *, permanent: bool = False
+    ) -> bool:
+        """Delete a post by its ID.
+
+        Returns True when Mattermost confirms deletion (``{"status": "OK"}``),
+        False on any error. ``chat_id`` is accepted for API symmetry but
+        Mattermost's DELETE /api/v4/posts/{id} endpoint does not need it.
+
+        When ``permanent=True``, first attempts a hard delete via
+        ``?permanent=true`` (no "(message deleted)" tombstone). That endpoint
+        is gated behind the server config flag
+        ``ServiceSettings.EnableAPIPostDeletion`` AND requires a
+        ``system_admin`` token; servers/tokens without it respond 501 or 403.
+        This method never touches server config — it only probes the
+        endpoint and falls back to the plain soft delete on 501/403 (or any
+        other failure), so behaviour is unchanged everywhere except servers
+        that have already opted in.
+        """
+        if permanent:
+            data, status = await self._api_delete_with_status(
+                f"posts/{message_id}?permanent=true"
+            )
+            if status in (501, 403):
+                logger.debug(
+                    "MM permanent delete unavailable (status %s) for post %s; "
+                    "falling back to soft delete",
+                    status, message_id,
+                )
+            else:
+                return bool(data and data.get("status") == "OK")
+
+        data = await self._api_delete(f"posts/{message_id}")
+        return bool(data and data.get("status") == "OK")
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,

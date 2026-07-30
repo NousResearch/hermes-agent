@@ -2671,6 +2671,12 @@ class GatewayTurnMixin:
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off"
+        # Live-thinking bubble: a single post edited in place with each completed
+        # thought, then deleted when the final answer lands. Explicit per-platform
+        # opt-in (default false); Mattermost requires a platform override.
+        _live_thinking_enabled = _display_surface_mode(
+            "live_thinking", default=False, require_platform_override_for={Platform.MATTERMOST},
+        ) != "off"
         # Slack-native task cards need the progress queue even with text tool_progress off.
         # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
@@ -2692,6 +2698,7 @@ class GatewayTurnMixin:
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
+            _live_thinking_enabled=_live_thinking_enabled,
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
             _generic_status_phrase=_generic_status_phrase,
         )
@@ -2702,6 +2709,7 @@ class GatewayTurnMixin:
         "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
+        "_live_thinking_enabled",
     )
 
     def _run_agent_build_turn_context(
@@ -2736,6 +2744,30 @@ class GatewayTurnMixin:
             _cleanup_progress = False
             _cleanup_adapter = None
 
+        # Live-thinking bubble: one post edited in place per thought, deleted when the
+        # final answer lands. Tracked independently so the bubble is always cleaned up
+        # regardless of the _cleanup_progress guard. Needs edit_message; delete_message
+        # is optional (without it the bubble simply isn't removed after the final answer).
+        _live_thinking_adapter = (
+            self.adapters.get(source.platform) if disp._live_thinking_enabled else None
+        )
+        if _live_thinking_adapter is not None and (
+            type(_live_thinking_adapter).edit_message is BasePlatformAdapter.edit_message
+        ):
+            logger.warning(
+                "live_thinking enabled but %s adapter has no edit_message; disabling",
+                source.platform.value if source.platform else "unknown",
+            )
+            _live_thinking_adapter = None
+        if _live_thinking_adapter is not None and (
+            type(_live_thinking_adapter).delete_message is BasePlatformAdapter.delete_message
+        ):
+            logger.warning(
+                "live_thinking enabled but %s adapter has no delete_message; "
+                "bubble will not be deleted after final answer",
+                source.platform.value if source.platform else "unknown",
+            )
+
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
         turn_ctx = TurnContext(
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
@@ -2745,6 +2777,11 @@ class GatewayTurnMixin:
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
+        # Live-thinking bubble runtime state onto the shared TurnContext so the extracted
+        # TurnRunner callbacks (interim_assistant_cb, agent callback-wiring) can read them.
+        turn_ctx._live_thinking_adapter = _live_thinking_adapter
+        turn_ctx._live_thinking_post_ids = []
+        turn_ctx._live_thinking_lock = asyncio.Lock()
         turn_runner = TurnRunner(self, turn_ctx)
         # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
         turn_ctx.progress_callback = turn_runner.progress_callback
@@ -3615,6 +3652,92 @@ class GatewayTurnMixin:
         if _is_empty_sentinel:
             return
         _sk = session_key or "?"
+        # Live-thinking bubble pending: send the final answer as a brand-new post (fresh
+        # notification instead of a silent edit-in-place), then let the post-delivery cleanup
+        # callback delete the old bubble. Send-then-delete keeps the bubble visible until the
+        # answer has landed. Never clear _live_thinking_post_ids here — that list is exactly
+        # what the cleanup callback deletes, and the new final post id must never enter it.
+        _live_thinking_enabled = getattr(turn_ctx, "_live_thinking_enabled", False)
+        _live_thinking_adapter = getattr(turn_ctx, "_live_thinking_adapter", None)
+        _live_thinking_post_ids = getattr(turn_ctx, "_live_thinking_post_ids", None) or []
+        if (
+            not response.get("already_sent")
+            and _live_thinking_enabled
+            and _live_thinking_post_ids
+            and _live_thinking_adapter is not None
+        ):
+            from gateway.run import _live_thinking_final_footer_markers
+            event_message_id = turn_ctx.event_message_id
+            _lt_bubble_ids_snapshot = list(_live_thinking_post_ids)
+            _lt_new_post_id = None
+            _lt_send_result_final = None
+            for _lt_attempt in range(3):
+                try:
+                    _lt_send_res = await _live_thinking_adapter.send(
+                        source.chat_id,
+                        _final,
+                        metadata=self._thread_metadata_for_source(source, event_message_id),
+                    )
+                    _lt_candidate_id = getattr(_lt_send_res, "message_id", None)
+                    if (
+                        getattr(_lt_send_res, "success", False)
+                        and _lt_candidate_id
+                        and str(_lt_candidate_id) not in _lt_bubble_ids_snapshot
+                    ):
+                        _lt_new_post_id = str(_lt_candidate_id)
+                        _lt_send_result_final = _lt_send_res
+                        break
+                except Exception as _lt_send_err:
+                    logger.debug(
+                        "live_thinking final send attempt %d/3 failed: %s",
+                        _lt_attempt + 1, _lt_send_err,
+                    )
+                if _lt_attempt < 2:
+                    await asyncio.sleep(0.5 * (2 ** _lt_attempt))  # 0.5s, 1s
+            if _lt_new_post_id:
+                assert _lt_new_post_id not in _lt_bubble_ids_snapshot
+                response["already_sent"] = True
+                _lt_footer_markers = _live_thinking_final_footer_markers(_lt_send_result_final, _final)
+                if _lt_footer_markers is not None:
+                    response.update(_lt_footer_markers)
+                else:
+                    logger.info(
+                        "live_thinking final answer for session %s was chunk-split across posts; "
+                        "skipping footer edit-append to avoid a duplicate full copy.", _sk,
+                    )
+                logger.info(
+                    "Sent live-thinking final answer %s for session %s; bubble %s will be deleted.",
+                    _lt_new_post_id, _sk, _lt_bubble_ids_snapshot,
+                )
+            else:
+                # Send failed — fall back to edit-in-place so the answer is never lost.
+                _lt_bubble_id = _live_thinking_post_ids[0]
+                _lt_replaced = False
+                for _lt_attempt in range(3):
+                    try:
+                        _lt_edit_res = await _live_thinking_adapter.edit_message(
+                            source.chat_id, _lt_bubble_id, _final, finalize=True,
+                        )
+                        if getattr(_lt_edit_res, "success", False):
+                            _lt_replaced = True
+                            break
+                    except Exception as _lt_edit_err:
+                        logger.debug(
+                            "live_thinking bubble replace attempt %d/3 failed: %s",
+                            _lt_attempt + 1, _lt_edit_err,
+                        )
+                    if _lt_attempt < 2:
+                        await asyncio.sleep(0.5 * (2 ** _lt_attempt))  # 0.5s, 1s
+                if _lt_replaced:
+                    response["already_sent"] = True
+                    response["live_thinking_final_post_id"] = _lt_bubble_id
+                    response["live_thinking_final_content"] = _final
+                    _live_thinking_post_ids.clear()
+                    logger.info(
+                        "Replaced live-thinking bubble %s with final answer for session %s (fallback).",
+                        _lt_bubble_id, _sk,
+                    )
+            return
         if not _transformed and (_streamed or _content_delivered):
             logger.info(
                 "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
@@ -3697,6 +3820,71 @@ class GatewayTurnMixin:
             )
         except Exception as _rpe:
             logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        self._run_agent_schedule_live_thinking_cleanup(response, turn_ctx)
+
+    def _run_agent_schedule_live_thinking_cleanup(self, response: Any, turn_ctx: TurnContext) -> None:
+        """Delete the live-thinking bubble after the final answer lands, regardless of
+        _cleanup_progress. The whole point is that the bubble goes away once the real
+        response is visible."""
+        from gateway.run import safe_schedule_threadsafe
+        _live_thinking_enabled = getattr(turn_ctx, "_live_thinking_enabled", False)
+        _live_thinking_adapter = getattr(turn_ctx, "_live_thinking_adapter", None)
+        _live_thinking_post_ids = getattr(turn_ctx, "_live_thinking_post_ids", None) or []
+        session_key = turn_ctx.session_key
+        if not (
+            _live_thinking_enabled
+            and _live_thinking_adapter is not None
+            and _live_thinking_post_ids
+            and session_key
+            and isinstance(response, dict)
+            and not response.get("failed")
+            and hasattr(_live_thinking_adapter, "register_post_delivery_callback")
+        ):
+            return
+        _lt_ids_snapshot = list(_live_thinking_post_ids)
+        _lt_chat_id_snapshot = turn_ctx.source.chat_id
+        _lt_adapter_snapshot = _live_thinking_adapter
+        _lt_loop_snapshot = asyncio.get_running_loop()
+
+        def _cleanup_live_thinking_bubble() -> None:
+            async def _delete_lt_bubble() -> None:
+                for _mid in _lt_ids_snapshot:
+                    for _attempt in range(3):
+                        try:
+                            try:
+                                _ok = await _lt_adapter_snapshot.delete_message(
+                                    _lt_chat_id_snapshot, _mid, permanent=True
+                                )
+                            except TypeError:
+                                # Adapter's delete_message doesn't accept `permanent` —
+                                # fall back to its default (soft) delete.
+                                _ok = await _lt_adapter_snapshot.delete_message(
+                                    _lt_chat_id_snapshot, _mid
+                                )
+                            if _ok:
+                                break
+                        except Exception:
+                            pass
+                        if _attempt < 2:
+                            await asyncio.sleep(0.5 * (2 ** _attempt))  # 0.5s, 1s
+            try:
+                safe_schedule_threadsafe(
+                    _delete_lt_bubble(), _lt_loop_snapshot,
+                    logger=logger,
+                    log_message="Live-thinking bubble cleanup scheduling error",
+                )
+            except Exception:
+                pass
+
+        try:
+            _lt_adapter_snapshot.register_post_delivery_callback(
+                session_key,
+                _cleanup_live_thinking_bubble,
+                generation=turn_ctx.run_generation,
+            )
+        except Exception as _ltpe:
+            logger.debug("Live-thinking bubble post-delivery registration failed: %s", _ltpe)
 
     def _run_agent_bind_turn_wiring(
         self, turn_ctx: TurnContext, turn_runner: TurnRunner, source: SessionSource,

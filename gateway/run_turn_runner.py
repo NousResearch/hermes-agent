@@ -829,10 +829,84 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            from gateway.run import (
+                _LIVE_THINKING_MAX,
+                _update_live_bubble_via_adapter,
+                safe_schedule_threadsafe,
+            )
+            display_text = text
+            _live_thinking_enabled = ctx._live_thinking_enabled
+            _live_thinking_adapter = ctx._live_thinking_adapter
             if stream_consumer is not None:
-                stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
-            elif not already_streamed and ctx._status_adapter and str(text or "").strip():
-                self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
+                if already_streamed:
+                    stream_consumer.on_segment_break()
+                elif _live_thinking_enabled and _live_thinking_adapter and not already_streamed:
+                    # live_thinking IS the streaming experience for this platform —
+                    # bypass the stream consumer commentary path and fall through to
+                    # the bubble update below.  Letting on_commentary() handle it
+                    # would swallow the thought into the stream consumer's buffer
+                    # instead of updating the thinking bubble.
+                    pass
+                else:
+                    stream_consumer.on_commentary(display_text)
+                    return
+            if already_streamed or not str(display_text or "").strip():
+                return
+            # ------------------------------------------------------------------
+            # Live-thinking bubble: edit a single post in place (Mattermost and
+            # any adapter that implements edit_message + delete_message).
+            # ------------------------------------------------------------------
+            if _live_thinking_enabled and _live_thinking_adapter:
+                _raw_thought = str(text).strip()
+                if len(_raw_thought) > _LIVE_THINKING_MAX:
+                    _raw_thought = _raw_thought[:_LIVE_THINKING_MAX - 3] + "..."
+                # Render as a distinct blockquote so it's visually
+                # distinguishable from the final answer at a glance.
+                # Collapse multi-line thoughts to a single line: the italic
+                # _"..."_ delimiter doesn't span newlines in Mattermost and
+                # multi-line blockquotes require every line to carry "> " —
+                # joining with " · " keeps the format clean and consistent.
+                _thought_line = " \u00b7 ".join(
+                    ln.strip() for ln in _raw_thought.splitlines() if ln.strip()
+                )
+                _bubble_text = f'> \U0001f4ad  _"{_thought_line}"_'
+                # Capture a non-None local so the async closure has a
+                # concrete reference (avoids Pyright Optional false-positives).
+                _lta = _live_thinking_adapter
+                _lt_post_ids = ctx._live_thinking_post_ids
+                _lt_lock = ctx._live_thinking_lock
+
+                async def _update_live_bubble(bubble_text: str = _bubble_text) -> None:
+                    # Serialize the whole read-decide-write section: only one
+                    # bubble update touches the post-id list at a time, so a
+                    # later thought always edits the existing post instead of
+                    # racing into a duplicate (or orphaning the first send).
+                    async with _lt_lock:
+                        try:
+                            await _update_live_bubble_via_adapter(
+                                _lta,
+                                _lt_post_ids,
+                                bubble_text,
+                                ctx._status_chat_id,
+                                status_thread_metadata=ctx._status_thread_metadata,
+                                platform=ctx.source.platform,
+                            )
+                        except Exception as _ble:
+                            logger.debug("live_thinking bubble update error: %s", _ble)
+
+                safe_schedule_threadsafe(
+                    _update_live_bubble(),
+                    ctx._loop_for_step,
+                    logger=logger,
+                    log_message="live_thinking bubble scheduling error",
+                )
+                return  # don't also send a regular interim post
+            # ------------------------------------------------------------------
+            # Default path: send each thought as a standalone status post.
+            # ------------------------------------------------------------------
+            if not ctx._status_adapter:
+                return
+            self._send_status_text(display_text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
 
         return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
 
@@ -1100,8 +1174,11 @@ class TurnRunner:
         )
         agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
-        agent.stream_delta_callback = stream_delta_cb
-        agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
+        # Suppress per-token streaming when live_thinking is active:
+        # live_thinking IS the progressive-update experience for this platform
+        # and per-token edits would flood the messaging API on every token.
+        agent.stream_delta_callback = None if ctx._live_thinking_enabled else stream_delta_cb
+        agent.interim_assistant_callback = interim_assistant_cb if (want_interim_messages or ctx._live_thinking_enabled) else None
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync

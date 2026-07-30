@@ -2503,14 +2503,31 @@ class BasePlatformAdapter(ABC):
         when content is unchanged."""
         return SendResult(success=False, error="Not supported")
 
-    async def delete_message(self, chat_id: str, message_id: str) -> bool:
-        """Delete a sent message; True on success (platforms without a deletion API return False and
-        callers leave it). Used by the stream consumer's fresh-final cleanup to remove stale
-        previews.
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        permanent: bool = False,
+    ) -> bool:
+        """
+        Delete a previously sent message.  Optional — platforms that don't
+        support deletion return ``False`` and callers fall back to leaving
+        the message in place.
 
-        Used by the stream consumer's fresh-final cleanup path (see openclaw/openclaw#72038) to remove
-        long-lived preview messages after sending the completed reply as a fresh message so the platform's
-        visible timestamp reflects completion time.
+        ``permanent``, when supported by a platform, requests a hard delete
+        that leaves no tombstone/placeholder in place of the deleted message.
+        Platforms that don't support (or can't guarantee) a tombstone-free
+        delete should ignore the flag and fall back to their normal delete.
+
+        Used by the stream consumer's fresh-final cleanup path (see
+        openclaw/openclaw#72038) to remove long-lived preview messages
+        after sending the completed reply as a fresh message so the
+        platform's visible timestamp reflects completion time.
+
+        Returns ``True`` on successful deletion, ``False`` otherwise.
+        Subclasses should override for platforms with a deletion API
+        (e.g. Telegram ``deleteMessage``).
         """
         return False
 

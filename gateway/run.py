@@ -60,6 +60,10 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _USER_BOUNDARY_END_REASONS = ("session_reset", "user_exit", "session_switch", "new_session")
 # Bounds one stall-notify send so a wedged transport can't block the watcher; on timeout the next tick retries.
 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
+# Max characters for the live-thinking bubble text before truncation.
+# Mattermost posts are capped at 16 383 chars but one very long thought can
+# fill a channel thread; 1 500 chars is intentionally conservative.
+_LIVE_THINKING_MAX = 1500
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
@@ -484,6 +488,84 @@ def _seed_hygiene_system_prompt(agent: Any, session_row: Optional[Dict[str, Any]
 
     agent._cached_system_prompt = stored_prompt
     return bool(stored_prompt)
+
+
+async def _update_live_bubble_via_adapter(
+    adapter: Any,
+    live_thinking_post_ids: list,
+    bubble_text: str,
+    status_chat_id: Any,
+    *,
+    status_thread_metadata: Optional[Dict[str, Any]] = None,
+    platform: Any = None,
+) -> None:
+    """Edit the tracked live-thinking bubble in place, or replace it.
+
+    Mutates ``live_thinking_post_ids`` (expected: a single-element list acting
+    as a mutable box shared with the caller's post-delivery cleanup step).
+
+    On edit-failure, ``existing_id`` was a real post the edit didn't touch —
+    it is deleted (best-effort) before a fresh post is sent and tracked, so
+    the old bubble is never orphaned in the channel once tracking moves to
+    the replacement id.
+    """
+    existing_id = live_thinking_post_ids[0] if live_thinking_post_ids else None
+    edit_ok = False
+    if existing_id:
+        try:
+            res = await adapter.edit_message(status_chat_id, existing_id, bubble_text)
+            edit_ok = bool(getattr(res, "success", False))
+        except Exception as _ee:
+            logger.debug("live_thinking edit failed: %s", _ee)
+    if not edit_ok:
+        if existing_id:
+            try:
+                await adapter.delete_message(status_chat_id, existing_id)
+            except Exception as _dle:
+                logger.debug("live_thinking orphaned-bubble delete failed: %s", _dle)
+        send_res = await adapter.send(
+            status_chat_id,
+            bubble_text,
+            metadata=_non_conversational_metadata(status_thread_metadata, platform=platform),
+        )
+        new_id = getattr(send_res, "message_id", None)
+        if getattr(send_res, "success", False) and new_id:
+            if live_thinking_post_ids:
+                live_thinking_post_ids[0] = str(new_id)
+            else:
+                live_thinking_post_ids.append(str(new_id))
+
+
+def _live_thinking_final_footer_markers(send_result: Any, final_text: str) -> Optional[Dict[str, Any]]:
+    """Decide whether a live-thinking final new-post send is safe to
+    edit-append a footer onto.
+
+    The Mattermost adapter's ``send()`` splits content longer than its
+    per-post cap into multiple posts (``(1/N)`` markers) and returns only the
+    LAST chunk's id, exposing the earlier ids via
+    ``continuation_message_ids``. When that happens the last-chunk post holds
+    only a partial ``(N/N)`` tail, so recording it as the footer edit target
+    would rewrite that post with the FULL ``final_text`` — resurrecting the
+    whole answer as a second full copy beside the ``(1/N)`` partial (the
+    duplicate/partial-post bug).
+
+    Returns a dict of response markers
+    (``live_thinking_final_post_id`` + ``live_thinking_final_content``) ONLY
+    for a coherent single-post send; returns ``None`` when the send was
+    chunk-split, signalling the caller to leave the markers unset so the
+    footer is delivered as its own trailing post and the multi-chunk answer
+    is left intact.
+    """
+    candidate_id = getattr(send_result, "message_id", None)
+    if not (getattr(send_result, "success", False) and candidate_id):
+        return None
+    if getattr(send_result, "continuation_message_ids", ()):
+        # Chunk-split delivery — not safe to edit-append the full answer.
+        return None
+    return {
+        "live_thinking_final_post_id": str(candidate_id),
+        "live_thinking_final_content": final_text,
+    }
 
 
 _TRANSIENT_NETWORK_ERROR_CLASS_NAMES = frozenset({
@@ -4328,6 +4410,7 @@ class GatewayRunner(
         log_queue: Any = None
         interim_assistant_messages_enabled: Any = None
         _thinking_enabled: Any = None
+        _live_thinking_enabled: Any = None
         _native_slack_task_cards: Any = None
         needs_progress_queue: Any = None
         _generic_status_phrase: Any = None

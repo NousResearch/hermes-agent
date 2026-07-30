@@ -1,15 +1,18 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import type { ComponentType } from "react";
+import { act, type ComponentType } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import {
   MemoryRouter,
   Navigate,
   Route,
   Routes,
   useLocation,
-} from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+} from "react-router";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
+  .IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock("@/plugins", () => ({
   PluginPage: ({ name }: { name: string }) => <div>plugin:{name}</div>,
@@ -66,47 +69,56 @@ function AppRoutes({
   );
 }
 
-afterEach(cleanup);
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+async function renderApp(manifests: PluginManifest[], loading: boolean) {
+  await act(async () => {
+    root.render(
+      <MemoryRouter initialEntries={["/"]}>
+        <AppRoutes manifests={manifests} loading={loading} />
+      </MemoryRouter>,
+    );
+  });
+}
+
+function locationPath() {
+  return container.querySelector<HTMLOutputElement>("[data-testid='location']")
+    ?.textContent;
+}
 
 describe("App root plugin routing", () => {
-  it("holds the root location while plugins load, then renders a resolved root override", () => {
-    const { rerender } = render(
-      <MemoryRouter initialEntries={["/"]}>
-        <AppRoutes manifests={[]} loading />
-      </MemoryRouter>,
-    );
+  it("holds the root location while plugins load, then renders a resolved root override", async () => {
+    await renderApp([], true);
 
-    expect(screen.getByTestId("location").textContent).toBe("/");
-    expect(screen.queryByText("sessions-page")).toBeNull();
+    expect(locationPath()).toBe("/");
+    expect(container.textContent).not.toContain("sessions-page");
 
-    rerender(
-      <MemoryRouter initialEntries={["/"]}>
-        <AppRoutes manifests={[rootOverride]} loading={false} />
-      </MemoryRouter>,
-    );
+    await renderApp([rootOverride], false);
 
-    expect(screen.getByTestId("location").textContent).toBe("/");
-    expect(screen.getByText("plugin:test-dashboard")).toBeTruthy();
+    expect(locationPath()).toBe("/");
+    expect(container.textContent).toContain("plugin:test-dashboard");
   });
 
   it("redirects to sessions only after loading resolves without a root override", async () => {
-    const { rerender } = render(
-      <MemoryRouter initialEntries={["/"]}>
-        <AppRoutes manifests={[]} loading />
-      </MemoryRouter>,
-    );
+    await renderApp([], true);
 
-    expect(screen.getByTestId("location").textContent).toBe("/");
+    expect(locationPath()).toBe("/");
 
-    rerender(
-      <MemoryRouter initialEntries={["/"]}>
-        <AppRoutes manifests={[]} loading={false} />
-      </MemoryRouter>,
-    );
+    await renderApp([], false);
 
-    await waitFor(() => {
-      expect(screen.getByTestId("location").textContent).toBe("/sessions");
-    });
-    expect(screen.getByText("sessions-page")).toBeTruthy();
+    expect(locationPath()).toBe("/sessions");
+    expect(container.textContent).toContain("sessions-page");
   });
 });

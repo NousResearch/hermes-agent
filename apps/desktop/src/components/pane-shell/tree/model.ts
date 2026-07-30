@@ -184,9 +184,9 @@ export function normalize(node: LayoutNode): LayoutNode | null {
   return { ...node, children, weights }
 }
 
-/** Remove a pane wherever it lives. Closing the ACTIVE tab activates its
- *  previous neighbor (the next one when it was first) — browser-tab feel,
- *  never a jump to the strip's start. */
+/** Remove a pane wherever it lives. Closing the ACTIVE tab leaves selection on
+ *  the neighbor that fills its slot (right; left when it was last) — same rule
+ *  as terminals and the preview rail. */
 export function removePane(node: LayoutNode, paneId: string): LayoutNode | null {
   const walk = (n: LayoutNode): LayoutNode => {
     if (n.type === 'group') {
@@ -198,7 +198,8 @@ export function removePane(node: LayoutNode, paneId: string): LayoutNode | null 
 
       const panes = n.panes.filter(p => p !== paneId)
 
-      return { ...n, panes, active: n.active === paneId ? panes[Math.max(0, at - 1)] : n.active }
+      // After splice, `at` indexes the old right neighbor (clamp left at end).
+      return { ...n, panes, active: n.active === paneId ? (panes[Math.min(at, panes.length - 1)] ?? '') : n.active }
     }
 
     return { ...n, children: n.children.map(walk) }

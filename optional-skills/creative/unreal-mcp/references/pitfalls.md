@@ -9,7 +9,7 @@ delivery.
 ### 1. Start order: editor first, Hermes second
 
 Hermes probes MCP servers at session start. If the editor (and its server)
-isn't up yet, no `mcp_unreal_engine_*` tools exist in the session. Fix:
+isn't up yet, no `mcp__unreal_engine__*` tools exist in the session. Fix:
 launch the editor, confirm the server bound (Output Log shows
 `LogModelContextProtocol` with the address), then open a NEW Hermes session.
 Tools don't hot-appear mid-session.
@@ -65,7 +65,7 @@ mistake it for the Hermes setup step.
 
 The server executes tool calls serially on the game thread and Epic
 explicitly warns against overlapping calls. Hermes executes same-turn tool
-calls concurrently — so batching two `mcp_unreal_engine_*` calls in one turn
+calls concurrently — so batching two `mcp__unreal_engine__*` calls in one turn
 IS issuing overlapping calls. Strictly sequential: call, await, then next.
 This deliberately overrides the general "batch independent calls" guidance.
 

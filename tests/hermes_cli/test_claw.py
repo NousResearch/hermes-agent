@@ -188,21 +188,40 @@ class TestCmdMigrate:
         captured = capsys.readouterr()
         assert "Could not load migration script" in captured.out
 
-    def test_migration_failure_restore_hint_is_runnable(self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize(
+        "home_parts, expected_quotes",
+        [
+            ((".hermes",), ""),
+            # A profile home with a space: the exact case that stayed broken
+            # after the full-path fix, because the shell splits the argument
+            # and ``hermes import`` accepts only one positional ``zipfile``.
+            ("My Profile/.hermes".split("/"), "'"),
+        ],
+        ids=["plain_path", "path_with_spaces"],
+    )
+    def test_migration_failure_restore_hint_is_runnable(
+        self, tmp_path, monkeypatch, capsys, home_parts, expected_quotes
+    ):
         """The recovery hint printed after a failed migration must actually work.
 
         The pre-migration archive is written to ``<HERMES_HOME>/backups/``,
         which is never the user's cwd, and ``hermes import`` resolves its
         argument against the cwd -- so the basename form failed 100% of the
-        time at exactly the moment the user needs to recover.
+        time at exactly the moment the user needs to recover.  It must also be
+        a single shell argument, which the bare full path is not once the
+        profile home contains a space.
+
+        ``expected_quotes`` is spelled out per-case instead of being recomputed
+        with ``shlex.quote`` so the assertion cannot pass vacuously against a
+        different (wrong) quoting function.
         """
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
         config_path = tmp_path / "config.yaml"
         config_path.write_text("")
 
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
+        hermes_home = tmp_path.joinpath(*home_parts)
+        hermes_home.mkdir(parents=True)
         (hermes_home / "config.yaml").write_text("model: test\n")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
@@ -240,9 +259,13 @@ class TestCmdMigrate:
         archives = sorted((hermes_home / "backups").glob("pre-migration-*.zip"))
         assert len(archives) == 1
         archive = archives[0].resolve()
+        q = expected_quotes
         # Both the pre-backup hint and the post-failure recovery hint.
-        assert captured.out.count(f"Restore with: hermes import {archive}") == 2
+        assert captured.out.count(f"Restore with: hermes import {q}{archive}{q}\n") == 2
+        # Never the bare basename, and never an unquoted path with spaces.
         assert f"hermes import {archive.name}\n" not in captured.out
+        if q:
+            assert f"hermes import {archive}\n" not in captured.out
 
     def test_full_preset_does_not_enable_secrets_silently(self, tmp_path, capsys):
         """The 'full' preset must NOT auto-enable migrate_secrets.

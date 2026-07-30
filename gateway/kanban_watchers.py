@@ -711,7 +711,22 @@ class GatewayKanbanWatchersMixin:
                         _session_key = ""
                         _synth = ""
                         if _wake_kinds:
-                            _session_key = getattr(task, "session_id", None) or ""
+                            if _is_push_adapter:
+                                _session_key = getattr(task, "session_id", None) or ""
+                            else:
+                                # Non-push (api_server) wakes go to the
+                                # subscription's delivery destination —
+                                # sub["chat_id"] IS the raw session id the
+                                # subscriber registered with. task.session_id
+                                # is worker/creator provenance and may point
+                                # at a WORKER session for child tasks with
+                                # inherited subscriptions; falling back to it
+                                # only when chat_id is empty (legacy rows).
+                                _session_key = (
+                                    sub["chat_id"]
+                                    or getattr(task, "session_id", None)
+                                    or ""
+                                )
                         if _wake_kinds:
                             _title = (task.title if task else sub["task_id"])[:120]
                             _assignee = task.assignee if task else ""

@@ -26,6 +26,15 @@ def _pending_reaction_notes(session: dict) -> str:
     if not session_key:
         return ""
 
+    # Feature-gated (off by default, Settings → Appearance): when disabled the
+    # model hears nothing, even about reactions set while it was on.
+    try:
+        display = _load_cfg().get("display")
+        if not (isinstance(display, dict) and bool(display.get("message_reactions", False))):
+            return ""
+    except Exception:
+        return ""
+
     try:
         with _session_db(session) as db:
             if db is None:

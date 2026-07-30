@@ -441,6 +441,8 @@ export const en: Translations = {
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
       backdropTitle: 'Chat Backdrop',
       backdropDesc: 'The faint statue image behind the conversation.',
+      reactionsTitle: 'Message Reactions',
+      reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',

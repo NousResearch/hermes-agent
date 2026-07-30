@@ -90,8 +90,21 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
 
 
 def check_react_requirements() -> bool:
-    """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return env_var_enabled("HERMES_DESKTOP")
+    """Desktop GUI only, and opt-in.
+
+    HERMES_DESKTOP is set on the gateway the app spawns; the feature itself is
+    off by default and enabled from Settings → Appearance (the desktop mirrors
+    the toggle into ``display.message_reactions``).
+    """
+    if not env_var_enabled("HERMES_DESKTOP"):
+        return False
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        display = load_config_readonly().get("display")
+    except Exception:
+        return False
+    return isinstance(display, dict) and bool(display.get("message_reactions", False))
 
 
 REACT_TO_MESSAGE_SCHEMA = {

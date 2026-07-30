@@ -367,3 +367,55 @@ class TestRunConversationRecoversFromCorruptImage400:
             "reverted generic fallback appears to have been reintroduced: "
             f"{only_call_msgs!r}"
         )
+
+
+# ─── History isolation: strip only the per-call payload copy (#69104) ────────
+
+
+class TestCanonicalHistoryIsolation:
+    def test_payload_copy_strip_preserves_canonical_history(self):
+        """api_messages rows are shallow copies of canonical history
+        (``msg.copy()`` in the build loop). The strip must replace the
+        copy's ``content`` instead of mutating the shared parts list, so
+        a transient provider rejection never erases the stored image."""
+        image_part = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AA=="},
+        }
+        text_part = {"type": "text", "text": "look at this"}
+        canonical = [{"role": "user", "content": [text_part, image_part]}]
+        api_messages = [m.copy() for m in canonical]  # build-loop aliasing
+
+        removed = _strip_images_from_messages(api_messages)
+
+        assert removed is True
+        assert api_messages[0]["content"] == [text_part]
+        assert canonical[0]["content"] == [text_part, image_part], (
+            "canonical history lost its image through shallow aliasing"
+        )
+
+    def test_image_corrupt_branch_strips_only_payload_copy(self):
+        """Contract check on the recovery branch itself: the image_corrupt
+        path must NOT call _strip_images_from_messages(messages) — only the
+        api_messages per-call copy. Stripping canonical history permanently
+        erased images on a transient provider error (#69104 sweeper review,
+        copy-on-write contract from e762a5a473)."""
+        import inspect
+        import re as _re
+
+        import agent.conversation_loop as loop_mod
+
+        src = inspect.getsource(loop_mod)
+        # Locate the image_corrupt recovery block and inspect its calls.
+        block = _re.search(
+            r"image_corrupt:\n(.*?)\n\s*(?:continue|else)", src, _re.S
+        )
+        assert block is not None, "image_corrupt recovery branch not found"
+        body = block.group(1)
+        assert "_strip_images_from_messages(api_messages)" in body, (
+            "recovery must strip the per-call api_messages copy"
+        )
+        assert "_strip_images_from_messages(messages)" not in body, (
+            "recovery must NOT strip canonical messages — that permanently "
+            "erases history on a transient provider rejection"
+        )

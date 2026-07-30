@@ -201,6 +201,61 @@ describe('ModelMenuPanel search', () => {
 
     expect(onSelectModel).not.toHaveBeenCalled()
   })
+
+  it('arrows move the selection without leaving the input; Enter commits the stepped row', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+    })
+
+    // First match auto-selected; ↓ steps to the second match.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({ model: 'gemini-2.5-flash', provider: 'google', sessionId: 'runtime-1' })
+    })
+  })
+
+  it('with no query the selection sits on the current model, so Enter closes without switching', async () => {
+    $currentProvider.set('google')
+    $currentModel.set('gemini-3.1-pro')
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('filters MoA presets by the query instead of leaving them as phantom first matches', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('MoA: BeastMode')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'beast' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /MoA: BeastMode/)).not.toBeNull()
+    })
+    expect(rowWithText(content, /MoA: default/)).toBeNull()
+
+    // The surviving preset IS the first row, so Enter commits it.
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: 'runtime-1' })
+    })
+  })
 })
 
 describe('ModelMenuPanel provider collapse', () => {

@@ -743,6 +743,10 @@ class TestConfigSupportFloor:
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
         "model_catalog": {"ttl_hours": 1},
         "plugins": {"disabled": ["foo"], "enabled": []},
+        # skills.write_mode "on" → write_approval=False (v28→29). That is the
+        # legacy explicit dump of the OLD default; with #70128 skills default
+        # on, False is a non-default so it remains materialized on disk.
+        "skills": {"write_approval": False},
     }
 
     _ENV_FIXTURE = (

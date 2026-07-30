@@ -152,6 +152,28 @@ describe('GatewaySettings', () => {
     expect(screen.queryByText('Status: unknown')).toBeNull()
   })
 
+  it('hides an empty cloud agent gateway status', async () => {
+    cloudDiscover.mockResolvedValue({
+      agents: [
+        {
+          dashboardGatewayState: '',
+          dashboardUrl: 'https://agent.example.com',
+          id: 'agent-1',
+          name: 'Cloud Agent',
+          status: 'active'
+        }
+      ],
+      org: null
+    })
+    const { GatewaySettings } = await import('./gateway-settings')
+
+    render(<GatewaySettings />)
+    fireEvent.click(await screen.findByRole('button', { name: /Hermes Cloud/ }))
+
+    expect(await screen.findByText('Cloud Agent')).toBeTruthy()
+    expect(screen.queryByText(/^Status:/)).toBeNull()
+  })
+
   it('shows a known cloud agent gateway status', async () => {
     cloudDiscover.mockResolvedValue({
       agents: [

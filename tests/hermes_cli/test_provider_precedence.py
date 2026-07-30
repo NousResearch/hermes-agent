@@ -129,6 +129,25 @@ class TestProviderPrecedence:
             for record in caplog.records
         )
 
+    def test_single_provider_dual_env_vars_not_multi_key(
+        self, monkeypatch, caplog
+    ):
+        """A provider with multiple env vars (e.g. GLM_API_KEY + ZAI_API_KEY)
+        counts as one candidate, not two."""
+        _clear_provider_env(monkeypatch)
+        _no_aws(monkeypatch)
+        _config(monkeypatch, {})
+        monkeypatch.setenv("GLM_API_KEY", "test-glm-key")
+        monkeypatch.setenv("ZAI_API_KEY", "test-zai-key")
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+            assert resolve_provider("auto") == "zai"
+
+        assert not any(
+            "Multiple provider API keys detected" in record.message
+            for record in caplog.records
+        )
+
     def test_oauth_used_as_last_resort(self, monkeypatch):
         """With NO config provider and NO env keys, the logged-in OAuth provider
         is still used (it's the last-resort fallback, not removed)."""

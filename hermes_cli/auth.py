@@ -2023,6 +2023,7 @@ def resolve_provider(
             _seen_api_key_env_vars.add(env_var)
             if has_usable_secret(os.getenv(env_var, "")):
                 _api_key_candidates.append((pid, env_var))
+                break  # one candidate per provider, even with multiple env vars
 
     if _api_key_candidates:
         pid, env_var = _api_key_candidates[0]

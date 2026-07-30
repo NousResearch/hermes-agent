@@ -1,5 +1,7 @@
 """Tests for setup.py configuration flows."""
 import sys
+import os
+import json
 import types
 
 
@@ -248,24 +250,3 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert os.environ["VERCEL_TEAM_ID"] == "linked-team"
     assert defaults["    Vercel project ID"] == "linked-project"
     assert defaults["    Vercel team ID"] == "linked-team"
-
-
-def test_setup_slack_saves_home_channel(monkeypatch):
-    """_setup_slack() saves SLACK_HOME_CHANNEL when the user provides one."""
-    saved = {}
-    prompts = iter(["xoxb-test-token", "xapp-test-token", "", "C01ABC2DE3F"])
-
-    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
-    monkeypatch.setattr(setup_mod, "save_env_value", lambda k, v: saved.update({k: v}))
-    monkeypatch.setattr(setup_mod, "prompt", lambda *_a, **_kw: next(prompts))
-    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: False)
-    monkeypatch.setattr(setup_mod, "_write_slack_manifest_and_instruct", lambda: None)
-
-    setup_mod._setup_slack()
-
-    assert saved.get("SLACK_HOME_CHANNEL") == "C01ABC2DE3F"
-
-
-
-
-

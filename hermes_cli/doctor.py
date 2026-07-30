@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import (

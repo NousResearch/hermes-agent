@@ -3622,7 +3622,17 @@ def delegate_task(
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
         task_schemas.append(coerced_schema)
 
-    commit_subagent_spawn(len(task_list))
+    charged = commit_subagent_spawn(len(task_list))
+    rejected = len(task_list) - charged
+    if rejected > 0:
+        task_list = task_list[:charged]
+        results.append(
+            tool_result(
+                f"{rejected} task(s) rejected: per-turn subagent cap reached "
+                f"(limit {charged} spawned this turn). The remaining tasks "
+                "were not created."
+            )
+        )
 
     overall_start = time.monotonic()
     results = []

@@ -72,10 +72,11 @@ def test_commit_caps_at_remaining_budget():
 
 
 def test_batch_does_not_cross_cap_boundary():
-    """A batch does NOT let count exceed cap — commit caps it."""
+    """A batch does NOT let count exceed cap — commit caps it and returns charged count."""
     ctrl = _controller(2)
-    commit_subagent_spawn(3)
+    charged = commit_subagent_spawn(3)
     assert ctrl._turn_subagent_count == 2  # capped at 2, not 3
+    assert charged == 2  # only 2 were charged
 
 
 def test_remaining_budget_after_partial_commit():
@@ -175,3 +176,23 @@ def test_web_search_cap_still_works():
     decision = ctrl.before_call("web_search", {"query": "q3"})
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
+
+
+
+def test_commit_returns_correct_charged_count():
+    """commit_subagent_spawn returns the number actually charged."""
+    ctrl = _controller(3)
+    assert commit_subagent_spawn(1) == 1
+    assert commit_subagent_spawn(5) == 2  # only 2 remaining
+
+
+def test_return_value_allows_caller_to_trim_tasks():
+    """The caller can use the return value to skip excess child construction."""
+    ctrl = _controller(2)
+    task_list = list(range(5))
+    charged = commit_subagent_spawn(len(task_list))
+    # Only create the charged number of children
+    created = task_list[:charged]
+    assert len(created) == 2
+    assert len(created) < len(task_list)
+

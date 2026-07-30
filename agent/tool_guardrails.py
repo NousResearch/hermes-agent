@@ -288,23 +288,28 @@ def _set_active_subagent_guardrail(ctrl: "ToolCallGuardrailController | None") -
     _active_subagent_guardrail.value = ctrl
 
 
-def commit_subagent_spawn(count: int) -> None:
+def commit_subagent_spawn(count: int) -> int:
     """Commit the *actual* subagent spawn count after delegate_task normalisation.
 
     Called from delegate_tool.py after JSON-string recovery and
     max_concurrent_children validation.  Caps at the configured
     max_subagents so an oversized (then rejection-trimmed) batch does
     not consume spendable budget.
+
+    Returns the number of subagents actually charged (may be less than
+    ``count`` when the remaining budget is insufficient).
     """
     ctrl = getattr(_active_subagent_guardrail, "value", None)
     if ctrl is None:
-        return
+        return count
     cap = ctrl.config.loop_caps.max_subagents
     if cap:
         available = cap - ctrl._turn_subagent_count
-        ctrl._turn_subagent_count += min(count, available)
-    else:
-        ctrl._turn_subagent_count += count
+        charged = min(count, available)
+        ctrl._turn_subagent_count += charged
+        return charged
+    ctrl._turn_subagent_count += count
+    return count
 
 
 class ToolCallGuardrailController:

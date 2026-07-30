@@ -768,10 +768,26 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 export const selectionHomesToWorkspace = (selected: null | string, tiles: readonly SessionTile[]): boolean =>
   !(selected && tiles.some(t => t.storedSessionId === selected))
 
+// Cold-start restore is the one selection change that is NOT a navigation: the
+// route already pointed at the primary session before the window loaded, and
+// homing on it would front the workspace tab over the PERSISTED active tab —
+// then persist that clobber, so the tab you reloaded on never comes back
+// (⌘R always landing on main). use-route-resume arms this one-shot right
+// before dispatching the boot resume; the very next selection change skips
+// homing and the restored layout tree keeps its say.
+let selectionRestoreInFlight = false
+
+export function markSelectionRestore() {
+  selectionRestoreInFlight = true
+}
+
 // Homing also FRONTS the workspace tab: the resumed chat loads in the workspace
 // pane, so a zone parked on a tile tab must switch back or the click looks dead.
 $selectedStoredSessionId.listen(selected => {
-  if (!selectionHomesToWorkspace(selected, $sessionTiles.get())) {
+  const restoring = selectionRestoreInFlight
+  selectionRestoreInFlight = false
+
+  if (restoring || !selectionHomesToWorkspace(selected, $sessionTiles.get())) {
     return
   }
 

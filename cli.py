@@ -77,14 +77,18 @@ except (ImportError, AttributeError):
 
 try:
     from hermes_cli.pt_input_extras import (
+        enable_kitty_keyboard_protocol,
         install_ctrl_enter_alias,
         install_ignored_terminal_sequences,
+        install_kitty_control_aliases,
         install_shift_enter_alias,
     )
+    enable_kitty_keyboard_protocol()
+    install_kitty_control_aliases()
     install_shift_enter_alias()
     install_ctrl_enter_alias()
     install_ignored_terminal_sequences()
-    del install_shift_enter_alias, install_ctrl_enter_alias, install_ignored_terminal_sequences
+    del enable_kitty_keyboard_protocol, install_kitty_control_aliases, install_shift_enter_alias, install_ctrl_enter_alias, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading

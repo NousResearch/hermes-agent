@@ -85,7 +85,17 @@ def resolve_context_cwd() -> Path | None:
     override = _session_cwd_override()
     if override:
         p = Path(override).expanduser()
-        if not p.is_dir():
+        try:
+            is_dir = p.is_dir()
+        except OSError as exc:
+            logger.debug(
+                "could not validate configured working directory locally; "
+                "preserving logical path %s: %s",
+                override,
+                exc,
+            )
+            return p
+        if not is_dir:
             logger.warning("configured working directory does not exist: %s", override)
         else:
             return p
@@ -93,7 +103,16 @@ def resolve_context_cwd() -> Path | None:
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         p = Path(raw).expanduser()
-        if not p.is_dir():
+        try:
+            is_dir = p.is_dir()
+        except OSError as exc:
+            logger.debug(
+                "could not validate TERMINAL_CWD locally; preserving logical path %s: %s",
+                raw,
+                exc,
+            )
+            return p
+        if not is_dir:
             logger.warning("TERMINAL_CWD does not exist: %s", raw)
         else:
             return p

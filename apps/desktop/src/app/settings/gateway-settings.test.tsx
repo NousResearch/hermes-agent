@@ -597,12 +597,41 @@ describe('GatewaySettings', () => {
       ],
       org: null
     })
-    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: 'https://portal.nousresearch.com' })
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      remoteUrl: 'https://portal.nousresearch.com'
+    })
 
     render(<GatewaySettings />)
 
     expect(await screen.findByText('Cloud Agent')).toBeTruthy()
     expect(screen.queryByText('Status: unknown')).toBeNull()
+  })
+
+  it('hides an empty cloud agent gateway status', async () => {
+    cloudDiscover.mockResolvedValue({
+      agents: [
+        {
+          dashboardGatewayState: '',
+          dashboardUrl: 'https://agent.example.com',
+          id: 'agent-1',
+          name: 'Cloud Agent',
+          status: 'active'
+        }
+      ],
+      org: null
+    })
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      remoteUrl: 'https://portal.nousresearch.com'
+    })
+
+    render(<GatewaySettings />)
+
+    expect(await screen.findByText('Cloud Agent')).toBeTruthy()
+    expect(screen.queryByText(/^Status:/)).toBeNull()
   })
 
   it('shows a known cloud agent gateway status', async () => {
@@ -618,11 +647,14 @@ describe('GatewaySettings', () => {
       ],
       org: null
     })
-    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: 'https://portal.nousresearch.com' })
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'cloud',
+      remoteUrl: 'https://portal.nousresearch.com'
+    })
 
     render(<GatewaySettings />)
 
     expect(await screen.findByText('Status: active')).toBeTruthy()
-  })
   })
 })

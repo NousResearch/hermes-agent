@@ -80,6 +80,70 @@ class TestMicroCompaction:
 
         assert cc._micro_compact(list(messages)) == messages
 
+    def test_is_off_unless_explicitly_enabled(self):
+        # A pass rewrites already-sent history, breaking the prompt-cache
+        # prefix, so nobody inherits it from an update: it stays off until
+        # `compression.micro_compact` opts in.
+        cc = ContextCompressor(
+            model="test-model",
+            threshold_percent=0.75,
+            protect_first_n=1,
+            protect_last_n=2,
+            quiet_mode=True,
+            config_context_length=40960,
+            provider="test",
+        )
+        cc._micro_summarize_one = lambda _text: "ROLLING SUMMARY"
+        messages = _conversation()
+
+        assert cc._micro_compact_enabled is False
+        assert cc._micro_compact(list(messages)) == messages
+
+    def test_cadence_of_one_runs_every_turn(self):
+        cc = _compressor()
+        cc._micro_compact_every_n_turns = 1
+        messages = _conversation(exchanges=8)
+
+        first = cc._micro_compact(list(messages))
+        second = cc._micro_compact(list(first))
+
+        assert cc._micro_compact_cursor > 0
+        assert len(_summary_markers(first)) == 1
+        # Each turn absorbed something, so the transcript kept shrinking.
+        assert len(second) < len(first)
+
+    def test_cadence_skips_turns_until_a_pass_is_due(self):
+        cc = _compressor()
+        cc._micro_compact_every_n_turns = 3
+        messages = _conversation(exchanges=8)
+
+        first = cc._micro_compact(list(messages))
+        second = cc._micro_compact(list(first))
+
+        # Cache prefix untouched on the turns in between.
+        assert _summary_markers(first) == []
+        assert _summary_markers(second) == []
+        assert cc._micro_compact_cursor == 0
+
+        third = cc._micro_compact(list(second))
+
+        assert len(_summary_markers(third)) == 1
+        assert not any("answer 0" in str(m.get("content")) for m in third)
+        # Counter rearmed for the next window.
+        assert cc._micro_compact_turns_since_pass == 0
+
+    def test_cadence_is_clamped_to_at_least_one(self):
+        # A bogus 0 or negative must not disable compaction silently, nor
+        # divide-by-zero: it degrades to "every turn".
+        for bogus in (0, -5):
+            cc = _compressor()
+            cc._micro_compact_every_n_turns = bogus
+            messages = _conversation(exchanges=8)
+
+            result = cc._micro_compact(list(messages))
+
+            assert len(_summary_markers(result)) == 1
+
     def test_cursor_advances_across_successive_turns(self):
         cc = _compressor()
         messages = _conversation(exchanges=8)

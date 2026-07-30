@@ -1302,6 +1302,7 @@ class ContextCompressor(ContextEngine):
         self._micro_compact_last_failure_cursor = -1
         self._micro_compact_passes = 0
         self._micro_compact_tokens_saved_total = 0
+        self._micro_compact_turns_since_pass = 0
 
     def _begin_compression_telemetry(
         self,
@@ -2161,6 +2162,12 @@ class ContextCompressor(ContextEngine):
         self._micro_compact_defrag_threshold_tokens: int = 2000
         self._micro_compact_passes: int = 0
         self._micro_compact_tokens_saved_total: int = 0
+        # Cadence: run a pass every Nth completed turn. Each pass rewrites
+        # already-sent history and so breaks the prompt-cache prefix, which
+        # makes this the dial that sets how often that break is paid. 1 =
+        # every turn (most aggressive reclaim, one break per turn).
+        self._micro_compact_every_n_turns: int = 1
+        self._micro_compact_turns_since_pass: int = 0
 
         # Defer context-length resolution to first access (#32221):
         # get_model_context_length() can issue a synchronous /models HTTP
@@ -5328,6 +5335,18 @@ This compaction should PRIORITISE preserving all information related to the focu
         """
         if not self._micro_compact_enabled:
             return messages
+
+        # Cadence gate. A pass rewrites already-sent history, so it costs one
+        # prompt-cache break; `every_n_turns` is how an operator trades reclaim
+        # frequency against that cost. Counted per invocation rather than per
+        # committed pass so a turn that finds nothing to absorb still advances
+        # the cadence and cannot wedge it.
+        every_n = max(1, int(self._micro_compact_every_n_turns or 1))
+        if every_n > 1:
+            self._micro_compact_turns_since_pass += 1
+            if self._micro_compact_turns_since_pass < every_n:
+                return messages
+            self._micro_compact_turns_since_pass = 0
 
         n_messages = len(messages)
         if n_messages < 4:

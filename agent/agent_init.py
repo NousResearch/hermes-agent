@@ -1971,6 +1971,23 @@ def init_agent(
     compression_micro_compact = is_truthy_value(
         _compression_cfg.get("micro_compact"), default=False
     )
+    # How often a pass runs, in completed turns. Each pass rewrites
+    # already-sent history and costs one prompt-cache break, so this is the
+    # dial for how often that cost is paid: 1 = every turn (most aggressive
+    # reclaim), 5 = one break per five turns. Clamped to >= 1.
+    compression_micro_compact_every_n_turns = max(
+        1,
+        _parse_prune_int(_compression_cfg.get("micro_compact_every_n_turns", 1), 1),
+    )
+    # Rolling-summary defrag threshold, in tokens. Lived on the compressor as
+    # a hardcoded attribute with no path from config until now.
+    compression_micro_compact_defrag_tokens = max(
+        1,
+        _parse_prune_int(
+            _compression_cfg.get("micro_compact_defrag_threshold_tokens", 2000),
+            2000,
+        ),
+    )
     codex_app_server_auto_compaction = str(
         _compression_cfg.get("codex_app_server_auto", "native") or "native"
     ).lower()
@@ -2426,10 +2443,16 @@ def init_agent(
             pass
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
-    # Apply micro-compaction flag to the compressor (enabled by default)
+    # Apply micro-compaction settings to the compressor (feature is opt-in)
     _cc = getattr(agent, "context_compressor", None)
     if _cc is not None and hasattr(_cc, "_micro_compact_enabled"):
         _cc._micro_compact_enabled = compression_micro_compact
+    if _cc is not None and hasattr(_cc, "_micro_compact_every_n_turns"):
+        _cc._micro_compact_every_n_turns = compression_micro_compact_every_n_turns
+    if _cc is not None and hasattr(_cc, "_micro_compact_defrag_threshold_tokens"):
+        _cc._micro_compact_defrag_threshold_tokens = (
+            compression_micro_compact_defrag_tokens
+        )
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
     agent.max_compression_attempts = compression_max_attempts
     agent.compression_idle_compact_after_seconds = (

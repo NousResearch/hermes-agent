@@ -168,11 +168,26 @@ Micro-compaction is **off by default**. Turn it on explicitly:
 
 ```yaml
 compression:
-  micro_compact: true   # default: false
+  micro_compact: true             # default: false
+  micro_compact_every_n_turns: 1  # cadence — how often a pass runs
+  micro_compact_defrag_threshold_tokens: 2000
 ```
 
-With it unset or `false` Hermes behaves exactly as it always has: batch-only
-compaction. Everything else about compression is unchanged.
+With `micro_compact` unset or `false` Hermes behaves exactly as it always has:
+batch-only compaction. Everything else about compression is unchanged.
+
+`micro_compact_every_n_turns` is the knob that matters most after the on/off
+switch, because it sets how often you pay the cache break described below. At
+`1` a pass runs after every completed turn: the most aggressive reclaim, and
+one broken prefix per turn. At `5` you get a fifth of the breaks and a fifth of
+the reclaim rate, which is the right direction if your sessions are long-lived
+and your provider's cache discount is deep. Values below `1` are clamped to `1`
+rather than silently disabling the feature. The counter advances per turn, not
+per committed pass, so a turn with nothing to absorb still moves the cadence
+along and cannot wedge it.
+
+`micro_compact_defrag_threshold_tokens` is when the rolling summary gets
+re-summarized instead of growing forever — see [Defrag](#defrag).
 
 It ships opt-in rather than on because of the prompt-cache cost described in
 the next section — that cost is real, it is not universally worth paying, and
@@ -193,8 +208,15 @@ This is the same cost the proactive prune deliberately avoids. That path gates
 itself behind `compression.proactive_prune_min_reclaim_tokens` (4096 by
 default) precisely so its rewrites stay, in the words of the config comment,
 "one big episodic break instead of a tiny break every tool iteration."
-Micro-compaction has no such gate: one exchange per turn means one break per
-turn, by design.
+
+Micro-compaction has no equivalent *reclaim-size* gate — a pass commits
+whatever the one absorbed exchange happened to save, large or small. What it
+has instead is a *frequency* dial, `micro_compact_every_n_turns`. Raising it
+makes the breaks rarer and more episodic, which is the same end the prune's
+gate serves by a different route, though it gets there by absorbing less rather
+than by waiting for a bigger win. If you want the prune's exact semantics here,
+a reclaim threshold on micro-compaction is the obvious follow-up and does not
+exist yet.
 
 So the honest framing is a trade of one cost for another, not a saving:
 

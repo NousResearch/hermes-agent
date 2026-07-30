@@ -174,9 +174,7 @@ describe('MessagingView pairing', () => {
     // connect/disconnect health via gateway_state.json, which a new pairing
     // request never moves. Riding it would leave someone invisible in the
     // pending list until an unrelated reconnect happened to fire.
-    const { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } = await import(
-      '@/store/live-sync'
-    )
+    const { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } = await import('@/store/live-sync')
 
     getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
     getPairing.mockResolvedValue({ approved: [], pending: [] })

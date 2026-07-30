@@ -13,6 +13,7 @@ or out-of-bounds values that could break asyncio.sleep().
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +59,11 @@ class TestAdaptiveTextBatchTiers:
         assert TelegramAdapter._TEXT_BATCH_FAST_DELAY_S < TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S
         assert TelegramAdapter._TEXT_BATCH_FAST_DELAY_S > 0
         assert TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S > 0
+        assert TelegramAdapter._TEXT_BATCH_DEFAULT_DELAY_S >= 1.177
+        assert (
+            TelegramAdapter._TEXT_BATCH_SPLIT_DEFAULT_DELAY_S
+            >= TelegramAdapter._TEXT_BATCH_DEFAULT_DELAY_S
+        )
 
     def test_fast_tier_uses_min_with_configured_cap(self, adapter):
         """A short message picks the lower of the fast-tier delay and
@@ -78,4 +84,32 @@ class TestAdaptiveTextBatchTiers:
         )
         assert delay == 0.10
 
+    def test_observed_sub_4000_shape_uses_long_grace(self, adapter):
+        """The observed 2566 -> 3955 burst must not use the short tiers."""
+        adapter._text_batch_delay_seconds = TelegramAdapter._TEXT_BATCH_DEFAULT_DELAY_S
+        adapter._text_batch_split_delay_seconds = (
+            TelegramAdapter._TEXT_BATCH_SPLIT_DEFAULT_DELAY_S
+        )
+
+        first = SimpleNamespace(text="a" * 2566, _last_chunk_len=2566)
+        combined = SimpleNamespace(
+            text=("a" * 2566) + "\n" + ("b" * 3955),
+            _last_chunk_len=3955,
+        )
+
+        assert adapter._calc_text_batch_delay(first) >= 1.177
+        assert adapter._calc_text_batch_delay(combined) >= 1.177
+
+    def test_fast_tiers_remain_unchanged(self, adapter):
+        """Long-burst protection must not slow common short messages."""
+        adapter._text_batch_delay_seconds = TelegramAdapter._TEXT_BATCH_DEFAULT_DELAY_S
+        adapter._text_batch_split_delay_seconds = (
+            TelegramAdapter._TEXT_BATCH_SPLIT_DEFAULT_DELAY_S
+        )
+
+        fast = SimpleNamespace(text="a" * 320, _last_chunk_len=320)
+        short = SimpleNamespace(text="a" * 1024, _last_chunk_len=1024)
+
+        assert adapter._calc_text_batch_delay(fast) == 0.18
+        assert adapter._calc_text_batch_delay(short) == 0.24
 

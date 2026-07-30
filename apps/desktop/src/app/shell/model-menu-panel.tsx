@@ -17,6 +17,7 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
+import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -253,9 +254,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
-  // Gates the keyboard highlight: hovering a row moves Radix's focus off the
-  // input, and two live highlights would fight over which row Enter means.
-  const [searchFocused, setSearchFocused] = useState(true)
+  // A parked cursor is not a cursor in use: until the mouse actually moves,
+  // hover can't take rows out from under the keyboard (rows re-flow beneath it
+  // as the filter narrows). One real movement hands hover back.
+  const pointerQuiet = usePointerQuiet()
 
   const currentKey = optionsProvider === 'moa' ? `moa:${optionsModel}` : `${optionsProvider}:${optionsModel}`
 
@@ -266,7 +268,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     : kbRows.findIndex(row => row.key === currentKey || (row.kind === 'family' && row.family.fastId === optionsModel))
 
   const kbIndex = kbOverride !== null && kbOverride < kbRows.length ? kbOverride : autoIndex
-  const kbActiveKey = searchFocused && kbIndex >= 0 ? kbRows[kbIndex].key : null
+  const kbActiveKey = kbIndex >= 0 ? kbRows[kbIndex].key : null
 
   const stepKb = (delta: -1 | 1) => {
     if (kbRows.length === 0) {
@@ -305,17 +307,25 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     listRef.current?.querySelector('[data-kb-active]')?.scrollIntoView({ block: 'nearest' })
   }, [kbActiveKey])
 
-  const kbRowProps = (key: string) =>
-    kbActiveKey === key
-      ? { className: cn(dropdownMenuRow, 'bg-(--ui-control-active-background) text-foreground'), 'data-kb-active': '' }
-      : { className: dropdownMenuRow }
+  // The keyboard-selected row, styled + tagged for scrollIntoView. Pointer
+  // suppression is NOT here — it belongs on the containers (below), so one
+  // class covers every row inside them.
+  const kbRowProps = (key: string) => {
+    const active = kbActiveKey === key
+
+    return {
+      className: cn(dropdownMenuRow, active && 'bg-(--ui-control-active-background) text-foreground'),
+      ...(active ? { 'data-kb-active': '' } : {})
+    }
+  }
+
+  // Rows are hover-selectable, so they go inert with the pointer (usePointerQuiet).
+  const quietRows = pointerQuiet && 'pointer-events-none'
 
   return (
     <>
       <DropdownMenuSearch
         aria-label={copy.search}
-        onBlur={() => setSearchFocused(false)}
-        onFocus={() => setSearchFocused(true)}
         onKeyDown={event => {
           // Claim arrows and Enter from Radix so DOM focus stays in the input
           // and Enter commits the highlighted row without a DownArrow first
@@ -362,7 +372,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
           {copy.noModels}
         </DropdownMenuItem>
       ) : (
-        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
+        <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
           {groups.map(group => {
             const slug = group.provider.slug
 
@@ -485,7 +495,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       <DropdownMenuSeparator className="mx-0" />
 
       {shownMoaPresets.length > 0 ? (
-        <>
+        <div className={cn(quietRows)}>
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
           {shownMoaPresets.map(preset => {
             const isCurrentMoa = optionsProvider === 'moa' && optionsModel === preset
@@ -507,7 +517,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
             )
           })}
           <DropdownMenuSeparator className="mx-0" />
-        </>
+        </div>
       ) : null}
 
       <DropdownMenuItem

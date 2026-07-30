@@ -691,3 +691,98 @@ def test_existing_profile_homes_filters_deleted(tmp_path):
 
     as_paths = _existing_profile_homes([live, deleted])
     assert [p for p in as_paths] == [live]
+
+
+def _run_multiplex_capture(tmp_path, *, profile_adapters, shared_adapters):
+    """Run the multiplex ticker one full cycle and return the ``adapters``
+    object passed to ``tick()`` for the default profile and the secondary
+    profile (in ``profile_homes`` order: default first, secondary second)."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    p_default = tmp_path / "default"
+    p_sec = tmp_path / "home-ops"
+    for d in (p_default, p_sec):
+        (d / "cron").mkdir(parents=True)
+    profile_homes = [("default", p_default), ("home-ops", p_sec)]
+
+    captured: list = []  # adapters seen per tick call; order follows profile_homes
+
+    def _capturing_tick(*args, **kwargs):
+        captured.append(kwargs.get("adapters"))
+        return 0
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_capturing_tick), \
+         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": profile_homes,
+                "adapters": shared_adapters,
+                "profile_adapters": profile_adapters,
+                "default_profile": "default",
+            },
+            daemon=True,
+        )
+        t.start()
+        deadline = time.monotonic() + 10
+        while len(captured) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert len(captured) >= 2, f"expected >= 2 tick calls, got {len(captured)}"
+    return captured[0], captured[1]  # (default, secondary) of the first cycle
+
+
+def test_multiplex_default_profile_uses_shared_adapters(tmp_path):
+    """The default profile's cron is delivered via the shared ``adapters`` set
+    (which belongs to the default profile)."""
+    shared = {"kind": "shared"}
+    default_ad, _ = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": {"kind": "secondary"}},
+        shared_adapters=shared,
+    )
+    assert default_ad is shared
+
+
+def test_multiplex_connected_secondary_uses_its_own_adapters(tmp_path):
+    """A connected secondary is delivered via ITS OWN adapters, not the shared
+    default-profile set."""
+    shared = {"kind": "shared"}
+    sec = {"kind": "secondary"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": sec}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is sec
+
+
+def test_multiplex_empty_secondary_does_not_fall_back_to_shared(tmp_path):
+    """A secondary whose adapter map is present-but-empty (its bot has not
+    connected yet) must NOT fall back to the default profile's shared adapters
+    — otherwise its cron output ships through the wrong bot. It receives an
+    empty adapter set and simply does not deliver this tick."""
+    shared = {"kind": "shared"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={"home-ops": {}}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is not shared
+    assert not sec_ad  # empty → no delivery, not the default bot
+
+
+def test_multiplex_missing_secondary_does_not_fall_back_to_shared(tmp_path):
+    """A secondary absent from profile_adapters entirely (its adapter map has
+    not been created yet) also must not fall back to the shared adapters."""
+    shared = {"kind": "shared"}
+    default_ad, sec_ad = _run_multiplex_capture(
+        tmp_path, profile_adapters={}, shared_adapters=shared,
+    )
+    assert default_ad is shared
+    assert sec_ad is not shared
+    assert not sec_ad

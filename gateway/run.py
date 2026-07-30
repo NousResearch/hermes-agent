@@ -32679,6 +32679,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 cron_start_kwargs["profile_adapters"] = getattr(
                     runner, "_profile_adapters", None
                 )
+                # runner.adapters belongs to the default profile, which
+                # profiles_to_serve() names "default" in its multiplex list.
+                # Thread that identity so the ticker reserves the shared adapters
+                # for the default profile alone and never routes a secondary's
+                # cron through the default bot (even before its adapter connects,
+                # when profile_adapters[name] is still absent/empty).
+                cron_start_kwargs["default_profile"] = "default"
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s",
                     len(profile_homes),

@@ -559,6 +559,7 @@ class InProcessCronScheduler(CronScheduler):
         can_dispatch=None,
         profile_homes=None,
         profile_adapters=None,
+        default_profile=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -587,6 +588,7 @@ class InProcessCronScheduler(CronScheduler):
                 interval=interval,
                 can_dispatch=can_dispatch,
                 profile_adapters=profile_adapters,
+                default_profile=default_profile,
             )
             return
 
@@ -659,6 +661,7 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_adapters=None,
+        default_profile=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -719,15 +722,19 @@ class InProcessCronScheduler(CronScheduler):
                         home_token = set_hermes_home_override(str(home))
                         try:
                             with use_cron_store(home):
-                                # Deliver each profile's cron via ITS OWN bot/adapter.
-                                # Secondary profiles live in profile_adapters[name];
-                                # the default profile has no entry there and owns the
-                                # shared `adapters` set — so fall back to it. Without
-                                # this, every profile's cron output ships through the
-                                # default profile's bot (wrong-bot cross-delivery).
-                                _tick_adapters = adapters
-                                if profile_adapters and _pname and profile_adapters.get(_pname):
-                                    _tick_adapters = profile_adapters[_pname]
+                                # Deliver each profile's cron via ITS OWN adapters.
+                                # The shared `adapters` set belongs to the default
+                                # profile only. A secondary profile uses its own map
+                                # in profile_adapters[name], which is populated only
+                                # once that profile's bot connects. A secondary must
+                                # NEVER fall back to the default profile's `adapters`
+                                # (that ships its cron output through the wrong bot),
+                                # so before its adapter connects — map absent or empty
+                                # — it simply does not deliver this tick.
+                                if _pname is None or _pname == default_profile:
+                                    _tick_adapters = adapters
+                                else:
+                                    _tick_adapters = (profile_adapters or {}).get(_pname) or {}
                                 cron_tick(
                                     verbose=False,
                                     adapters=_tick_adapters,

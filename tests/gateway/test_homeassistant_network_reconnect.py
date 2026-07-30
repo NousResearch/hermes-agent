@@ -974,3 +974,199 @@ async def test_disconnect_rest_close_runs_when_ws_close_raises_cancellederror():
     rest_session.close.assert_awaited_once()
     assert adapter._rest_session is None
 
+
+# ---------------------------------------------------------------------------
+# Defect 5: abandoned listener generation guard (#68540)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_listen_generation_increments_on_respawn(monkeypatch):
+    """The listen generation counter must increment when watchdog respawns
+    the listen task, establishing a new generation for the updated connection.
+    This allows the old abandoned listener to detect it's stale via the
+    generation guard and exit (#68540 sweeper review)."""
+    adapter = _make_adapter()
+    monkeypatch.setattr(ha_adapter, "_WATCHDOG_INTERVAL", 0.01, raising=False)
+    monkeypatch.setattr(ha_adapter, "_LISTEN_STUCK_TIMEOUT", 0.01, raising=False)
+
+    initial_gen = adapter._listen_gen
+    assert initial_gen >= 0, "initial generation must be non-negative"
+
+    respawn_calls = []
+
+    async def _stub_listen_loop():
+        respawn_calls.append(1)
+        await asyncio.Event().wait()
+
+    adapter._listen_loop = _stub_listen_loop  # type: ignore[method-assign]
+    adapter._cleanup_ws = AsyncMock()
+
+    adapter._running = True
+    stuck_task = asyncio.ensure_future(_hang_forever())
+    adapter._listen_task = stuck_task
+    adapter._last_progress = time.monotonic() - 10  # force stale
+
+    gen_before_respawn = adapter._listen_gen
+
+    watchdog_task = asyncio.ensure_future(adapter._watchdog_loop())
+
+    # Wait for watchdog to respawn
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if respawn_calls and adapter._listen_task is not stuck_task:
+            break
+
+    gen_after_respawn = adapter._listen_gen
+
+    assert gen_after_respawn > gen_before_respawn, \
+        "watchdog respawn must increment the generation counter"
+    assert len(respawn_calls) > 0, \
+        "new listen loop must have been created"
+
+    # Cleanup
+    adapter._running = False
+    for t in (watchdog_task, adapter._listen_task):
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+class _CancellationResistantWS:
+    """Async-iterable fake websocket for the #68540 stale-generation tests.
+
+    Its iterator blocks until ``release`` is set; a cancellation delivered
+    while blocked is swallowed and it KEEPS blocking — the exact shape
+    ``_cancel_task_bounded`` gives up on and abandons. After release it
+    yields exactly one TEXT frame, then ends the stream."""
+
+    def __init__(self, release: asyncio.Event, text_type):
+        self._release = release
+        self._text_type = text_type
+        self._yielded = False
+        self.closed = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        while True:
+            try:
+                await self._release.wait()
+                break
+            except asyncio.CancelledError:
+                continue  # swallow; stay wedged
+        if self._yielded:
+            raise StopAsyncIteration
+        self._yielded = True
+        frame = MagicMock()
+        frame.type = self._text_type
+        frame.data = '{"type": "event", "event": {"data": {"entity_id": "light.x"}}}'
+        return frame
+
+
+@pytest.mark.asyncio
+async def test_abandoned_listener_cannot_reconnect_over_new_generation(monkeypatch):
+    """#68540 sweeper finding: the REAL _listen_loop, running the REAL
+    _read_events over a cancellation-resistant fake websocket, is abandoned
+    by the implementation's own respawn sequence (_respawn_listener). The
+    stale loop is released INSIDE the cleanup await — the exact resume
+    window from the second-pass review — and must exit without calling
+    _cleanup_ws()/_ws_connect() itself."""
+    adapter = _make_adapter()
+    adapter._BACKOFF_STEPS = [0]
+    # The bounded cancel would otherwise wait the full production drain
+    # timeout for the cancellation-resistant read.
+    monkeypatch.setattr(ha_adapter, "_DRAIN_TIMEOUT", 0.05)
+    # aiohttp is an optional dependency; adapter references it only through
+    # its module attribute, so patch it like the other tests in this file.
+    fake_aiohttp = MagicMock()
+    monkeypatch.setattr(ha_adapter, "aiohttp", fake_aiohttp)
+
+    release = asyncio.Event()
+    adapter._ws = _CancellationResistantWS(release, fake_aiohttp.WSMsgType.TEXT)
+    adapter._running = True
+
+    calls = []  # (which, task) — task identity separates stale from legit
+
+    async def spy_cleanup():
+        calls.append(("cleanup_ws", asyncio.current_task()))
+        # Open the resume window WHILE the respawn awaits cleanup: the stale
+        # loop wakes up here, exactly as in the reviewed race.
+        release.set()
+        await asyncio.sleep(0.05)
+
+    async def spy_connect():
+        calls.append(("ws_connect", asyncio.current_task()))
+        adapter._running = False   # stop the replacement after one pass
+        return False
+
+    adapter._cleanup_ws = spy_cleanup  # type: ignore[method-assign]
+    adapter._ws_connect = spy_connect  # type: ignore[method-assign]
+
+    adapter._listen_gen += 1
+    old_loop = asyncio.ensure_future(adapter._listen_loop())
+    adapter._listen_task = old_loop
+    await asyncio.sleep(0)  # old loop is now blocked in the wedged read
+
+    try:
+        # The implementation's own replacement sequence (bounded cancel that
+        # the read swallows -> generation revoke -> cleanup -> new spawn).
+        await asyncio.wait_for(adapter._respawn_listener(), timeout=5)
+
+        await asyncio.wait_for(old_loop, timeout=5)
+        new_loop = adapter._listen_task
+        if new_loop is not None and new_loop is not old_loop:
+            await asyncio.wait_for(new_loop, timeout=5)
+    finally:
+        release.set()  # never leave the fake read blocked on failure paths
+        adapter._running = False
+
+    stale_calls = [w for w, task in calls if task is old_loop]
+    assert stale_calls == [], (
+        f"abandoned listener touched the new generation's plumbing: {stale_calls}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame_kind", ["TEXT", "CLOSED", "ERROR"])
+async def test_stale_frame_cannot_forge_progress_or_dispatch(monkeypatch, frame_kind):
+    """#68540 sweeper finding, second path: a frame yielded by the OLD
+    generation's websocket after replacement must neither overwrite
+    _last_progress (it would mask a wedged NEW reader from the watchdog)
+    nor dispatch an event through the old plumbing. Parametrized over the
+    frame-type branches so the generation check cannot hide inside the
+    TEXT branch alone (Sol review round 2)."""
+    adapter = _make_adapter()
+    fake_aiohttp = MagicMock()
+    monkeypatch.setattr(ha_adapter, "aiohttp", fake_aiohttp)
+    release = asyncio.Event()
+    frame_type = getattr(fake_aiohttp.WSMsgType, frame_kind)
+    adapter._ws = _CancellationResistantWS(release, frame_type)
+    adapter._running = True
+
+    dispatched = []
+
+    async def spy_handle(event):
+        dispatched.append(event)
+
+    monkeypatch.setattr(adapter, "_handle_ha_event", spy_handle)
+
+    adapter._listen_gen += 1
+    my_gen = adapter._listen_gen
+    reader = asyncio.ensure_future(adapter._read_events(my_gen))
+    await asyncio.sleep(0)  # reader is now blocked in the fake ws
+
+    # Replacement happens while the old reader is wedged.
+    adapter._listen_gen += 1
+    sentinel = adapter._last_progress = -12345.0
+
+    release.set()
+    await asyncio.wait_for(reader, timeout=2)
+
+    assert adapter._last_progress == sentinel, (
+        "stale frame overwrote the replacement generation's progress signal"
+    )
+    assert dispatched == [], "stale frame was dispatched through old plumbing"

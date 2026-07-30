@@ -237,6 +237,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         # iteration or received event; the watchdog compares against this to
         # detect a wedged listener (#67470).
         self._last_progress: float = time.monotonic()
+        # Generation counter bumped on each _listen_loop respawn; prevents
+        # abandoned listener instances from interfering with new generations
+        # after watchdog-driven cancellation + reconnection (#68540 sweeper review).
+        self._listen_gen: int = 0
 
         # Configuration from extra
         extra = config.extra or {}
@@ -295,6 +299,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
             # Start background listener + its cause-agnostic watchdog (#67470)
             self._last_progress = time.monotonic()
+            self._listen_gen += 1
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._watchdog_task = asyncio.create_task(self._watchdog_loop())
             self._running = True
@@ -581,16 +586,26 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
     async def _listen_loop(self) -> None:
         """Main event loop with automatic reconnection."""
+        # Capture the generation at entry so this loop instance can detect
+        # if it's been abandoned by a watchdog-driven respawn and guard
+        # against interfering with the new generation's connection (#68540).
+        gen = self._listen_gen
         backoff_idx = 0
 
         while self._running:
+            # Stale-generation check: if watchdog respawned the listener,
+            # this abandoned instance must exit rather than manipulate the
+            # new generation's connection or state (#68540 sweeper review).
+            if gen != self._listen_gen:
+                return
+
             # Progress heartbeat for the watchdog (#67470): each pass through
             # the outer loop counts as forward motion even before any event
             # arrives, so a connect that never yields a message still shows
             # up as "alive" rather than immediately tripping the watchdog.
             self._last_progress = time.monotonic()
             try:
-                await self._read_events()
+                await self._read_events(gen)
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -604,6 +619,11 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             logger.info("[%s] Reconnecting in %ds...", self.name, delay)
             await asyncio.sleep(delay)
             backoff_idx += 1
+
+            # Stale-generation check before reconnect path: prevent abandoned
+            # listener from reconnecting after it's been replaced (#68540).
+            if gen != self._listen_gen:
+                return
 
             try:
                 await self._cleanup_ws()
@@ -653,15 +673,28 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                 self.name, stalled_for,
             )
 
-            await self._cancel_task_bounded(self._listen_task, "wedged listen task")
+            await self._respawn_listener()
 
-            await self._cleanup_ws()
+    async def _respawn_listener(self) -> None:
+        """Abandon the current listener (which may be cancellation-resistant
+        and survive the bounded cancel) and spawn a replacement generation.
 
-            if not self._running:
-                return
+        Order matters: the old generation is revoked BEFORE awaiting cleanup,
+        because the abandoned task can resume inside that await — with its
+        generation still current it would sail through the loop guards into
+        the reconnect path of the replacement (#68540 sweeper review,
+        second pass)."""
+        await self._cancel_task_bounded(self._listen_task, "wedged listen task")
 
-            self._last_progress = time.monotonic()
-            self._listen_task = asyncio.create_task(self._listen_loop())
+        self._listen_gen += 1
+
+        await self._cleanup_ws()
+
+        if not self._running:
+            return
+
+        self._last_progress = time.monotonic()
+        self._listen_task = asyncio.create_task(self._listen_loop())
 
     async def _listener_alive_after_ping(self) -> bool:
         """Send an HA-protocol ping and report whether the reader saw a reply.
@@ -691,11 +724,21 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             raise
         return self._last_progress >= probe_start
 
-    async def _read_events(self) -> None:
-        """Read events from WebSocket until disconnected."""
+    async def _read_events(self, gen: Optional[int] = None) -> None:
+        """Read events from WebSocket until disconnected.
+
+        ``gen`` is the listener generation this reader belongs to. A
+        cancellation-resistant iterator can yield again AFTER the watchdog
+        has replaced the listener; without the per-frame check that stale
+        frame would overwrite the replacement's ``_last_progress`` (masking
+        a wedged new reader from the watchdog) and could dispatch an event
+        through the old plumbing (#68540 sweeper review, second pass).
+        """
         if self._ws is None or self._ws.closed:
             return
         async for ws_msg in self._ws:
+            if gen is not None and gen != self._listen_gen:
+                return
             # Any received frame is progress for the watchdog (#67470), not
             # just ones that parse into a state_changed event.
             self._last_progress = time.monotonic()

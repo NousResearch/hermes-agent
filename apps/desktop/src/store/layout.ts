@@ -221,6 +221,20 @@ export function dismissAutoProject(id: string): void {
   }
 }
 
+// Auto projects dismissed from the overview stay out of every surface that
+// lists projects (sidebar + ⌘K). Explicit rows never match.
+export function filterVisibleProjects<T extends { id: string; isAuto?: boolean }>(
+  projects: readonly T[],
+  dismissedIds: readonly string[] = $dismissedAutoProjectIds.get()
+): T[] {
+  if (!dismissedIds.length) {
+    return projects as T[]
+  }
+
+  const dismissed = new Set(dismissedIds)
+  return projects.filter(project => !(project.isAuto && dismissed.has(project.id)))
+}
+
 // Hide a worktree row after it's been removed via git.
 export function dismissWorktree(id: string): void {
   const current = $dismissedWorktreeIds.get()

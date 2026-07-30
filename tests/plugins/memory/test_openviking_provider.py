@@ -1058,3 +1058,54 @@ def test_prefetch_sends_contract_safe_memory_context_payload(monkeypatch):
     assert "mode" not in payload
     assert "target_uri" not in payload
 
+def test_in_place_compression_rearms_commit_guard():
+    """Post-compression turns must still be committable (#74695).
+
+    ``compress_context()`` commits before rewriting the transcript, which
+    latches the per-sid guard. In-place mode (the default) keeps the SAME sid,
+    so the latch then rejected every later commit for a still-live session —
+    the next compression, /new, normal session end and startup recovery all
+    silently did nothing, and post-compression turns were never extracted.
+    """
+    provider = _make_provider_with_session("sid-123", turn_count=4)
+    provider._ensure_client = lambda: True
+
+    # Compression commits the live session, latching the guard.
+    provider._mark_session_committed("sid-123")
+    assert provider._session_needs_commit("sid-123", 4) is False
+
+    # In-place compression: same id in, no rotation.
+    provider.on_session_switch("sid-123", reason="compression")
+
+    # The session is still live, so new turns must be committable again.
+    assert provider._has_committed_session("sid-123") is False
+    assert provider._session_needs_commit("sid-123", 2) is True
+
+
+def test_rotating_compression_keeps_old_session_latched():
+    """Rotation mode must keep the guard, which dedupes the old id's finalize.
+
+    With ``compression.in_place: false`` a fresh child id is minted. The old id
+    stays committed so its ``_finalize_session_async`` does not double-commit
+    what compression already committed — the behavior the guard exists for.
+    """
+    provider = _make_provider_with_session("old-sid", turn_count=4)
+    provider._ensure_client = lambda: True
+    provider._finalize_session_async = MagicMock()
+
+    provider._mark_session_committed("old-sid")
+    provider.on_session_switch("new-sid", reason="compression")
+
+    assert provider._has_committed_session("old-sid") is True
+    assert provider._session_needs_commit("old-sid", 4) is False
+
+
+def test_undo_rewind_does_not_rearm_commit_guard():
+    """Only compression re-arms; a same-session /undo must not."""
+    provider = _make_provider_with_session("sid-123", turn_count=4)
+    provider._ensure_client = lambda: True
+
+    provider._mark_session_committed("sid-123")
+    provider.on_session_switch("sid-123", rewound=True)
+
+    assert provider._has_committed_session("sid-123") is True

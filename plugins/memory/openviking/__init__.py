@@ -2775,6 +2775,18 @@ class OpenVikingMemoryProvider(MemoryProvider):
         with self._committed_session_lock:
             self._committed_session_ids.add(sid)
 
+    def _clear_session_committed(self, sid: str) -> None:
+        """Re-arm the commit guard for a session that is still live.
+
+        A permanent per-sid latch is correct for a session being left behind:
+        it dedupes that id's ``_finalize_session_async`` against the commit
+        compression already performed. In-place compression keeps the *same*
+        id, so the latch would otherwise reject every later commit for a
+        session that is still accumulating turns (#74695).
+        """
+        with self._committed_session_lock:
+            self._committed_session_ids.discard(sid)
+
     def _pending_session_dir(self) -> Optional[Path]:
         if not self._hermes_home:
             return None
@@ -4240,6 +4252,20 @@ class OpenVikingMemoryProvider(MemoryProvider):
             # to prefetch() or self._session_id, so discard both to be safe.
             self._profile_prefetched_sessions.discard(old_session_id)
             self._profile_prefetched_sessions.discard(new_id)
+
+            if not rotate and old_session_id:
+                # In-place compression (the default) keeps the same session id.
+                # compress_context() has just committed it, latching the guard —
+                # but the session is still live, so every later commit for it
+                # (the next compression, /new, normal session end, startup
+                # recovery) would be rejected and post-compression turns would
+                # never be extracted. Re-arm the guard now that compression has
+                # finished; turns arriving after this point are genuinely new.
+                #
+                # Rotation mode is untouched: there a fresh child id is minted
+                # and the old id stays latched, which is what dedupes its
+                # _finalize_session_async against this same commit.
+                self._clear_session_committed(old_session_id)
 
         if not rotate:
             # Same-session rewind (/undo) or no-op rotation: no commit and no

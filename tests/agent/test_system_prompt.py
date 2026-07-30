@@ -116,6 +116,74 @@ class TestCodingContextBlock:
         assert "coding agent" not in _stable_prompt(agent)
 
 
+class TestNamedProfileHint:
+    """The profile hint must point at real paths (#72894).
+
+    ``_resolve_active_profile_name()`` only returns a non-default name when
+    ``get_hermes_home()`` has already resolved to ``<root>/profiles/<name>``,
+    so appending ``/profiles/<name>`` to it doubled the segment, and using it
+    for the *default* profile's data pointed those inside the active profile.
+    """
+
+    @staticmethod
+    def _full_prompt(monkeypatch, agent):
+        # Pin the prompt shape: with the coding posture off there is no
+        # workspace snapshot, so the hint's position doesn't depend on the
+        # cwd the suite happens to run from. Join both parts regardless.
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        with patch("agent.coding_context._coding_mode", return_value="off"):
+            return "\n\n".join(_prompt_parts(agent).values())
+
+    @classmethod
+    def _named_profile_prompt(cls, monkeypatch, name="mac"):
+        import agent.system_prompt as system_prompt
+
+        agent = _make_agent(valid_tool_names=["read_file"])
+        monkeypatch.setattr(
+            system_prompt, "get_hermes_home", lambda: Path(f"/hermes/profiles/{name}")
+        )
+        monkeypatch.setattr(
+            system_prompt, "get_default_hermes_root", lambda: Path("/hermes")
+        )
+        monkeypatch.setattr(
+            "agent.file_safety._resolve_active_profile_name", lambda: name
+        )
+        return cls._full_prompt(monkeypatch, agent)
+
+    def test_session_home_is_not_doubled(self, monkeypatch):
+        prompt = self._named_profile_prompt(monkeypatch)
+
+        assert "This session reads and writes /hermes/profiles/mac/." in prompt
+        assert "/hermes/profiles/mac/profiles/mac" not in prompt
+
+    def test_default_profile_data_points_at_the_root(self, monkeypatch):
+        prompt = self._named_profile_prompt(monkeypatch)
+
+        assert (
+            "The default profile's data lives at /hermes/skills/, "
+            "/hermes/plugins/, /hermes/cron/, /hermes/memories/"
+        ) in prompt
+        # Never inside the active profile — that's the cross-profile
+        # confusion this hint exists to prevent.
+        assert "/hermes/profiles/mac/skills/" not in prompt
+        assert "/hermes/profiles/mac/memories/" not in prompt
+
+    def test_default_profile_hint_is_unchanged(self, monkeypatch):
+        import agent.system_prompt as system_prompt
+
+        agent = _make_agent(valid_tool_names=["read_file"])
+        monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
+        monkeypatch.setattr(
+            "agent.file_safety._resolve_active_profile_name", lambda: "default"
+        )
+        prompt = self._full_prompt(monkeypatch, agent)
+
+        assert (
+            "Active Hermes profile: default. Other profiles (if any) live "
+            "under /hermes/profiles/<name>/."
+        ) in prompt
+
+
 def test_build_system_prompt_records_stable_prefix():
     agent = _make_agent()
     with (

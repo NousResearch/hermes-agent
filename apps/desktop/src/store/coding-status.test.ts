@@ -260,20 +260,24 @@ describe('refreshRepoStatus', () => {
 describe('repoChangeKindForPath', () => {
   it('does not notify a row when only another path changes', () => {
     $currentCwd.set('/repo')
-    $repoStatus.set({ ...sampleStatus, files: [] })
+    $repoStatusByCwd.set({ '/repo': { ...sampleStatus, files: [] } })
     const row = repoChangeKindForPath('/repo/a.ts')
     const listener = vi.fn()
     const unsubscribe = row.subscribe(listener)
 
-    $repoStatus.set({
-      ...sampleStatus,
-      files: [{ path: 'b.ts', untracked: true } as HermesRepoStatus['files'][number]]
+    $repoStatusByCwd.set({
+      '/repo': {
+        ...sampleStatus,
+        files: [{ path: 'b.ts', untracked: true } as HermesRepoStatus['files'][number]]
+      }
     })
     expect(listener).toHaveBeenCalledTimes(1)
 
-    $repoStatus.set({
-      ...sampleStatus,
-      files: [{ path: 'a.ts', untracked: true } as HermesRepoStatus['files'][number]]
+    $repoStatusByCwd.set({
+      '/repo': {
+        ...sampleStatus,
+        files: [{ path: 'a.ts', untracked: true } as HermesRepoStatus['files'][number]]
+      }
     })
     expect(listener).toHaveBeenCalledTimes(2)
     expect(listener.mock.calls.at(-1)?.[0]).toBe('added')

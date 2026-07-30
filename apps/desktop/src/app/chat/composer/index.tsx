@@ -1188,7 +1188,10 @@ export function ChatBar({
                   onBranchOff={handleBranchOff}
                   onConvertBranch={handleConvertBranch}
                   onListBranches={handleListBranches}
-                  onOpen={toggleReview}
+                  // A tile's rail reviews ITS worktree: pin the pane's scope to
+                  // this surface's cwd. Main keeps the classic follow-the-
+                  // active-session scope (null).
+                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null))}
                   onOpenWorktree={openInWorktree}
                   onSwitchBranch={handleSwitchBranch}
                   repoPath={cwd}

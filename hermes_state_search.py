@@ -356,13 +356,169 @@ class SessionSearchMixin:
                 self._ensure_fts_cjk_schema(self._conn)
                 self._conn.commit()
 
+    def _fts_external_index_empty_with_messages(self, conn) -> bool:
+        """True when the base FTS table exists but indexes nothing while
+        ``messages`` has rows. Caller must hold ``self._lock``.
+
+        This is the post-demote empty-index shape: external-content FTS with
+        zero ``messages_fts_docsize`` rows against a non-empty messages table.
+        Healthy installs (and mid-backfill installs that still hold markers)
+        never match.
+        """
+        try:
+            n_msg = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            if int(n_msg) <= 0:
+                return False
+            # docsize is the authoritative "is this rowid indexed" surface for
+            # external-content FTS5; COUNT(*) on the virtual table itself is
+            # not reliable across SQLite builds.
+            n_fts = conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_docsize"
+            ).fetchone()[0]
+            return int(n_fts) == 0
+        except sqlite3.OperationalError:
+            # Table absent / FTS disabled mid-init — not this failure class.
+            return False
+
+    def _fts_index_known_empty(self, conn) -> bool:
+        """True when the base external-content index holds no rows.
+
+        A missing table counts as empty: the schema ensure that follows
+        creates it fresh.
+        """
+        try:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_docsize"
+            ).fetchone()[0]
+            return int(n) == 0
+        except sqlite3.OperationalError:
+            return True
+
+    def _reset_fts_index_to_empty(self, conn) -> None:
+        """Delete every indexed row from the v23 external-content tables.
+
+        FTS5 supports a no-WHERE DELETE on external-content tables as an
+        efficient drop-all. The backfill chunk worker replays its whole
+        selected id range with no anti-join, so a replay from zero is only
+        safe once the index is known empty — this is how a partially indexed
+        DB gets there.
+        """
+        for tbl in ("messages_fts", "messages_fts_trigram"):
+            try:
+                conn.execute(f"DELETE FROM {tbl}")
+            except sqlite3.OperationalError:
+                pass  # table absent — already an empty surface
+
+    def _seed_fts_rebuild_markers(self, conn, *, force: bool = False) -> int:
+        """Write ``fts_rebuild_high_water`` / ``fts_rebuild_progress`` for a
+        full backfill. Returns the high-water id.
+
+        When ``force`` is False and high_water is already set, only repairs a
+        missing progress key (stuck no-op when high_water exists alone), and
+        only after the index is known empty: the chunk worker replays its
+        whole selected id range without an anti-join, so a partially indexed
+        DB is first reset to a known-empty surface rather than rebuilt from
+        zero on top of surviving rows. Caller must hold the write
+        transaction / lock as appropriate.
+        """
+        existing_hw = conn.execute(
+            "SELECT value FROM state_meta WHERE key = 'fts_rebuild_high_water'"
+        ).fetchone()
+        if existing_hw is not None and not force:
+            hw = int(existing_hw[0])
+            progress = conn.execute(
+                "SELECT value FROM state_meta WHERE key = 'fts_rebuild_progress'"
+            ).fetchone()
+            if progress is None:
+                # high_water without progress: fts_rebuild_step treats missing
+                # progress as "done by another process" and optimize would
+                # no-op then stamp. Re-seed progress so the chunk loop runs.
+                if not self._fts_index_known_empty(conn):
+                    self._reset_fts_index_to_empty(conn)
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES "
+                    "('fts_rebuild_progress', '0') "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                )
+            return hw
+
+        hw = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM messages"
+        ).fetchone()[0]
+        for k, v in (
+            ("fts_rebuild_high_water", str(hw)),
+            ("fts_rebuild_progress", "0"),
+        ):
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (k, v),
+            )
+        return int(hw)
+
+    def _repair_optimize_bookkeeping(self) -> None:
+        """Heal interrupted demote/backfill bookkeeping before optimize runs.
+
+        Covers two post-#65798 failure classes:
+
+        1. Empty external-content index with messages present and no rebuild
+           markers (demote crash window after empty v23 tables landed but
+           before markers, or settle that stamped without backfill). Seed a
+           full backfill.
+        2. ``fts_rebuild_high_water`` present without ``fts_rebuild_progress``
+           (partial meta) — seed progress so the chunk loop is not a no-op,
+           resetting a partially populated index to a known-empty surface
+           first so the anti-join-free chunk replay cannot duplicate rows.
+
+        Must not invent markers on a still-legacy inline DB: that would make
+        ``optimize_fts_storage`` skip demote (``legacy and not pending``) and
+        attempt v23-shaped INSERTs against the inline table forever.
+        """
+        def _do(conn):
+            existing_hw = conn.execute(
+                "SELECT value FROM state_meta "
+                "WHERE key = 'fts_rebuild_high_water'"
+            ).fetchone()
+
+            if existing_hw is not None:
+                # Repair orphan high_water-without-progress only. Never
+                # invent a fresh claim on a healthy complete index.
+                progress = conn.execute(
+                    "SELECT 1 FROM state_meta "
+                    "WHERE key = 'fts_rebuild_progress'"
+                ).fetchone()
+                if progress is None:
+                    if not self._fts_index_known_empty(conn):
+                        self._reset_fts_index_to_empty(conn)
+                    conn.execute(
+                        "INSERT INTO state_meta (key, value) VALUES "
+                        "('fts_rebuild_progress', '0') "
+                        "ON CONFLICT(key) DO UPDATE SET value = '0'"
+                    )
+                return
+
+            # No markers. On a still-legacy DB demote owns marker creation.
+            if self._db_has_legacy_inline_fts(conn):
+                return
+
+            # Non-legacy empty external index (demote crash window / premature
+            # stamp): seed a full backfill claim.
+            if self._fts_external_index_empty_with_messages(conn):
+                conn.execute(
+                    "DELETE FROM state_meta WHERE key = 'fts_storage_version'"
+                )
+                self._seed_fts_rebuild_markers(conn, force=True)
+        self._execute_write(_do)
+
     def fts_optimize_available(self) -> bool:
         """True when `optimize_fts_storage()` has work to do: either this DB
         is a legacy inline-FTS install that can be optimized to the v23
         external-content schema, or a previous optimize run was interrupted
         (legacy vtables already demoted, but backfill markers and/or trash
         tables remain) and re-running would resume it, or the CJK-bigram
-        index needs a backfill/rebuild on this tokenizer-capable host.
+        index needs a backfill/rebuild on this tokenizer-capable host, or
+        a prior demote left an empty external-content index without markers
+        (healable on re-run).
         False for fresh and fully-optimized installs (and when FTS5 is
         unavailable)."""
         if not self._fts_enabled or self.read_only:
@@ -388,14 +544,27 @@ class SessionSearchMixin:
                 f"('fts_cjk_rebuild_high_water', '{FTS_CJK_STALE_KEY}') LIMIT 1"
             ).fetchone():
                 return True
-            return self._has_fts_trash(self._conn)
+            if self._has_fts_trash(self._conn):
+                return True
+            # Pre-fix crash window: empty external-content index with
+            # messages still present, no markers, no trash (teardown already
+            # finished or never needed). Re-run seeds markers and backfills.
+            return self._fts_external_index_empty_with_messages(self._conn)
 
     def _demote_legacy_fts_to_trash(self) -> int:
         """Demote the legacy inline FTS vtables and stage their shadow tables
         for chunked teardown. Returns MAX(messages.id) as the rebuild high
         water. O(1) schema surgery — the heavy delete is deferred to the
-        chunked teardown, exactly as the validated auto path did."""
-        def _do(conn):
+        chunked teardown, exactly as the validated auto path did.
+
+        Markers are written in the same BEGIN IMMEDIATE as the demote, *before*
+        the empty v23 schema is created. Schema creation uses
+        ``executescript`` and therefore cannot run inside that transaction
+        (it issues an implicit COMMIT — see the CJK recreate path). Creating
+        the empty schema only after markers are durable closes the crash
+        window where trash + empty v23 tables exist with no backfill claim.
+        """
+        def _stage(conn):
             self._drop_fts_triggers(conn)
             conn.execute("DROP VIEW IF EXISTS messages_fts_trigram_src")
             had = bool(conn.execute(
@@ -420,22 +589,35 @@ class SessionSearchMixin:
                 ]
                 for sh in shadows:
                     conn.execute(f"ALTER TABLE {sh} RENAME TO fts_v22_trash_{sh}")
-            # Create the new v23 empty schema + set the backfill markers.
-            self._ensure_fts_schema(conn, "messages_fts", FTS_SQL)
-            self._ensure_fts_schema(conn, "messages_fts_trigram", FTS_TRIGRAM_SQL)
-            hw = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
-            for k, v in (
-                ("fts_rebuild_high_water", str(hw)),
-                ("fts_rebuild_progress", "0"),
-            ):
-                conn.execute(
-                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (k, v),
-                )
-            conn.execute("DELETE FROM state_meta WHERE key = 'fts_optimize_available'")
+            # Claim the backfill *before* empty v23 tables exist. A crash
+            # between this commit and schema ensure still leaves markers, so
+            # optimize-storage resumes instead of tearing down trash and
+            # stamping an empty index as complete.
+            hw = self._seed_fts_rebuild_markers(conn, force=True)
+            conn.execute(
+                "DELETE FROM state_meta WHERE key = 'fts_optimize_available'"
+            )
             return hw
-        return int(self._execute_write(_do))
+
+        hw = int(self._execute_write(_stage))
+
+        # Create the empty v23 schema outside the write transaction —
+        # ``_ensure_fts_schema`` uses executescript(), which implicitly
+        # commits any pending transaction and must not run inside
+        # ``_execute_write``'s BEGIN IMMEDIATE (same rule as the CJK recreate
+        # path above). Markers are already durable.
+        with self._lock:
+            base_ok = self._ensure_fts_schema(self._conn, "messages_fts", FTS_SQL)
+            trigram_ok = self._ensure_fts_schema(
+                self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
+            )
+            self._trigram_available = bool(trigram_ok)
+            if not base_ok:
+                raise sqlite3.OperationalError(
+                    "failed to create v23 messages_fts during optimize-storage demote"
+                )
+            self._conn.commit()
+        return hw
 
     def optimize_fts_storage(
         self,
@@ -458,6 +640,12 @@ class SessionSearchMixin:
         if self.read_only:
             return {"ok": False, "reason": "read_only"}
 
+        # Heal empty-index / orphan-marker bookkeeping from an interrupted
+        # demote *before* deciding whether to demote again. This re-seeds
+        # markers when trash was already staged (or torn down) without a
+        # backfill claim so the phases below actually run.
+        self._repair_optimize_bookkeeping()
+
         # Only demote if we're actually still on the legacy shape. If a prior
         # run already demoted (markers/trash present), skip straight to
         # finishing the backfill + teardown — this is what makes re-running
@@ -467,6 +655,26 @@ class SessionSearchMixin:
         pending = self.get_meta("fts_rebuild_high_water") is not None
         if legacy and not pending:
             self._demote_legacy_fts_to_trash()
+        elif pending and not legacy:
+            # Resume mid-demote: markers exist, empty v23 tables may still be
+            # missing if the process died between the staged demote commit and
+            # schema ensure. Re-ensure is IF NOT EXISTS and cheap.
+            with self._lock:
+                base_ok = self._ensure_fts_schema(
+                    self._conn, "messages_fts", FTS_SQL
+                )
+                trigram_ok = self._ensure_fts_schema(
+                    self._conn, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                )
+                self._trigram_available = bool(trigram_ok)
+                if not base_ok:
+                    # Fail fast: without the base table the backfill loop
+                    # below would retry "no such table" errors forever.
+                    raise sqlite3.OperationalError(
+                        "failed to re-create v23 messages_fts "
+                        "on optimize-storage resume"
+                    )
+                self._conn.commit()
 
         # A stale CJK index (triggers dropped by a tokenizer-less process)
         # can only be recovered from scratch — reset it now so the cjk
@@ -536,6 +744,29 @@ class SessionSearchMixin:
             _emit("teardown")
             _pause(time.monotonic() - _t0)
 
+        # Refuse to stamp "optimized" while work remains or the base index is
+        # still empty against a non-empty messages table. Pre-fix code could
+        # tear down trash and settle after a no-op backfill when markers were
+        # missing — permanent search-index loss for historical rows.
+        with self._lock:
+            still_pending = self._conn.execute(
+                "SELECT 1 FROM state_meta "
+                "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
+            ).fetchone() is not None
+            still_trash = self._has_fts_trash(self._conn)
+            empty_index = self._fts_external_index_empty_with_messages(self._conn)
+        if still_pending or still_trash or empty_index:
+            reason = (
+                "backfill_incomplete" if still_pending or empty_index
+                else "teardown_incomplete"
+            )
+            logger.warning(
+                "FTS storage optimization did not settle (%s): "
+                "pending=%s trash=%s empty_index=%s",
+                reason, still_pending, still_trash, empty_index,
+            )
+            return {"ok": False, "reason": reason, "vacuumed": None}
+
         # Phase 3: reclaim freed pages to the OS.
         vacuum_ok = None
         if vacuum:
@@ -572,6 +803,18 @@ class SessionSearchMixin:
         # DB opened only by pre-decoupling code still settles). The FTS-layout
         # marker is the source of truth for "is this DB optimized".
         def _settle(conn):
+            # Re-check inside the write transaction so a concurrent writer
+            # cannot race a stamp past incomplete work. Returns a refusal
+            # reason (stamping nothing) or None once the stamp is written.
+            if conn.execute(
+                "SELECT 1 FROM state_meta "
+                "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
+            ).fetchone() is not None:
+                return "backfill_incomplete"
+            if self._has_fts_trash(conn):
+                return "teardown_incomplete"
+            if self._fts_external_index_empty_with_messages(conn):
+                return "backfill_incomplete"
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES ('fts_storage_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -582,7 +825,17 @@ class SessionSearchMixin:
                 "UPDATE schema_version SET version = ? WHERE version < ?",
                 (SCHEMA_VERSION, SCHEMA_VERSION),
             )
-        self._execute_write(_settle)
+            return None
+        refusal = self._execute_write(_settle)
+        if refusal is not None:
+            # A concurrent process re-seeded markers, left trash, or emptied
+            # the index between the pre-vacuum check above and this write
+            # transaction. Nothing was stamped. Report the failure instead of
+            # crashing the CLI with a traceback; a re-run can still settle.
+            logger.warning(
+                "FTS storage optimization settle refused (%s)", refusal
+            )
+            return {"ok": False, "reason": refusal, "vacuumed": vacuum_ok}
         _emit("done")
         logger.info(
             "FTS storage optimization complete (layout v%d).", FTS_STORAGE_VERSION

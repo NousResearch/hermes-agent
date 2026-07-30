@@ -730,7 +730,8 @@ class SessionSchemaMixin:
             # FTS_STORAGE_VERSION; a legacy DB is left at whatever it had
             # (absent/0) until `optimize-storage` runs. An INTERRUPTED
             # optimize (legacy vtables already demoted, but rebuild markers
-            # or demoted trash tables still present) is NOT stamped either —
+            # or demoted trash tables still present, or an empty external
+            # index against non-empty messages) is NOT stamped either —
             # the marker is the source of truth for "fully optimized", and
             # `fts_optimize_available()` keeps offering the resume until the
             # transition actually completes.
@@ -742,6 +743,7 @@ class SessionSchemaMixin:
                     "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
                 ).fetchone() is None
                 and not self._has_fts_trash(cursor)
+                and not self._fts_external_index_empty_with_messages(cursor)
             ):
                 self.set_meta(
                     "fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor

@@ -33,6 +33,7 @@ import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
 import { toggleMessageReaction } from '@/store/reactions'
+import { $reactionsEnabled } from '@/store/reactions-enabled'
 import { $agentReactions, $localReactions, mergeReactions, setLocalReaction } from '@/store/reactions-local'
 import { $voicePlayback } from '@/store/voice-playback'
 import type { MessageReaction } from '@/types/hermes'
@@ -156,6 +157,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
   })
 
   const [pickerOpen, setPickerOpen] = useState(false)
+  const reactionsEnabled = useStore($reactionsEnabled)
   const localAll = useStore($localReactions)
   const agentLive = useStore($agentReactions)
 
@@ -219,32 +221,34 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
           clicking it reopens the picker to switch or retract. Outside
           ActionBarPrimitive.Root so a landed reaction doesn't ride the bar's
           hover opacity. */}
-      <ReactionPicker
-        onOpenChange={setPickerOpen}
-        onSelect={react}
-        open={pickerOpen}
-        selected={shownReactions.find(reaction => reaction.author === 'user')?.emoji}
-      >
-        <TooltipIconButton
-          data-reacted={shownReactions.length > 0 || undefined}
-          data-slot="aui_msg-reactions"
-          data-state={pickerOpen ? 'open' : undefined}
-          onClick={() => setPickerOpen(open => !open)}
-          tooltip={copy.react}
+      {(reactionsEnabled || shownReactions.length > 0) && (
+        <ReactionPicker
+          onOpenChange={setPickerOpen}
+          onSelect={react}
+          open={pickerOpen}
+          selected={shownReactions.find(reaction => reaction.author === 'user')?.emoji}
         >
-          {shownReactions.length > 0 ? (
-            <span className="flex items-center gap-0.5 text-[0.8125rem] leading-none">
-              {shownReactions.map(reaction => (
-                <span className="reaction-pop" key={`${reaction.author}-${reaction.emoji}`}>
-                  {reaction.emoji}
-                </span>
-              ))}
-            </span>
-          ) : (
-            <SmilePlusIcon className="size-3.5" />
-          )}
-        </TooltipIconButton>
-      </ReactionPicker>
+          <TooltipIconButton
+            data-reacted={shownReactions.length > 0 || undefined}
+            data-slot="aui_msg-reactions"
+            data-state={pickerOpen ? 'open' : undefined}
+            onClick={reactionsEnabled ? () => setPickerOpen(open => !open) : undefined}
+            tooltip={copy.react}
+          >
+            {shownReactions.length > 0 ? (
+              <span className="flex items-center gap-0.5 text-[0.8125rem] leading-none">
+                {shownReactions.map(reaction => (
+                  <span className="reaction-pop" key={`${reaction.author}-${reaction.emoji}`}>
+                    {reaction.emoji}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <SmilePlusIcon className="size-3.5" />
+            )}
+          </TooltipIconButton>
+        </ReactionPicker>
+      )}
     </div>
   )
 }

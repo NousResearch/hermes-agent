@@ -15,6 +15,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { toggleMessageReaction } from '@/store/reactions'
+import { $reactionsEnabled } from '@/store/reactions-enabled'
 import { $agentReactions, $localReactions, mergeReactions, setLocalReaction } from '@/store/reactions-local'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
@@ -166,6 +167,7 @@ export const UserMessage: FC<{
   })
 
   const [pickerOpen, setPickerOpen] = useState(false)
+  const reactionsEnabled = useStore($reactionsEnabled)
   const localAll = useStore($localReactions)
   const agentLive = useStore($agentReactions)
 
@@ -309,8 +311,7 @@ export const UserMessage: FC<{
                 className="relative w-full"
                 onContextMenu={
                   // Right-click is the desktop stand-in for iOS touch-and-hold.
-                  // Only offered once the row is persisted (rowId present).
-                  readOnly
+                  readOnly || !reactionsEnabled
                     ? undefined
                     : event => {
                         event.preventDefault()

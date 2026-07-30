@@ -351,6 +351,8 @@ export interface Translations {
       translucencyDesc: string
       backdropTitle: string
       backdropDesc: string
+      reactionsTitle: string
+      reactionsDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string

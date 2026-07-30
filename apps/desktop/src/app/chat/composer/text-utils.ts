@@ -1,4 +1,5 @@
 import { DATA_IMAGE_URL_RE, dataUrlToBlob } from '@/lib/embedded-images'
+import { $reactionsEnabled } from '@/store/reactions-enabled'
 
 export interface TriggerState {
   /** True for a `/` typed mid-message — an inline skill/command reference in
@@ -185,7 +186,9 @@ export function detectTrigger(textBefore: string): TriggerState | null {
   }
 
   // After `@` so a directive starter's colon (`@file:`) stays an `@` query.
-  const emoji = EMOJI_TRIGGER_RE.exec(textBefore)
+  // Rides the reactions opt-in (Settings → Appearance) — both are one
+  // "emoji features" surface, off by default.
+  const emoji = $reactionsEnabled.get() ? EMOJI_TRIGGER_RE.exec(textBefore) : null
 
   if (emoji) {
     return { kind: ':', query: emoji[2], tokenLength: 1 + emoji[2].length }

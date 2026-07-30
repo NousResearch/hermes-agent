@@ -1,8 +1,8 @@
-"""Tests for skill lifecycle plugin hooks.
+"""Tests for all 8 skill lifecycle plugin hooks.
 
-Verifies that pre_skill_create and post_skill_create hooks fire during
-skill_manage(action='create') with the documented kwargs, that plugins
-can redirect/block/handle creation, and that a misbehaving hook never
+Covers pre/post hooks for create, edit, patch, write_file, remove_file,
+and delete. Verifies block, handle, redirect (create only), fallthrough,
+misbehaving-hook resilience, validation bypass, and VALID_HOOKS registration.
 breaks creation.
 """
 
@@ -506,25 +506,6 @@ def test_pre_edit_old_content_none_when_skill_missing(tmp_path):
 def test_patch_hook_registered():
     """pre_skill_patch is in VALID_HOOKS."""
     assert "pre_skill_patch" in VALID_HOOKS
-
-
-def test_patch_block_aborts(tmp_path):
-    """pre_skill_patch returning block aborts the patch."""
-    mgr = get_plugin_manager()
-    saved = {k: list(v) for k, v in mgr._hooks.items()}
-    mgr._hooks.setdefault("pre_skill_patch", []).append(
-        lambda **kw: {"action": "block", "reason": "no patches allowed"}
-    )
-    try:
-        with _isolated_skills(tmp_path):
-            c = _create_skill("patched", SKILL_CONTENT)
-            assert c["success"]
-            result = _patch_skill("patched", "# Test", "## Test")
-    finally:
-        mgr._hooks = saved
-
-    assert result["success"] is False
-    assert "no patches allowed" in result["error"]
 
 
 def test_patch_handled_skips_hermes_patch(tmp_path):

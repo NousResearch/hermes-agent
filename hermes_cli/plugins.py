@@ -382,10 +382,10 @@ VALID_HOOKS: Set[str] = {
     # Skill lifecycle hooks. Fired by skill_manage() before (pre) and after
     # (post) a new SKILL.md is written to disk.  Plugins may influence the
     # pre hook via return value:
-    #   None / {}                          → 默认 ~/.hermes/skills/
-    #   {"action": "redirect", "path": "..."}  → 写入指定目录
-    #   {"action": "handled"}              → plugin 自行处理，跳过 Hermes 写入
-    #   {"action": "block",  "reason": "..."}  → 阻止创建
+    #   None / {}                          → default ~/.hermes/skills/
+    #   {"action": "redirect", "path": "..."}  → write to custom directory
+    #   {"action": "handled"}              → plugin handles, skip Hermes write
+    #   {"action": "block",  "reason": "..."}  → abort creation
     # Kwargs: name, content, category (str or None)
     # Post hook is observer-only (return value ignored).
     # Kwargs: name, category, path (abs str; "" when handled by plugin), success (bool)

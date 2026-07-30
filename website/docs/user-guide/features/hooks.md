@@ -383,8 +383,8 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
+- Three hook groups' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and the skill lifecycle hooks can **handle** or **block** skill operations ([`pre_skill_create`](#pre_skill_create) can also **redirect** to a custom directory). All other hooks, including `post_skill_*`, are fire-and-forget observers.
 - The catalog below is descriptive: **observers** ignore returns, **transforms** accept the first valid string replacement, and **directive/control** hooks consume documented return shapes. Plugin middleware is a separate registry and surface, not another hook category.
-- Two hook groups' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and the skill lifecycle hooks ([`pre_skill_create`](#pre_skill_create), [`pre_skill_edit`](#pre_skill_edit), [`pre_skill_patch`](#pre_skill_patch), [`pre_skill_write_file`](#pre_skill_write_file), [`pre_skill_remove_file`](#pre_skill_remove_file), [`pre_skill_delete`](#pre_skill_delete)) can **handle**, **redirect**, or **block** skill operations. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat IDs as opaque; do not parse their string format.
 - Runtime event-name validity comes from `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lists configured shell/outbound hooks, not every available event; `hermes hooks test <event>` reports the valid set only when an invalid event is supplied.
 
@@ -434,7 +434,6 @@ before it can be added.
 
 ### Shipped plugin-hook catalog
 
-<<<<<<< HEAD
 Payload fields below are the exact event-specific fields supplied by each call site. For backward compatibility, `PluginManager` also adds `telemetry_schema_version="hermes.observer.v1"` to every plugin-hook callback. That legacy envelope marker does not mean all hook payloads share one semantic schema; new versioned contracts belong to their concrete event or capability family.
 
 | Hook | Category | Exact timing and return behavior | Explicit payload fields | Privacy / sensitivity |
@@ -524,6 +523,152 @@ plugins:
 ```
 
 Return values are ignored. To keep the stream fast, callbacks should enqueue their own work and return quickly. Exceptions are logged and do not stop the stream.
+
+---
+
+### `pre_skill_create`
+
+Fires before `skill_manage(action='create')` writes a new skill to disk.
+The hook runs after the name validation, collision check, and write guards,
+but before the atomic write. Plugins may **block**, **handle**, or
+**redirect** the write to a custom directory.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, content: str, category: str | None, **kwargs):
+```
+
+| Action | Return value | Effect |
+|--------|-------------|--------|
+| Block   | `{"action": "block", "reason": "…"}` | Abort creation |
+| Handle  | `{"action": "handled"}` | Plugin wrote the skill; Hermes skips its own write |
+| Redirect | `{"action": "redirect", "path": "/abs/path"}` | Write to a custom directory |
+| Fallthrough | `None`, `{}`, or any other dict | Hermes proceeds with default write |
+
+---
+
+### `post_skill_create`
+
+Fires after a skill is successfully created (or handled by a plugin).
+Observer-only — return value ignored.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, category: str, path: str, success: bool, **kwargs):
+```
+
+`path` is the absolute path to the created skill directory, or `""`
+when creation was handled externally by a plugin.
+
+---
+
+### `pre_skill_edit`
+
+Fires before `skill_manage(action='edit')` replaces a SKILL.md.
+Runs after the existing skill is resolved, write guards, and security scan,
+but before the atomic write.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, content: str, old_content: str | None, **kwargs):
+```
+
+| Action | Return value | Effect |
+|--------|-------------|--------|
+| Block   | `{"action": "block", "reason": "…"}` | Abort edit |
+| Handle  | `{"action": "handled"}` | Plugin handled the edit; Hermes skips its own write |
+| Fallthrough | `None`, `{}`, or any other dict | Hermes proceeds with default write |
+
+---
+
+### `post_skill_edit`
+
+Fires after a skill is successfully edited (or handled by a plugin).
+Observer-only — return value ignored.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, path: str, success: bool, **kwargs):
+```
+
+---
+
+### `pre_skill_patch`
+
+Fires before `skill_manage(action='patch')` applies a targeted edit.
+Same ordering as `pre_skill_edit`: after guards, before write.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, old_string: str, new_string: str,
+                file_path: str | None, replace_all: bool, **kwargs):
+```
+
+| Action | Return value | Effect |
+|--------|-------------|--------|
+| Block   | `{"action": "block", "reason": "…"}` | Abort patch |
+| Handle  | `{"action": "handled"}` | Plugin handled the patch; Hermes skips |
+| Fallthrough | `None`, `{}`, or any other dict | Hermes proceeds |
+
+---
+
+### `pre_skill_write_file`
+
+Fires before `skill_manage(action='write_file')` writes a supporting file
+into a skill directory. After guards, before write.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, file_path: str, file_content: str, **kwargs):
+```
+
+| Action | Return value | Effect |
+|--------|-------------|--------|
+| Block   | `{"action": "block", "reason": "…"}` | Abort |
+| Handle  | `{"action": "handled"}` | Plugin wrote the file; Hermes skips |
+| Fallthrough | `None`, `{}`, or any other dict | Hermes proceeds |
+
+---
+
+### `pre_skill_remove_file`
+
+Fires before `skill_manage(action='remove_file')` removes a supporting file.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, file_path: str, **kwargs):
+```
+
+| Action | Return value | Effect |
+|--------|-------------|--------|
+| Block   | `{"action": "block", "reason": "…"}` | Abort |
+| Handle  | `{"action": "handled"}` | Plugin removed the file; Hermes skips |
+| Fallthrough | `None`, `{}`, or any other dict | Hermes proceeds |
+
+---
+
+### `pre_skill_delete`
+
+Fires before `skill_manage(action='delete')` removes a skill directory.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, **kwargs):
+```
+
+| Action | Return value | Effect |
+|--------|-------------|--------|
+| Block   | `{"action": "block", "reason": "…"}` | Abort deletion |
+| Handle  | `{"action": "handled"}` | Plugin deleted the skill; Hermes skips |
+| Fallthrough | `None`, `{}`, or any other dict | Hermes proceeds |
 
 ---
 

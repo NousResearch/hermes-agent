@@ -892,7 +892,7 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
             if not isinstance(entry, dict):
                 continue
             if _entry_serves_model(entry):
-                return f"custom:{_normalize_custom_provider_name(str(ep_name))}"
+                return custom_provider_slug(str(ep_name), str(ep_name))
 
     try:
         custom_providers = get_compatible_custom_providers(config)
@@ -905,7 +905,10 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
         if not isinstance(name, str) or not name.strip():
             continue
         if _entry_serves_model(entry):
-            return f"custom:{_normalize_custom_provider_name(name)}"
+            return custom_provider_slug(
+                name,
+                str(entry.get("provider_key", "") or ""),
+            )
 
     return None
 

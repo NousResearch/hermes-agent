@@ -843,6 +843,12 @@ class WeComAdapter(BasePlatformAdapter):
         stored = self._approval_tasks.get(task_id)
         if stored:
             _, expected_chat_id, expected_user_id, _ = stored
+            if not expected_user_id:
+                logger.warning(
+                    "[WeCom] admin_user_id empty in approval state — "
+                    "admin identity gate is not enforced (user=%s, key=%s)",
+                    sender_id, event_key,
+                )
             if expected_chat_id and chat_id != expected_chat_id:
                 logger.warning(
                     "[WeCom] Unauthorized approval click: "

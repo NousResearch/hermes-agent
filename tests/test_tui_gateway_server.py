@@ -9598,14 +9598,16 @@ def test_respond_unpacks_sid_tuple_correctly():
 # /model switch and other agent-mutating commands must reject while the
 # session is running.  agent.switch_model() mutates self.model, self.provider,
 # self.base_url, self.client etc. in place — the worker thread running
-# agent.run_conversation is reading those on every iteration.  Same class of
-# bug as the session.undo / session.compress mid-run silent-drop; same fix
-# pattern: reject with 4009 while running.
+# agent.run_conversation is reading those on every iteration.  So a mid-turn
+# config.set model must NOT switch in place; instead it queues the pick
+# (session["pending_model_switch"]) and _apply_pending_model_switch applies it
+# on the turn thread at the next turn start, where nothing is in flight.
 # ---------------------------------------------------------------------------
 
 
-def test_config_set_model_rejects_while_running(monkeypatch):
-    """/model via config.set must reject during an in-flight turn."""
+def test_config_set_model_defers_while_running(monkeypatch):
+    """/model via config.set queues the pick during an in-flight turn instead
+    of rejecting or racing the worker thread."""
     seen = {"called": False}
 
     def _fake_apply(sid, session, raw, **_kwargs):
@@ -9627,15 +9629,45 @@ def test_config_set_model_rejects_while_running(monkeypatch):
                 },
             }
         )
-        assert resp.get("error")
-        assert resp["error"]["code"] == 4009
-        assert "session busy" in resp["error"]["message"]
+        assert not resp.get("error")
+        result = resp["result"]
+        assert result["deferred"] is True
+        assert result["value"] == "anthropic/claude-sonnet-4.6"
         assert not seen["called"], (
-            "_apply_model_switch was called mid-turn — would race with "
-            "the worker thread reading agent.model / agent.client"
+            "_apply_model_switch ran mid-turn — would race the worker thread "
+            "reading agent.model / agent.client; it must defer to turn start"
         )
+        pending = server._sessions["sid"].get("pending_model_switch")
+        assert pending and pending["raw"] == "anthropic/claude-sonnet-4.6"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_apply_pending_model_switch_runs_queued_pick(monkeypatch):
+    """The queued pick is consumed once, on the turn thread, via
+    _apply_model_switch — and cleared so it can't re-fire next turn."""
+    calls = []
+
+    def _fake_apply(sid, session, raw, **kwargs):
+        calls.append(raw)
+        return {"value": raw, "warning": "", "confirm_required": False}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+
+    session = _session(running=False)
+    session["agent"] = object()
+    session["pending_model_switch"] = {
+        "raw": "anthropic/claude-sonnet-4.6",
+        "confirm_expensive_model": False,
+    }
+
+    server._apply_pending_model_switch("sid", session)
+    assert calls == ["anthropic/claude-sonnet-4.6"]
+    assert "pending_model_switch" not in session
+
+    # Idempotent: a second turn start with nothing queued is a no-op.
+    server._apply_pending_model_switch("sid", session)
+    assert calls == ["anthropic/claude-sonnet-4.6"]
 
 
 def test_config_set_model_allowed_when_idle(monkeypatch):

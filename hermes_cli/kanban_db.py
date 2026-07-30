@@ -4047,8 +4047,8 @@ def recompute_ready(
             # promoted on the very next dispatch tick and respawned
             # immediately, cycling blocked → ready → running → block in a
             # tight loop (observed on t_cb67c890: six blocked runs, four
-            # in ~4 minutes).  Park it in ``todo`` until a parent link is
-            # added or the task is explicitly unblocked.
+            # in ~4 minutes). Park it in ``todo`` until a parent link is
+            # added or an operator deliberately changes/promotes the task.
             block_kind = row["block_kind"] if "block_kind" in row.keys() else None
             if block_kind == "dependency" and not parents:
                 continue

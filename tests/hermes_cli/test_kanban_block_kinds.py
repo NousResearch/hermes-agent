@@ -109,7 +109,7 @@ def test_parentless_dependency_wait_not_auto_promoted(kanban_home: Path) -> None
     it on the very next dispatch tick, respawning the worker which would
     block again — six blocked runs, four in ~4 minutes.  The fix parks a
     dependency-wait task with no parents in ``todo`` until a parent link is
-    added or the task is explicitly unblocked.
+    added or an operator deliberately changes/promotes the task.
     """
     with kb.connect_closing() as conn:
         tid = _running_task(conn, title="parentless dep wait")

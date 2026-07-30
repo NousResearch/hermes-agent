@@ -241,6 +241,84 @@ class TestSupervisorDaemonPageSplit:
         assert out.get("method") != "cdp_supervisor"
         sup.evaluate_runtime.assert_not_called()
 
+    def test_same_url_different_target_falls_back(self, monkeypatch):
+        """Reviewer scenario: two CDP page targets can show the SAME URL.
+
+        The supervisor's top frame is a different target than the one bound
+        at navigation time — a URL match alone must not re-establish trust,
+        the eval must come from the subprocess path (daemon's page)."""
+        import tools.browser_tool as bt
+
+        url = "https://example.com/page"
+        sup = self._sup_with_page(url, frame_id="OTHER-TARGET")
+        _patch_supervisor(monkeypatch, sup)
+        _trust_supervisor_page(monkeypatch, url, frame_id="BOUND-AT-NAVIGATE")
+        monkeypatch.setattr(
+            bt_session,
+            "_run_browser_command",
+            lambda *a, **kw: {"success": True, "data": {"result": "DAEMON-RESULT"}},
+        )
+
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "DAEMON-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_matching_url_without_bound_identity_falls_back(self, monkeypatch):
+        """URL equality with no identity bound at navigate time is not
+        sufficient: if the supervisor wasn't provably watching the daemon's
+        page when the URL was recorded, the fast path stays down."""
+        import tools.browser_tool as bt
+
+        url = "https://example.com/page"
+        sup = self._sup_with_page(url)
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setitem(bt._last_navigated_urls, "test-task", url)
+        monkeypatch.delitem(bt._page_bound_frame_ids, "test-task", raising=False)
+        monkeypatch.setattr(
+            bt_session,
+            "_run_browser_command",
+            lambda *a, **kw: {"success": True, "data": {"result": "DAEMON-RESULT"}},
+        )
+
+        out = json.loads(bt._browser_eval("document.title"))
+        assert out["result"] == "DAEMON-RESULT"
+        assert out.get("method") != "cdp_supervisor"
+        sup.evaluate_runtime.assert_not_called()
+
+    def test_navigate_binds_identity_when_supervisor_shows_landing_url(
+        self, monkeypatch
+    ):
+        """_record_daemon_url captures the supervisor's top-frame id when its
+        URL matches the fresh post-navigation URL — the one moment the two
+        provably coincide — and that binding enables the fast path."""
+        import tools.browser_tool as bt
+
+        url = "https://example.com/page"
+        sup = self._sup_with_page(url, result="fast", frame_id="PAGE-TARGET")
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setattr(bt, "_last_navigated_urls", {})
+        monkeypatch.setattr(bt, "_page_bound_frame_ids", {})
+
+        bt._record_daemon_url("test-task", url)
+        assert bt._page_bound_frame_ids.get("test-task") == "PAGE-TARGET"
+        assert bt._supervisor_page_matches_daemon("test-task", sup) is True
+
+    def test_navigate_does_not_bind_identity_on_url_mismatch(self, monkeypatch):
+        """Browserless shape: the supervisor's private browser sits on
+        about:blank while the daemon lands elsewhere — no identity is bound
+        and the gate never trusts the fast path for the session."""
+        import tools.browser_tool as bt
+
+        sup = self._sup_with_page("about:blank", frame_id="PRIVATE-BROWSER")
+        _patch_supervisor(monkeypatch, sup)
+        monkeypatch.setattr(bt, "_last_navigated_urls", {})
+        monkeypatch.setattr(bt, "_page_bound_frame_ids", {})
+
+        bt._record_daemon_url("test-task", "https://example.com/page")
+        assert "test-task" not in bt._page_bound_frame_ids
+        assert bt._supervisor_page_matches_daemon("test-task", sup) is False
+
     def test_unreadable_supervisor_state_falls_through(self, monkeypatch):
         """snapshot() blowing up must fail toward the subprocess path."""
         import tools.browser_tool as bt

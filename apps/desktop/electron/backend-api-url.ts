@@ -1,10 +1,11 @@
 /**
  * Join a Hermes backend base URL with a renderer-supplied API path.
  *
- * `hermes:api` concatenates `connection.baseUrl + path`. A path that does not
- * start with `/` (notably `@host/...`) is parsed as URL userinfo and retargets
- * the request to an attacker-controlled host while fetchJson still attaches
- * session / OAuth credentials. Reject those paths before any network I/O.
+ * Callers previously did `connection.baseUrl + path`. A path that does not
+ * start with `/` (notably `@host/...`, including whitespace-prefixed forms)
+ * is parsed as URL userinfo and retargets the request to an attacker-controlled
+ * host while fetchJson still attaches session / OAuth credentials. Reject those
+ * paths before any network I/O.
  */
 
 export function joinBackendApiUrl(baseUrl: string, path: unknown): string {

@@ -32,7 +32,14 @@ test('joinBackendApiUrl rejects @-authority retargeting that would leak credenti
   assert.throws(() => joinBackendApiUrl(REMOTE, '@attacker.example/steal'), /relative path/)
 })
 
-test('joinBackendApiUrl rejects protocol-relative and empty paths', () => {
+test('joinBackendApiUrl rejects whitespace-prefixed @-authority retargeting', () => {
+  assert.throws(() => joinBackendApiUrl(LOCAL, ' @attacker.example/'), /relative path/)
+  assert.throws(() => joinBackendApiUrl(LOCAL, '\t@attacker.example/'), /relative path/)
+})
+
+test('joinBackendApiUrl rejects protocol-relative-shaped and empty paths', () => {
+  // Shape reject: WHATWG concat after host:port keeps //evil on-origin, but
+  // renderer paths must still be single-slash relative API paths.
   assert.throws(() => joinBackendApiUrl(LOCAL, '//attacker.example/'), /relative path/)
   assert.throws(() => joinBackendApiUrl(LOCAL, ''), /non-empty/)
   assert.throws(() => joinBackendApiUrl(LOCAL, null), /non-empty/)

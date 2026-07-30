@@ -1,5 +1,0 @@
-name: alibaba-token-plan-provider
-kind: model-provider
-version: 1.0.0
-description: Alibaba Cloud Model Studio Token Plan (international + China endpoints)
-author: Nous Research

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'

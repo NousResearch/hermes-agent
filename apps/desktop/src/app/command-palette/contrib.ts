@@ -19,11 +19,15 @@ export interface PaletteContribution {
   keywords?: string[]
   run: () => void
   /**
-   * Muted text after the label — the live state the row acts on. A function
+   * Short note after the label — the live state the row acts on. A function
    * because contributions register once at boot while that state keeps moving;
    * the palette re-reads it on open.
    */
   detail?: () => string
+  /** `state` when running the row CHANGES what `detail` says. */
+  detailVariant?: 'muted' | 'state'
+  /** Leave the palette open after running — for rows you may run repeatedly. */
+  keepOpen?: boolean
 }
 
 /** Contributed palette rows, with stable render keys. */
@@ -34,12 +38,15 @@ export function usePaletteContributions(): Array<PaletteContribution & { key: st
 }
 
 /**
- * A binary setting as one palette row: `Toggle status bar` with the live state
- * trailing in muted text. The verb says what the row does, the detail says
- * which way it will go — neither alone is enough.
+ * A binary setting as one palette row: `Toggle status bar` trailed by the live
+ * state. The verb says what the row does, the note says where it stands —
+ * neither alone is enough to act on.
+ *
+ * Rows keep the palette open: flipping a setting is the kind of thing you do
+ * two or three of in a row, and the note updating in place is the receipt.
  */
 export function paletteToggle(
-  spec: Omit<PaletteContribution, 'detail' | 'run'> & {
+  spec: Omit<PaletteContribution, 'detail' | 'detailVariant' | 'keepOpen' | 'run'> & {
     get: () => boolean
     set: (enabled: boolean) => void
   }
@@ -49,6 +56,8 @@ export function paletteToggle(
   const data: PaletteContribution = {
     ...rest,
     detail: () => (get() ? 'on' : 'off'),
+    detailVariant: 'state',
+    keepOpen: true,
     keywords: [...keywords, 'on', 'off', 'enable', 'disable'],
     run: () => set(!get())
   }

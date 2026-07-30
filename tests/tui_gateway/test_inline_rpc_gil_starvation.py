@@ -34,6 +34,9 @@ def _restore_stdout():
 
 @pytest.fixture()
 def server():
+    # Mocks are scoped to the initial import only — keeping them active for
+    # the whole test would poison modules first imported inside test bodies
+    # (see tests/tui_gateway/test_protocol.py for the full rationale).
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -42,10 +45,19 @@ def server():
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
+
+    # Tests below stub handlers ("session.list", "prompt.submit", ...) in
+    # the module-level _methods dict shared with every other test file in
+    # the process — snapshot and restore it around each test.
+    methods = dict(mod._methods)
+    real_stdout = mod._real_stdout
+    yield mod
+    mod._methods.clear()
+    mod._methods.update(methods)
+    mod._real_stdout = real_stdout
+    mod._sessions.clear()
+    mod._pending.clear()
+    mod._answers.clear()
 
 
 @pytest.fixture()

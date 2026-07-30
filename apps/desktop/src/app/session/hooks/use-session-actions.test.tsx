@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
-import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
+import { getSession, getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
@@ -21,6 +21,7 @@ import {
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessions,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentCwd,
@@ -103,12 +104,14 @@ function Harness({
   navigate = vi.fn(),
   onReady,
   requestGateway,
+  runtimeIdByStoredSessionId = new Map<string, string>(),
   selectedStoredSessionId = null
 }: {
   activeSessionId?: string | null
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionId?: Map<string, string>
   selectedStoredSessionId?: string | null
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
@@ -124,7 +127,7 @@ function Harness({
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    runtimeIdByStoredSessionIdRef: ref(runtimeIdByStoredSessionId),
     selectedStoredSessionId,
     selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
@@ -463,6 +466,31 @@ describe('startFreshSessionDraft', () => {
     expect($selectedStoredSessionId.get()).toBeNull()
   })
 
+  it('records a failed non-blocking session-boundary close', async () => {
+    const closeError = new Error('gateway disconnected')
+    const requestGateway = vi.fn(async () => Promise.reject(closeError))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        activeSessionId="runtime-old"
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-old"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => handle!.startFreshSessionDraft())
+
+    await waitFor(() =>
+      expect(warn).toHaveBeenCalledWith('Failed to finalize the previous desktop session boundary', closeError)
+    )
+    expect($activeSessionId.get()).toBeNull()
+    warn.mockRestore()
+  })
+
   it('closes an archived session runtime before hiding its durable row', async () => {
     const requestGateway = vi.fn(async () => ({}) as never)
     let handle: HarnessHandle | null = null
@@ -484,6 +512,116 @@ describe('startFreshSessionDraft', () => {
 
     expect(requestGateway).toHaveBeenCalledTimes(1)
     expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-old' })
+  })
+
+  it('closes an unselected tiled runtime before archiving', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'stored-old' })])
+    render(
+      <Harness
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionId={new Map([['stored-old', 'runtime-tile']])}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.archiveSession('stored-old')
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-tile' })
+    expect(setSessionArchived).toHaveBeenCalledWith('stored-old', true, undefined)
+  })
+
+  it('deduplicates the selected and tiled runtime before archiving', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'stored-old' })])
+    render(
+      <Harness
+        activeSessionId="runtime-shared"
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionId={new Map([['stored-old', 'runtime-shared']])}
+        selectedStoredSessionId="stored-old"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.archiveSession('stored-old')
+    })
+
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-shared' })
+  })
+
+  it('does not archive when a tiled runtime cannot be finalized', async () => {
+    const requestGateway = vi.fn(async () => Promise.reject(new Error('close failed')))
+    let handle: HarnessHandle | null = null
+
+    vi.mocked(setSessionArchived).mockClear()
+    setSessions([storedSession({ id: 'stored-old' })])
+    render(
+      <Harness
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionId={new Map([['stored-old', 'runtime-tile']])}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.archiveSession('stored-old')
+    })
+
+    expect(setSessionArchived).not.toHaveBeenCalled()
+    expect($sessions.get().some(session => session.id === 'stored-old')).toBe(true)
+  })
+
+  it('resumes the selected session when the archive write fails after close', async () => {
+    const requestGateway = vi.fn(async method => {
+      if (method === 'session.resume') {
+        return {
+          messages: [],
+          resumed: 'stored-old',
+          session_id: 'runtime-resumed'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+
+    vi.mocked(setSessionArchived).mockRejectedValueOnce(new Error('archive failed'))
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      messages: [],
+      session_id: 'stored-old'
+    })
+    setSessions([storedSession({ id: 'stored-old' })])
+    render(
+      <Harness
+        activeSessionId="runtime-old"
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-old"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.archiveSession('stored-old')
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-old' })
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.objectContaining({ session_id: 'stored-old' }))
+    expect($selectedStoredSessionId.get()).toBe('stored-old')
+    expect($activeSessionId.get()).toBe('runtime-resumed')
   })
 })
 

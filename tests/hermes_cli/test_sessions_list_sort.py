@@ -2,34 +2,13 @@
 
 Covers:
 - argparse registration (--sort flag, default=None)
-- Resolution chain: CLI --sort flag > config sessions.list_sort > hardcoded default
-- order_by_last_active forwarding to list_sessions_rich
+- Real cmd_sessions handler: CLI --sort flag > config > hardcoded default
+- order_by_last_active forwarding to list_sessions_rich via mock SessionDB
 """
 
 import argparse
-import time
-from unittest.mock import MagicMock, patch
-
 import pytest
-
-
-# ─── Sample session data ──────────────────────────────────────────────────────
-
-def _make_sessions(n=5):
-    now = time.time()
-    return [
-        {
-            "id": f"20260723_{i:06d}_test",
-            "source": "cli",
-            "model": "test/model",
-            "title": f"Session {i}",
-            "preview": f"Message {i}",
-            "last_active": now - i * 3600,
-            "started_at": now - i * 3600 - 60,
-            "message_count": (i + 1) * 5,
-        }
-        for i in range(n)
-    ]
+from unittest.mock import MagicMock, patch
 
 
 # ─── Argparse: --sort flag ───────────────────────────────────────────────────
@@ -38,7 +17,6 @@ class TestSessionsListSortArgparse:
     """Verify --sort is registered with correct choices and default."""
 
     def _build_list_parser(self):
-        """Replicate the sessions list subparser setup from main.py."""
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="sessions_action")
         sessions_list = subparsers.add_parser("list")
@@ -73,76 +51,123 @@ class TestSessionsListSortArgparse:
             parser.parse_args(["list", "--sort", "bogus"])
 
 
-# ─── Sort resolution logic ───────────────────────────────────────────────────
+# ─── Real handler: sort resolution + order_by_last_active forwarding ──────────
 
-class TestSortResolution:
-    """Test the sort-resolution chain used inside cmd_sessions."""
+class TestCmdSessionsSort:
+    """Exercise the real cmd_sessions handler with mocked SessionDB."""
 
-    @pytest.mark.parametrize(
-        "cli_flag,config_value,expected",
-        [
-            # CLI flag wins over everything
-            ("started", "last-active", "started"),
-            ("last-active", "started", "last-active"),
-            # No CLI flag → config value
-            (None, "started", "started"),
-            (None, "last-active", "last-active"),
-            # No CLI flag, no config → hardcoded default
-            (None, None, "last-active"),
-        ],
-    )
-    def test_resolution_chain(self, cli_flag, config_value, expected):
-        """CLI flag > config > hardcoded default 'last-active'."""
-        # Simulate the resolution logic from cmd_sessions
-        _sort = cli_flag
-        if _sort is None:
-            _cfg = {"sessions": {}} if config_value is None else {"sessions": {"list_sort": config_value}}
-            _sort = (_cfg.get("sessions") or {}).get("list_sort", "last-active")
-        assert _sort == expected
+    @staticmethod
+    def _make_mock_db():
+        db = MagicMock()
+        db.list_sessions_rich.return_value = []
+        return db
 
+    @staticmethod
+    def _make_args(sort=None, source=None, limit=20, workspace=None):
+        args = MagicMock()
+        args.sessions_action = "list"
+        args.sort = sort
+        args.source = source
+        args.limit = limit
+        args.workspace = workspace
+        # cmd_sessions reads these from args for non-list actions
+        args.target = None
+        args.older_than = None
+        args.newer_than = None
+        args.active_within = None
+        args.id_query = None
+        args.search_query = None
+        args.chat_dump_format = None
+        args.keep_stale = None
+        args.min_message_count = None
+        args.compact_rows = None
+        args.force = None
+        args.yes = None
+        args.source_arg = None
+        args.pin = None
+        args.unpin = None
+        args.pinned = None
+        args.filter = None
+        return args
 
-# ─── order_by_last_active forwarding ─────────────────────────────────────────
+    def _run_handler(self, mock_db):
+        """Run cmd_sessions with SessionDB mocked to return mock_db."""
+        from hermes_cli.sessions_cmd import cmd_sessions
+        args = self._make_args()
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            cmd_sessions(args)
 
-class TestOrderByLastActive:
-    """Verify order_by_last_active is forwarded to list_sessions_rich."""
-
-    def test_last_active_maps_to_true(self):
-        """When sort is 'last-active', order_by_last_active=True."""
-        _sort = "last-active"
-        assert (_sort == "last-active") is True
-
-    def test_started_maps_to_false(self):
-        """When sort is 'started', order_by_last_active=False."""
-        _sort = "started"
-        assert (_sort == "last-active") is False
-
-    def test_list_sessions_rich_receives_correct_flag(self):
-        """End-to-end: mock SessionDB, verify list_sessions_rich receives the flag."""
-        mock_db = MagicMock()
-        mock_db.list_sessions_rich.return_value = _make_sessions(2)
-
-        # Simulate the cmd_sessions "list" action with --sort last-active
-        _sort = "last-active"
-        mock_db.list_sessions_rich(
-            source=None,
-            exclude_sources=["tool"],
-            limit=10,
-            order_by_last_active=(_sort == "last-active"),
-        )
-
+    def test_no_sort_flag_defaults_to_last_active(self):
+        """No --sort flag → order_by_last_active=True (hardcoded default)."""
+        mock_db = self._make_mock_db()
+        args = self._make_args(sort=None)
+        from hermes_cli.sessions_cmd import cmd_sessions
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            cmd_sessions(args)
         call_kwargs = mock_db.list_sessions_rich.call_args.kwargs
         assert call_kwargs["order_by_last_active"] is True
 
-        # Reset and test with --sort started
-        mock_db.reset_mock()
-        _sort = "started"
-        mock_db.list_sessions_rich(
-            source=None,
-            exclude_sources=["tool"],
-            limit=10,
-            order_by_last_active=(_sort == "last-active"),
-        )
+    def test_cli_last_active_forwards_true(self):
+        """--sort last-active → order_by_last_active=True."""
+        mock_db = self._make_mock_db()
+        args = self._make_args(sort="last-active")
+        from hermes_cli.sessions_cmd import cmd_sessions
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            cmd_sessions(args)
+        call_kwargs = mock_db.list_sessions_rich.call_args.kwargs
+        assert call_kwargs["order_by_last_active"] is True
 
+    def test_cli_started_forwards_false(self):
+        """--sort started → order_by_last_active=False."""
+        mock_db = self._make_mock_db()
+        args = self._make_args(sort="started")
+        from hermes_cli.sessions_cmd import cmd_sessions
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            cmd_sessions(args)
+        call_kwargs = mock_db.list_sessions_rich.call_args.kwargs
+        assert call_kwargs["order_by_last_active"] is False
+
+    @patch("hermes_cli.config_defaults.DEFAULT_CONFIG", {"sessions": {"list_sort": "started"}})
+    def test_config_started_when_cli_absent(self):
+        """No --sort, config 'started' → order_by_last_active=False."""
+        mock_db = self._make_mock_db()
+        args = self._make_args(sort=None)
+        from hermes_cli.sessions_cmd import cmd_sessions
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            cmd_sessions(args)
+        call_kwargs = mock_db.list_sessions_rich.call_args.kwargs
+        assert call_kwargs["order_by_last_active"] is False
+
+    @patch("hermes_cli.config_defaults.DEFAULT_CONFIG", {"sessions": {"list_sort": "last-active"}})
+    def test_config_last_active_when_cli_absent(self):
+        """No --sort, config 'last-active' → order_by_last_active=True."""
+        mock_db = self._make_mock_db()
+        args = self._make_args(sort=None)
+        from hermes_cli.sessions_cmd import cmd_sessions
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            cmd_sessions(args)
+        call_kwargs = mock_db.list_sessions_rich.call_args.kwargs
+        assert call_kwargs["order_by_last_active"] is True
+
+    @patch("hermes_cli.config_defaults.DEFAULT_CONFIG", {"sessions": {}})
+    def test_hardcoded_default_when_no_cli_no_config(self):
+        """No --sort, empty config → falls back to 'last-active'."""
+        mock_db = self._make_mock_db()
+        args = self._make_args(sort=None)
+        from hermes_cli.sessions_cmd import cmd_sessions
+        with patch("hermes_state.SessionDB", return_value=mock_db):
+            cmd_sessions(args)
+        call_kwargs = mock_db.list_sessions_rich.call_args.kwargs
+        assert call_kwargs["order_by_last_active"] is True
+
+    def test_cli_overrides_config(self):
+        """--sort started overrides config 'last-active'."""
+        mock_db = self._make_mock_db()
+        args = self._make_args(sort="started")
+        from hermes_cli.sessions_cmd import cmd_sessions
+        with patch("hermes_state.SessionDB", return_value=mock_db), \
+             patch("hermes_cli.config_defaults.DEFAULT_CONFIG", {"sessions": {"list_sort": "last-active"}}):
+            cmd_sessions(args)
         call_kwargs = mock_db.list_sessions_rich.call_args.kwargs
         assert call_kwargs["order_by_last_active"] is False
 
@@ -154,11 +179,6 @@ class TestConfigKey:
 
     def test_default_config_has_list_sort(self):
         from hermes_cli.config import DEFAULT_CONFIG
-
         sessions = DEFAULT_CONFIG.get("sessions") or {}
-        assert "list_sort" in sessions, (
-            "sessions.list_sort must be present in DEFAULT_CONFIG"
-        )
-        assert sessions["list_sort"] in ("started", "last-active"), (
-            f"Unexpected default: {sessions['list_sort']}"
-        )
+        assert "list_sort" in sessions
+        assert sessions["list_sort"] in ("started", "last-active")

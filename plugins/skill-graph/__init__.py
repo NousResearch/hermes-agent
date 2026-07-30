@@ -940,6 +940,7 @@ def _enrich_pending_skills(conn: sqlite3.Connection, limit: int = 10,
 def _full_rebuild(conn: sqlite3.Connection) -> int:
     """Full rebuild: scan all skills dirs, rebuild graph from scratch."""
     skill_dirs = _find_all_skills_dirs()
+    logger.info("skill-graph: starting full rebuild — scanning %d skill directories", len(skill_dirs))
     skills = _scan_skill_mds(skill_dirs)
     deduped = _dedup_skills(skills)
 
@@ -1761,12 +1762,19 @@ def _handle_slash_command(args: str) -> str | None:
                 if _lock_file.exists():
                     try:
                         _stale_pid = int(_lock_file.read_text().strip())
-                        os.kill(_stale_pid, 0)
-                        return (
-                            f"Skill graph rebuilt: {count} skills indexed. "
-                            f"{pending} skills pending enrichment — "
-                            f"background enrichment already running (pid {_stale_pid})."
-                        )
+                        os.kill(_stale_pid, 0)  # signal 0: check existence
+                        # Verify the PID actually belongs to an enrichment worker
+                        _cmdline = Path(f"/proc/{_stale_pid}/cmdline")
+                        if _cmdline.exists():
+                            _cmd = _cmdline.read_bytes()
+                            if b"enrich" in _cmd or b"skill_graph" in _cmd:
+                                return (
+                                    f"Skill graph rebuilt: {count} skills indexed. "
+                                    f"{pending} skills pending enrichment — "
+                                    f"background enrichment already running (pid {_stale_pid})."
+                                )
+                        # PID alive but not our process — stale lock
+                        logger.warning("skill-graph: stale enrichment lock (pid %d alive but not enrich worker)", _stale_pid)
                     except (ValueError, OSError, ProcessLookupError):
                         pass  # stale lock — proceed
                 _script = _log_dir / "_enrich_worker.py"

@@ -86,9 +86,10 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty):
+           session_key, effective_pty, origin_ui_session_id):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
-                  owner_task_id=task_id or effective_task_id, session_key=session_key)
+                  owner_task_id=task_id or effective_task_id, session_key=session_key,
+                  origin_ui_session_id=origin_ui_session_id)
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
@@ -146,20 +147,16 @@ def spawn_background_process(
         workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
     )
     try:
+        try:
+            from gateway.session_context import get_session_env
+            origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or ""
+        except Exception:
+            origin_ui_session_id = ""
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
-            effective_pty=effective_pty,
+            effective_pty=effective_pty, origin_ui_session_id=origin_ui_session_id,
         )
-        # Capture the UI owner for every background process, not only those
-        # requesting a completion notification. Delegated children use their
-        # own internal session_key, but their live output still belongs to the
-        # TUI/Desktop window that started the parent turn.
-        try:
-            from gateway.session_context import get_session_env
-            proc_session.origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or ""
-        except Exception:
-            pass  # best effort; routing retains the session_key fallback
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
         if approval_note:

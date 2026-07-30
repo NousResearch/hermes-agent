@@ -448,7 +448,11 @@ def test_background_spawn_captures_ui_origin_without_notify(monkeypatch, tmp_pat
     EVERY background process, but the spawn-time UI owner was only captured
     when notify_on_complete/watch_patterns were set — a plain background=true
     spawn (a delegated child's, in particular) had no positive owner and its
-    live output was dropped by the desktop router."""
+    live output was dropped by the desktop router.
+
+    The owner must be passed INTO spawn_local() (sweeper review): the local
+    reader thread starts inside the spawn and can emit output before it
+    returns, so a post-spawn attribute assignment races the first chunks."""
     import gateway.session_context as session_context
 
     tt = _silent_bg_harness(monkeypatch, tmp_path)
@@ -458,7 +462,8 @@ def test_background_spawn_captures_ui_origin_without_notify(monkeypatch, tmp_pat
     spawned = {}
 
     def capturing_spawn_local(**kwargs):
-        proc = SimpleNamespace(
+        spawned["kwargs"] = kwargs
+        return SimpleNamespace(
             id="proc_ui_origin_test",
             pid=4243,
             notify_on_complete=False,
@@ -470,8 +475,6 @@ def test_background_spawn_captures_ui_origin_without_notify(monkeypatch, tmp_pat
             watcher_message_id="",
             watcher_interval=0,
         )
-        spawned["proc"] = proc
-        return proc
 
     monkeypatch.setattr(
         process_registry_module.process_registry, "spawn_local", capturing_spawn_local
@@ -487,7 +490,44 @@ def test_background_spawn_captures_ui_origin_without_notify(monkeypatch, tmp_pat
         tt._active_environments.pop("default", None)
         tt._last_activity.pop("default", None)
 
-    assert getattr(spawned["proc"], "origin_ui_session_id", "") == "sid_ui_1", (
-        "plain background spawn (no notify/watch) must record the spawn-time "
-        "UI owner so live output chunks can be positively routed"
+    assert spawned["kwargs"].get("origin_ui_session_id") == "sid_ui_1", (
+        "plain background spawn (no notify/watch) must hand the spawn-time UI "
+        "owner to spawn_local() so the session owns it before the reader starts"
+    )
+
+
+def test_immediate_output_carries_ui_owner_through_real_registry(tmp_path):
+    """Sweeper ask: real registry lifecycle, not a stubbed spawn. The very
+    first chunk a fast process emits must already see the UI owner on the
+    session — spawn_local() sets it at ProcessSession construction, before
+    the reader thread exists."""
+    from tools.process_registry import process_registry
+
+    recorded = []
+    prev_sink = process_registry.on_output
+    process_registry.on_output = lambda session, chunk: recorded.append(
+        (getattr(session, "origin_ui_session_id", ""), chunk)
+    )
+    try:
+        session = process_registry.spawn_local(
+            command="echo immediate-owner-check",
+            cwd=str(tmp_path),
+            origin_ui_session_id="sid_live_1",
+        )
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not any(
+            "immediate-owner-check" in chunk for _, chunk in recorded
+        ):
+            time.sleep(0.05)
+    finally:
+        process_registry.on_output = prev_sink
+        try:
+            process_registry.kill_process(session.id)
+        except Exception:
+            pass
+
+    matching = [sid for sid, chunk in recorded if "immediate-owner-check" in chunk]
+    assert matching, f"no live output observed; recorded={recorded!r}"
+    assert all(sid == "sid_live_1" for sid in matching), (
+        f"immediate output emitted without its UI owner: {matching}"
     )

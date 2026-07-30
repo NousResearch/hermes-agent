@@ -22269,7 +22269,7 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
 def test_agent_terminal_output_routes_by_spawn_time_ui_owner(monkeypatch):
-    """#61719 residual: `_owner_sid_for_process` matched only by session_key.
+    """#61719 residual: the desktop sink matched only by session_key.
     A delegated child's process carries the subagent's internal key, which
     never matches a live TUI session, so its live `agent.terminal.output`
     chunks were emitted with sid "" and dropped by write_json. The spawn-time
@@ -22285,7 +22285,7 @@ def test_agent_terminal_output_routes_by_spawn_time_ui_owner(monkeypatch):
     monkeypatch.setattr(
         server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload))
     )
-    server._wire_agent_terminal_output()
+    server._wire_desktop_sinks()
 
     saved = dict(server._sessions)
     server._sessions.clear()

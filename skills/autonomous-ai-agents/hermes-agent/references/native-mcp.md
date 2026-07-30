@@ -57,8 +57,9 @@ mcp_servers:
   server_name:
     command: "npx"             # (required) executable to run
     args: ["-y", "pkg-name"]   # (optional) command arguments, default: []
+    env_file: "/home/user/project/.env.hermes" # (optional) isolated placeholder values
     env:                       # (optional) environment variables for the subprocess
-      SOME_API_KEY: "value"
+      SOME_API_KEY: "${PROJECT_API_KEY}"
     timeout: 120               # (optional) per-tool-call timeout in seconds, default: 120
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
@@ -81,6 +82,7 @@ mcp_servers:
 |-------------------|--------|---------|---------------------------------------------------|
 | `command`         | string | --      | Executable to run (stdio transport, required)     |
 | `args`            | list   | `[]`    | Arguments passed to the command                   |
+| `env_file`        | string | --      | Isolated values for this server's `${VAR}` placeholders |
 | `env`             | dict   | `{}`    | Extra environment variables for the subprocess    |
 | `url`             | string | --      | Server URL (HTTP transport, required)             |
 | `headers`         | dict   | `{}`    | HTTP headers sent with every request              |
@@ -88,6 +90,13 @@ mcp_servers:
 | `connect_timeout` | int    | `60`    | Timeout for initial connection and discovery      |
 
 Note: A server config must have either `command` (stdio) or `url` (HTTP), not both.
+
+`env_file` values override the active profile or process environment only while
+resolving that server's placeholders. They are not added to `os.environ` and do
+not leak to sibling MCP servers. Relative paths use `TERMINAL_CWD` when it names
+a valid directory, otherwise the Hermes process working directory; use an
+absolute path for gateways and cron jobs. A missing or unreadable file logs a
+warning and falls back to profile/process values.
 
 ## How It Works
 

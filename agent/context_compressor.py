@@ -2150,8 +2150,10 @@ class ContextCompressor(ContextEngine):
         self.abort_on_summary_failure = abort_on_summary_failure
 
         # ── Micro-compaction (per-turn rolling compaction) ─────────
-        # Default: enabled when not explicitly disabled (backward compatible).
-        self._micro_compact_enabled: bool = True
+        # Default: OFF. Each pass rewrites already-sent history, so it breaks
+        # the prompt-cache prefix every turn instead of at an episodic
+        # boundary. Operators opt in via `compression.micro_compact: true`.
+        self._micro_compact_enabled: bool = False
         self._micro_compact_cursor: int = 0
         self._micro_compact_rolling_summary: str = ""
         self._micro_compact_consecutive_failures: int = 0

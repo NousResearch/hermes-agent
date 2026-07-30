@@ -578,6 +578,18 @@ DEFAULT_CONFIG = {
                                       # prompt-cache invalidation amortized: one big
                                       # episodic break instead of a tiny break every
                                       # tool iteration. 0 = commit any non-zero prune.
+        "micro_compact": False,       # opt-in: after each completed turn, fold the
+                                      # oldest un-absorbed exchange into a rolling
+                                      # summary, amortizing compression cost instead
+                                      # of paying it in one batch stall. Default False
+                                      # because a pass rewrites already-sent history
+                                      # and so breaks the provider prompt-cache prefix
+                                      # EVERY turn — the per-turn cache break that
+                                      # `proactive_prune_min_reclaim_tokens` above
+                                      # exists to avoid. Enable only when you have
+                                      # measured that the amortized stall is worth
+                                      # more to you than the cached-prefix discount.
+                                      # See docs/micro-compaction.md.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
                                       # WITHOUT forward progress. The summary call streams, so

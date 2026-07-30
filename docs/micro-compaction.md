@@ -14,11 +14,16 @@ Hermes folds the single oldest un-absorbed exchange into a running summary. The
 work is the same work; it just happens continuously, a piece at a time, instead
 of all at once in the middle of your session.
 
-It is not free and it is not a magic bullet. Each pass is a real call to the
+It is not free and it is not a magic bullet, and it is **off by default** —
+`compression.micro_compact: true` turns it on. Each pass is a real call to the
 compression model, and it runs at the end of a turn — your answer has already
-streamed, but the turn does not close until the pass finishes. What the feature
-gives you is a **tuning option**: you choose how the compression cost is
-distributed, and which model pays it. See
+streamed, but the turn does not close until the pass finishes. Each pass also
+rewrites already-sent history, which breaks the provider prompt-cache prefix
+every turn; read [Prompt caching](#prompt-caching--the-cost-you-are-opting-into)
+before enabling it, because for some setups that cost exceeds the benefit.
+
+What the feature gives you is a **tuning option**: you choose how the
+compression cost is distributed, and which model pays it. See
 [Choosing a compression model](#choosing-a-compression-model), because that
 choice matters more than anything else here.
 
@@ -159,13 +164,52 @@ batch path fires much less often.
 
 ## Configuration
 
+Micro-compaction is **off by default**. Turn it on explicitly:
+
 ```yaml
 compression:
-  micro_compact: true   # default
+  micro_compact: true   # default: false
 ```
 
-Set it to `false` to disable micro-compaction and return to batch-only
+With it unset or `false` Hermes behaves exactly as it always has: batch-only
 compaction. Everything else about compression is unchanged.
+
+It ships opt-in rather than on because of the prompt-cache cost described in
+the next section — that cost is real, it is not universally worth paying, and
+it should be a decision you make rather than one you inherit.
+
+## Prompt caching — the cost you are opting into
+
+Read this before enabling the feature. It is the strongest argument against it.
+
+A long-lived conversation reuses a cached prompt prefix every turn, and cached
+input tokens are billed at a fraction of uncached ones. That discount survives
+only as long as the prefix does not change. **A micro-compaction pass rewrites
+already-sent history**, which invalidates the prefix from the rewrite point
+onward — so with micro-compaction on, you break the cache *every turn* instead
+of once per batch compaction.
+
+This is the same cost the proactive prune deliberately avoids. That path gates
+itself behind `compression.proactive_prune_min_reclaim_tokens` (4096 by
+default) precisely so its rewrites stay, in the words of the config comment,
+"one big episodic break instead of a tiny break every tool iteration."
+Micro-compaction has no such gate: one exchange per turn means one break per
+turn, by design.
+
+So the honest framing is a trade of one cost for another, not a saving:
+
+| | Batch-only (default) | Micro-compaction on |
+|---|---|---|
+| Compression stalls | One long stall at the threshold | Spread across turns |
+| Context occupancy | Sawtooths up to the threshold | Stays low and flat |
+| Cache prefix | Intact between compactions | Broken every turn |
+
+Which side wins depends on numbers specific to you: how much your provider
+discounts cached input, how large your prefix is, how long your sessions run,
+and how much a mid-session stall actually costs you. On a provider with a deep
+cache discount and a big prefix, the per-turn invalidation can plausibly cost
+more than the stall it removes. Measure your own sessions — see
+[Measuring it](#measuring-it) — rather than assuming.
 
 ## Choosing a compression model
 

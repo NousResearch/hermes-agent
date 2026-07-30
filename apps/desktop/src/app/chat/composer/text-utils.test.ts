@@ -65,6 +65,18 @@ describe('detectTrigger', () => {
     })
   })
 
+  it('treats a chip edge as a token boundary, like whitespace', () => {
+    // U+FFFC is textBeforeCaret's placeholder for a committed pill. Upstream
+    // assistant-ui's Lexical DirectivePlugin gets the same semantics from node
+    // boundaries: typing a trigger right after a chip (no space) still opens
+    // the popover, and a chip inside a token ends it.
+    expect(detectTrigger('\uFFFC@Desk')).toEqual({ kind: '@', query: 'Desk', tokenLength: 5 })
+    // Not position 0, so it's an inline reference — not a command invocation.
+    expect(detectTrigger('\uFFFC/cle')).toEqual({ inline: true, kind: '/', query: 'cle', tokenLength: 4 })
+    // The placeholder itself never leaks into a query.
+    expect(detectTrigger('@a\uFFFCb')).toBeNull()
+  })
+
   it('keeps the at-mention live for a typed ref kind with a path', () => {
     expect(detectTrigger('@file:src/main.tsx')).toEqual({
       kind: '@',

@@ -6363,6 +6363,24 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
         logger.debug("Existing-gateway process probe failed", exc_info=True)
         return
     if pid is None:
+        # get_running_pid() now filters records by the current profile's
+        # HERMES_HOME (via _pid_record_belongs_to_current_profile). When no
+        # match was found, check whether a stale PID file from a different
+        # profile exists — the user may have switched profiles while the old
+        # gateway is still running.
+        try:
+            from gateway.status import _read_pid_record, _pid_record_belongs_to_current_profile
+
+            stale = _read_pid_record()
+            if stale is not None and not _pid_record_belongs_to_current_profile(stale):
+                stale_home = stale.get("hermes_home", "<unknown>")
+                logger.warning(
+                    "PID file belongs to another profile (hermes_home=%s). "
+                    "The old gateway may still be running under that profile.",
+                    stale_home,
+                )
+        except Exception:
+            pass
         return
 
     print_error(

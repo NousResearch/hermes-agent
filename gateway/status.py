@@ -698,6 +698,30 @@ def _get_code_identity_fields() -> dict[str, Any]:
         return {}
 
 
+def _pid_record_belongs_to_current_profile(
+    record: Optional[dict[str, Any]],
+) -> bool:
+    """Return True when the PID record's ``hermes_home`` matches the current process.
+
+    PID records written by ``_build_pid_record()`` include the gateway's
+    ``hermes_home`` at write time. If a profile gateway was started (or recorded)
+    under a different HERMES_HOME, the record belongs to a different profile
+    and must be ignored — otherwise the default-profile gateway can mistakenly
+    assume the identity of another profile (issue #74872).
+
+    Records that predate the ``hermes_home`` field (pre-#74872 gateways) are
+    accepted conservatively (no field → assume current profile).
+    """
+    if not isinstance(record, dict):
+        return False
+    record_home = record.get("hermes_home")
+    if not record_home:
+        # Records without hermes_home belong to a pre-#74872 gateway;
+        # accept them conservatively.
+        return True
+    return _same_hermes_home(record_home, _get_process_hermes_home())
+
+
 def _build_runtime_status_record() -> dict[str, Any]:
     payload = _build_pid_record()
     payload.update({
@@ -1544,6 +1568,13 @@ def get_runtime_status_running_pid(
         and current_start is not None
         and current_start != recorded_start
     ):
+        return None
+
+    # When no explicit expected_home is given (active profile context),
+    # verify the persisted record's hermes_home matches the current process.
+    # This prevents the default-profile gateway from assuming another
+    # profile's identity via a stale runtime status record (#74872).
+    if expected_home is None and not _pid_record_belongs_to_current_profile(payload):
         return None
 
     if _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
@@ -2430,6 +2461,9 @@ def get_running_pid(
         recorded_start = record.get("start_time")
         current_start = _get_process_start_time(pid)
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
+            continue
+
+        if not _pid_record_belongs_to_current_profile(record):
             continue
 
         if _record_matches_live_gateway_pid(record, pid):

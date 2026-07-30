@@ -33,7 +33,7 @@ import {
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
-import { requestNewWorktree } from '@/store/projects'
+import { openFolderAsProject, requestNewWorktree } from '@/store/projects'
 import { toggleReview } from '@/store/review'
 import { setModelPickerOpen } from '@/store/session'
 import { reopenLastClosedTile } from '@/store/session-states'
@@ -173,6 +173,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // Only meaningful inside a git repo — a no-op otherwise (the key falls
     // through instead of silently doing nothing).
     'workspace.newWorktree': () => $repoStatus.get() && requestNewWorktree(),
+    // ⌘O: native folder picker → open the folder as a project (upsert) with a
+    // fresh session anchored there.
+    'workspace.openFolder': () => void openFolderAsProject(),
 
     // Narrow-viewport reveal is handled inside the store toggles now.
     'view.toggleSidebar': toggleSidebarOpen,

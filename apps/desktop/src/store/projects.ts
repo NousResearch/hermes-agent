@@ -161,6 +161,36 @@ export function exitProjectScope(): void {
   $projectScope.set(ALL_PROJECTS)
 }
 
+// A project's working root: its primary folder, else the first repo that has
+// one. Empty for the path-less Home bucket. (The sidebar's `projectTreeCwd` is
+// the same rule over the same tree — this is the store-side copy so the store
+// doesn't reach into the sidebar's React module.)
+const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
+  (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+
+// ⌘K "go to project": flip the sidebar into grouped mode and enter the project
+// — a pure scope switch, same as clicking the overview row (never spends main).
+// With `newSession` (⌘-select / ⌘-Enter) it also lands on a fresh session draft
+// anchored at the project root — stacked as a tab when main already holds a
+// chat (palette opens are opens-from-nowhere). A path-less project (the Home
+// bucket) gets a plain detached draft.
+export function goToProject(id: string, options?: { newSession?: boolean }): void {
+  setSidebarAgentsGrouped(true)
+  enterProject(id)
+
+  if (!options?.newSession) {
+    return
+  }
+
+  const cwd = projectRootCwd($projectTree.get().find(node => node.id === id))
+
+  if (cwd) {
+    requestStartWorkSession(cwd, undefined, { openTab: true })
+  } else {
+    requestFreshSession()
+  }
+}
+
 // The cwd a NEW chat should start in. The "active project" is just an atom
 // ($projectScope) — so when you're inside a project, a new session (cmd-n, the
 // trunk "+") starts at that project's root (its primary repo = the default-branch
@@ -177,8 +207,7 @@ export function resolveNewSessionCwd(): string {
   }
 
   if (scope !== ALL_PROJECTS) {
-    const project = $projectTree.get().find(node => node.id === scope)
-    const cwd = (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+    const cwd = projectRootCwd($projectTree.get().find(node => node.id === scope))
 
     if (cwd) {
       return cwd
@@ -997,6 +1026,8 @@ export async function switchBranchInRepo(repoPath: string, branch: string): Prom
 // effect even if the path repeats.
 export interface StartWorkSessionRequest {
   draft?: string
+  /** Stack the fresh session as a tab when main already holds a chat (palette/⌘O opens-from-nowhere). */
+  openTab?: boolean
   path: string
   token: number
 }
@@ -1016,7 +1047,7 @@ export function requestNewWorktree(): void {
 
 let startWorkToken = 0
 
-export function requestStartWorkSession(path: string, draft?: string): void {
+export function requestStartWorkSession(path: string, draft?: string, options?: { openTab?: boolean }): void {
   const target = path.trim()
 
   if (!target) {
@@ -1024,7 +1055,12 @@ export function requestStartWorkSession(path: string, draft?: string): void {
   }
 
   startWorkToken += 1
-  $startWorkSessionRequest.set({ draft: draft?.trim() || undefined, path: target, token: startWorkToken })
+  $startWorkSessionRequest.set({
+    draft: draft?.trim() || undefined,
+    openTab: options?.openTab || undefined,
+    path: target,
+    token: startWorkToken
+  })
 }
 
 export async function removeWorktreePath(
@@ -1067,4 +1103,45 @@ export async function pickProjectFolder(): Promise<null | string> {
   })
 
   return dir || null
+}
+
+// ⌘O / palette "Open folder…": open a folder AS a project, upserting. A folder
+// already covered by a project (explicit or auto) just enters it; anything else
+// becomes a new project named after the folder. Either way the sidebar scopes
+// to the project and a fresh session draft lands anchored at the folder — the
+// one-keystroke version of new project → enter → new session. Like goToProject,
+// this is an open-from-nowhere: an occupied main gets a stacked tab, not stolen.
+export async function openFolderAsProject(dir?: string): Promise<void> {
+  const target = (dir ?? (await pickProjectFolder()) ?? '').trim()
+
+  if (!target) {
+    return
+  }
+
+  // Refresh first so the membership check runs against live truth — a repo
+  // cloned since the last scan should enter its auto project, not double-create.
+  await refreshProjectTree()
+
+  const existing = projectIdForCwd(target)
+
+  if (existing) {
+    setSidebarAgentsGrouped(true)
+    enterProject(existing)
+  } else {
+    const name = target.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || target
+
+    try {
+      const created = await createProject({ name, folders: [target], primaryPath: target, use: true })
+
+      if (created) {
+        enterProject(created.id)
+      }
+    } catch (err) {
+      // Stale backend (no projects.* RPC) or a failed write: still open the
+      // folder as a plain workspace session below — the project row can wait.
+      notify({ kind: 'warning', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  requestStartWorkSession(target, undefined, { openTab: true })
 }

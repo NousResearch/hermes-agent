@@ -65,6 +65,7 @@ import {
 } from './app-version'
 import { runAppInstallerChecker } from './appinstaller-checker'
 import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
+import { joinBackendApiUrl } from './backend-api-url'
 import { stopBackendChild as stopBackendChildImpl, waitForBackendExit } from './backend-child'
 import {
   execText,
@@ -14970,7 +14971,9 @@ async function fetchJsonForBackend(
   path,
   opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean } = {}
 ) {
-  const url = `${descriptor.baseUrl}${path}`
+  // Every renderer-routed REST call lands here; refuse a path that would move the
+  // credentialed request off the backend origin (`@evil/` parses as userinfo).
+  const url = joinBackendApiUrl(descriptor.baseUrl, path)
 
   // A native grant names one profile and the gateway refuses `all`: assemble the unified
   // session lists, project tree and PR scan from one read per profile, each carrying that

@@ -23,6 +23,7 @@ import {
   releaseActiveComposer
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
+import { rebuildAroundCaret } from '@/app/chat/composer/hooks/use-composer-trigger'
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
 import { useEmojiCompletions } from '@/app/chat/composer/hooks/use-emoji-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
@@ -42,7 +43,7 @@ import {
   replaceBeforeCaret,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
-import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
+import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
@@ -352,9 +353,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         : fragment.append(document.createTextNode(text))
 
       if (!replaceBeforeCaret(editor, trigger.tokenLength, fragment)) {
-        const current = composerPlainText(editor)
-        renderComposerContents(editor, `${current.slice(0, Math.max(0, current.length - trigger.tokenLength))}${text}`)
-        placeCaretEnd(editor)
+        rebuildAroundCaret(editor, trigger.tokenLength, text)
       }
 
       finish()
@@ -555,8 +554,14 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     rememberInitialDraft()
     recordUndoPoint()
 
-    // Links land as `@url:` chips, same as the main composer.
-    insertComposerContentsAtCaret(event.currentTarget, pathifyRefs(linkifyUrls(pastedText)))
+    // Links land as `@url:` chips, same as the main composer — including
+    // consuming an open `@url:` scope rather than stacking a second directive
+    // in front of the chip.
+    insertComposerContentsAtCaret(
+      event.currentTarget,
+      pathifyRefs(linkifyUrls(pastedText)),
+      openDirectiveScope(event.currentTarget)
+    )
     syncDraftFromEditor(event.currentTarget)
   }
 

@@ -181,6 +181,71 @@ class TestWindowsShellDestructiveCommands:
         assert desc is None
 
 
+class TestDetectDangerousGitConfig:
+    def test_set_is_dangerous(self):
+        for cmd in (
+            "git config user.name foo",
+            "git config --global user.email bar@baz",
+            "git config --local core.editor vim",
+            "git config --file .gitconfig foo.bar value",
+            "git config --system foo.bar value",
+            "git config --worktree foo.bar value",
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"{cmd!r} should be dangerous"
+            assert "config" in desc.lower()
+
+    def test_add_is_dangerous(self):
+        for cmd in (
+            "git config --add foo.bar value",
+            "git config --global --add user.name foo",
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"{cmd!r} should be dangerous"
+
+    def test_replace_all_is_dangerous(self):
+        cmd = "git config --replace-all foo.bar value"
+        is_dangerous, _, _ = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+
+    def test_unset_is_dangerous(self):
+        for cmd in (
+            "git config --unset user.name",
+            "git config --global --unset user.email",
+        ):
+            is_dangerous, _, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"{cmd!r} should be dangerous"
+
+    def test_unset_all_is_dangerous(self):
+        cmd = "git config --unset-all foo.bar"
+        is_dangerous, _, _ = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+
+    def test_remove_section_is_dangerous(self):
+        cmd = "git config --remove-section foo"
+        is_dangerous, _, _ = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+
+    def test_rename_section_is_dangerous(self):
+        cmd = "git config --rename-section old new"
+        is_dangerous, _, _ = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+
+    def test_query_only_is_safe(self):
+        for cmd in (
+            "git config --list",
+            "git config --global --list",
+            "git config --get user.name",
+            "git config --get-all foo.bar",
+            "git config --get-regexp foo",
+            "git config user.name",
+            "git config --global user.name",
+        ):
+            is_dangerous, _, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is False, f"{cmd!r} should NOT be dangerous"
+
+
+
 class TestDetectDangerousSudo:
     def test_shell_via_c_flag(self):
         is_dangerous, key, desc = detect_dangerous_command("bash -c 'echo pwned'")

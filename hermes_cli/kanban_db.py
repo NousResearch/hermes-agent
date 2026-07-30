@@ -4021,7 +4021,7 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, block_kind "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -4039,6 +4039,19 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
+            # A dependency-wait task with no parent links must not
+            # auto-promote.  ``block_task(kind="dependency")`` routes to
+            # ``todo`` expecting ``recompute_ready`` to gate on parents,
+            # but ``all([])`` is vacuously true — so a parentless worker
+            # that calls ``kanban_block(kind="dependency")`` would be
+            # promoted on the very next dispatch tick and respawned
+            # immediately, cycling blocked → ready → running → block in a
+            # tight loop (observed on t_cb67c890: six blocked runs, four
+            # in ~4 minutes). Park it in ``todo`` until a parent link is
+            # added or an operator deliberately changes/promotes the task.
+            block_kind = row["block_kind"] if "block_kind" in row.keys() else None
+            if block_kind == "dependency" and not parents:
+                continue
             if all(p["status"] in ("done", "archived") for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the

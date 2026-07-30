@@ -1312,6 +1312,9 @@ _COMMAND_WRAPPER_WORDS = {
     "time",
     "command",
     "builtin",
+    "timeout",
+    "nice",
+    "stdbuf",
 }
 _SUDO_OPTIONS_WITH_ARG = {
     "-c", "--close-from",
@@ -1348,11 +1351,133 @@ _COMMAND_OPTIONS = frozenset({"-p", "-v", "-V"})
 _EXEC_OPTIONS = frozenset({"-a", "-c", "-l"})
 _EXEC_OPTIONS_WITH_ARG = frozenset({"-a"})
 
+# `timeout` consumes one duration operand after its options, then launches the
+# remaining command. Options in this set take their value from the next word
+# unless it is attached with `=`.
+_TIMEOUT_OPTIONS_WITH_ARG = frozenset({
+    "-k", "--kill-after",
+    "-s", "--signal",
+})
+_TIMEOUT_OPTIONS = _TIMEOUT_OPTIONS_WITH_ARG | frozenset({
+    # Short spellings included: coreutils' getopt string is "+k:s:vf" plus
+    # -p for --preserve-status, so `timeout -p 5 cmd` and `timeout -f 5 cmd`
+    # are valid and must not strand the walker on the option word.
+    "-p", "--preserve-status",
+    "-f", "--foreground",
+    "-v", "--verbose",
+})
+
+_NICE_OPTIONS_WITH_ARG = frozenset({"-n", "--adjustment"})
+_NICE_OPTIONS = _NICE_OPTIONS_WITH_ARG
+
+_STDBUF_OPTIONS_WITH_ARG = frozenset({
+    "-i", "-o", "-e",
+    "--input", "--output", "--error",
+})
+_STDBUF_OPTIONS = _STDBUF_OPTIONS_WITH_ARG
+
+_WRAPPER_SHORT_FLAGS = {
+    "command": frozenset("pv"),
+    "exec": frozenset("cl"),
+    # coreutils' timeout getopt string is "+k:s:vf" and -p is accepted for
+    # --preserve-status, so v/f/p are the no-argument short flags that can
+    # appear bundled (-vpf) ahead of the duration.
+    "timeout": frozenset("vfp"),
+}
+_WRAPPER_SHORT_OPTIONS_WITH_ARG = {
+    "exec": frozenset("a"),
+    "timeout": frozenset("ks"),
+    "nice": frozenset("n"),
+    "stdbuf": frozenset("ioe"),
+}
+
 
 def _is_lookup_only_option(option_name: str) -> bool:
     if option_name.startswith("--"):
         return False
     return bool(set(option_name[1:]) & _COMMAND_LOOKUP_ONLY_SHORT)
+
+
+def _short_wrapper_option_action(
+    wrapper: str, word: str
+) -> tuple[str, bool] | None:
+    """Parse one GNU-style short-option cluster for a wrapper."""
+    if (
+        len(word) <= 1
+        or word.startswith("--")
+        or not word.startswith("-")
+        or "=" in word
+    ):
+        return None
+    flags = _WRAPPER_SHORT_FLAGS.get(wrapper, frozenset())
+    options_with_arg = _WRAPPER_SHORT_OPTIONS_WITH_ARG.get(
+        wrapper, frozenset()
+    )
+    if not flags and not options_with_arg:
+        return None
+
+    cluster = word[1:]
+    for index, option in enumerate(cluster):
+        if option in options_with_arg:
+            return ("skip", index == len(cluster) - 1)
+        if option not in flags:
+            return None
+    return ("skip", False)
+
+
+def _wrapper_option_action(wrapper: str, word: str) -> tuple[str | None, bool]:
+    """Classify one option-shaped word for a pass-through wrapper.
+
+    The action is ``skip`` for a recognized option, ``end`` for ``--``,
+    ``stop`` for command lookup-only modes, and ``None`` when the word is the
+    program name rather than an option. The boolean reports whether the next
+    word is the option's separate operand.
+    """
+    lowered = word.lower()
+    option_name = lowered.split("=", 1)[0]
+    if lowered == "--":
+        return ("end", False)
+    if wrapper == "command" and _is_lookup_only_option(option_name):
+        return ("stop", False)
+    if wrapper == "nice" and re.fullmatch(r"-\d+", lowered):
+        # GNU nice's obsolete but still-supported `-ADJUSTMENT` spelling.
+        return ("skip", False)
+
+    short_action = _short_wrapper_option_action(wrapper, lowered)
+    if short_action is not None:
+        return short_action
+
+    if wrapper == "sudo":
+        options = None
+        options_with_arg = _SUDO_OPTIONS_WITH_ARG
+    elif wrapper == "env":
+        options = None
+        options_with_arg = _ENV_OPTIONS_WITH_ARG
+    elif wrapper == "command":
+        options = _COMMAND_OPTIONS
+        options_with_arg = frozenset()
+    elif wrapper == "exec":
+        options = _EXEC_OPTIONS
+        options_with_arg = _EXEC_OPTIONS_WITH_ARG
+    elif wrapper == "timeout":
+        options = _TIMEOUT_OPTIONS
+        options_with_arg = _TIMEOUT_OPTIONS_WITH_ARG
+    elif wrapper == "nice":
+        options = _NICE_OPTIONS
+        options_with_arg = _NICE_OPTIONS_WITH_ARG
+    elif wrapper == "stdbuf":
+        options = _STDBUF_OPTIONS
+        options_with_arg = _STDBUF_OPTIONS_WITH_ARG
+    else:
+        options = frozenset()
+        options_with_arg = frozenset()
+
+    if options is not None and option_name not in options:
+        return (None, False)
+    return (
+        "skip",
+        "=" not in lowered and option_name in options_with_arg,
+    )
 
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"},
@@ -2217,8 +2342,10 @@ def _iter_shell_command_word_spans(command: str):
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
         prefix_words = 0
+        active_wrapper = ""
         skip_wrapper_options = False
         skip_next_wrapper_arg = False
+        skip_timeout_duration = False
         while prefix_words < 12:
             word_start, word_end, word = _read_shell_word(command, pos)
             if word_start == word_end:
@@ -2231,11 +2358,20 @@ def _iter_shell_command_word_spans(command: str):
                 prefix_words += 1
                 continue
             if skip_wrapper_options and lower_word.startswith("-"):
-                option_name = lower_word.split("=", 1)[0]
-                skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                action, skip_next_wrapper_arg = _wrapper_option_action(
+                    active_wrapper, lower_word
                 )
+                if action == "stop":
+                    break
+                if action is not None:
+                    if action == "end":
+                        skip_wrapper_options = False
+                    pos = word_end
+                    prefix_words += 1
+                    continue
+            if skip_timeout_duration:
+                skip_timeout_duration = False
+                skip_wrapper_options = False
                 pos = word_end
                 prefix_words += 1
                 continue
@@ -2244,10 +2380,13 @@ def _iter_shell_command_word_spans(command: str):
             prefix_words += 1
 
             if lower_word in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = lower_word in {"sudo", "env"}
+                active_wrapper = lower_word
+                skip_wrapper_options = True
+                skip_timeout_duration = lower_word == "timeout"
                 pos = word_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
+                active_wrapper = ""
                 skip_wrapper_options = False
                 pos = word_end
                 continue
@@ -2320,11 +2459,11 @@ def _project_path_spelled_executables(command: str) -> str | None:
     replacements: dict[int, tuple[int, str]] = {}
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
-        wrapper_arg_options: frozenset | set = frozenset()
-        wrapper_options: frozenset | set | None = frozenset()
-        command_option_grammar = False
+        active_wrapper = ""
+        resolved_through_wrapper = False
         skip_wrapper_options = False
         skip_next_wrapper_arg = False
+        skip_timeout_duration = False
         # Bound the WRAPPER chain, not the whole prefix: shell grammar puts no
         # limit on assignment prefixes or on a wrapper option list, so counting
         # those let a caller push the executable past a fixed budget and out of
@@ -2353,60 +2492,39 @@ def _project_path_spelled_executables(command: str) -> str | None:
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
                 continue  # VAR=value prefix: data, keep walking
             if skip_wrapper_options and deobfuscated.startswith("-"):
-                option_name = deobfuscated.lower().split("=", 1)[0]
-                if wrapper_options is None:
-                    # sudo/env: their option lists are large and largely
-                    # long-form, so every dash word is still skipped. Left as
-                    # it was — narrowing them is a separate change.
-                    skip_next_wrapper_arg = (
-                        "=" not in deobfuscated
-                        and option_name in wrapper_arg_options
-                    )
+                action, skip_next_wrapper_arg = _wrapper_option_action(
+                    active_wrapper, deobfuscated
+                )
+                if action == "stop":
+                    break
+                if action is not None:
+                    if action == "end":
+                        skip_wrapper_options = False
                     continue
-                # Wrappers whose option list is small enough to model exactly.
-                # `--` ends it: whatever follows is the program name even when
-                # it looks like an option (`command -- -p x` runs `-p`), and a
-                # word outside the list is not an option at all, so it falls
-                # through and is read as the program — which is what the shell
-                # does. Both directions matter: skipping every dash word
-                # blocked spellings the shell never executes.
-                if deobfuscated == "--":
-                    skip_wrapper_options = False
-                    continue
-                if command_option_grammar and _is_lookup_only_option(option_name):
-                    break  # `command -v`: a lookup, nothing is executed
-                if option_name in wrapper_options:
-                    skip_next_wrapper_arg = (
-                        "=" not in deobfuscated
-                        and option_name in wrapper_arg_options
-                    )
-                    continue
+            if skip_timeout_duration:
+                skip_timeout_duration = False
+                skip_wrapper_options = False
+                continue
             basename = _projected_executable_basename(word)
             effective = (basename or deobfuscated).lower()
             if basename is not None and word_start not in replacements:
                 replacements[word_start] = (word_end, basename)
             if effective in _COMMAND_WRAPPER_WORDS:
                 wrapper_budget -= 1  # only the wrapper CHAIN is bounded
+                active_wrapper = effective
+                resolved_through_wrapper = True
                 skip_wrapper_options = True
-                command_option_grammar = effective == "command"
-                if effective == "sudo":
-                    wrapper_options = None  # keep the existing skip-everything
-                    wrapper_arg_options = _SUDO_OPTIONS_WITH_ARG
-                elif effective == "env":
-                    wrapper_options = None
-                    wrapper_arg_options = _ENV_OPTIONS_WITH_ARG
-                elif effective == "command":
-                    wrapper_options = _COMMAND_OPTIONS
-                    wrapper_arg_options = frozenset()
-                elif effective == "exec":
-                    wrapper_options = _EXEC_OPTIONS
-                    wrapper_arg_options = _EXEC_OPTIONS_WITH_ARG
-                else:
-                    # nohup/setsid/time/builtin: nothing option-shaped precedes
-                    # the program, so a dash word is the program itself.
-                    wrapper_options = frozenset()
-                    wrapper_arg_options = frozenset()
+                skip_timeout_duration = effective == "timeout"
                 continue  # wrapper (bare or path-spelled): walk to the command
+            if (
+                resolved_through_wrapper
+                and basename is None
+                and word_start not in replacements
+            ):
+                # Wrappers absent from the flat `_CMDPOS` grammar still need
+                # their resolved bare command surfaced at a real command
+                # position (`timeout 5 nice rm -rf /`).
+                replacements[word_start] = (word_end, deobfuscated)
             break
     if not replacements:
         return None

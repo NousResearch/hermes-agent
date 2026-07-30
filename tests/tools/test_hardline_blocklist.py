@@ -794,3 +794,44 @@ def test_abs_path_hardline_not_bypassed_by_yolo(clean_session, monkeypatch):
     result = check_all_command_guards("/sbin/shutdown -h now", "local")
     assert result["approved"] is False
     assert result.get("hardline") is True
+
+
+@pytest.mark.parametrize(
+    "command,approved,hardline",
+    [
+        ("timeout 5 /bin/rm -rf /", False, True),
+        ("timeout -k 3 5s rm -rf /", False, True),
+        ("timeout -k3 5s rm -rf /", False, True),
+        ("timeout -sTERM 5s rm -rf /", False, True),
+        ("timeout -vk3 5s rm -rf /", False, True),
+        ("timeout -vsTERM 5s rm -rf /", False, True),
+        ("timeout --preserve-status 5 /bin/rm -rf /", False, True),
+        ("timeout -p 5 /bin/rm -rf /", False, True),
+        ("timeout -f 5 rm -rf /", False, True),
+        ("timeout -pf 5 rm -rf /", False, True),
+        ("timeout -vpf 5 rm -rf /", False, True),
+        ("nice /bin/rm -rf /", False, True),
+        ("nice -n 10 rm -rf /", False, True),
+        ("nice -n10 rm -rf /", False, True),
+        ("nice -10 rm -rf /", False, True),
+        ("stdbuf -oL /bin/rm -rf /", False, True),
+        ("stdbuf -o L rm -rf /", False, True),
+        ("timeout 5 nice rm -rf /", False, True),
+        ("echo timeout 5 rm -rf /", True, False),
+        ("timeout 5 ls", True, False),
+        ("nice -n 10 make build", True, False),
+        ("timeout -vx 5s rm -rf /", True, False),
+        ("timeout 5 -vsTERM rm -rf /", True, False),
+        ("nice -vn10 rm -rf /", True, False),
+        ("nice -10x rm -rf /", True, False),
+    ],
+)
+def test_pass_through_launcher_wrappers_resolve_command_word_under_yolo(
+    clean_session, monkeypatch, command, approved, hardline
+):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    result = check_all_command_guards(command, "local")
+
+    assert result["approved"] is approved, command
+    assert bool(result.get("hardline")) is hardline, command

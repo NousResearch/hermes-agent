@@ -67,7 +67,7 @@ export function ModelVisibilityDialog({
     setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
 
-  const toggleProvider = (provider: ModelOptionProvider, next: boolean) => {
+  const setProviderVisible = (provider: ModelOptionProvider, next: boolean) => {
     setVisibleModels(setProviderVisibility($visibleModels.get(), providers, provider.slug, next))
   }
 
@@ -135,7 +135,7 @@ export function ModelVisibilityDialog({
                         size="0.625rem"
                       />
                     </button>
-                    <Checkbox checked={checkState} onCheckedChange={next => toggleProvider(provider, next !== false)} />
+                    <Checkbox checked={checkState} onCheckedChange={next => setProviderVisible(provider, next !== false)} />
                   </div>
                   {!collapsed &&
                     models.map(family => {

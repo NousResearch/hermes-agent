@@ -4,10 +4,10 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
-import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { IdleMount } from '@/components/idle-mount'
-import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
+import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
@@ -36,9 +36,10 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { LayoutDashboard, PanelBottom } from '@/lib/icons'
+import { FileText, LayoutDashboard, PanelBottom, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
 import {
   $fileBrowserOpen,
@@ -54,9 +55,9 @@ import {
 } from '@/store/layout'
 import { $previewOpenRequest, $previewTabs, closeRightRail } from '@/store/preview'
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
-import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
+import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
-import { $statusbarVisible, toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import { $statusbarVisible } from '@/store/statusbar-prefs'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
@@ -265,18 +266,15 @@ registry.registerMany([
       run: toggleLayoutEditMode
     } satisfies KeybindContribution
   },
-  {
+  paletteToggle({
     id: 'layout.editMode',
-    area: PALETTE_AREA,
-    data: {
-      id: 'layout.editMode',
-      label: 'Toggle layout edit mode',
-      action: 'layout.editMode',
-      icon: LayoutDashboard,
-      keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
-      run: toggleLayoutEditMode
-    } satisfies PaletteContribution
-  },
+    label: 'Toggle layout edit mode',
+    action: 'layout.editMode',
+    icon: LayoutDashboard,
+    keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
+    get: () => $layoutEditMode.get(),
+    set: enabled => $layoutEditMode.set(enabled)
+  }),
   // The agent's write -> see loop: rescan <hermes home>/desktop-plugins
   // without relaunching (same-id reloads dispose the previous incarnation).
   {
@@ -302,18 +300,15 @@ registry.registerMany([
   },
   // Hiding the bar removes the surface that would otherwise offer it back, so
   // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S).
-  {
+  paletteToggle({
     id: 'view.toggleStatusbar',
-    area: PALETTE_AREA,
-    data: {
-      id: 'view.toggleStatusbar',
-      label: 'Toggle status bar',
-      action: 'view.toggleStatusbar',
-      icon: PanelBottom,
-      keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
-      run: toggleStatusbarVisible
-    } satisfies PaletteContribution
-  },
+    label: 'Toggle status bar',
+    action: 'view.toggleStatusbar',
+    icon: PanelBottom,
+    keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
+    get: () => $statusbarVisible.get(),
+    set: enabled => $statusbarVisible.set(enabled)
+  }),
   // The keybind panel's non-titlebar door (the keyboard icon is gone).
   {
     id: 'keybinds.panel',
@@ -597,16 +592,30 @@ bindPaneCollapse(
   () => $logsOpen.set(false),
   () => $logsOpen.set(true)
 )
-registry.register({
-  id: 'logs.toggle',
-  area: PALETTE_AREA,
-  data: {
+registry.register(
+  paletteToggle({
     id: 'logs.toggle',
     label: 'Toggle logs',
+    icon: FileText,
     keywords: ['logs', 'agent log', 'tail', 'debug'],
-    run: () => $logsOpen.set(!$logsOpen.get())
-  } satisfies PaletteContribution
-})
+    get: () => $logsOpen.get(),
+    set: enabled => $logsOpen.set(enabled)
+  })
+)
+
+// YOLO (dangerous-command approval bypass) is a status-bar zap and a /yolo
+// command; ⌘K is the third door onto the SAME store function, so a user who
+// lives in the palette never has to hunt for the pill.
+registry.register(
+  paletteToggle({
+    id: 'session.yolo',
+    label: 'Toggle yolo',
+    icon: Zap,
+    keywords: ['yolo', 'approvals', 'auto-approve', 'bypass', 'dangerous', 'commands'],
+    get: () => $yoloActive.get(),
+    set: enabled => void setYoloEnabled(enabled).catch(() => undefined)
+  })
+)
 
 // Sessions/files Close = collapse their SIDE (⌘B/⌘J truthful, titlebar button
 // flips back) — but only while the pane actually lives in that root side

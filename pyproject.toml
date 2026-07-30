@@ -369,7 +369,6 @@ markers = [
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
-    "live_system_guard_bypass: opt out of the os.kill monkeypatch guard for tests that need real signal delivery",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"

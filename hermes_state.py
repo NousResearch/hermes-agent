@@ -1934,7 +1934,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
-                apply_database_pragmas(self._conn, db_label="state.db")
                 # FTS capability flags normally come from writable schema
                 # initialisation. Probe existing virtual tables with SELECTs
                 # only so read-only search keeps its FTS and trigram paths.
@@ -1945,6 +1944,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # raw-copy for the rest of the process — the writable heal
                 # that follows would then repair WITHOUT its forensic backup.
                 try:
+                    apply_database_pragmas(self._conn, db_label="state.db")
                     cursor = self._conn.cursor()
                     self._fts_enabled = (
                         self._fts_table_probe(cursor, "messages_fts") is True
@@ -2022,9 +2022,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
                 )
                 apply_database_pragmas(self._conn, db_label="state.db")
-                self._conn.execute("PRAGMA cache_size=-8000")
-                self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA synchronous=NORMAL")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()

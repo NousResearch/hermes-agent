@@ -13,22 +13,23 @@ export interface NativeAccessTokenCoordinatorDeps {
 
 export interface NativeAccessTokenCoordinator {
   ensure: (baseUrl: string) => Promise<string | null>
-  invalidateExplicitAuthChange: () => void
+  invalidateExplicitAuthChange: (rawBaseUrl: string) => void
 }
 
 /**
  * Coordinate native-token refreshes for the Electron main process.
  *
- * One module-level coordinator instance owns one flight map and one auth epoch.
+ * One module-level coordinator instance owns one flight map and scoped auth epochs.
  * Equivalent gateway URLs share a flight after normalization. Explicit login
- * and logout advance the epoch so a response that started under older auth
+ * and logout advance the relevant epoch so a response that started under older auth
  * state can neither overwrite a new login nor resurrect a logout.
  */
 export function createNativeAccessTokenCoordinator(
   deps: NativeAccessTokenCoordinatorDeps
 ): NativeAccessTokenCoordinator {
   const refreshFlights = new Map<string, Promise<string | null>>()
-  let authEpoch = 0
+  const authEpochs = new Map<string, number>()
+  const epochFor = (baseUrl: string) => authEpochs.get(baseUrl) ?? 0
 
   async function ensure(rawBaseUrl: string): Promise<string | null> {
     const baseUrl = deps.normalizeBaseUrl(rawBaseUrl)
@@ -56,14 +57,14 @@ export function createNativeAccessTokenCoordinator(
       return existingFlight
     }
 
-    const flightEpoch = authEpoch
+    const flightEpoch = epochFor(baseUrl)
     const sentRefreshToken = tokens.refreshToken
 
     const refreshFlight = (async (): Promise<string | null> => {
       try {
         const rotated = await deps.refreshTokens(baseUrl, tokens)
 
-        if (authEpoch !== flightEpoch) {
+        if (epochFor(baseUrl) !== flightEpoch) {
           return null
         }
 
@@ -71,7 +72,7 @@ export function createNativeAccessTokenCoordinator(
 
         return rotated.accessToken
       } catch (error) {
-        if (authEpoch !== flightEpoch) {
+        if (epochFor(baseUrl) !== flightEpoch) {
           return null
         }
 
@@ -102,8 +103,9 @@ export function createNativeAccessTokenCoordinator(
 
   return {
     ensure,
-    invalidateExplicitAuthChange: () => {
-      authEpoch += 1
+    invalidateExplicitAuthChange: rawBaseUrl => {
+      const baseUrl = deps.normalizeBaseUrl(rawBaseUrl)
+      authEpochs.set(baseUrl, (authEpochs.get(baseUrl) ?? 0) + 1)
     }
   }
 }

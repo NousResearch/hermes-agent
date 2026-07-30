@@ -19,6 +19,7 @@ import {
   configureGatewayRegistry,
   disposeSecondariesForConnection,
   ensureGatewayForProfile,
+  isActivePrimary,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
@@ -168,13 +169,23 @@ export function useGatewayBoot({
         // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
         await desktop.revalidateConnection?.().catch(() => undefined)
 
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        // Primary sleep/wake reconnect must dial the WINDOW-owned primary backend
+        // (same as boot/softSwitch). Passing $activeGatewayProfile would retarget
+        // this primary socket at a secondary profile's backend after a live swap.
+        // Secondaries reconnect via reconnectSecondaryGateways().
+        const conn = await desktop.getConnection()
 
         if (cancelled) {
           return
         }
 
-        publish(conn)
+        // Only publish the primary descriptor when the primary is active.
+        // Otherwise a background-profile view would inherit the primary's
+        // mode/baseUrl and break image.attach / fs / media routing (#46651).
+        if (isActivePrimary()) {
+          publish(conn)
+        }
+
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
         // dead on every reconnect after the initial boot — reusing it surfaces

@@ -11,8 +11,10 @@ answer, and exited with the task unstarted. On an unattended multi-step job
 The fix keys on the provider contract violation itself
 (``finish_reason == "tool_calls"`` with zero ``tool_calls``) and re-prompts,
 bounded to 3 consecutive stalls, with the budget resetting after any
-successful tool round so it guards each stall rather than the whole run. A
-genuine ``finish_reason="stop"`` text turn is unaffected.
+successful tool round so it guards each stall rather than the whole run. It
+also recovers when a model emits a trailing ``<invoke>`` block as plain text
+with ``finish_reason="stop"`` instead of using the provider's structured tool
+channel. Genuine text turns are unaffected.
 """
 
 from __future__ import annotations
@@ -67,6 +69,36 @@ def _dropped_tool_call_response(content: str):
 
 
 class TestDroppedToolCallRecovery:
+    def test_textual_invoke_stop_reprompts_instead_of_exiting(self, loop_agent):
+        """A known tool emitted as trailing XML text is an attempted call,
+        not a final answer, even when the provider reports a clean stop."""
+        from tests.run_agent.test_run_agent import _mock_response
+
+        loop_agent.valid_tool_names = {"memory"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content=(
+                    "I will save that rule now.\n\n"
+                    "card\n"
+                    '<invoke name="memory">\n'
+                    '<parameter name="target">memory</parameter>\n'
+                    "</invoke>"
+                ),
+                finish_reason="stop",
+            ),
+            _mock_response(content="Saved the rule.", finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("remember this rule")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert "Saved the rule." in result["final_response"]
+
     def test_dropped_tool_call_reprompts_instead_of_exiting(self, loop_agent):
         """finish_reason=tool_calls with an empty tool_calls array must
         re-prompt the model to emit the call rather than exiting the loop
@@ -124,6 +156,36 @@ class TestDroppedToolCallRecovery:
             "A clean finish_reason=stop turn must not trigger a re-prompt."
         )
         assert "Here is your answer." in result["final_response"]
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            (
+                'For example: <invoke name="memory"></invoke> is transcript '
+                "data, not a tool call."
+            ),
+            'card\n<invoke name="not_a_real_tool"></invoke>',
+        ],
+    )
+    def test_non_call_invoke_text_is_unaffected(self, loop_agent, content):
+        """Explanatory text and unknown tool names must not be mistaken for
+        executable tool intent."""
+        from tests.run_agent.test_run_agent import _mock_response
+
+        loop_agent.valid_tool_names = {"memory"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=content, finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("explain tool-call markup")
+
+        assert loop_agent.client.chat.completions.create.call_count == 1
+        assert content in result["final_response"]
 
     def test_persistent_dropped_tool_calls_are_bounded(self, loop_agent):
         """If the model never emits a call, the recovery must give up after a

@@ -169,3 +169,99 @@ def test_cp1252_env_regression_does_not_crash(tmp_path, monkeypatch):
     assert os.getenv("LATIN1_VALUE") == "café"
     # Sanitize must not have rewritten (would have persisted U+FFFD).
     assert env_file.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# Profile .env isolation: inherited known-key cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_known_keys_absent_from_user_env_are_cleared(tmp_path, monkeypatch):
+    """Known Hermes keys inherited from parent process are removed when absent
+    from the profile's .env.
+
+    This is the startup equivalent of ``reload_env()``'s known-key cleanup and
+    fixes the isolation gap where one profile's ACP/provider settings silently
+    leak into another profile's runtime via ``os.environ`` inheritance.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "OPENAI_BASE_URL=https://profile.example/v1\n", encoding="utf-8"
+    )
+
+    # Inherited known keys from parent process / other profile
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://stale.example/v1")
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("COPILOT_CLI_PATH", "/usr/bin/claude-code")
+    # Unrelated shell var must NOT be touched
+    monkeypatch.setenv("MY_SHELL_ONLY_VAR", "keep-me")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    # OPENAI_BASE_URL is defined in the profile .env → overridden to the new value
+    assert os.getenv("OPENAI_BASE_URL") == "https://profile.example/v1"
+    # HERMES_ACP_AUTH_METHOD and COPILOT_CLI_PATH are NOT in the profile .env → cleared
+    assert "HERMES_ACP_AUTH_METHOD" not in os.environ
+    assert "COPILOT_CLI_PATH" not in os.environ
+    # Unrelated shell vars must survive
+    assert os.getenv("MY_SHELL_ONLY_VAR") == "keep-me"
+
+
+def test_empty_assignment_in_user_env_is_preserved(tmp_path, monkeypatch):
+    """An explicit ``KEY=`` (empty value) in the profile .env keeps the key
+    in ``os.environ`` — distinct from a key absent from .env entirely.
+
+    Empty ``HERMES_ACP_AUTH_METHOD=`` tells the ACP adapter to skip
+    ``authenticate`` (the key exists, its value is just empty).  This is the
+    documented workaround for the leak and must still work after the cleanup.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("HERMES_ACP_AUTH_METHOD=\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("COPILOT_CLI_PATH", "/usr/bin/sneaky")  # NOT in .env → cleared
+
+    load_hermes_dotenv(hermes_home=home)
+
+    # KEY= in .env keeps the key (now empty string)
+    assert "HERMES_ACP_AUTH_METHOD" in os.environ
+    assert os.environ["HERMES_ACP_AUTH_METHOD"] == ""
+    # COPILOT_CLI_PATH is absent from .env → cleared
+    assert "COPILOT_CLI_PATH" not in os.environ
+
+
+def test_no_user_env_does_not_clear_anything(tmp_path, monkeypatch):
+    """When no profile .env exists (bare profile), load_hermes_dotenv must not
+    wipe inherited known keys — the bare-profile case follows #66930 / #67027
+    semantics and the user's shell environment should not be mutilated.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    # No .env in home — bare profile
+
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_ACP_AUTH_METHOD") == "cursor_login"
+    assert os.getenv("PATH") == "/usr/bin:/bin"
+
+
+def test_known_key_explicitly_set_in_user_env_is_kept(tmp_path, monkeypatch):
+    """A known Hermes key that IS explicitly set in the profile .env survives
+    the cleanup (overrides the inherited value).
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "HERMES_ACP_AUTH_METHOD=claude_code_cli\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("HERMES_ACP_AUTH_METHOD") == "claude_code_cli"

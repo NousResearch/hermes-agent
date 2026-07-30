@@ -50,6 +50,71 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 _APPLIED_HOMES: set[str] = set()
 
 
+def _known_hermes_env_keys() -> set[str]:
+    """Return the combined set of known Hermes env-var keys.
+
+    Includes both ``OPTIONAL_ENV_VARS`` (setup-flow vars with metadata) and
+    ``_EXTRA_ENV_KEYS`` (provider/platform keys managed outside the setup
+    wizard).  Lazy-imported to avoid circular-dependency during early-bootstrap
+    ``load_hermes_dotenv()`` calls.
+    """
+    from hermes_cli.config import _EXTRA_ENV_KEYS
+    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+
+    return set(OPTIONAL_ENV_VARS.keys()) | set(_EXTRA_ENV_KEYS)
+
+
+def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
+    """Return KEY names assigned in a dotenv file (including empty ``KEY=``).
+
+    Uses a fast line scanner rather than full dotenv parsing so it works
+    during early bootstrap without importing python-dotenv.  Ignores comment
+    and blank lines.  Non-ASCII encoding errors fall back to ``latin-1``,
+    matching ``_load_dotenv_with_fallback``.
+    """
+    keys: set[str] = set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        try:
+            text = path.read_text(encoding="latin-1", errors="replace")
+        except Exception:
+            return keys
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
+    """Remove inherited known Hermes keys absent from the profile ``.env``.
+
+    After the profile's ``.env`` has been loaded with ``override=True``,
+    scan the file for which known Hermes keys it explicitly defines and
+    delete any known key that exists in ``os.environ`` but is *not* present
+    in the file.
+
+    This mirrors the semantics of ``reload_env()`` in ``config.py`` (which
+    already deletes missing known keys on hot-reload) and closes the gap
+    between startup and hot-reload: without this, a known key inherited
+    from the parent process leaks into the profile, silently mutating
+    provider / ACP / platform behaviour.
+
+    Does **not** run when the ``.env`` file does not exist (bare-profile
+    case, which follows ``#66930`` / ``#67027`` semantics).
+    """
+    if not path.exists():
+        return
+    defined = _env_keys_defined_in_dotenv(path)
+    for key in _known_hermes_env_keys():
+        if key not in defined and key in os.environ:
+            del os.environ[key]
+
+
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
 
@@ -320,6 +385,9 @@ def load_hermes_dotenv(
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
+        # Mirror reload_env() known-key cleanup so inherited Hermes keys
+        # absent from this profile's .env do not leak into the runtime.
+        _clear_known_keys_missing_from_dotenv(user_env)
 
     # Load .op.env AFTER .env so that .env values win, but the bootstrap
     # token (OP_SERVICE_ACCOUNT_TOKEN) becomes available for

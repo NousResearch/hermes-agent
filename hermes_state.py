@@ -5647,6 +5647,214 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return bool(self._execute_write(_do))
 
+    #: Key under which message reactions live inside ``display_metadata``.
+    #: Reactions share the existing per-message JSON column rather than a side
+    #: table so they survive rewind/compaction row rewrites with the row itself.
+    REACTIONS_METADATA_KEY = "reactions"
+
+    def set_message_reaction(
+        self,
+        session_id: str,
+        message_row_id: int,
+        emoji: Optional[str],
+        *,
+        author: str = "user",
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Set (or with ``emoji=None`` clear) *author*'s reaction on one message.
+
+        iOS Tapback semantics: one reaction per author per message. Re-sending
+        the same emoji clears it, a different emoji replaces it. Returns the
+        message's full reaction list after the write, or ``None`` when the row
+        doesn't exist or isn't part of *session_id*.
+        """
+        if not session_id or message_row_id is None:
+            return None
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?",
+                (message_row_id, session_id),
+            ).fetchone()
+            if row is None:
+                return None
+
+            meta = self._decode_display_metadata(row[0]) or {}
+            existing = meta.get(self.REACTIONS_METADATA_KEY)
+            reactions = [
+                r
+                for r in (existing if isinstance(existing, list) else [])
+                if isinstance(r, dict) and r.get("author") != author
+            ]
+            previous = next(
+                (
+                    r
+                    for r in (existing if isinstance(existing, list) else [])
+                    if isinstance(r, dict) and r.get("author") == author
+                ),
+                None,
+            )
+            # Tapping the live reaction again retracts it.
+            toggling_off = (
+                emoji is not None and previous is not None and previous.get("emoji") == emoji
+            )
+            if emoji and not toggling_off:
+                reactions.append(
+                    {"emoji": _scrub_surrogates(emoji), "author": author, "at": time.time()}
+                )
+
+            if reactions:
+                meta[self.REACTIONS_METADATA_KEY] = reactions
+            else:
+                meta.pop(self.REACTIONS_METADATA_KEY, None)
+
+            conn.execute(
+                "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                (self._encode_display_metadata(meta) if meta else None, message_row_id),
+            )
+            return reactions
+
+        return self._execute_write(_do)
+
+    def get_message_reactions(
+        self, session_id: str, message_row_id: int
+    ) -> List[Dict[str, Any]]:
+        """Return the reaction list persisted on one message row (never ``None``)."""
+        if not session_id or message_row_id is None:
+            return []
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?",
+                (message_row_id, session_id),
+            ).fetchone()
+
+        if row is None:
+            return []
+
+        meta = self._decode_display_metadata(row[0]) or {}
+        reactions = meta.get(self.REACTIONS_METADATA_KEY)
+
+        return [r for r in reactions if isinstance(r, dict)] if isinstance(reactions, list) else []
+
+    def take_unseen_reactions(
+        self, session_id: str, *, author: str = "user"
+    ) -> List[Dict[str, Any]]:
+        """Return *author*'s not-yet-surfaced reactions and mark them seen.
+
+        Powers the cache-safe model-context path: reactions are announced on the
+        NEXT user turn (never by rewriting the message that was reacted to), and
+        the ``seen`` stamp guarantees each one is announced exactly once.
+        """
+        if not session_id:
+            return []
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT id, role, content, display_metadata FROM messages "
+                "WHERE session_id = ? AND active = 1 AND display_metadata IS NOT NULL "
+                "ORDER BY id",
+                (session_id,),
+            ).fetchall()
+
+            pending = []
+            for row in rows:
+                meta = self._decode_display_metadata(row["display_metadata"])
+                if not meta:
+                    continue
+                reactions = meta.get(self.REACTIONS_METADATA_KEY)
+                if not isinstance(reactions, list):
+                    continue
+
+                changed = False
+                for reaction in reactions:
+                    if (
+                        not isinstance(reaction, dict)
+                        or reaction.get("author") != author
+                        or reaction.get("seen")
+                    ):
+                        continue
+                    reaction["seen"] = True
+                    changed = True
+                    content = self._decode_content(row["content"])
+                    pending.append(
+                        {
+                            "row_id": row["id"],
+                            "role": row["role"],
+                            "emoji": reaction.get("emoji") or "",
+                            "text": content if isinstance(content, str) else "",
+                        }
+                    )
+
+                if changed:
+                    conn.execute(
+                        "UPDATE messages SET display_metadata = ? WHERE id = ?",
+                        (self._encode_display_metadata(meta), row["id"]),
+                    )
+
+            return pending
+
+        return self._execute_write(_do) or []
+
+    def latest_message_row_id(
+        self, session_id: str, *, role: str = "user", offset: int = 0, require_text: bool = True
+    ) -> Optional[int]:
+        """Row id of the most recent active message with *role*, or ``None``.
+
+        Two callers, same need — "the message I mean, without an id": the agent
+        defaulting to the turn that triggered it, and the desktop reacting to a
+        live message that hasn't round-tripped through a resume yet.
+        ``offset`` steps to earlier turns (1 = the one before the latest) so a
+        reaction can land retroactively — "two messages ago" is how the caller
+        thinks about it.
+
+        ``require_text`` (default) skips rows with no plain-text content —
+        tool-call-only assistant turns and attachment stubs don't render as
+        bubbles, so "the latest message" as a HUMAN means it must never
+        resolve to one (a reaction landing on an invisible row looks dropped,
+        and its annotation quotes an empty string).
+        """
+        if not session_id or role not in {"user", "assistant"} or offset < 0:
+            return None
+
+        text_filter = (
+            "AND content IS NOT NULL AND TRIM(content) != '' " if require_text else ""
+        )
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND role = ? "
+                f"AND active = 1 {text_filter}ORDER BY id DESC LIMIT 1 OFFSET ?",
+                (session_id, role, int(offset)),
+            ).fetchone()
+
+        return row[0] if row else None
+
+    def latest_user_message_row_id(self, session_id: str) -> Optional[int]:
+        """Row id of the most recent active user message, or ``None``.
+
+        The agent's default reaction target: "the message that triggered me",
+        so the model never has to thread row ids through a tool call (mirrors
+        the photon adapter's ``_record_last_inbound``).
+        """
+        return self.latest_message_row_id(session_id, role="user")
+
+    def get_message_role(self, session_id: str, row_id: int) -> Optional[str]:
+        """Role of the active message at *row_id* in *session_id*, or ``None``.
+
+        Lets a reaction event carry the target's role so a renderer can match
+        a live message that doesn't know its durable row id yet.
+        """
+        if not session_id:
+            return None
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1",
+                (int(row_id), session_id),
+            ).fetchone()
+
+        return row[0] if row else None
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows for *session_id*.
 
@@ -6127,6 +6335,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         include_ancestors: bool = False,
         include_inactive: bool = False,
         repair_alternation: bool = False,
+        include_row_ids: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -6154,10 +6363,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
-                "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
-                "api_content, display_kind, display_metadata "
+                f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -6176,13 +6382,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             session_id=session_id,
             include_ancestors=include_ancestors,
             repair_alternation=repair_alternation,
+            include_row_ids=include_row_ids,
         )
 
     # Columns every conversation projection decodes. Shared by
     # get_messages_as_conversation and get_resume_conversations so a single
     # SELECT can feed both the model-fed and display views.
     _CONVERSATION_ROW_COLUMNS = (
-        "role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+        "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
         "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp, "
         "api_content, display_kind, display_metadata"
@@ -6195,6 +6402,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         include_ancestors: bool,
         repair_alternation: bool,
+        include_row_ids: bool = False,
     ) -> List[Dict[str, Any]]:
         """Decode fetched message rows into the OpenAI conversation format.
 
@@ -6209,6 +6417,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            # Durable per-message identity for surfaces that need to address a
+            # specific row later (desktop reactions). OPT-IN: only the gateway
+            # asks for it — every other consumer (ACP restore, export,
+            # inspection) gets the transcript in its historical shape.
+            # Underscore-prefixed so every transport's convert_messages()
+            # strips it before the wire.
+            if include_row_ids and row["id"] is not None:
+                msg["_row_id"] = row["id"]
             # api_content is the byte-fidelity sidecar: the exact string sent
             # to the API when it differed from the clean content. Returned
             # VERBATIM — no sanitize_context, no strip — because the replay
@@ -6345,12 +6561,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             session_id=session_id,
             include_ancestors=False,
             repair_alternation=True,
+            include_row_ids=True,
         )
         display_history = self._rows_to_conversation(
             rows,
             session_id=session_id,
             include_ancestors=True,
             repair_alternation=False,
+            include_row_ids=True,
         )
         return model_history, display_history
 

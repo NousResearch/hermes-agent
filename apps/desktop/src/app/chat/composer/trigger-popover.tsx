@@ -50,7 +50,7 @@ const ROW_BASE_CLASS = [
 interface ComposerTriggerPopoverProps {
   activeIndex: number
   items: readonly Unstable_TriggerItem[]
-  kind: '@' | '/'
+  kind: '@' | '/' | ':'
   loading: boolean
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
@@ -92,6 +92,10 @@ export function ComposerTriggerPopover({
               <>
                 {copy.lookupTry} <span className="font-mono text-foreground/80">@file:</span> {copy.lookupOr}{' '}
                 <span className="font-mono text-foreground/80">@folder:</span>.
+              </>
+            ) : kind === ':' ? (
+              <>
+                {copy.lookupTry} <span className="font-mono text-foreground/80">:joy:</span>.
               </>
             ) : (
               <>
@@ -154,6 +158,9 @@ export function ComposerTriggerPopover({
                       </span>
                     )}
                   </>
+                ) : kind === ':' ? (
+                  // Just the emoji + :shortcode:, Slack-style — no icon column.
+                  <span className="min-w-0 shrink truncate leading-5 text-foreground">{display}</span>
                 ) : (
                   <>
                     <span className="grid size-4 shrink-0 place-items-center text-(--ui-text-tertiary)">

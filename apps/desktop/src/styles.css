@@ -1638,18 +1638,21 @@ text-* variant utilities. */ .btn-arc {
    an open diff is excluded — it keeps the full gap, same as in-flow. */
 [data-slot='aui_turn-pair']
   > [data-slot='aui_assistant-message-root']:has(
-      > [data-slot='aui_assistant-message-content']
-        > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):last-child
-    ):not(:has([data-file-edit]))
+    > [data-slot='aui_assistant-message-content']
+      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):last-child
+  ):not(:has([data-file-edit]))
   + [data-slot='aui_assistant-message-root']:has(
-      > [data-slot='aui_assistant-message-content']
-        > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):first-child
-    ):not(:has([data-file-edit])) {
+    > [data-slot='aui_assistant-message-content']
+      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):first-child
+  ):not(:has([data-file-edit])) {
   margin-top: calc(var(--scaffold-block-gap) - var(--conversation-turn-gap));
 }
 
-/* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength. */
-[data-slot='aui_msg-actions'] button {
+/* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength.
+   The reaction slot lives OUTSIDE the bar (a landed emoji must not ride the
+   bar's hover fade) but is still one of these controls visually. */
+[data-slot='aui_msg-actions'] button,
+button[data-slot='aui_msg-reactions'] {
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1666,25 +1669,65 @@ text-* variant utilities. */ .btn-arc {
   opacity: 0.5;
 }
 
+/* A landed reaction is content, not a dimmed affordance — emoji render at
+   full strength everywhere, always (color dim would gray them anyway; they're
+   glyphs, not icons). */
+button[data-slot='aui_msg-reactions'][data-reacted] {
+  opacity: 1;
+  color: inherit;
+}
+
+/* The EMPTY slot is an affordance and follows its action-bar neighbors
+   exactly: hidden until the message is hovered, then the same 0.5 dim, full
+   strength under the pointer. Stylesheet-owned because the base rule above
+   outweighs Tailwind's opacity utilities (0,1,1 vs 0,1,0). */
+button[data-slot='aui_msg-reactions']:not([data-reacted]) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.group:hover button[data-slot='aui_msg-reactions']:not([data-reacted]),
+button[data-slot='aui_msg-reactions']:not([data-reacted]):focus-visible,
+button[data-slot='aui_msg-reactions']:not([data-reacted])[data-state='open'] {
+  opacity: 0.5;
+  pointer-events: auto;
+}
+
+.group:hover button[data-slot='aui_msg-reactions']:not([data-reacted]):hover,
+button[data-slot='aui_msg-reactions']:not([data-reacted])[data-state='open'] {
+  opacity: 1;
+}
+
+/* Emoji in ANY reaction surface (badge under a user bubble, footer slot,
+   picker rows) never inherit a translucent treatment from their container. */
+[data-slot='aui_msg-reactions'] .reaction-pop,
+span[data-slot='aui_msg-reactions'] {
+  opacity: 1;
+}
+
 [data-slot='aui_msg-actions'] button:disabled {
   cursor: default;
 }
 
-[data-slot='aui_msg-actions'] button:hover {
+[data-slot='aui_msg-actions'] button:hover,
+button[data-slot='aui_msg-reactions']:hover {
   background: transparent;
   color: var(--color-foreground);
   opacity: 1;
 }
 
-[data-slot='aui_msg-actions'] button:active {
+[data-slot='aui_msg-actions'] button:active,
+button[data-slot='aui_msg-reactions']:active {
   background: transparent;
 }
 
-[data-slot='aui_msg-actions'] button:focus-visible {
+[data-slot='aui_msg-actions'] button:focus-visible,
+button[data-slot='aui_msg-reactions']:focus-visible {
   opacity: 1;
 }
 
-[data-slot='aui_msg-actions'] button svg {
+[data-slot='aui_msg-actions'] button svg,
+button[data-slot='aui_msg-reactions'] svg {
   width: 0.875rem;
   height: 0.875rem;
 }
@@ -2014,11 +2057,34 @@ text-* variant utilities. */ .btn-arc {
   }
 }
 
+@keyframes reaction-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Landing a reaction should feel like something — same pop shape as
+   pet-reveal-pop, scaled down for an inline glyph. */
+.reaction-pop {
+  animation: reaction-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pet-egg,
   .pet-egg__glow,
   .pet-egg-shadow,
   .pet-reveal {
+    animation: none;
+  }
+  .reaction-pop {
     animation: none;
   }
   .pet-reveal {

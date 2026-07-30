@@ -369,11 +369,7 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
     return (
       <span className="my-2 block text-sm text-muted-foreground">
         Couldn&apos;t load {name}.{' '}
-        <button
-          className="ref font-medium text-foreground"
-          onClick={open}
-          type="button"
-        >
+        <button className="ref font-medium text-foreground" onClick={open} type="button">
           Open image
         </button>
         {openFailed && <OpenMediaFailedNote name={name} />}

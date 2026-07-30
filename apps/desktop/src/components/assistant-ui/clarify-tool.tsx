@@ -93,8 +93,7 @@ const OPTION_ROW_CLASS =
 // field-sizing on top of Textarea's shared chrome; kill min-h-16 for one-liners.
 const CLARIFY_TEXTAREA_CLASS = 'field-sizing-content max-h-40 min-h-0 resize-none'
 
-const CLARIFY_SHELL_CLASS =
-  `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
+const CLARIFY_SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
 
 const CLARIFY_ICON_CLASS = 'mt-px size-4 shrink-0 text-(--ui-text-tertiary)'
 
@@ -522,11 +521,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   if (loading) {
     return (
-      <ClarifyShell
-        aria-label={copy.loadingQuestion}
-        className="my-1.5 grid min-h-12 place-items-center"
-        role="status"
-      >
+      <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
       </ClarifyShell>
     )

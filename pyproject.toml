@@ -343,6 +343,15 @@ hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
+[tool.uv]
+override-dependencies = [
+  # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.
+  # discord.py has updated pynacl to 1.6 on `main`, but has not yet published a patch release.
+  # so, we force-override this to pynacl 1.6. here.
+  # remove this when we update discord.py
+  "pynacl>=1.6,<1.7",
+]
+
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
 # sealed venv is missing hermes_constants, run_agent, etc.

@@ -277,7 +277,9 @@ const PaletteRow = memo(function PaletteRow({
         )}
       </span>
       {item.detail && <span className="truncate text-muted-foreground/80">{item.detail}</span>}
-      {combo && <KbdCombo className={cn('ml-auto', modPreview ? 'opacity-90' : 'opacity-55')} combo={combo} size="sm" />}
+      {combo && (
+        <KbdCombo className={cn('ml-auto', modPreview ? 'opacity-90' : 'opacity-55')} combo={combo} size="sm" />
+      )}
       {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />}
       {item.active && <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />}
     </CommandItem>

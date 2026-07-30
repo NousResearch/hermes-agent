@@ -1128,7 +1128,11 @@ export async function openFolderAsProject(dir?: string): Promise<void> {
     setSidebarAgentsGrouped(true)
     enterProject(existing)
   } else {
-    const name = target.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || target
+    const name =
+      target
+        .replace(/[/\\]+$/, '')
+        .split(/[/\\]/)
+        .pop() || target
 
     try {
       const created = await createProject({ name, folders: [target], primaryPath: target, use: true })

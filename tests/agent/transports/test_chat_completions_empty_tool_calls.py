@@ -74,9 +74,10 @@ class TestEmptyToolCallsStripping:
         assert "tool_calls" in out[0]
         assert out[0]["tool_calls"] == []
 
-    def test_empty_array_with_codex_fields_still_dropped(self, transport):
-        # When an empty tool_calls array also carries codex scaffolding
-        # markers, the empty array takes precedence and is stripped outright.
+    def test_nonempty_array_codex_fields_stripped(self, transport):
+        # A non-empty tool_calls array carrying codex scaffolding markers
+        # (call_id, response_item_id) must have those fields stripped while
+        # the call itself is preserved.
         msgs = [{
             "role": "assistant",
             "content": "ok",

@@ -635,6 +635,20 @@ def create_job(
 
     prompt_text = _coerce_job_text(prompt)
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+
+    # PATCH: reject past one-shot schedules at creation time.
+    # Without this guard, compute_next_run() returns None for one-shots whose
+    # target has passed the 2-minute grace window, and the job is stored with
+    # next_run_at=null — silently never firing, no warning, no log.
+    _next_run = compute_next_run(parsed_schedule)
+    if _next_run is None and parsed_schedule.get("kind") == "once":
+        raise ValueError(
+            f"One-shot schedule '{parsed_schedule.get('display', schedule)}' "
+            f"has already passed (more than {ONESHOT_GRACE_SECONDS}s ago). "
+            f"The job would never fire. Use a relative offset like '30m' or '2h' "
+            f"so the scheduler computes the target from the current time."
+        )
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -658,7 +672,7 @@ def create_job(
         "paused_at": None,
         "paused_reason": None,
         "created_at": now,
-        "next_run_at": compute_next_run(parsed_schedule),
+        "next_run_at": _next_run,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,
@@ -778,7 +792,15 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updated_schedule.get("display", updated.get("schedule_display")),
             )
             if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+                # PATCH: reject past one-shot schedules on update too.
+                _updated_next = compute_next_run(updated_schedule)
+                if _updated_next is None and updated_schedule.get("kind") == "once":
+                    raise ValueError(
+                        f"One-shot schedule '{updated_schedule.get('display')}' "
+                        f"has already passed — the job would never fire. "
+                        f"Use a relative offset like '30m' or '2h' instead."
+                    )
+                updated["next_run_at"] = _updated_next
 
         if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
             updated["next_run_at"] = compute_next_run(updated["schedule"])

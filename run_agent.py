@@ -7624,11 +7624,12 @@ class AIAgent:
                 turn_id=relay_turn_id,
                 task_id=effective_task_id,
             )
-            start_task_run(
-                **task_context,
-                parent_session_id=getattr(self, "_parent_session_id", None) or "",
-            )
-            task_started = True
+            if relay_turn.relay_enabled:
+                start_task_run(
+                    **task_context,
+                    parent_session_id=getattr(self, "_parent_session_id", None) or "",
+                )
+                task_started = True
             # Publish the conversation id for ambient Nous Portal tagging. Every
             # LLM call made inside this turn — main loop, compression, vision,
             # web_extract, session_search, MoA slots, background-review forks

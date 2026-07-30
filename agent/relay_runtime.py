@@ -487,6 +487,7 @@ class RelayTurnContext:
         repr=False,
     )
     _active_registered: bool = field(default=False, repr=False)
+    relay_enabled: bool = True
     closed: bool = False
 
 
@@ -600,7 +601,28 @@ class RelaySessionCoordinator:
         if lease.released:
             raise RuntimeError("Hermes Relay conversation lease is released")
         turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id)
-        if isinstance(lease.host, RelayRuntime) and lease.session is not None:
+        key = (lease.profile_key, lease.session_id)
+        with self._active_turns_lock:
+            active = self._active_turns.get(key)
+            if active:
+                # A Relay session owns one physical scope stack. Concurrent
+                # Hermes turns would create sibling scopes on that stack, but
+                # their completion order is not guaranteed to be LIFO.
+                turn.relay_enabled = False
+                logger.warning(
+                    "Skipping Relay instrumentation for concurrent Hermes turn "
+                    "%s in session %s",
+                    turn_id,
+                    lease.session_id,
+                )
+            else:
+                self._active_turns[key] = {id(turn)}
+                turn._active_registered = True
+        if (
+            turn.relay_enabled
+            and isinstance(lease.host, RelayRuntime)
+            and lease.session is not None
+        ):
             try:
                 turn.handle = lease.host.run_in_session(
                     lease.session,
@@ -618,10 +640,6 @@ class RelaySessionCoordinator:
             except Exception:
                 logger.warning("Hermes Relay turn initialization failed", exc_info=True)
         turn._token = _CURRENT_TURN.set(turn)
-        key = (lease.profile_key, lease.session_id)
-        with self._active_turns_lock:
-            self._active_turns.setdefault(key, set()).add(id(turn))
-            turn._active_registered = True
         return turn
 
     def end_turn(
@@ -796,7 +814,12 @@ def current_turn() -> RelayTurnContext | None:
 def active_turn(session_id: str | None = None) -> RelayTurnContext | None:
     """Return a live turn only when it belongs to the active profile/session."""
     turn = current_turn()
-    if turn is None or turn.closed or turn.lease.released:
+    if (
+        turn is None
+        or not turn.relay_enabled
+        or turn.closed
+        or turn.lease.released
+    ):
         return None
     if turn.lease.profile_key != current_profile_key():
         return None
@@ -814,6 +837,9 @@ def resolve_execution_context(
     session_id: str,
 ) -> tuple[RelayRuntime | None, RelaySession | None, Any]:
     """Resolve one active turn/session parent for managed Relay execution."""
+    inherited_turn = current_turn()
+    if inherited_turn is not None and not inherited_turn.relay_enabled:
+        return None, None, None
     turn = active_turn(session_id)
     if (
         turn is not None

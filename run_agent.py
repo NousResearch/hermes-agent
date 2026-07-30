@@ -1792,7 +1792,6 @@ class AIAgent:
                 db.set_active_topic(sid, 0)
             topic_id = db.create_topic(sid, name)
             self._active_topic_id = topic_id
-            self._invalidate_system_prompt()
         except Exception:
             pass
 

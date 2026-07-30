@@ -6,7 +6,7 @@ import math
 import os
 import random
 import re
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -82,9 +82,24 @@ def _env_ref_name(ref: str) -> str:
     return ref
 
 
-def _sanitize_error(text: str) -> str:
-    """Replace credential-like patterns with [REDACTED] before text reaches the LLM."""
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+def _sanitize_error(text: str, redaction_values: Iterable[str] = ()) -> str:
+    """Strip credential-like patterns from error text before returning to LLM.
+
+    Replaces tokens, keys, and other secrets with [REDACTED] to prevent
+    accidental credential exposure in tool error responses. Callers that load
+    isolated per-server values can pass them explicitly so opaque credentials
+    are removed even when they do not match a known token shape.
+    """
+    sanitized = _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    values = {
+        str(value)
+        for value in redaction_values
+        if value is not None and str(value)
+    }
+    for value in sorted(values, key=len, reverse=True):
+        sanitized = sanitized.replace(value, "[REDACTED]")
+    return sanitized
+
 
 
 def _exc_str(exc: BaseException) -> str:

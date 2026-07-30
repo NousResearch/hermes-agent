@@ -9,7 +9,7 @@ import importlib
 import logging
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, Iterable, List, Optional
 from urllib.parse import urlparse
 from tools.mcp_tool_common import _sanitize_error, _core
 
@@ -411,7 +411,7 @@ def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
     return ordered
 
 
-def _format_connect_error(exc: BaseException) -> str:
+def _format_connect_error(exc: BaseException, redaction_values: Iterable[str] = ()) -> str:
     """Render nested MCP connection errors into an actionable short message."""
     nodes = _iter_exception_nodes(exc)
 
@@ -438,13 +438,13 @@ def _format_connect_error(exc: BaseException) -> str:
 
     missing = _find_missing()
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]), redaction_values)
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "
                     "or set mcp_servers.<name>.command to an absolute path and include "
                     "that directory in mcp_servers.<name>.env.PATH)")
-    return _sanitize_error(message)
+    return _sanitize_error(message, redaction_values)
 
 
 def _optional_types(module: str, *names: str) -> list:

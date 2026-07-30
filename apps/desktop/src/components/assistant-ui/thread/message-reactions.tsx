@@ -117,10 +117,7 @@ export const ReactionPicker: FC<{
         // Opt this one surface out of the shared popover glass: emoji hover
         // tints at 15% alpha are unreadable over blurred transcript text.
         // Overriding the local surface var keeps the arrow matched for free.
-        className={cn(
-          'w-auto p-1 [--popover-surface:var(--ui-bg-elevated)]',
-          !expanded && 'flex gap-0.5'
-        )}
+        className={cn('w-auto p-1 [--popover-surface:var(--ui-bg-elevated)]', !expanded && 'flex gap-0.5')}
         onCloseAutoFocus={event => event.preventDefault()}
         side="top"
       >

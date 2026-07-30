@@ -378,6 +378,13 @@ class TelegramAdapter(BasePlatformAdapter):
     _RECONNECT_WAIT_SECONDS = 15.0
     _RECONNECT_POLL_INTERVAL = 0.5
 
+    # Large-image compression for Telegram photo sends. Behind an HTTP proxy the PTB
+    # media_write_timeout is easily exceeded by raw PNGs > 1-2MB; pre-compressing to
+    # progressive JPEG keeps the upload well under the timeout and reduces bandwidth.
+    _IMG_JPEG_QUALITY = 85
+    _IMG_MAX_DIMENSION = 1600  # above this, resize before JPEG
+    _IMG_COMPRESS_THRESHOLD_BYTES = 1_048_576  # 1MB
+
     # edit_message applies MarkdownV2 only on finalize=True; without this flag stream_consumer skips
     # the final edit when raw text is unchanged.
     # Fixes #25710.
@@ -4553,6 +4560,100 @@ class TelegramAdapter(BasePlatformAdapter):
                 "Bind-mount a host directory and emit the host-visible path in MEDIA: for gateway file delivery.)")
         return error
 
+    def _compress_image_to_jpeg(self, image_path: str) -> Optional[str]:
+        """Pre-compress a large image to progressive JPEG before upload.
+
+        Behind an HTTP proxy (e.g. tgapi.indevs.in) the PTB
+        media_write_timeout (~20s) is easily exceeded by raw PNGs > 1-2MB.
+        A progressive JPEG at ~85% quality keeps the upload well under the
+        timeout while remaining visually equivalent for photos / info-graphics.
+
+        Returns the path to a temporary JPEG, or None when the original can be
+        used as-is (already small / already JPEG / Pillow not available). The
+        caller is responsible for cleaning up the returned temp file.
+        """
+        import shutil
+        import tempfile
+        import imghdr
+
+        try:
+            file_size = os.path.getsize(image_path)
+        except OSError:
+            return None
+
+        ext = os.path.splitext(image_path)[1].lower()
+
+        # Already JPEG — no gain in converting back
+        if ext in (".jpg", ".jpeg"):
+            return None
+
+        # Skip tiny files; conversion cost > upload benefit
+        if file_size < self._IMG_COMPRESS_THRESHOLD_BYTES:
+            return None
+
+        # Only convert raster image formats (png, gif, webp, bmp, tiff)
+        if imghdr.what(image_path) not in ("png", "gif", "webp", "bmp", "tiff"):
+            return None
+
+        try:
+            from PIL import Image
+        except Exception:
+            # Pillow missing: fall back to uploading the original (may timeout)
+            logger.warning("[%s] Pillow not available for image compression", self.name)
+            return None
+
+        try:
+            img = Image.open(image_path)
+            if len(img.getbands()) == 4:
+                img = img.convert("RGB")
+            elif img.mode in ("RGBA", "LA", "P"):
+                # Build white background for alpha-blended images
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                if img.mode == "P":
+                    img = img.convert("RGBA")
+                background.paste(img, mask=img.split()[-1])
+                img = background
+            elif img.mode not in ("RGB",):
+                img = img.convert("RGB")
+
+            max_w, max_h = img.size
+            max_dim = max(max_w, max_h)
+            if max_dim > self._IMG_MAX_DIMENSION:
+                scale = self._IMG_MAX_DIMENSION / max_dim
+                img = img.resize((int(max_w * scale), int(max_h * scale)), Image.LANCZOS)
+
+            fd, tmp = tempfile.mkstemp(
+                suffix=".jpg",
+                dir=os.path.join(DEFAULT_OUTPUT_DIR, "tmp"),
+                prefix="tg_compress_",
+            )
+            os.close(fd)
+            os.makedirs(os.path.dirname(tmp), exist_ok=True)
+
+            img.save(
+                tmp,
+                "JPEG",
+                quality=self._IMG_JPEG_QUALITY,
+                progressive=True,
+                optimize=True,
+            )
+            logger.info(
+                "[%s] Pre-compressed %s (%.1fKB → %s %.1fKB) for Telegram upload",
+                self.name,
+                image_path,
+                file_size / 1024,
+                tmp,
+                os.path.getsize(tmp) / 1024,
+            )
+            return tmp
+        except Exception as e:
+            logger.warning(
+                "[%s] Image compression failed, uploading original: %s",
+                self.name,
+                e,
+            )
+            return None
+
     def _telegram_media_too_large_note(self, label: str, file_size: Any, max_bytes: int) -> str:
         limit_mb = max(1, max_bytes // (1024 * 1024))
         try:
@@ -4708,6 +4809,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 await asyncio.sleep(human_delay)
             media: List[Any] = []
             opened_files: List[Any] = []
+            temp_paths: List[str] = []
             try:
                 for image_url, alt_text in chunk:
                     source: Any = image_url
@@ -4716,6 +4818,12 @@ class TelegramAdapter(BasePlatformAdapter):
                         if not os.path.exists(local_path):
                             logger.warning("[%s] Skipping missing image in media group: %s", self.name, local_path)
                             continue
+                        # Pre-compress large raster images so the media-group upload stays under
+                        # media_write_timeout; the temp JPEG is removed after the send.
+                        compressed = self._compress_image_to_jpeg(local_path)
+                        if compressed:
+                            temp_paths.append(compressed)
+                            local_path = compressed
                         source = open(local_path, "rb")
                         opened_files.append(source)
                     media.append(InputMediaPhoto(media=source, caption=self._caption_1024(alt_text)))
@@ -4743,12 +4851,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 for fh in opened_files:
                     with contextlib.suppress(Exception):
                         fh.close()
+                for tmp in temp_paths:
+                    with contextlib.suppress(OSError):
+                        os.remove(tmp)
         return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
+        # Pre-compress large raster images to progressive JPEG once; the photo send and the document
+        # fallback both reuse the compressed file so either upload stays under media_write_timeout.
+        compressed = self._compress_image_to_jpeg(image_path)
+        actual_path = compressed or image_path
+        doc_name = os.path.splitext(os.path.basename(image_path))[0] + ".jpg" if compressed else os.path.basename(image_path)
+
         async def _photo_failed(e: Exception) -> SendResult:
             error_str = str(e)
             # Dimension errors are expected for valid images Telegram refuses as photos → INFO.
@@ -4761,16 +4878,22 @@ class TelegramAdapter(BasePlatformAdapter):
             # Document has no dimension limit (50MB only); if even that fails, base adapter text.
             try:
                 return await self.send_document(
-                    chat_id=chat_id, file_path=image_path, caption=caption, file_name=os.path.basename(image_path),
+                    chat_id=chat_id, file_path=actual_path, caption=caption, file_name=doc_name,
                     reply_to=reply_to, metadata=metadata)
             except Exception as doc_err:
                 logger.error(
                     "[%s] Failed to send Telegram local image as document, falling back to base adapter: %s",
                     self.name, doc_err, exc_info=True)
                 return await super(TelegramAdapter, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
-        return await self._send_local_file(
-            "Image", image_path, chat_id, reply_to, metadata, "photo",
-            lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed)
+
+        try:
+            return await self._send_local_file(
+                "Image", actual_path, chat_id, reply_to, metadata, "photo",
+                lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed)
+        finally:
+            if compressed:
+                with contextlib.suppress(OSError):
+                    os.remove(compressed)
 
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,

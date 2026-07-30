@@ -552,6 +552,61 @@ class TestSenderMayDesignateHome:
             mock_store_cls.return_value.is_approved.return_value = True
             assert adapter._sender_may_designate_home(ctx) is True
 
+    def test_pairing_check_routes_to_own_profile_store(self, monkeypatch):
+        """Multiplex gateways serve a secondary profile via a dedicated
+        YuanbaoAdapter instance with ``_own_profile`` stamped by
+        GatewayRunner (gateway/run.py::_configure_profile_adapter). The
+        pairing check must construct PairingStore(profile=...) for that
+        profile instead of the global default store — otherwise a sender
+        approved only on the routed profile is denied here even though
+        authz_mixin._pairing_store_for would have found them.
+        """
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        adapter = make_adapter()
+        adapter._own_profile = "coder"
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing",
+            dm_allow_from=[],
+            group_policy="pairing",
+            group_allow_from=[],
+        )
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="dm",
+            from_account="approved-on-coder-only",
+        )
+
+        with patch("gateway.pairing.PairingStore") as mock_store_cls:
+            mock_store_cls.return_value.is_approved.return_value = True
+            assert adapter._sender_may_designate_home(ctx) is True
+            mock_store_cls.assert_called_once_with(profile="coder")
+
+    def test_pairing_check_uses_global_store_for_default_profile(self):
+        """When _own_profile is unset (default/active profile, or an
+        adapter built without going through _configure_profile_adapter),
+        the pairing check must construct the global PairingStore() with no
+        profile kwarg — preserving pre-fix behavior exactly."""
+        adapter = make_adapter()
+        assert getattr(adapter, "_own_profile", None) is None
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing",
+            dm_allow_from=[],
+            group_policy="pairing",
+            group_allow_from=[],
+        )
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="dm",
+            from_account="approved-sender",
+        )
+
+        with patch("gateway.pairing.PairingStore") as mock_store_cls:
+            mock_store_cls.return_value.is_approved.return_value = True
+            assert adapter._sender_may_designate_home(ctx) is True
+            mock_store_cls.assert_called_once_with()
+
 
 
 class TestExtractContentMiddleware:

@@ -21,7 +21,7 @@ TDD：强制执行 RED-GREEN-REFACTOR，测试先于代码。
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `testing`, `tdd`, `development`, `quality`, `red-green-refactor` |
-| 相关 skill | [`systematic-debugging`](/user-guide/skills/bundled/software-development/software-development-systematic-debugging)、[`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans)、[`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development) |
+| 相关 skill | [`systematic-debugging`](/user-guide/skills/bundled/software-development/software-development-systematic-debugging), [`plan`](/user-guide/skills/bundled/software-development/software-development-plan), [`subagent-driven-development`](/user-guide/skills/optional/software-development/software-development-subagent-driven-development) |
 
 ## 参考：完整 SKILL.md
 

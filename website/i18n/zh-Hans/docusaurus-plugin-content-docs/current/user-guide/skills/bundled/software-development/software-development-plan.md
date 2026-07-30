@@ -21,7 +21,7 @@ Plan 模式：将 Markdown 计划写入 .hermes/plans/，不执行任何操作�
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `planning`, `plan-mode`, `implementation`, `workflow` |
-| 相关 skill | [`writing-plans`](/user-guide/skills/bundled/software-development/software-development-writing-plans), [`subagent-driven-development`](/user-guide/skills/bundled/software-development/software-development-subagent-driven-development) |
+| 相关 skill | [`subagent-driven-development`](/user-guide/skills/optional/software-development/software-development-subagent-driven-development), [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`requesting-code-review`](/user-guide/skills/bundled/software-development/software-development-requesting-code-review) |
 
 ## 参考：完整 SKILL.md
 

@@ -167,11 +167,11 @@ def _auth_error_detail(exc: BaseException) -> str:
     return f" {_sanitize_error(text)}" if text else ""
 
 
-def _mcp_call_failed_message(exc: BaseException) -> str:
+def _mcp_call_failed_message(exc: BaseException, redaction_values: Iterable[str] = ()) -> str:
     """Generic tool-error text naming the group root cause: the transport's TaskGroup wrapper ``str()`` is
     "unhandled errors in a TaskGroup (1 sub-exception)", which tells the model nothing."""
     root = _unwrap_exception_group(exc)
-    return _sanitize_error(f"MCP call failed: {type(root).__name__}: {_exc_str(root)}")
+    return _sanitize_error(f"MCP call failed: {type(root).__name__}: {_exc_str(root)}", redaction_values)
 
 
 def _classify_mcp_failure(exc: BaseException) -> str:

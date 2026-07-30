@@ -21,7 +21,7 @@ def session(db):
     key = db.create_session("react-test", "test")
     db.append_message(key, "user", "how do i center a div")
     db.append_message(key, "assistant", "use flexbox")
-    rows = [m["_row_id"] for m in db.get_messages_as_conversation(key)]
+    rows = [m["_row_id"] for m in db.get_messages_as_conversation(key, include_row_ids=True)]
 
     return key, rows
 
@@ -155,15 +155,21 @@ def test_latest_user_message_is_the_agents_default_target(session, db):
     assert db.latest_user_message_row_id(key) == rows[0]
 
     db.append_message(key, "user", "thanks!")
-    newest = db.get_messages_as_conversation(key)[-1]["_row_id"]
+    newest = db.get_messages_as_conversation(key, include_row_ids=True)[-1]["_row_id"]
 
     assert db.latest_user_message_row_id(key) == newest
 
 
-def test_row_id_never_reaches_the_provider(session, db):
-    """_row_id is underscore-prefixed so transports strip it before the wire."""
+def test_row_id_is_opt_in_and_never_reaches_the_provider(session, db):
+    """Only include_row_ids=True consumers see _row_id — and it's underscore-
+    prefixed so transports strip it before the wire even for them. Default
+    consumers (ACP restore, export) get the transcript in its historical shape.
+    """
     key, _rows = session
 
     for message in db.get_messages_as_conversation(key):
+        assert "_row_id" not in message
+
+    for message in db.get_messages_as_conversation(key, include_row_ids=True):
         assert "_row_id" in message
         assert all(not k.startswith("_") or k == "_row_id" for k in message)

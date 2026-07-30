@@ -120,9 +120,9 @@ _TOOL_STUBS = {
     "web_search": ("query: str, limit: int = 5",
         '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
         '{"query": query, "limit": limit}'),
-    "web_extract": ("urls: list, char_limit: int = None",
-        '"""Extract content from URLs (no LLM summarization). Returns dict with results list of {url, title, content, error}. Pages over char_limit (default 15000) are head+tail truncated with the full text stored on disk; the content footer gives the path. content is markdown."""',
-        '{"urls": urls, "char_limit": char_limit}'),
+    "web_extract": ("urls: list, char_limit: int = None, headers: dict = None",
+        '"""Extract content from URLs (no LLM summarization). Returns dict with results list of {url, title, content, error}. Pages over char_limit (default 15000) are head+tail truncated with the full text stored on disk; the content footer gives the path. content is markdown. headers is an optional str→str map of HTTP request headers to send with the fetch (Firecrawl backend)."""',
+        '{"urls": urls, "char_limit": char_limit, "headers": headers}'),
     "read_file": ("path: str, offset: int = 1, limit: int = 2000",
         '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
         '{"path": path, "offset": offset, "limit": limit}'),
@@ -792,9 +792,10 @@ def _get_execution_mode() -> str:
 _TOOL_DOC_LINES = [
     ("web_search", "  web_search(query: str, limit: int = 5) -> dict\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
-    ("web_extract", "  web_extract(urls: list[str], char_limit: int = None) -> dict\n"
+    ("web_extract", "  web_extract(urls: list[str], char_limit: int = None, headers: dict = None) -> dict\n"
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
-     "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
+     "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer).\n"
+     "    headers: optional str->str HTTP request headers sent with the fetch (Firecrawl backend)."),
     ("read_file", "  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
     ("write_file", "  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file."),

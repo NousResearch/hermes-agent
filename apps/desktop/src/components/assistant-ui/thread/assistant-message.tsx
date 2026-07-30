@@ -9,6 +9,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 
+import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
   contentHasVisibleText,
   messageContentText,
@@ -33,6 +34,10 @@ import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
+
+// Stable empty identity for the settled-parts selector — a fresh [] per render
+// would re-derive the changed-files card on every message re-render.
+const EMPTY_PARTS: readonly unknown[] = []
 
 interface MessageActionProps {
   messageId: string
@@ -82,6 +87,21 @@ export const AssistantMessage: FC<{
   }, [completedText])
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
+
+  // Cursor's changed-files card only appears once the turn settles: while the
+  // agent is still editing, the tool rows narrate each patch and a card that
+  // grew a row per write would thrash the transcript. `[]` while running keeps
+  // this selector referentially stable across the 30 Hz delta stream.
+  //
+  // It also only rides the LAST turn. The card is a "here's what just landed"
+  // summary, not a per-turn artifact: leaving one behind on every reply would
+  // stack a wall of stale cards down the transcript. Sending the next message
+  // retires it — the working tree it describes is already history by then.
+  const settledParts = useAuiState(s => {
+    const isLastMessage = s.thread.messages[s.thread.messages.length - 1]?.id === s.message.id
+
+    return s.message.status?.type === 'running' || !isLastMessage ? EMPTY_PARTS : s.message.parts
+  })
 
   const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`)
 
@@ -134,6 +154,9 @@ export const AssistantMessage: FC<{
       {hasVisibleText && !isInterim && (
         <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
       )}
+      {/* Last thing in the turn — under the action bar, the way Cursor ends a
+          turn on its summary rather than burying it above the controls. */}
+      <ChangedFilesCard parts={settledParts} />
     </MessagePrimitive.Root>
   )
 }

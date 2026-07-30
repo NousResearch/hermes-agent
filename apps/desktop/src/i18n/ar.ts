@@ -2289,6 +2289,8 @@ export const ar = defineLocale({
       branchNewChat: 'تفريع إلى محادثة جديدة',
       react: 'تفاعل',
       dismissError: 'تجاهل الخطأ',
+      filesChanged: count => `${count} ملفات تم تغييرها`,
+      reviewChanges: 'مراجعة',
       readAloudFailed: 'فشلت القراءة بصوت عال',
       preparingAudio: 'جار تجهيز الصوت',
       stopReading: 'إيقاف القراءة',

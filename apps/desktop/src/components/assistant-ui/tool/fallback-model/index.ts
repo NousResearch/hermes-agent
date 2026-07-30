@@ -57,7 +57,7 @@ export function countDiffLineStats(diff: string): DiffLineStats {
   return { added, removed }
 }
 
-function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
+export function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
   return (
     firstStringField(args, ['path', 'file', 'filepath']) ||
     firstStringField(result, ['path', 'file', 'filepath', 'resolved_path']) ||

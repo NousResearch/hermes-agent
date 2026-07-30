@@ -274,8 +274,62 @@ export function toggleReview(): void {
   if ($reviewOpen.get()) {
     closeReview()
   } else {
+    revealReview()
+  }
+}
+
+/**
+ * Open the review pane and bring it into view. Unlike `toggleReview` this never
+ * closes an already-open pane — it's the "take me to the diff" entry point used
+ * by the transcript's changed-files card.
+ */
+export function revealReview(): void {
+  const wasOpen = $reviewOpen.get()
+
+  if (!wasOpen) {
     openReview()
-    revealTreePane(REVIEW_PANE_ID)
+  }
+
+  if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
+    // The reveal pin is a toggle, so only fire it when the overlay isn't
+    // already slid in — otherwise "show me the diff" would hide the pane.
+    if (!wasOpen) {
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: REVIEW_PANE_ID } }))
+    }
+
+    return
+  }
+
+  revealTreePane(REVIEW_PANE_ID)
+}
+
+/** The changed file matching a tool-reported path (absolute or repo-relative). */
+function matchReviewFile(files: readonly HermesReviewFile[], path: string): HermesReviewFile | undefined {
+  const target = path.replace(/\\/g, '/').replace(/\/+$/, '')
+
+  if (!target) {
+    return undefined
+  }
+
+  return files.find(file => {
+    const candidate = file.path.replace(/\\/g, '/')
+
+    return candidate === target || target.endsWith(`/${candidate}`) || candidate.endsWith(`/${target}`)
+  })
+}
+
+/**
+ * Open the review pane on one file's diff. The path comes from a tool call, so
+ * it may be absolute while git reports repo-relative — match on the tail.
+ */
+export async function openReviewForPath(path: string): Promise<void> {
+  revealReview()
+  await refreshReview()
+
+  const file = matchReviewFile($reviewFiles.get(), path)
+
+  if (file) {
+    await selectReviewFile(file)
   }
 }
 

@@ -4291,14 +4291,15 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def get_messages_as_conversation(
-            self, _session_id, repair_alternation=False
-        ):
-            assert repair_alternation is True
-            return list(history)
+        def get_resume_conversations(self, _session_id):
+            return list(history), list(history)
 
-        def replace_messages(self, key, messages):
+        def replace_active_messages_if_unchanged(
+            self, key, expected_messages, messages
+        ):
+            assert expected_messages == history
             replaced.append((key, list(messages)))
+            return True
 
     history = [
         {"role": "user", "content": "first"},
@@ -4382,14 +4383,15 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
             self._target()
 
     class _FakeDB:
-        def get_messages_as_conversation(
-            self, _session_id, repair_alternation=False
-        ):
-            assert repair_alternation is True
-            return list(history)
+        def get_resume_conversations(self, _session_id):
+            return list(history), list(history)
 
-        def replace_messages(self, key, messages):
+        def replace_active_messages_if_unchanged(
+            self, key, expected_messages, messages
+        ):
+            assert expected_messages == history
             replaced.append((key, list(messages)))
+            return True
 
     history = [
         {"role": "user", "content": "first"},
@@ -9228,12 +9230,15 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, session_id, repair_alternation=False):
-            assert repair_alternation is True
-            return list(original_history)
+        def get_resume_conversations(self, session_id):
+            return list(original_history), list(original_history)
 
-        def replace_messages(self, session_id, messages):
+        def replace_active_messages_if_unchanged(
+            self, session_id, expected_messages, messages
+        ):
+            assert expected_messages == original_history
             self.replaced.append((session_id, list(messages)))
+            return True
 
     stub_db = _StubDb()
 
@@ -9288,7 +9293,12 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
     server._sessions["trunc-fail-sid"] = sess
 
     class _FailDb:
-        def replace_messages(self, session_id, messages):
+        def get_resume_conversations(self, session_id):
+            return list(original_history), list(original_history)
+
+        def replace_active_messages_if_unchanged(
+            self, session_id, expected_messages, messages
+        ):
             raise OSError("disk full")
 
     monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
@@ -9383,12 +9393,15 @@ def test_prompt_submit_truncate_ordinal_refreshes_external_writes(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, session_id, repair_alternation=False):
-            assert repair_alternation is True
-            return list(fresh_history)
+        def get_resume_conversations(self, session_id):
+            return list(fresh_history), list(fresh_history)
 
-        def replace_messages(self, session_id, messages):
+        def replace_active_messages_if_unchanged(
+            self, session_id, expected_messages, messages
+        ):
+            assert expected_messages == fresh_history
             self.replaced.append((session_id, list(messages)))
+            return True
 
     stub_db = _StubDb()
 
@@ -9419,6 +9432,82 @@ def test_prompt_submit_truncate_ordinal_refreshes_external_writes(monkeypatch):
         assert stub_db.replaced == [("session-key", fresh_history[:2])]
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_truncate_conflicts_on_append_after_refresh(
+    monkeypatch, tmp_path
+):
+    """An append between the authoritative read and rewrite must survive."""
+
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_key = db.create_session("race", "tui")
+    for role, content in (
+        ("user", "first"),
+        ("assistant", "first reply"),
+        ("user", "second"),
+        ("assistant", "second reply"),
+    ):
+        db.append_message(session_key, role, content)
+    initial_history, _display = db.get_resume_conversations(session_key)
+
+    original_replace = db.replace_active_messages_if_unchanged
+    appended = False
+
+    def _append_then_replace(session_id, expected_messages, messages):
+        nonlocal appended
+        if not appended:
+            appended = True
+            db.append_message(session_id, "user", "concurrent third")
+        return original_replace(session_id, expected_messages, messages)
+
+    monkeypatch.setattr(
+        db,
+        "replace_active_messages_if_unchanged",
+        _append_then_replace,
+    )
+    session = _session(history=list(initial_history))
+    session["session_key"] = session_key
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(
+            server,
+            "_start_agent_build",
+            lambda *args, **kwargs: pytest.fail("must not start a turn"),
+        )
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited second",
+                    "truncate_before_user_ordinal": 1,
+                },
+            }
+        )
+
+        assert resp["error"]["code"] == 4091
+        assert "reload and retry" in resp["error"]["message"]
+        assert server._sessions["sid"]["history"] == initial_history
+        assert server._sessions["sid"]["running"] is False
+        assert [
+            message["content"]
+            for message in db.get_messages_as_conversation(session_key)
+        ] == [
+            "first",
+            "first reply",
+            "second",
+            "second reply",
+            "concurrent third",
+        ]
+    finally:
+        server._sessions.pop("sid", None)
+        db.close()
 
 
 def test_prompt_submit_truncate_ordinal_excludes_display_ancestors(monkeypatch, tmp_path):
@@ -9524,12 +9613,14 @@ def test_prompt_submit_truncate_fails_closed_when_fresh_read_fails(monkeypatch):
     replaced = []
 
     class _StubDb:
-        def get_messages_as_conversation(self, session_id, repair_alternation=False):
-            assert repair_alternation is True
+        def get_resume_conversations(self, session_id):
             raise RuntimeError("database unavailable")
 
-        def replace_messages(self, session_id, messages):
+        def replace_active_messages_if_unchanged(
+            self, session_id, expected_messages, messages
+        ):
             replaced.append((session_id, list(messages)))
+            return True
 
     server._sessions["sid"] = _session(history=list(stale_history))
 
@@ -9573,11 +9664,13 @@ def test_prompt_submit_truncate_fails_closed_when_replace_fails(monkeypatch):
     ]
 
     class _StubDb:
-        def get_messages_as_conversation(self, session_id, repair_alternation=False):
-            assert repair_alternation is True
-            return list(history)
+        def get_resume_conversations(self, session_id):
+            return list(history), list(history)
 
-        def replace_messages(self, session_id, messages):
+        def replace_active_messages_if_unchanged(
+            self, session_id, expected_messages, messages
+        ):
+            assert expected_messages == history
             raise RuntimeError("database is read-only")
 
     server._sessions["sid"] = _session(history=list(history))
@@ -9602,8 +9695,8 @@ def test_prompt_submit_truncate_fails_closed_when_replace_fails(monkeypatch):
             }
         )
 
-        assert resp["error"]["code"] == 5000
-        assert "failed to truncate session history" in resp["error"]["message"]
+        assert resp["error"]["code"] == 5008
+        assert "failed to persist history truncation" in resp["error"]["message"]
         assert server._sessions["sid"]["history"] == history
         assert server._sessions["sid"]["history_version"] == 0
         assert server._sessions["sid"]["running"] is False
@@ -9668,12 +9761,15 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def get_messages_as_conversation(self, session_id, repair_alternation=False):
-            assert repair_alternation is True
-            return list(original_history)
+        def get_resume_conversations(self, session_id):
+            return list(original_history), list(original_history)
 
-        def replace_messages(self, session_id, messages):
+        def replace_active_messages_if_unchanged(
+            self, session_id, expected_messages, messages
+        ):
+            assert expected_messages == original_history
             self.replaced.append((session_id, list(messages)))
+            return True
 
     stub_db = _StubDb()
 

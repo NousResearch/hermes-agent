@@ -183,11 +183,14 @@ def _(rid, params: dict) -> dict:
                 if message.get("role") == "user" and not message.get("display_kind")
             )
             segment_ordinal = ordinal - prefix_user_count
+            expected_history = list(history)
             if db is not None and session.get("session_key"):
                 try:
-                    history = db.get_messages_as_conversation(
-                        session["session_key"], repair_alternation=True
+                    raw_history, _display_history = db.get_resume_conversations(
+                        session["session_key"]
                     )
+                    expected_history = list(raw_history)
+                    history = sanitize_replay_history(raw_history)
                 except Exception as exc:
                     # This path immediately performs a destructive transcript
                     # replacement. If the authoritative read fails, do not fall
@@ -248,7 +251,11 @@ def _(rid, params: dict) -> dict:
             # Fail closed: refuse the turn and leave memory/DB unchanged.
             if (db := _get_db()) is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
+                    replaced = db.replace_active_messages_if_unchanged(
+                        session["session_key"],
+                        expected_history,
+                        truncated,
+                    )
                 except Exception as exc:
                     logger.error(
                         "prompt.submit: replace_messages failed for session %s "
@@ -263,6 +270,12 @@ def _(rid, params: dict) -> dict:
                         rid,
                         5008,
                         f"failed to persist history truncation: {exc}",
+                    )
+                if not replaced:
+                    return _err(
+                        rid,
+                        4091,
+                        "session history changed while editing; reload and retry",
                     )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1

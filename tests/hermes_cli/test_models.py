@@ -640,15 +640,49 @@ class TestLocalOllamaModelDiscovery:
         with patch("hermes_cli.models.probe_ollama_local_models", return_value=None):
             assert should_use_ollama_native_catalog("custom", "192.168.1.5:11434/v1") is False
 
-    def test_provider_model_ids_ollama_cloud_config_does_not_probe_local_tags(self):
+    def test_provider_model_ids_ollama_cloud_config_uses_generic_catalog(self):
         from hermes_cli.models import provider_model_ids
 
         with patch(
             "hermes_cli.config.load_config",
-            return_value={"providers": {"ollama": {"base_url": "https://ollama.com/v1"}}},
-        ), patch("hermes_cli.models.fetch_ollama_local_models") as fetch_local:
-            assert provider_model_ids("ollama", force_refresh=True) == []
+            return_value={
+                "providers": {
+                    "ollama": {
+                        "base_url": "https://ollama.com/v1",
+                        "api_key": "cloud-key",
+                    }
+                }
+            },
+        ), patch("hermes_cli.models.fetch_ollama_local_models") as fetch_local, patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["qwen3:1.7b"],
+        ) as fetch_generic:
+            assert provider_model_ids("ollama", force_refresh=True) == ["qwen3:1.7b"]
         fetch_local.assert_not_called()
+        fetch_generic.assert_called_once_with(
+            "cloud-key",
+            "https://ollama.com/v1",
+            headers={"Authorization": "Bearer cloud-key"},
+        )
+
+    def test_native_ollama_catalog_uses_configured_key_env(self, monkeypatch):
+        from hermes_cli.models import _get_ollama_request_headers
+
+        monkeypatch.setenv("TEST_OLLAMA_API_KEY", "env-key")
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "providers": {
+                    "ollama": {
+                        "base_url": "https://ollama.internal/v1",
+                        "key_env": "TEST_OLLAMA_API_KEY",
+                    }
+                }
+            },
+        ):
+            assert _get_ollama_request_headers() == {
+                "Authorization": "Bearer env-key"
+            }
 
     def test_provider_model_ids_ignores_active_non_ollama_custom_endpoint(self):
         from hermes_cli.models import provider_model_ids

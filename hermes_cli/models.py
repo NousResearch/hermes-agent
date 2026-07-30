@@ -2321,15 +2321,23 @@ def _get_ollama_base_url() -> str:
 
 
 def _get_ollama_request_headers() -> dict[str, str]:
-    """Return configured headers for native Ollama catalog requests."""
+    """Return configured headers and credentials for native Ollama requests."""
     entry = _get_provider_config_dict("ollama")
     raw = entry.get("extra_headers")
     try:
         from hermes_cli.config import normalize_extra_headers
 
-        return normalize_extra_headers(raw)
+        result = normalize_extra_headers(raw)
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        return {}
+        result = {}
+
+    api_key = str(entry.get("api_key") or "").strip()
+    if not api_key:
+        key_env = str(entry.get("key_env") or "").strip()
+        api_key = os.getenv(key_env, "").strip() if key_env else ""
+    if api_key and not any(key.lower() == "authorization" for key in result):
+        result["Authorization"] = f"Bearer {api_key}"
+    return result
 
 
 _OLLAMA_LOCAL_MODELS_CACHE_TTL: int = 300  # seconds (5 minutes)
@@ -3184,7 +3192,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if native_models or _OLLAMA_LOCAL_PROBE_REACHABLE.get(native_key) is True:
                 return native_models
         else:
-            return []
+            # Non-native Ollama-compatible endpoints (including Ollama Cloud)
+            # retain the generic OpenAI-compatible catalog path.
+            pass
         # gateways that expose only OpenAI-style /v1/models.
         config = _get_provider_config_dict("ollama")
         fallback_key = str(config.get("api_key") or "").strip()

@@ -346,7 +346,26 @@ hermes-acp = "acp_adapter.entry:main"
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
 # sealed venv is missing hermes_constants, run_agent, etc.
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+py-modules = [
+  "run_agent",
+  "model_tools",
+  "toolsets",
+  "batch_runner",
+  "trajectory_compressor",
+  "toolset_distributions",
+  "cli",
+  "hermes_bootstrap",
+  "hermes_constants",
+  "hermes_state",
+  "hermes_state_common",
+  "hermes_state_portability",
+  "hermes_state_schema",
+  "hermes_state_search",
+  "hermes_time",
+  "hermes_logging",
+  "utils",
+  "mcp_serve",
+]
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]

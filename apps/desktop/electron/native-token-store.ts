@@ -48,12 +48,17 @@ export interface NativeTokenStoreIo {
 /**
  * baseUrl → encrypted payload. A missing, unreadable, or hand-mangled store
  * reads as empty rather than throwing: a failed *read* falls to the next rung.
+ *
+ * Arrays are rejected alongside every other non-object shape: assigning
+ * store[baseUrl] on an array would set a non-index property, which
+ * JSON.stringify drops on the way back out — the write would look like it
+ * succeeded and the tokens would be gone on the next launch.
  */
 function readStore(io: NativeTokenStoreIo): Record<string, any> {
   try {
     const parsed = JSON.parse(io.readStoreText())
 
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
     return {}
   }
@@ -79,7 +84,9 @@ export function persistNativeTokenSet(baseUrl: string, tokens: NativeTokenSet | 
   try {
     io.writeStoreText(JSON.stringify(store))
   } catch (error) {
-    io.rememberLog?.(`[native-oauth] failed to persist tokens: ${(error as Error).message}`)
+    const detail = error instanceof Error ? error.message : String(error)
+
+    io.rememberLog?.(`[native-oauth] failed to persist tokens: ${detail}`)
   }
 }
 

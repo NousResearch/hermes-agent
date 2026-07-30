@@ -5620,6 +5620,12 @@ def _load_mcp_config() -> Dict[str, dict]:
             pass
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
+            if not isinstance(cfg, dict):
+                logger.warning(
+                    "Skipping MCP server '%s': invalid configuration (expected a mapping)",
+                    name,
+                )
+                continue
             interpolated = _resolve_mcp_server_config(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)

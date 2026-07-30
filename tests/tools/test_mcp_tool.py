@@ -3083,3 +3083,26 @@ def test_unreadable_server_env_file_warns_without_leaking_secret(
         assert "MCP env_file is not readable" in caplog.text
         assert "file-secret" not in caplog.text
         assert "process-token" not in caplog.text
+
+
+def test_invalid_server_entry_does_not_drop_healthy_sibling(self, caplog):
+        servers = {
+            "broken": "not-a-server-config",
+            "healthy": {"url": "https://mcp.example.com/mcp"},
+        }
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": servers},
+        ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
+            logging.WARNING, logger="tools.mcp_tool"
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            result = _load_mcp_config()
+
+        assert result == {
+            "healthy": {"url": "https://mcp.example.com/mcp"},
+        }
+        assert "broken" in caplog.text
+        assert "invalid configuration" in caplog.text

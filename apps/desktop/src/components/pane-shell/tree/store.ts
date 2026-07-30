@@ -31,12 +31,10 @@ import {
   normalize,
   removePane,
   reorderPaneInGroup as reorderPaneInGroupOp,
-  type RootEdge,
   setActivePane as setActivePaneOp,
   setGroupHeaderHidden as setGroupHeaderHiddenOp,
   setGroupMinimized,
   setSplitWeights as setSplitWeightsOp,
-  splitGroupZone as splitGroupZoneOp,
   type SplitNode
 } from './model'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
@@ -1202,18 +1200,6 @@ export function reorderTreePane(groupId: string, paneId: string, toIndex: number
   if (tree) {
     commit(reorderPaneInGroupOp(tree, groupId, paneId, toIndex))
     markActivePreset('custom')
-  }
-}
-
-/** Split a zone on `side`, moving `movePaneId` out of its stack into the new
- *  zone (VS Code split-and-move — the zone menu's Split actions). */
-export function splitTreeZone(groupId: string, side: RootEdge, movePaneId: string) {
-  const tree = $layoutTree.get()
-
-  if (tree) {
-    commit(splitGroupZoneOp(tree, groupId, side, movePaneId))
-    markActivePreset('custom')
-    markPaneUserPlaced(movePaneId)
   }
 }
 

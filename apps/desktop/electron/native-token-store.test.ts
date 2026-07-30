@@ -232,6 +232,29 @@ test('a corrupt store file loads as signed out instead of throwing', () => {
   assert.deepEqual(disk.logs, [])
 })
 
+test('an array store file loads as signed out instead of throwing', () => {
+  const disk = createFakeDisk('[]')
+
+  assert.equal(loadNativeTokenSet(GATEWAY, disk.io), null)
+  assert.deepEqual(disk.logs, [])
+})
+
+test('an array store file is replaced by a real map rather than swallowing the write', () => {
+  const disk = createFakeDisk('[]')
+
+  persistNativeTokenSet(GATEWAY, TOKENS, disk.io)
+
+  const written = JSON.parse(disk.fileText()!)
+
+  // Assigning store[baseUrl] on an array sets a non-index property, which
+  // JSON.stringify drops — the write would report success and the tokens would
+  // be gone on the next launch.
+  assert.equal(Array.isArray(written), false)
+  assert.ok(written[GATEWAY], 'the gateway entry must survive serialization')
+  // And it really does come back after a restart.
+  assert.deepEqual(loadNativeTokenSet(GATEWAY, createFakeDisk(disk.fileText()).io), TOKENS)
+})
+
 test('a corrupt decrypted blob is reported and loads as signed out', () => {
   const disk = createFakeDisk(JSON.stringify({ [GATEWAY]: { encoding: 'safeStorage', value: 'bm90LWpzb24=' } }))
 
@@ -270,6 +293,19 @@ test('an unwritable store file is logged rather than thrown', () => {
 
   assert.doesNotThrow(() => persistNativeTokenSet(GATEWAY, TOKENS, disk.io))
   assert.match(disk.logs[0], /failed to persist tokens: EACCES/)
+})
+
+test('a non-Error write failure keeps its detail in the log', () => {
+  const disk = createFakeDisk(null, {
+    writeStoreText: () => {
+      throw 'disk went away'
+    }
+  })
+
+  // `(error as Error).message` on a thrown string reads as undefined and loses
+  // the only diagnostic there was.
+  assert.doesNotThrow(() => persistNativeTokenSet(GATEWAY, TOKENS, disk.io))
+  assert.equal(disk.logs[0], '[native-oauth] failed to persist tokens: disk went away')
 })
 
 test('an unusable keychain fails the write loudly and writes nothing', () => {

@@ -508,8 +508,9 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # Non-interactive git: never hang a tool subprocess on credential prompts
     # (clone/fetch/push over https). Users can still set credentials via
     # git credential helpers or URL-embedded tokens; GIT_TERMINAL_PROMPT=0 only
-    # disables interactive stdin prompts.
-    sanitized.setdefault("GIT_TERMINAL_PROMPT", "0")
+    # disables interactive stdin prompts. Assign unconditionally so an
+    # inherited GIT_TERMINAL_PROMPT=1 cannot re-enable prompts.
+    sanitized["GIT_TERMINAL_PROMPT"] = "0"
 
     return sanitized
 
@@ -1282,8 +1283,9 @@ def _make_run_env(env: dict) -> dict:
     run_env = _scrub_delegated_child_kanban_env(run_env)
 
     # See _sanitize_subprocess_env — same non-interactive git policy for the
-    # primary terminal run path.
-    run_env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    # primary terminal run path. Assign unconditionally so an inherited
+    # GIT_TERMINAL_PROMPT=1 cannot re-enable prompts.
+    run_env["GIT_TERMINAL_PROMPT"] = "0"
 
     return run_env
 

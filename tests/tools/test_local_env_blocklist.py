@@ -706,3 +706,21 @@ class TestHermesInternalDynamicSecrets:
         with patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True):
             run_env = _make_run_env({})
         assert run_env.get("GIT_TERMINAL_PROMPT") == "0"
+
+    def test_git_terminal_prompt_inherited_enabled_is_overridden(self):
+        """An inherited GIT_TERMINAL_PROMPT=1 must be forced back to 0."""
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        # _sanitize_subprocess_env path: enabled value supplied via base_env.
+        result = _sanitize_subprocess_env(
+            {"PATH": "/usr/bin", "GIT_TERMINAL_PROMPT": "1"}
+        )
+        assert result.get("GIT_TERMINAL_PROMPT") == "0"
+
+        # Foreground run path (_make_run_env) with inherited enabled prompt
+        # via os.environ (merged as os.environ | env).
+        with patch.dict(
+            os.environ, {"PATH": "/usr/bin", "GIT_TERMINAL_PROMPT": "1"}, clear=True
+        ):
+            run_env = _make_run_env({})
+        assert run_env.get("GIT_TERMINAL_PROMPT") == "0"

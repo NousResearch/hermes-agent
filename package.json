@@ -46,5 +46,15 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "allowScripts": {
+    "unicode-animations": false,
+    "esbuild@0.28.1": true,
+    "node-pty@1.1.0": true,
+    "electron-winstaller@5.4.0": true,
+    "agent-browser@0.26.0": true,
+    "electron@40.10.2": true,
+    "fsevents@2.3.2": true,
+    "fsevents@2.3.3": true
   }
 }

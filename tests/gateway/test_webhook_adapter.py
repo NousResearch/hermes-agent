@@ -151,6 +151,37 @@ class TestValidateSignature:
             secret,
         ) is False
 
+    @pytest.mark.asyncio
+    async def test_signed_redmine_post_authenticates_raw_http_body(self):
+        """A Redmine signature is accepted through the real HTTP handler."""
+        secret = "redmine-webhook-secret"
+        adapter = _make_adapter(
+            routes={
+                "redmine": {
+                    "secret": secret,
+                    "prompt": "Issue #{data.issue.id}",
+                }
+            }
+        )
+        adapter.handle_message = AsyncMock()
+        body = b'{"type":"issue.updated","data":{"issue":{"id":42}}}'
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            response = await cli.post(
+                "/webhooks/redmine",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Redmine-Signature-256": _github_signature(body, secret),
+                },
+            )
+
+            assert response.status == 202
+
+            await asyncio.gather(*adapter._background_tasks)
+
+        adapter.handle_message.assert_awaited_once()
+
     def test_invalid_github_signature_does_not_fall_through_to_redmine(self):
         """Multiple protocol headers commit to the first recognized format."""
         adapter = _make_adapter()

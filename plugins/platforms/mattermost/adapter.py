@@ -251,7 +251,13 @@ class MattermostAdapter(BasePlatformAdapter):
         if metadata_root_id:
             # A source/target thread ID represents a real existing thread (or a
             # top-level message intentionally promoted by the inbound policy).
-            return str(metadata_root_id)
+            # It is not guaranteed to be a *root*, though: delayed deliveries
+            # and synthesized metadata can carry a reply's ID, and Mattermost
+            # rejects a non-root root_id with "Invalid RootId parameter".
+            # Resolve it the same way the reply_to branch below does.  A failed
+            # lookup returns None and may be transient, so fall back to the
+            # recorded ID rather than dropping the thread entirely.
+            return await self._resolve_root_id(str(metadata_root_id)) or str(metadata_root_id)
         if not reply_to:
             return None
 

@@ -694,18 +694,46 @@ def test_popen_bash_uses_kill_on_exit_wrapper(monkeypatch):
     assert proc.kwargs["errors"] == "replace"
 
 
-def test_local_backend_run_bash_uses_kill_on_exit_wrapper():
-    """LocalEnvironment's bash spawn also routes through the same wrapper
-    (source check -- the spawn is deep inside a long method with cwd
-    recovery / shell-init logic that isn't worth re-mocking end-to-end
-    here; the base.py test above exercises the wrapper's call contract
-    directly)."""
-    import inspect
-
+def test_local_backend_run_bash_uses_kill_on_exit_wrapper(monkeypatch, tmp_path):
+    """LocalEnvironment._run_bash must preserve the wrapper and Popen contract."""
     from tools.environments import local as env_local
 
-    src = inspect.getsource(env_local)
-    assert "spawn_bash_with_kill_on_exit" in src
+    wrapper_calls = []
+    wrapper_results = []
+
+    def fake_wrapper(popen_fn):
+        wrapper_calls.append(popen_fn)
+        result = popen_fn()
+        wrapper_results.append(result)
+        return result
+
+    class _FakeProc:
+        def __init__(self, args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            self.pid = 4_200_000
+
+    monkeypatch.setattr(env_local, "_find_bash", lambda: "/fake/bash")
+    monkeypatch.setattr(env_local, "spawn_bash_with_kill_on_exit", fake_wrapper)
+    monkeypatch.setattr(env_local.subprocess, "Popen", _FakeProc)
+
+    env = object.__new__(env_local.LocalEnvironment)
+    env.cwd = str(tmp_path)
+    env.env = {}
+
+    proc = env._run_bash("echo hi")
+
+    assert len(wrapper_calls) == 1
+    assert isinstance(proc, _FakeProc)
+    assert proc is wrapper_results[0]
+    assert proc.args == ["/fake/bash", "-c", "echo hi"]
+    assert proc.kwargs["text"] is True
+    assert proc.kwargs["encoding"] == "utf-8"
+    assert proc.kwargs["errors"] == "replace"
+    assert proc.kwargs["start_new_session"] is True
+    assert proc.kwargs["stdout"] == subprocess.PIPE
+    assert proc.kwargs["stderr"] == subprocess.STDOUT
+    assert proc.kwargs["stdin"] == subprocess.DEVNULL
 
 
 # ---------------------------------------------------------------------------

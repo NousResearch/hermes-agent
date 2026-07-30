@@ -101,8 +101,10 @@ def remove_wrapper_script():
     wrapper_paths = [
         Path.home() / ".local" / "bin" / "hermes",
         Path.home() / ".local" / "bin" / "hermes-acp",
+        Path.home() / ".local" / "bin" / "hermes-agent",
         Path("/usr/local/bin/hermes"),
         Path("/usr/local/bin/hermes-acp"),
+        Path("/usr/local/bin/hermes-agent"),
     ]
     
     removed = []

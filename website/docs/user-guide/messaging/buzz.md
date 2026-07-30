@@ -34,6 +34,8 @@ gateway:
         cli_path: ""               # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""       # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []          # empty = allow all; hex pubkeys or npubs
+        require_mention: true      # require a mention in shared channels (default: true)
+        thread_require_mention: true  # require a fresh mention in thread replies (default: true)
 ```
 
 Plus, in `~/.hermes/.env`:
@@ -52,6 +54,8 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_HOME_CHANNEL` | — | Channel UUID for cron / notification delivery (defaults to the first watched channel) |
 | `BUZZ_ALLOWED_USERS` | — | Comma-separated npubs or hex pubkeys allowed to talk to the agent |
 | `BUZZ_ALLOW_ALL_USERS` | — | Allow any community member to talk to the agent |
+| `BUZZ_REQUIRE_MENTION` | — | Require a mention in shared channels (`true`/`false`, default: `true`) |
+| `BUZZ_THREAD_REQUIRE_MENTION` | — | Require a fresh mention in thread replies (`true`/`false`, default: `true`) |
 | `BUZZ_POLL_INTERVAL` | — | Seconds between inbound poll sweeps (default: 4) |
 | `BUZZ_CLI_PATH` | — | Path to the `buzz` binary (default: `buzz` on PATH, then `~/bin/buzz`) |
 | `BUZZ_CREDENTIALS_FILE` | — | JSON credentials file holding the nsec, used when `BUZZ_PRIVATE_KEY` is unset |
@@ -80,6 +84,7 @@ gateway:
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
         require_mention: true             # in channels: only respond when addressed (@name, npub, or hex pubkey); DMs always dispatch regardless
+        thread_require_mention: true      # in threads: require a fresh mention (set false to allow active-thread follow-ups)
         allow_all_users: false            # set true for community mode (everyone can chat, only owner is admin); false for private mode (only allowed_users)
 ```
 
@@ -90,6 +95,7 @@ gateway:
 - `poll_interval: 4` — balances inbound latency (up to 4s delay) against relay load. Lower values increase polling frequency; higher values reduce it.
 - `allowed_users: []` + `allow_all_users: false` — private mode by default. Only listed users can interact. Set `allow_all_users: true` for community mode where everyone can chat (admin tier still restricted to the owner).
 - `require_mention: true` — in channels, the agent only responds when addressed. DMs always dispatch regardless of this setting.
+- `thread_require_mention: true` — preserves strict thread behavior: every reply needs a fresh mention. Set it to `false` to allow unmentioned follow-ups only after Hermes has successfully replied in that thread.
 
 **Rationale:** Channels are for final results and conversation, not for the agent's internal tool execution log. Users see the final answer, not the steps taken to get there. This matches the behavior on Telegram and email, which already have these defaults.
 
@@ -97,7 +103,9 @@ gateway:
 
 ## Mentions, channels, and DMs
 
-- In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
+- `require_mention` controls top-level shared-channel messages; `thread_require_mention` independently controls thread replies. Both default to `true`.
+- With `require_mention: true` and `thread_require_mention: false`, a mention is required to start a conversation, then unmentioned follow-ups are accepted only in a thread where Hermes has successfully sent a reply. Unrelated threads remain gated.
+- Explicit `BUZZ_REQUIRE_MENTION` and `BUZZ_THREAD_REQUIRE_MENTION` environment values override YAML. Dashboard-saved YAML values take effect on the next inbound Buzz event; a missing or malformed saved value preserves the last working policy.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 

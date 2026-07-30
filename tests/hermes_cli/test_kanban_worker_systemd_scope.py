@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -121,9 +122,11 @@ def test_scope_verification_failure_stops_exact_unit(monkeypatch):
             "ControlGroup": "/expected.scope",
         },
     )
-    monkeypatch.setattr(kb, "_process_cgroup_path", lambda pid: "/wrong.scope")
+    monkeypatch.setattr(kb, "_systemd_scope_process_ids", lambda path: (4242,))
+    monkeypatch.setattr(kb, "_process_cgroup_path", lambda pid: "/expected.scope")
+    monkeypatch.setattr(kb, "_process_command_argv", lambda pid: ("/wrong",))
     with pytest.raises(RuntimeError, match="could not verify systemd scope"):
-        kb._verify_systemd_scope_pid(proc, unit, target)
+        kb._verify_systemd_scope_worker_pid(proc, unit, target, ["/bin/sleep", "30"])
 
     stop_calls = []
     monkeypatch.setattr(kb.shutil, "which", lambda name: "/usr/bin/systemctl")
@@ -135,6 +138,55 @@ def test_scope_verification_failure_stops_exact_unit(monkeypatch):
     kb._cleanup_systemd_scope_launch(proc, unit, target)
     assert stop_calls[0][0] == ["/usr/bin/systemctl", "--user", "stop", unit]
     assert getattr(proc, "terminated", False)
+
+
+def test_scope_verification_returns_matching_worker_not_launcher(monkeypatch):
+    unit = "hermes-kanban-worker-0123456789abcdef0123456789abcdef.scope"
+    target = kb._SystemdUserManagerTarget(
+        os.getuid(),
+        Path("/run/user") / str(os.getuid()),
+        Path("/run/user") / str(os.getuid()) / "bus",
+    )
+    proc = SimpleNamespace(pid=111, poll=lambda: None)
+    monkeypatch.setattr(
+        kb,
+        "_systemd_scope_properties",
+        lambda *args, **kwargs: {
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "ControlGroup": "/expected.scope",
+        },
+    )
+    monkeypatch.setattr(kb, "_systemd_scope_process_ids", lambda path: (111, 222))
+    monkeypatch.setattr(kb, "_process_cgroup_path", lambda pid: "/expected.scope")
+    monkeypatch.setattr(
+        kb,
+        "_process_command_argv",
+        lambda pid: ("/usr/bin/systemd-run",) if pid == 111 else ("/bin/sleep", "30"),
+    )
+
+    assert (
+        kb._verify_systemd_scope_worker_pid(
+            cast(subprocess.Popen, proc),
+            unit,
+            target,
+            ["/bin/sleep", "30"],
+        )
+        == 222
+    )
+
+
+def test_process_command_matches_shebang_interpreter(monkeypatch):
+    monkeypatch.setattr(
+        kb,
+        "_process_command_argv",
+        lambda pid: ("/usr/bin/python3", "/usr/local/bin/hermes", "chat", "-q", "work"),
+    )
+
+    assert getattr(kb, "_process_command_matches")(
+        222,
+        ["/usr/local/bin/hermes", "chat", "-q", "work"],
+    )
 
 
 def test_default_spawn_receipt_reaches_spawned_event(
@@ -159,7 +211,7 @@ def test_default_spawn_receipt_reaches_spawned_event(
         return ["/usr/bin/systemd-run", "--user", "--scope", "--unit=" + unit, "--", *cmd], unit, target
 
     monkeypatch.setattr(kb, "_systemd_scope_argv", fake_scope_argv)
-    monkeypatch.setattr(kb, "_verify_systemd_scope_pid", lambda *args: None)
+    monkeypatch.setattr(kb, "_verify_systemd_scope_worker_pid", lambda *args: 2468)
     monkeypatch.setattr(kb.subprocess, "Popen", fake_popen)
 
     with kb.connect() as conn:
@@ -169,7 +221,7 @@ def test_default_spawn_receipt_reaches_spawned_event(
 
     assert result.spawned and result.spawned[0][0] == task_id
     assert event.payload == {
-        "pid": 6789,
+        "pid": 2468,
         "launch_mode": "systemd-user-scope",
         "scope_unit": captured["unit"],
         "verification_status": "verified",
@@ -203,7 +255,9 @@ def test_native_systemd_scope_lifecycle_when_user_manager_is_available(kanban_ho
         systemd_run=runner,
         user_manager_ready=True,
     )
-    assert unit is not None and manager is target
+    assert unit is not None
+    assert manager is target
+    assert manager is not None
     native_env = dict(os.environ)
     native_env.update(kb._systemd_user_manager_environment(target))
     proc = subprocess.Popen(
@@ -214,7 +268,38 @@ def test_native_systemd_scope_lifecycle_when_user_manager_is_available(kanban_ho
         env=native_env,
     )
     try:
-        kb._verify_systemd_scope_pid(proc, unit, manager)
+        worker_pid = kb._verify_systemd_scope_worker_pid(
+            proc,
+            unit,
+            manager,
+            ["/bin/sleep", "30"],
+        )
+        props = kb._systemd_scope_properties(unit, manager)
+        assert props is not None
+        control_group = props["ControlGroup"]
+        assert worker_pid in kb._systemd_scope_process_ids(control_group)
+        assert kb._process_cgroup_path(worker_pid) == control_group
+
+        with kb.connect() as conn:
+            task_id = kb.create_task(
+                conn,
+                title="native scope timeout",
+                assignee="worker",
+                max_runtime_seconds=1,
+            )
+            claimed = kb.claim_task(conn, task_id)
+            assert claimed is not None
+            kb._set_worker_pid(conn, task_id, worker_pid)
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? WHERE id = ?",
+                (int(kb.time.time()) - 2, claimed.current_run_id),
+            )
+            conn.commit()
+            assert kb.enforce_max_runtime(conn) == [task_id]
+            timed_out_task = kb.get_task(conn, task_id)
+            assert timed_out_task is not None
+            assert timed_out_task.status == "ready"
+        proc.wait(timeout=kb._SYSTEMD_SCOPE_CLEANUP_TIMEOUT)
     finally:
         kb._cleanup_systemd_scope_launch(proc, unit, manager)
     assert proc.poll() is not None

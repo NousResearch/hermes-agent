@@ -8876,6 +8876,8 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
+
+
 _SYSTEMD_WORKER_SCOPE_PREFIX = "hermes-kanban-worker-"
 _SYSTEMD_SCOPE_MIN_VERSION = 236
 _SYSTEMD_SCOPE_PROBE_TIMEOUT = 2.0
@@ -9138,36 +9140,85 @@ def _process_cgroup_path(pid: int) -> Optional[str]:
     return None
 
 
-def _verify_systemd_scope_pid(
-    proc: subprocess.Popen,
+def _systemd_scope_process_ids(control_group: str) -> tuple[int, ...]:
+    """Return the PIDs the manager currently reports in ``control_group``."""
+    relative = control_group.strip().lstrip("/")
+    if not relative or ".." in Path(relative).parts:
+        return ()
+    roots = [Path("/sys/fs/cgroup")]
+    if not (roots[0] / "cgroup.controllers").exists():
+        roots.insert(0, roots[0] / "systemd")
+    for root in roots:
+        procs = root / relative / "cgroup.procs"
+        try:
+            return tuple(
+                int(line)
+                for line in procs.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        except (OSError, ValueError):
+            continue
+    return ()
+
+
+def _process_command_argv(pid: int) -> tuple[str, ...]:
+    try:
+        raw = Path(f"/proc/{int(pid)}/cmdline").read_bytes()
+    except OSError:
+        return ()
+    return tuple(
+        part.decode("utf-8", errors="surrogateescape")
+        for part in raw.rstrip(b"\0").split(b"\0")
+        if part
+    )
+
+
+def _process_command_matches(pid: int, worker_cmd: list[str]) -> bool:
+    """Match a direct exec or a shebang interpreter followed by worker argv."""
+    observed = _process_command_argv(pid)
+    expected = tuple(worker_cmd)
+    return bool(expected) and (
+        observed == expected
+        or (len(observed) > len(expected) and observed[-len(expected):] == expected)
+    )
+
+
+def _verify_systemd_scope_worker_pid(
+    proc: Any,
     unit: str,
     target: _SystemdUserManagerTarget,
-) -> None:
-    """Require this exact Popen PID to be in this manager-owned scope."""
+    worker_cmd: list[str],
+) -> int:
+    """Return the actual worker PID after the manager has attached and exec'd it."""
     deadline = time.monotonic() + _SYSTEMD_SCOPE_VERIFY_TIMEOUT
     last_reason = "scope identity was not observable"
     while time.monotonic() < deadline:
-        if getattr(proc, "poll", lambda: None)() is not None:
-            raise RuntimeError(f"systemd scope launcher exited before verification: {unit}")
         props = _systemd_scope_properties(unit, target)
         if props is not None:
             load_state = props.get("LoadState")
             active_state = props.get("ActiveState")
             control_group = (props.get("ControlGroup") or "").rstrip("/")
-            process_group = (_process_cgroup_path(proc.pid) or "").rstrip("/")
             if load_state != "loaded":
                 last_reason = f"scope unit load state was {load_state!r}"
             elif active_state not in {"active", "activating"}:
                 last_reason = f"scope unit state was {active_state!r}"
             elif not control_group:
                 last_reason = "scope has no control group"
-            elif process_group != control_group:
-                last_reason = (
-                    f"Popen PID {proc.pid} was in {process_group!r}, "
-                    f"expected {control_group!r}"
-                )
             else:
-                return
+                scope_pids = _systemd_scope_process_ids(control_group)
+                for pid in scope_pids:
+                    process_group = (_process_cgroup_path(pid) or "").rstrip("/")
+                    if (
+                        process_group == control_group
+                        and _process_command_matches(pid, worker_cmd)
+                    ):
+                        return pid
+                last_reason = (
+                    f"scope PIDs {scope_pids!r} did not expose worker argv "
+                    f"{tuple(worker_cmd)!r}"
+                )
+        if getattr(proc, "poll", lambda: None)() is not None:
+            raise RuntimeError(f"systemd scope launcher exited before verification: {unit}")
         time.sleep(0.05)
     raise RuntimeError(f"could not verify systemd scope {unit}: {last_reason}")
 
@@ -9208,6 +9259,8 @@ def _cleanup_systemd_scope_launch(
             proc.wait(timeout=_SYSTEMD_SCOPE_CLEANUP_TIMEOUT)
         except (OSError, subprocess.TimeoutExpired, AttributeError):
             pass
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -9388,6 +9441,7 @@ def _default_spawn(
         task,
         board=board,
     )
+    worker_pid: Optional[int] = None
     if scope_unit is not None and scope_target is not None:
         # Use the same authenticated user manager for the launcher and its
         # verification queries; do not inherit a different session bus.
@@ -9446,7 +9500,12 @@ def _default_spawn(
             )
     if scope_unit is not None and scope_target is not None:
         try:
-            _verify_systemd_scope_pid(proc, scope_unit, scope_target)
+            worker_pid = _verify_systemd_scope_worker_pid(
+                proc,
+                scope_unit,
+                scope_target,
+                worker_cmd,
+            )
         except Exception:
             _cleanup_systemd_scope_launch(proc, scope_unit, scope_target)
             log_f.close()
@@ -9457,8 +9516,10 @@ def _default_spawn(
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
     if scope_unit is not None:
+        if worker_pid is None:
+            raise RuntimeError(f"systemd scope {scope_unit} has no verified worker PID")
         return _WorkerLaunchPid(
-            proc.pid,
+            worker_pid,
             launch_mode="systemd-user-scope",
             scope_unit=scope_unit,
             verification_status="verified",

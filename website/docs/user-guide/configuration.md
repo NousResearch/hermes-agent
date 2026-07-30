@@ -1817,7 +1817,7 @@ Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, 
 
 ## Web Search Backends
 
-The `web_search` and `web_extract` tools support six backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
+The `web_search` and `web_extract` tools support multiple backend providers. Configure the backend in `config.yaml` or via `hermes tools`:
 
 ```yaml
 web:

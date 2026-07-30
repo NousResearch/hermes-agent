@@ -212,8 +212,8 @@ class TestFederatedSearch:
             call_count += 1
             name = backend.get("name", "")
             if name == "backend1":
-                return [{"title": "A1", "url": "https://a1.com", "description": ""}]
-            return [{"title": "B1", "url": "https://b1.com", "description": ""}]
+                return [{"title": "A1", "url": "https://a1.com", "description": ""}], None
+            return [{"title": "B1", "url": "https://b1.com", "description": ""}], None
 
         with patch(
             "plugins.web.federated.provider._read_config",
@@ -742,8 +742,8 @@ class TestFederatedSearchFaultTolerance:
             call_count["count"] += 1
             name = backend.get("name", "")
             if name == "required_src":
-                return []  # fail
-            return [{"title": "OK", "url": "https://ok.com", "description": ""}]
+                return [], None  # fail
+            return [{"title": "OK", "url": "https://ok.com", "description": ""}], None
 
         with patch(
             "plugins.web.federated.provider._read_config",
@@ -777,8 +777,8 @@ class TestFederatedSearchFaultTolerance:
         def fake_search(backend, query, limit):
             name = backend.get("name", "")
             if name == "a":
-                return [{"title": "A", "url": "https://a.com", "description": ""}]
-            return []  # b and c fail
+                return [{"title": "A", "url": "https://a.com", "description": ""}], None
+            return [], None  # b and c fail
 
         with patch(
             "plugins.web.federated.provider._read_config",
@@ -811,8 +811,8 @@ class TestFederatedSearchFaultTolerance:
         def fake_search(backend, query, limit):
             name = backend.get("name", "")
             if name == "a":
-                return [{"title": "A", "url": "https://a.com", "description": ""}]
-            return []
+                return [{"title": "A", "url": "https://a.com", "description": ""}], None
+            return [], None
 
         with patch(
             "plugins.web.federated.provider._read_config",
@@ -862,10 +862,84 @@ class TestFederatedSearchHealthCache:
             return_value=config,
         ), patch(
             "plugins.web.federated.provider._search_one_backend",
-            return_value=[{"title": "X", "url": "https://x.com", "description": ""}],
+            return_value=([{"title": "X", "url": "https://x.com", "description": ""}], None),
         ):
             result = provider.search("test", limit=5)
             assert result["success"] is True
+
+    def test_required_backend_cached_unavailable_causes_failure(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        """A required backend that is health-cached as unavailable must still
+        cause overall search failure — the check must validate the full
+        backend list, not just the active (post-health-filter) set."""
+        config = {
+            "k": 2,
+            "min_backends": 1,
+            "backends": [
+                {"name": "critical", "type": "custom", "required": True},
+                {"name": "optional", "type": "custom", "required": False},
+            ],
+            "timeout": 5,
+            "max_results": 8,
+            "health_check": {},
+        }
+        provider._health_cache = _HealthCache(ttl_seconds=300)
+        provider._health_cache.set_available("critical", False)
+        provider._health_cache.set_available("optional", True)
+
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ), patch(
+            "plugins.web.federated.provider._search_one_backend",
+            return_value=([{"title": "OK", "url": "https://ok.com", "description": ""}], None),
+        ):
+            result = provider.search("test", limit=5)
+            assert result["success"] is False
+            assert "Required backend" in result["error"]
+
+    def test_health_cache_cooldown_on_http_error(
+        self, provider: FederatedSearchProvider,
+    ) -> None:
+        """A custom backend search failure with HTTP 429 must call
+        health_cache.mark_failed(), triggering the documented cooldown."""
+        config = {
+            "k": 2,
+            "backends": [
+                {"name": "src_a", "type": "custom", "required": False},
+                {"name": "src_b", "type": "custom", "required": False},
+            ],
+            "timeout": 5,
+            "max_results": 8,
+            "health_check": {},
+        }
+        provider._health_cache = _HealthCache(ttl_seconds=300)
+        provider._health_cache.set_available("src_a", True)
+        provider._health_cache.set_available("src_b", True)
+
+        # src_a succeeds; src_b returns HTTP 429 status
+        results_by_backend = {
+            "src_a": ([{"title": "OK", "url": "https://ok.com", "description": ""}], None),
+            "src_b": ([], 429),
+        }
+
+        def fake_search(backend, query, limit):
+            name = backend.get("name", "")
+            return results_by_backend.get(name, ([], None))
+
+        with patch(
+            "plugins.web.federated.provider._read_config",
+            return_value=config,
+        ), patch(
+            "plugins.web.federated.provider._search_one_backend",
+            side_effect=fake_search,
+        ):
+            result = provider.search("test", limit=5)
+            # src_a succeeded, src_b 429 → partial success
+            assert result["success"] is True
+            # src_b should be marked unavailable due to 429 cooldown
+            assert provider._health_cache.is_available("src_b") is False
 
     def test_all_cached_unavailable(
         self, provider: FederatedSearchProvider,

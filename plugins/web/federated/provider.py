@@ -53,11 +53,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
-import os
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.web_search_provider import WebSearchProvider
+from agent.web_search_provider import WebSearchProvider, get_provider_env
 
 logger = logging.getLogger(__name__)
 
@@ -389,11 +388,15 @@ def _search_custom_backend(
     backend_config: Dict[str, Any],
     query: str,
     limit: int,
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], Optional[int]]:
     """Execute a search against a custom HTTP endpoint.
 
     Config keys: base_url, api_key_env, search_path, query_param (default ``q``),
     auth_style (``bearer`` or ``x-api-key``, default ``bearer``).
+
+    Returns ``(results, status_code)`` where *status_code* is ``None`` on
+    success or non-HTTP errors, and the response status code on HTTP errors
+    so the caller can invoke health-cache cooldowns.
     """
     import httpx
 
@@ -402,10 +405,10 @@ def _search_custom_backend(
     search_path = backend_config.get("search_path", "/v1/coding_plan/search")
     query_param = backend_config.get("query_param", "q")
     auth_style = backend_config.get("auth_style", "bearer")
-    api_key = os.environ.get(api_key_env, "") if api_key_env else ""
+    api_key = get_provider_env(api_key_env) if api_key_env else ""
 
     if not base_url or not api_key:
-        return []
+        return [], None
 
     url = f"{base_url}{search_path}"
     if auth_style == "x-api-key":
@@ -422,14 +425,15 @@ def _search_custom_backend(
         results = _extract_custom_results(data)
         if not results:
             logger.warning("Custom backend returned no parseable results")
-        return results
+        return results, None
     except httpx.TimeoutException:
         logger.warning("Custom backend timed out: %s", url)
     except httpx.HTTPStatusError as exc:
         logger.warning("Custom backend HTTP error: %s (%s)", exc, exc.response.text[:200])
+        return [], exc.response.status_code
     except Exception as exc:
         logger.warning("Custom backend failed: %s", exc)
-    return []
+    return [], None
 
 
 def _extract_custom_results(data: Any) -> List[Dict[str, Any]]:
@@ -490,19 +494,24 @@ def _extract_custom_results(data: Any) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _search_one_backend(backend: Dict[str, Any], query: str, limit: int) -> List[Dict[str, Any]]:
-    """Single-backend search worker for thread-pool execution."""
+def _search_one_backend(backend: Dict[str, Any], query: str, limit: int) -> tuple[List[Dict[str, Any]], Optional[int]]:
+    """Single-backend search worker for thread-pool execution.
+
+    Returns ``(results, status_code)``. *status_code* carries the HTTP status
+    for custom backends that fail with HTTP errors so the caller can invoke
+    health-cache cooldowns.
+    """
     name = str(backend.get("name", "?"))
     typ = str(backend.get("type", "") or "")
 
     try:
         if typ == "custom":
-            results = _search_custom_backend(backend, query, limit)
+            results, status_code = _search_custom_backend(backend, query, limit)
         else:
             provider = _get_registered_provider(name)
             if provider is None:
                 logger.warning("Backend '%s' not registered, skipping", name)
-                return []
+                return [], None
             resp = provider.search(query, limit=limit)
             if isinstance(resp, dict) and resp.get("success"):
                 data = resp.get("data", {})
@@ -517,12 +526,13 @@ def _search_one_backend(backend: Dict[str, Any], query: str, limit: int) -> List
             else:
                 err = resp.get("error", "unknown") if isinstance(resp, dict) else "unknown"
                 logger.warning("Backend '%s' failed: %s", name, err)
-                return []
+                return [], None
+            status_code = None
         logger.info("Backend '%s' returned %d results", name, len(results))
-        return results
+        return results, status_code
     except Exception as exc:
         logger.warning("Backend '%s' error: %s", name, exc)
-        return []
+        return [], None
 
 
 # ---------------------------------------------------------------------------
@@ -659,9 +669,13 @@ class FederatedSearchProvider(WebSearchProvider):
                     b = futures[f]
                     name = str(b.get("name", "?"))
                     try:
-                        results = f.result(timeout=2)
+                        results, status_code = f.result(timeout=2)
                         all_results.extend(results)
-                        backend_results[name] = (results, None)
+                        backend_results[name] = (results, status_code)
+                        # Wire real search failures into the health cache so
+                        # the documented 401/403/429 cooldown actually fires.
+                        if health_cache is not None and status_code is not None:
+                            health_cache.mark_failed(name, status_code)
                     except Exception as exc:
                         errors.append(f"backend '{name}' failed: {exc}")
                         backend_results[name] = ([], None)
@@ -681,7 +695,7 @@ class FederatedSearchProvider(WebSearchProvider):
                 if results
             ]
             required_failed = []
-            for b in active_backends:
+            for b in backends:
                 name = str(b.get("name", "?"))
                 if b.get("required", False) and name not in successful:
                     required_failed.append(name)

@@ -383,6 +383,26 @@ class TestMattermostSend:
         assert self.adapter._api_post.await_args.args[1]["root_id"] == "thread_root"
 
     @pytest.mark.asyncio
+    async def test_send_prefers_and_resolves_metadata_root_over_reply_to(self):
+        """send() posts to the metadata root even when reply_to is stale."""
+        self.adapter._api_get = AsyncMock(
+            return_value={"id": "metadata_reply", "root_id": "thread_root"}
+        )
+        self.adapter._api_post = AsyncMock(return_value={"id": "post789"})
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="stale_reply",
+            metadata={"thread_id": "metadata_reply"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._api_post.await_args.args[1]
+        assert payload["root_id"] == "thread_root"
+        self.adapter._api_get.assert_awaited_once_with("posts/metadata_reply")
+
+    @pytest.mark.asyncio
     async def test_thread_metadata_survives_transient_lookup_failure(self):
         """Keep the thread on a failed lookup rather than flattening it."""
         self.adapter._api_get = AsyncMock(return_value={})

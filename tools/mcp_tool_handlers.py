@@ -249,7 +249,7 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
             if recovered is not None:
                 return recovered
         on_final_failure(exc)
-        return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}", server._redaction_values))
+        return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}", getattr(server, "_redaction_values", ())))
 
 
 @asynccontextmanager
@@ -438,12 +438,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
-            return _render_call_tool_result(result, server_name, server._redaction_values)
+            return _render_call_tool_result(result, server_name, getattr(server, "_redaction_values", ()))
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name,
-                         _sanitize_error(_exc_str(exc), server._redaction_values))
+                         _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())))
         return _dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
@@ -472,7 +472,7 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label,
-                                         _sanitize_error(_exc_str(exc), server._redaction_values)))
+                                         _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ()))))
         return _handler
     return _factory
 

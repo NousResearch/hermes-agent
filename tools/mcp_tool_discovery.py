@@ -94,7 +94,8 @@ def _request_lazy_reconnect(server_name: str, server: _core.MCPServerTask) -> bo
     try:
         return bool(_loop._run_on_mcp_loop(_await_ready, timeout=_core._RECYCLED_RECONNECT_TIMEOUT))
     except Exception as exc:
-        logger.warning("MCP server '%s': lazy reconnect after stdio recycle failed: %s", server_name, exc)
+        logger.warning("MCP server '%s': lazy reconnect after stdio recycle failed: %s", server_name,
+                       _sanitize_error(_errors._exc_str(exc), getattr(server, "_redaction_values", ())))
         return False
 
 

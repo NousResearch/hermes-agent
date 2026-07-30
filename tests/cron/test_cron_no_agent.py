@@ -131,3 +131,21 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
     assert "Blocked" in output
+
+
+def test_create_job_no_agent_rejects_missing_script(hermes_env):
+    """A no_agent job whose script does not exist can never do anything.
+
+    The script IS the job, so a typo'd or not-yet-written filename must fail at
+    create time rather than scheduling a job that fails on every fire.
+    """
+    from cron.jobs import create_job
+
+    with pytest.raises(ValueError, match="script does not exist"):
+        create_job(
+            prompt=None,
+            schedule="every 5m",
+            script="not-written-yet.sh",
+            no_agent=True,
+            deliver="local",
+        )

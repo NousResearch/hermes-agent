@@ -1853,6 +1853,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "smart_model_routing",   # written by the setup wizard (hermes_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
     "known_plugin_toolsets", # written/read by hermes_cli/tools_config.py toolset-save flow
+    "known_builtin_toolsets",  # ditto — which builtin toolsets a platform's checklist has offered
     "session_reset",         # top-level form read by gateway/config.py + setup
     "group_sessions_per_user",   # top-level form bridged by gateway/config.py
     "thread_sessions_per_user",  # top-level form bridged by gateway/config.py

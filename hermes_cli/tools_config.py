@@ -2132,6 +2132,66 @@ def _exempt_explicit_platform_native(
             default_off.discard(ts)
 
 
+#: Toolsets young enough that absence from a saved ``platform_toolsets`` list
+#: means "never offered" rather than "declined".
+#:
+#: Saving ``hermes tools`` (or one toggle in the desktop Toolsets UI) replaces
+#: a platform's composite with a frozen explicit list, and nothing ever adds to
+#: that list — so a toolset shipped afterwards stays off forever for anyone who
+#: has touched the picker, while everyone still on ``[hermes-cli]`` inherits it
+#: on upgrade. Listing it here restores that parity.
+#:
+#: MUST ship in the same release as the toolset it names, and be emptied in the
+#: next one. The inference only holds while no released build has put the
+#: toolset on a checklist: once one has, a user who unchecks it writes a config
+#: byte-identical to one saved before the toolset existed (the record below is
+#: only written from that point on), and this rule turns their opt-out back on.
+#: Landing late — or leaving an entry here for a second release — converts a
+#: back-fill into a stuck checkbox.
+#:
+#: Not gated on a Nous subscription here: the six ``bfl_flux3_*`` tools carry
+#: ``check_fn=check_bfl_requirements`` (logged in AND paid), so an enabled
+#: toolset still ships zero schemas to a user without paid portal access — the
+#: same split Home Assistant uses. Probing the portal from this path would put
+#: a network call on every CLI start, gateway session and cron tick.
+_RECENTLY_SHIPPED_TOOLSETS = frozenset({"bfl"})
+
+
+def _enable_recently_shipped_toolsets(
+    enabled_toolsets: Set[str], config: dict, platform: str
+) -> None:
+    """Turn on toolsets that shipped after this platform's saved list.
+
+    Either way of saying no outlives this: unchecking in ``hermes tools``
+    records the toolset in ``known_builtin_toolsets`` so it reads as declined
+    from then on, and ``agent.disabled_toolsets`` is subtracted after every
+    rule in :func:`_get_platform_tools`. Mutates ``enabled_toolsets`` in place.
+    """
+    from toolsets import resolve_toolset
+
+    offered = (config.get("known_builtin_toolsets") or {}).get(platform)
+    declined = {str(ts) for ts in offered} if isinstance(offered, list) else set()
+
+    plat_info = PLATFORMS.get(platform)
+    default_ts = plat_info["default_toolset"] if plat_info else f"hermes-{platform}"
+    composite_tools = None
+
+    for ts_key in sorted(_RECENTLY_SHIPPED_TOOLSETS):
+        if ts_key in enabled_toolsets or ts_key in declined:
+            continue
+        if not _toolset_allowed_for_platform(ts_key, platform):
+            continue
+        # Parity is the whole justification, so only enable the toolset where
+        # staying on the composite would have enabled it anyway. Deliberately
+        # narrow composites (hermes-acp, hermes-webhook) stay narrow.
+        ts_tools = set(resolve_toolset(ts_key, include_registry=False))
+        if composite_tools is None:
+            composite_tools = set(resolve_toolset(default_ts))
+        if not ts_tools or not ts_tools.issubset(composite_tools):
+            continue
+        enabled_toolsets.add(ts_key)
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -2217,6 +2277,8 @@ def _get_platform_tools(
             expanded -= default_off
 
             enabled_toolsets |= expanded
+
+        _enable_recently_shipped_toolsets(enabled_toolsets, config, platform)
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
@@ -2483,6 +2545,17 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         if not isinstance(config.get("known_plugin_toolsets"), dict):
             config["known_plugin_toolsets"] = {}
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
+
+    # Same record for builtin toolsets: which ones this platform's checklist
+    # has actually put in front of the user. Without it, a toolset the user
+    # unchecks here is indistinguishable from one that shipped after they
+    # saved, and _enable_recently_shipped_toolsets would turn it straight back
+    # on. Recorded from the full catalog, since that is what the picker showed.
+    if not isinstance(config.get("known_builtin_toolsets"), dict):
+        config["known_builtin_toolsets"] = {}
+    config["known_builtin_toolsets"][platform] = sorted(
+        ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS
+    )
 
     # Reconcile with agent.disabled_toolsets. _get_platform_tools() applies
     # that list as a final override AFTER reading platform_toolsets.<platform>,

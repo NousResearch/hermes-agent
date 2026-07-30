@@ -930,11 +930,14 @@ Instead, when the budget is actually exhausted (500/500), Hermes injects one mes
 agent:
   max_turns: 500               # Max iterations per conversation turn (default: 500)
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
+  empty_response_retries: 5    # Retries on an empty model response before fallback (default: 5)
 ```
 
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (500/500) — response may be incomplete`.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+
+`agent.empty_response_retries` controls how many times Hermes retries a model that returns an empty response (no content and no reasoning) before fallback-provider switching engages; a short jittered backoff runs between retries. The default is `5`. Some providers return transient empty responses, and the previous hardcoded `3` could trigger a premature fallback. Set it to `0` to fall back on the first empty response instead of retrying.
 
 ## Verify-on-Stop (coding verification)
 

@@ -6658,8 +6658,10 @@ def run_conversation(
                         continue
 
                     # ── Empty response retry ──────────────────────
-                    # Model returned nothing usable.  Retry up to 3
-                    # times before attempting fallback.  This covers
+                    # Model returned nothing usable.  Retry up to
+                    # agent.empty_response_retries times (default 5; short
+                    # jittered backoff between attempts) before attempting
+                    # fallback.  This covers
                     # both truly empty responses (no content, no
                     # reasoning) AND reasoning-only responses after
                     # prefill exhaustion — models like mimo-v2-pro
@@ -6673,7 +6675,7 @@ def run_conversation(
                         _has_structured
                         and agent._thinking_prefill_retries >= 2
                     )
-                    if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
+                    if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < agent._empty_response_retries:
                         agent._empty_content_retries += 1
                         wait_time = jittered_backoff(
                             agent._empty_content_retries,
@@ -6681,23 +6683,44 @@ def run_conversation(
                             max_delay=60.0,
                         )
                         logger.warning(
-                            "Empty response (no content or reasoning) — "
-                            "retry %d/3 in %.1fs (model=%s)",
-                            agent._empty_content_retries, wait_time, agent.model,
+                            "Empty response (no content or reasoning); "
+                            "retry %d/%d (model=%s)",
+                            agent._empty_content_retries,
+                            agent._empty_response_retries,
+                            agent.model,
+                        )
+                        # Short jittered backoff so a transiently-empty provider
+                        # (e.g. z.ai GLM-5-Turbo) recovers before the retry.
+                        # Interruptible: a steering redirect that lands during
+                        # the wait is preserved and re-applied on the next loop
+                        # iteration instead of aborting the turn (same rule as
+                        # the 429/529 backoff). No activity keepalive: the ~22s
+                        # worst case (15s cap + jitter) sits well under the
+                        # gateway's 900s inactivity-warning / 1800s hard-timeout.
+                        wait_time = jittered_backoff(
+                            agent._empty_content_retries,
+                            base_delay=3.0,
+                            max_delay=15.0,
                         )
                         agent._buffer_status(
-                            f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3) in {wait_time:.0f}s"
+                            f"⚠️ Empty response from model; retrying "
+                            f"({agent._empty_content_retries}/{agent._empty_response_retries}) "
+                            f"in {wait_time:.1f}s..."
                         )
-                        # Sleep in small increments to stay responsive to interrupts
                         sleep_end = time.time() + wait_time
-                        _backoff_touch_counter = 0
+                        _empty_redirect_preserved = False
                         while time.time() < sleep_end:
                             if agent._interrupt_requested:
-                                agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during empty-response retry wait, aborting.", force=True)
+                                if agent.clear_interrupt(preserve_redirect=True):
+                                    _empty_redirect_preserved = True
+                                    break
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚡ Interrupt during empty-response backoff, aborting.",
+                                    force=True,
+                                )
                                 _interrupt_text = (
-                                    f"Operation interrupted: retrying empty response from model "
-                                    f"(retry {agent._empty_content_retries}/3)."
+                                    f"Operation interrupted during empty-response retry "
+                                    f"({agent._empty_content_retries}/{agent._empty_response_retries})."
                                 )
                                 close_interrupted_tool_sequence(messages, _interrupt_text)
                                 agent._persist_session(messages, conversation_history)
@@ -6710,12 +6733,12 @@ def run_conversation(
                                     "interrupted": True,
                                 }
                             time.sleep(0.2)
-                            _backoff_touch_counter += 1
-                            if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
-                                agent._touch_activity(
-                                    f"empty response retry backoff ({agent._empty_content_retries}/3), "
-                                    f"{int(sleep_end - time.time())}s remaining"
-                                )
+                        if _empty_redirect_preserved:
+                            # Refund the slot this empty retry consumed so the
+                            # loop re-enters and drains/applies the redirect
+                            # instead of exiting on an exhausted budget (mirrors
+                            # the 429 backoff's redirect-restart refund).
+                            agent.iteration_budget.refund()
                         continue
 
                     # ── Exhausted retries — try fallback provider ──

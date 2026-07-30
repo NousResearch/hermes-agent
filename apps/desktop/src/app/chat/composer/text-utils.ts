@@ -164,18 +164,13 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
   return serializeTextBefore(editor, range.startContainer, range.startOffset)
 }
 
-/** A directive scope the caret is sitting inside (`@url:` with nothing typed
- *  after it), and how many characters it occupies. A paste or a picked value
- *  lands INTO that scope: the scope text is consumed rather than left in front
- *  of the chip as leftover syntax. */
-export function openDirectiveScope(editor: HTMLDivElement): { length: number; scope: DirectiveScope } | null {
+/** How many characters of directive scope the caret is sitting inside (`@url:`
+ *  with nothing typed after it), or 0. A paste lands INTO that scope: the scope
+ *  text is consumed rather than left in front of the chip as leftover syntax. */
+export function openDirectiveScope(editor: HTMLDivElement): number {
   const trigger = detectTrigger(textBeforeCaret(editor) ?? '')
 
-  if (trigger?.kind !== '@' || !trigger.scope || trigger.value) {
-    return null
-  }
-
-  return { length: trigger.tokenLength, scope: trigger.scope }
+  return trigger?.kind === '@' && trigger.scope && !trigger.value ? trigger.tokenLength : 0
 }
 
 export function detectTrigger(textBefore: string): TriggerState | null {

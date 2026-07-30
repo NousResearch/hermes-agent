@@ -1,7 +1,7 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { Fragment } from 'react'
 
-import { referenceStyle } from '@/components/assistant-ui/reference-kinds'
+import { referenceKind, referenceStyle } from '@/components/assistant-ui/reference-kinds'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
@@ -137,6 +137,7 @@ export function ComposerTriggerPopover({
           const isFirstHeader = lastGroup === undefined
           lastGroup = group || lastGroup
           const active = index === activeIndex
+          const refKind = referenceKind(rowKind(item, isSlash))
 
           return (
             <Fragment key={item.id}>
@@ -154,10 +155,8 @@ export function ComposerTriggerPopover({
                   <span className="min-w-0 shrink truncate leading-5 text-foreground">{display}</span>
                 ) : (
                   <>
-                    <span
-                      className={cn('grid size-4 shrink-0 place-items-center', referenceStyle(rowKind(item, isSlash)).color)}
-                    >
-                      <Codicon name={referenceStyle(rowKind(item, isSlash)).codicon} size="0.875rem" />
+                    <span className="grid size-4 shrink-0 place-items-center text-(--ref-color)" data-ref={refKind}>
+                      <Codicon name={referenceStyle(refKind).codicon} size="0.875rem" />
                     </span>
                     <span className="min-w-0 shrink truncate font-medium leading-5 text-foreground">{display}</span>
                     {description && (

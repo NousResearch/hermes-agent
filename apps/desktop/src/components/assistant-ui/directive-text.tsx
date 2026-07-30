@@ -13,7 +13,7 @@ import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
-import { referenceStyle } from './reference-kinds'
+import { referenceKind, referenceStyle } from './reference-kinds'
 
 const HERMES_REF_TYPES = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -26,26 +26,23 @@ const SVG_ATTRS =
   'xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
 
 /**
- * Shared chip styling — used by the rendered <DirectiveChip> and by the raw
- * HTML composer chips in `rich-editor.ts`.
+ * The class + attributes that make any element an inline reference. Pair with
+ * the `.ref` rules in styles.css, which own the per-kind accent — pass the kind
+ * and the theme decides the colour.
  *
- * A chip is inline TEXT, not a badge: no background, no padding, no border.
- * The icon says what kind of thing it is and the color reinforces it, which is
- * all the signal a reference needs when it's sitting in the middle of a
- * sentence — a filled pill turns every mention into a UI element the eye has
- * to step over. Per-kind color comes from REFERENCE_STYLES so a `@file:` reads
- * the same here as it does in the popover you picked it from.
- *
- * Font size is inherited rather than shrunk: a reference is content the user
- * chose, and rendering it smaller than the words around it reads as a
- * footnote. With no vertical padding the glyphs sit in the normal line box, so
- * `align-baseline` is enough — no nudge needed.
+ * One helper for every surface: the composer's contenteditable chips, a sent
+ * message's mentions, a markdown link, a completion row's glyph. If it points
+ * at something from inside text, it goes through here.
  */
-export const DIRECTIVE_CHIP_CLASS = 'inline-flex max-w-56 items-baseline gap-1 align-baseline font-medium leading-none'
+export function refAttrs(kind?: string, extra?: string): { className: string; 'data-ref'?: string } {
+  const className = extra ? `ref ${extra}` : 'ref'
 
-/** Per-kind chip classes: the shared shape plus the kind's own color. */
-export function directiveChipClass(type: string): string {
-  return `${DIRECTIVE_CHIP_CLASS} ${referenceStyle(type).color}`
+  return kind ? { className, 'data-ref': referenceKind(kind) } : { className }
+}
+
+/** The same thing as a raw attribute string, for HTML built by hand. */
+export function refAttrsHtml(kind?: string): string {
+  return kind ? `class="ref" data-ref="${referenceKind(kind)}"` : 'class="ref"'
 }
 
 
@@ -55,12 +52,11 @@ export function directiveIconSvg(type: string) {
     .map(d => `<path d="${d}"/>`)
     .join('')
 
-  return `<svg ${SVG_ATTRS} class="size-[0.875em] shrink-0 opacity-80">${inner}</svg>`
+  return `<svg ${SVG_ATTRS}>${inner}</svg>`
 }
 
 function iconElementFromPaths(paths: string[]) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-  svg.setAttribute('class', 'size-[0.875em] shrink-0 opacity-80')
   svg.setAttribute('fill', 'none')
   svg.setAttribute('stroke', 'currentColor')
   svg.setAttribute('stroke-linecap', 'round')
@@ -82,25 +78,17 @@ export function directiveIconElement(type: string) {
   return iconElementFromPaths(iconPathsFor(type))
 }
 
-/** Slash pills are references too — commands, skills, and themes are just
- *  three more kinds in the shared vocabulary, so they share the chip shape and
- *  read their icon + accent from the same table. */
+/** Commands, skills, and themes are three more reference kinds — no separate
+ *  pill styling, just the shared `.ref` treatment with their own accent. */
 export type SlashChipKind = 'command' | 'skill' | 'theme'
-
-export const SLASH_CHIP_BASE_CLASS = DIRECTIVE_CHIP_CLASS
-
-export function slashChipClass(kind: SlashChipKind): string {
-  return directiveChipClass(kind)
-}
 
 export function slashIconElement(kind: SlashChipKind) {
   return iconElementFromPaths(iconPathsFor(kind))
 }
 
-const DirectiveIcon: FC<{ type: string; className?: string }> = ({
-  type,
-  className = 'size-[0.875em] shrink-0 opacity-80'
-}) => (
+/** The glyph for a reference kind. Size, spacing, and opacity come from the
+ *  `.ref > svg` rules — the icon only has to say which shape it is. */
+const DirectiveIcon: FC<{ type: string; className?: string }> = ({ type, className }) => (
   <svg
     className={className}
     fill="none"
@@ -498,7 +486,7 @@ export const SessionRefLink: FC<{
 
   return (
     <a
-      className="link-chip wrap-anywhere"
+      {...refAttrs('session', 'wrap-anywhere')}
       href="#"
       onClick={event => {
         event.preventDefault()
@@ -507,7 +495,7 @@ export const SessionRefLink: FC<{
       }}
       title={value}
     >
-      <DirectiveIcon className="mr-1 inline size-[0.82em] align-[-0.08em] opacity-70" type="session" />
+      <DirectiveIcon type="session" />
       {resolved}
     </a>
   )
@@ -516,9 +504,9 @@ export const SessionRefLink: FC<{
 /** A skill referenced inside a sent message — the rendered twin of the
  *  composer's slash pill, so a picked skill stays a chip after send. */
 const SlashChip: FC<{ kind: SlashChipKind; label: string; value: string }> = ({ kind, label, value }) => (
-  <span className={slashChipClass(kind)} data-slot="aui_slash-chip" title={value}>
+  <span {...refAttrs(kind)} data-slot="aui_slash-chip" title={value}>
     <DirectiveIcon type={kind} />
-    <span className="truncate">{label}</span>
+    {label}
   </span>
 )
 
@@ -533,14 +521,13 @@ const DirectiveChip: FC<{
   const body = (
     <>
       <DirectiveIcon type={type} />
-      <span className="truncate">{label}</span>
+      {label}
     </>
   )
 
   const props = {
-    className: cn(directiveChipClass(type), onClick && 'cursor-pointer transition-colors hover:text-foreground'),
+    ...refAttrs(type, cn('wrap-anywhere', onClick && 'cursor-pointer')),
     'data-directive-id': id,
-    'data-directive-type': type,
     'data-slot': 'aui_directive-chip',
     title: id
   }

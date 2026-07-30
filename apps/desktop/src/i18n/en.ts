@@ -2712,6 +2712,8 @@ export const en: Translations = {
       branchNewChat: 'Branch in new chat',
       react: 'React',
       dismissError: 'Dismiss error',
+      filesChanged: count => (count === 1 ? '1 file changed' : `${count} files changed`),
+      reviewChanges: 'Review',
       readAloudFailed: 'Read aloud failed',
       preparingAudio: 'Preparing audio...',
       stopReading: 'Stop reading',

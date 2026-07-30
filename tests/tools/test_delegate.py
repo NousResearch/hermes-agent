@@ -30,6 +30,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _run_child_in_workspace,
 )
 
 
@@ -57,6 +58,25 @@ def _make_mock_parent(depth=0):
 
 
 class TestDelegateRequirements(unittest.TestCase):
+
+    def test_child_run_is_pinned_to_parent_workspace(self):
+        import tempfile
+        from pathlib import Path
+        from agent.runtime_cwd import resolve_agent_cwd
+
+        observed = []
+
+        class Child:
+            def run_conversation(self, goal):
+                observed.append(resolve_agent_cwd())
+                return {"final_response": goal}
+
+        with tempfile.TemporaryDirectory() as workspace:
+            expected = Path(workspace)
+            result = _run_child_in_workspace(Child(), workspace, "review")
+
+        self.assertEqual(observed, [expected])
+        self.assertEqual(result["final_response"], "review")
 
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")

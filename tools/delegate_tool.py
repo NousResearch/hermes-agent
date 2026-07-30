@@ -889,6 +889,18 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+def _run_child_in_workspace(child, workspace_path: Optional[str], *args, **kwargs):
+    """Run a child with its logical cwd pinned to the parent's workspace."""
+    if not workspace_path:
+        return child.run_conversation(*args, **kwargs)
+    from agent.runtime_cwd import _SESSION_CWD, set_session_cwd
+    token = set_session_cwd(workspace_path)
+    try:
+        return child.run_conversation(*args, **kwargs)
+    finally:
+        _SESSION_CWD.reset(token)
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools.
 
@@ -1556,6 +1568,7 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._delegate_workspace_path = workspace_hint
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
@@ -2177,7 +2190,9 @@ def _run_single_child(
             from agent.delegation_context import delegated_child_context
 
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
+                return _run_child_in_workspace(
+                    child,
+                    getattr(child, "_delegate_workspace_path", None),
                     user_message=goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,

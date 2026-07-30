@@ -949,7 +949,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
                 break
             if _act == "handled":
                 result = {"success": True, "message": f"Skill '{name}' created by plugin.", "hook_handled": True}
-                # Fire post hook too so observers see the event
+                # Fire post hook so observers see the event.  Path is "" since
+                # the plugin chose the destination — the pre-hook contract
+                # guarantees the upstream caller won't interpret the path.
                 if has_hook("post_skill_create"):
                     _invoke_skill_hook("post_skill_create", name=name, category=category or "",
                                        path="", success=True)

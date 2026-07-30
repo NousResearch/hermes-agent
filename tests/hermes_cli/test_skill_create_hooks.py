@@ -697,3 +697,195 @@ def test_remove_file_handled_skips_hermes_removal(tmp_path):
 
     assert result["success"] is True
     assert result.get("hook_handled") is True
+
+# ─── Patch hooks ─────────────────────────────────────────────────────────
+
+def test_patch_hook_is_registered_as_valid():
+    """pre_skill_patch is in VALID_HOOKS."""
+    from hermes_cli.plugins import VALID_HOOKS
+    assert "pre_skill_patch" in VALID_HOOKS
+
+
+def test_patch_handled_skips_default(tmp_path):
+    """When pre_skill_patch returns handled, the default patch does not run."""
+    from unittest.mock import patch as mock_patch
+    import hermes_cli.plugins
+
+    captured = []
+
+    def _handle(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "action": "handled"}
+
+    reg = hermes_cli.plugins.PluginHookRegistry()
+    reg.register("pre_skill_patch", _handle)
+
+    with mock_patch("tools.skill_manager_tool._resolve_skill_reg_dir", return_value=str(tmp_path)):
+        # Skill must exist for patch
+        (tmp_path / "test_skill").mkdir(parents=True)
+        (tmp_path / "test_skill" / "SKILL.md").write_text("old content")
+
+        from hermes_cli.tool_routers.skill_manage_router import handle_skill_manage
+        from hermes_cli.plugins import _plugin_hooks_ctx
+
+        token = _plugin_hooks_ctx.set(reg)
+        try:
+            result = handle_skill_manage({
+                "action": "patch",
+                "name": "test_skill",
+                "old_string": "dummy",
+                "new_string": "dummy2",
+            })
+        finally:
+            _plugin_hooks_ctx.reset(token)
+
+    assert result.get("hook_handled") is True
+    assert len(captured) == 1
+    assert captured[0]["name"] == "test_skill"
+
+
+def test_patch_block_aborts(tmp_path):
+    """When pre_skill_patch returns block, the patch does not run."""
+    from unittest.mock import patch as mock_patch
+    import hermes_cli.plugins
+
+    def _block(**kwargs):
+        return {"success": False, "action": "block", "reason": "no patching allowed"}
+
+    reg = hermes_cli.plugins.PluginHookRegistry()
+    reg.register("pre_skill_patch", _block)
+
+    with mock_patch("tools.skill_manager_tool._resolve_skill_reg_dir", return_value=str(tmp_path)):
+        (tmp_path / "test_skill").mkdir(parents=True)
+        (tmp_path / "test_skill" / "SKILL.md").write_text("old content")
+
+        from hermes_cli.tool_routers.skill_manage_router import handle_skill_manage
+        from hermes_cli.plugins import _plugin_hooks_ctx
+
+        token = _plugin_hooks_ctx.set(reg)
+        try:
+            result = handle_skill_manage({
+                "action": "patch",
+                "name": "test_skill",
+                "old_string": "dummy",
+                "new_string": "dummy2",
+            })
+        finally:
+            _plugin_hooks_ctx.reset(token)
+
+    assert result.get("success") is False
+    assert "no patching allowed" in str(result.get("error", ""))
+
+
+# ─── Write file hooks ────────────────────────────────────────────────────
+
+def test_write_file_hook_is_registered_as_valid():
+    from hermes_cli.plugins import VALID_HOOKS
+    assert "pre_skill_write_file" in VALID_HOOKS
+
+
+def test_write_file_handled(tmp_path):
+    from unittest.mock import patch as mock_patch
+    import hermes_cli.plugins
+
+    captured = []
+
+    def _handle(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "action": "handled"}
+
+    reg = hermes_cli.plugins.PluginHookRegistry()
+    reg.register("pre_skill_write_file", _handle)
+
+    with mock_patch("tools.skill_manager_tool._resolve_skill_reg_dir", return_value=str(tmp_path)):
+        (tmp_path / "test_skill").mkdir(parents=True)
+
+        from hermes_cli.tool_routers.skill_manage_router import handle_skill_manage
+        from hermes_cli.plugins import _plugin_hooks_ctx
+
+        token = _plugin_hooks_ctx.set(reg)
+        try:
+            result = handle_skill_manage({
+                "action": "write_file",
+                "name": "test_skill",
+                "file_path": "references/test.md",
+                "file_content": "test content",
+            })
+        finally:
+            _plugin_hooks_ctx.reset(token)
+
+    assert result.get("hook_handled") is True
+    assert len(captured) == 1
+
+
+# ─── Remove file hooks ───────────────────────────────────────────────────
+
+def test_remove_file_hook_is_registered_as_valid():
+    from hermes_cli.plugins import VALID_HOOKS
+    assert "pre_skill_remove_file" in VALID_HOOKS
+
+
+def test_remove_file_handled(tmp_path):
+    from unittest.mock import patch as mock_patch
+    import hermes_cli.plugins
+
+    def _handle(**kwargs):
+        return {"success": True, "action": "handled"}
+
+    reg = hermes_cli.plugins.PluginHookRegistry()
+    reg.register("pre_skill_remove_file", _handle)
+
+    with mock_patch("tools.skill_manager_tool._resolve_skill_reg_dir", return_value=str(tmp_path)):
+        (tmp_path / "test_skill").mkdir(parents=True)
+        (tmp_path / "test_skill" / "references").mkdir(parents=True)
+        (tmp_path / "test_skill" / "references" / "test.md").write_text("content")
+
+        from hermes_cli.tool_routers.skill_manage_router import handle_skill_manage
+        from hermes_cli.plugins import _plugin_hooks_ctx
+
+        token = _plugin_hooks_ctx.set(reg)
+        try:
+            result = handle_skill_manage({
+                "action": "remove_file",
+                "name": "test_skill",
+                "file_path": "references/test.md",
+            })
+        finally:
+            _plugin_hooks_ctx.reset(token)
+
+    assert result.get("hook_handled") is True
+
+
+# ─── Delete hooks ────────────────────────────────────────────────────────
+
+def test_delete_hook_is_registered_as_valid():
+    from hermes_cli.plugins import VALID_HOOKS
+    assert "pre_skill_delete" in VALID_HOOKS
+
+
+def test_delete_handled(tmp_path):
+    from unittest.mock import patch as mock_patch
+    import hermes_cli.plugins
+
+    def _handle(**kwargs):
+        return {"success": True, "action": "handled"}
+
+    reg = hermes_cli.plugins.PluginHookRegistry()
+    reg.register("pre_skill_delete", _handle)
+
+    with mock_patch("tools.skill_manager_tool._resolve_skill_reg_dir", return_value=str(tmp_path)):
+        (tmp_path / "test_skill").mkdir(parents=True)
+
+        from hermes_cli.tool_routers.skill_manage_router import handle_skill_manage
+        from hermes_cli.plugins import _plugin_hooks_ctx
+
+        token = _plugin_hooks_ctx.set(reg)
+        try:
+            result = handle_skill_manage({
+                "action": "delete",
+                "name": "test_skill",
+            })
+        finally:
+            _plugin_hooks_ctx.reset(token)
+
+    assert result.get("hook_handled") is True

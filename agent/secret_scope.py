@@ -223,7 +223,7 @@ def _strip_inline_comment(value: str) -> str:
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
+def load_env_file(env_path: Path, *, strict: bool = False) -> Dict[str, str]:
     """Parse a ``.env`` file into a plain dict WITHOUT touching ``os.environ``.
 
     Used to load a profile's secrets into an isolated mapping for
@@ -237,11 +237,16 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     Encoding is ``utf-8-sig`` so a leading UTF-8 BOM (Windows Notepad /
     PowerShell ``Set-Content -Encoding UTF8``) does not prefix the first
     key as ``\\ufeffNAME`` and make ``get_secret('NAME')`` miss under scope.
+
+    Set ``strict=True`` when callers need to distinguish an unreadable file
+    from a valid empty file and surface their own secret-safe warning.
     """
     secrets: Dict[str, str] = {}
     try:
         text = env_path.read_text(encoding="utf-8-sig")
     except (FileNotFoundError, OSError, UnicodeDecodeError):
+        if strict:
+            raise
         return secrets
 
     # Parse values with the canonical Hermes parser: save_env_value

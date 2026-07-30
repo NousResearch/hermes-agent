@@ -46,7 +46,7 @@ description: "设置一个持续目标，让 Hermes 跨轮次持续工作直到�
 | `/goal resume` | 恢复循环（将轮次计数器重置为零）。 |
 | `/goal clear` | 完全删除目标。 |
 
-所有子命令在 CLI 及所有 gateway 平台（Telegram、Discord、Slack、Matrix、Signal、WhatsApp、SMS、iMessage、Webhook、API server 以及 Web 控制台）上行为完全一致，**但 `/goal --file <path>` 除外**——它仅限本地/后端使用：远程聊天命令不得读取 Hermes 后端主机上的文件（见[从文件加载目标](#从文件加载目标)）。
+所有子命令在 CLI、TUI、Desktop、Dashboard Chat（Web 控制台）及消息 gateway（Telegram、Discord、Slack、Matrix、Signal、WhatsApp、SMS、iMessage、Webhook 和 API server）上行为完全一致，**但 `/goal --file <path>` 除外**。文件输入可在 CLI、TUI、Desktop 和 Dashboard Chat 中使用；消息 gateway 会拒绝它，防止远程聊天命令读取 Hermes 后端主机上的文件（见[从文件加载目标](#从文件加载目标)）。
 
 ## 从文件加载目标
 
@@ -66,7 +66,7 @@ description: "设置一个持续目标，让 Hermes 跨轮次持续工作直到�
 - 包含空格的路径无需加引号，但你也可以用一对匹配的单引号或双引号包裹。原生 Windows 反斜杠会被保留。
 - 缺失、不可读、非常规、UTF-8 无效或空白的文件会返回明确错误，且不影响任何现有目标——加载是原子操作。
 
-`/goal --file` **仅**在本地 CLI、TUI、Desktop 和 Dashboard Chat（Web 控制台）中可用。在消息 gateway（Telegram、Discord、Slack 等）上会返回不支持的错误，且绝不读取文件——这一边界防止远程聊天用户读取 Hermes 后端主机上的任意文件。
+`/goal --file` 可在 CLI、TUI、Desktop 和 Dashboard Chat（Web 控制台）中使用，并且在所有这些界面中都从 Hermes 后端主机读取文件。在消息 gateway（Telegram、Discord、Slack 等）上会返回不支持的错误，且绝不读取文件——这一边界防止远程聊天用户读取后端主机上的任意文件。
 
 ## 目标进行中追加条件：`/subgoal`
 

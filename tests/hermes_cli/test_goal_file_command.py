@@ -3,9 +3,10 @@
 Covers the Classic CLI handler, the pure ``_parse_goal_file_arg`` syntax
 boundary (Windows backslashes preserved on any host), and the shared
 ``resolve_goal_input`` resolver used by the Classic CLI, TUI/Desktop/
-Dashboard Chat backend, and messaging gateway. Real temporary files back the success,
-directory, blank, and invalid-UTF-8 cases; an unreadable file is tested
-by mocking ``Path.read_text`` (``chmod 000`` is unreliable under root).
+Dashboard Chat backend, and messaging gateway. Real temporary files back
+the success, directory, blank, and invalid-UTF-8 cases; an unreadable file
+is tested by mocking ``Path.read_text`` (``chmod 000`` is unreliable under
+root).
 """
 from queue import Queue
 from types import SimpleNamespace

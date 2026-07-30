@@ -50,7 +50,7 @@ What you'll see:
 | `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
 
-All subcommands work identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard), **except** `/goal --file <path>`, which is local/backend-only — a remote chat command must not read files from the Hermes backend host (see [Loading a goal from a file](#loading-a-goal-from-a-file)).
+All subcommands work identically in the CLI, TUI, Desktop, Dashboard Chat, and messaging gateways (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, and the API server), **except** `/goal --file <path>`. File input works in the CLI, TUI, Desktop, and Dashboard Chat, but messaging gateways reject it so a remote chat command cannot read files from the Hermes backend host (see [Loading a goal from a file](#loading-a-goal-from-a-file)).
 
 ## Loading a goal from a file
 
@@ -70,7 +70,7 @@ Path resolution and semantics:
 - Paths with spaces don't require quoting, though you may wrap them in a matching pair of single or double quotes. Native Windows backslashes are preserved.
 - A missing, unreadable, non-regular, invalid-UTF-8, or blank file returns a clear error and leaves any existing goal untouched — the load is atomic.
 
-`/goal --file` is **only** available in the local CLI, TUI, Desktop, and Dashboard Chat. On messaging gateways (Telegram, Discord, Slack, etc.) it returns an unsupported error and never reads a file — that boundary prevents a remote chat user from reading arbitrary files off the Hermes backend host.
+`/goal --file` is available in the CLI, TUI, Desktop, and Dashboard Chat, and reads from the Hermes backend host in every case. On messaging gateways (Telegram, Discord, Slack, etc.) it returns an unsupported error and never reads a file — that boundary prevents a remote chat user from reading arbitrary files off the backend host.
 
 ## Completion contracts
 

@@ -1231,6 +1231,7 @@ def _build_child_progress_callback(
     *,
     subagent_id: Optional[str] = None,
     parent_id: Optional[str] = None,
+    parent_tool_call_id: Optional[str] = None,
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
@@ -1242,11 +1243,13 @@ def _build_child_progress_callback(
       CLI:     prints tree-view lines above the parent's delegation spinner
       Gateway: batches tool names and relays to parent's progress callback
 
-    The identity kwargs (``subagent_id``, ``parent_id``, ``depth``, ``model``,
-    ``toolsets``) are threaded into every relayed event so the TUI can
-    reconstruct the live spawn tree and route per-branch controls (kill,
-    pause) back by ``subagent_id``.  All are optional for backward compat —
-    older callers that ignore them still produce a flat list on the TUI.
+    The identity kwargs (``subagent_id``, ``parent_id``,
+    ``parent_tool_call_id``, ``depth``, ``model``, ``toolsets``) are threaded
+    into every relayed event so clients can deterministically attach the child
+    to its originating provider tool call, reconstruct the live spawn tree,
+    and route per-branch controls (kill, pause) back by ``subagent_id``. All
+    are optional for backward compat — older callers that ignore them still
+    produce a flat list on the TUI.
 
     Returns None if no display mechanism is available, in which case the
     child agent runs with no progress callback (identical to current behavior).
@@ -1276,6 +1279,8 @@ def _build_child_progress_callback(
             kw["subagent_id"] = subagent_id
         if parent_id is not None:
             kw["parent_id"] = parent_id
+        if parent_tool_call_id is not None:
+            kw["parent_tool_call_id"] = parent_tool_call_id
         if depth is not None:
             kw["depth"] = depth
         if model is not None:
@@ -1472,6 +1477,7 @@ def _build_child_agent(
     max_iterations: int,
     task_count: int,
     parent_agent,
+    parent_tool_call_id: Optional[str] = None,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -1615,6 +1621,7 @@ def _build_child_agent(
         task_count,
         subagent_id=subagent_id,
         parent_id=parent_subagent_id,
+        parent_tool_call_id=parent_tool_call_id,
         depth=tui_depth,
         model=effective_model_for_cb,
         toolsets=child_toolsets,
@@ -1878,6 +1885,7 @@ def _build_child_agent(
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
+    child._parent_tool_call_id = parent_tool_call_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Ownership chain for the model-facing control plane (action=list/steer/
@@ -3437,6 +3445,7 @@ def delegate_task(
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
     parent_agent=None,
+    parent_tool_call_id: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks, or control
@@ -3474,6 +3483,10 @@ def delegate_task(
         return tool_error(
             f"Unknown action '{action}'. Use spawn (default), list, steer, or stop."
         )
+
+    parent_tool_call_id = (
+        str(parent_tool_call_id).strip() if parent_tool_call_id is not None else ""
+    ) or None
 
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
@@ -3679,6 +3692,7 @@ def delegate_task(
             max_iterations=effective_max_iter,
             task_count=n_tasks,
             parent_agent=parent_agent,
+            parent_tool_call_id=parent_tool_call_id,
             override_provider=creds["provider"],
             override_base_url=creds["base_url"],
             override_api_key=creds["api_key"],
@@ -3708,6 +3722,24 @@ def delegate_task(
             )
             child._live_transcript_path = str(_writer.path)
         children.append((i, t, child))
+
+    def _attach_child_correlation(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Add the durable provider-call → child-session mapping when known."""
+        if not parent_tool_call_id:
+            return payload
+        associations: List[Dict[str, Any]] = []
+        for child_index, _task, child in children:
+            association: Dict[str, Any] = {"task_index": child_index}
+            subagent_id = getattr(child, "_subagent_id", None)
+            child_session_id = getattr(child, "session_id", None)
+            if isinstance(subagent_id, str) and subagent_id:
+                association["subagent_id"] = subagent_id
+            if isinstance(child_session_id, str) and child_session_id:
+                association["child_session_id"] = child_session_id
+            associations.append(association)
+        payload["parent_tool_call_id"] = parent_tool_call_id
+        payload["children"] = associations
+        return payload
 
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
@@ -3897,7 +3929,7 @@ def delegate_task(
         }
         if live_paths:
             combined["live_transcripts"] = list(live_paths)
-        return combined
+        return _attach_child_correlation(combined)
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
     # When background is true, the entire fan-out runs on the daemon executor
@@ -4126,7 +4158,10 @@ def delegate_task(
                     "task). Read or `tail -f` these paths at any time to watch "
                     "a child work while it runs."
                 )
-            return json.dumps(payload, ensure_ascii=False)
+            return json.dumps(
+                _attach_child_correlation(payload),
+                ensure_ascii=False,
+            )
 
         # Pool at capacity / schedule failure — children are still attached
         # (we detach above only on the parent list, but the async unit was
@@ -4727,6 +4762,7 @@ registry.register(
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
         parent_agent=kw.get("parent_agent"),
+        parent_tool_call_id=kw.get("tool_call_id"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

@@ -6,6 +6,20 @@ from pathlib import Path
 import pytest
 
 
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    import tempfile
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.write_text("x")
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src)
+            return True
+    except OSError:
+        return False
+
+
 @pytest.fixture
 def git_repo(tmp_path):
     """Create a temporary git repo for testing real cli._setup_worktree behavior."""
@@ -76,6 +90,7 @@ class TestWorktreeIncludeSecurity:
         finally:
             _force_remove_worktree(info)
 
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_rejects_symlink_that_resolves_outside_repo(self, git_repo):
         import cli as cli_mod
 
@@ -110,6 +125,7 @@ class TestWorktreeIncludeSecurity:
         finally:
             _force_remove_worktree(info)
 
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_allows_valid_directory_include(self, git_repo):
         import cli as cli_mod
 

@@ -2699,7 +2699,7 @@ class MCPServerTask:
             return  # Looks like a real MCP endpoint.
 
         raise NonMcpEndpointError(
-            f"MCP server '{self.name}' at {url} returned Content-Type "
+            f"MCP server '{self.name}' at the configured URL returned Content-Type "
             f"'{ct_base}', not an MCP response (expected one of: "
             f"{', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
             "points at a web page rather than an MCP endpoint — check it "
@@ -4724,7 +4724,10 @@ def _load_mcp_config() -> Dict[str, dict]:
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
-        return safe_servers
+        # Environment interpolation can turn an otherwise harmless-looking
+        # placeholder into a blocked command/argument shape. Revalidate the
+        # effective config at the final spawn boundary as well.
+        return _filter_suspicious_mcp_servers(safe_servers)
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

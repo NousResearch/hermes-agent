@@ -121,7 +121,7 @@ export function useComposerDraft({
       const editor = editorRef.current
 
       if (editor) {
-        renderComposerContents(editor, next)
+        renderComposerContents(editor, next, { trailingCommitted: true })
         placeCaretEnd(editor)
       }
 
@@ -265,7 +265,7 @@ export function useComposerDraft({
       const editor = editorRef.current
 
       if (editor && document.activeElement !== editor && composerPlainText(editor) !== text) {
-        renderComposerContents(editor, text)
+        renderComposerContents(editor, text, { trailingCommitted: true })
       }
 
       if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {

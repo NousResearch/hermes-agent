@@ -36,9 +36,14 @@ export interface TriggerState {
 // The inline shape is what makes skills reachable anywhere in a prompt. Both
 // shapes need the trailing `$`: detection runs against the text BEFORE the
 // caret, so the match must end where the user is typing.
-const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@]*)$/
+//
+// U+FFFC is the placeholder textBeforeCaret emits for a committed chip. A chip
+// edge is a token boundary just like whitespace (upstream assistant-ui's
+// Lexical DirectivePlugin gets the same semantics from node boundaries), so
+// `@` or `/` typed immediately after a pill still opens the popover.
+const AT_TRIGGER_RE = /(?:^|[\s\uFFFC])(@)([^\s@\uFFFC]*)$/
 const SLASH_COMMAND_TRIGGER_RE = /^(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
-const SLASH_INLINE_TRIGGER_RE = /[\s](\/)([a-zA-Z][\w-]*)?$/
+const SLASH_INLINE_TRIGGER_RE = /[\s\uFFFC](\/)([a-zA-Z][\w-]*)?$/
 
 /** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
 export function blobDedupeKey(blob: Blob): string {
@@ -112,7 +117,17 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   return blobs
 }
 
-/** Caret-anchored text before the cursor, or null if the selection isn't a collapsed caret inside `editor`. */
+/** Caret-anchored text before the cursor, or null if the selection isn't a
+ *  collapsed caret inside `editor`.
+ *
+ *  Chips are ATOMIC to trigger detection: a committed pill must not leak its
+ *  label text into the string the trigger regexes see. A `/work` pill whose
+ *  label serialized into this text made the `^`-anchored command regex treat
+ *  everything after it as that command's argument — which silenced the `@`
+ *  popover for the rest of the message (`/work @Desk` → no trigger → the
+ *  typed path never chips and submits as plain text). Each chip contributes
+ *  an object-replacement placeholder instead, and <br> contributes a newline
+ *  so a trigger at the start of a wrapped line still detects. */
 export function textBeforeCaret(editor: HTMLDivElement): string | null {
   const sel = window.getSelection()
   const range = sel?.rangeCount ? sel.getRangeAt(0) : null
@@ -125,7 +140,19 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
   before.selectNodeContents(editor)
   before.setEnd(range.startContainer, range.startOffset)
 
-  return before.toString()
+  const scratch = document.createElement('div')
+
+  scratch.append(before.cloneContents())
+
+  for (const chip of scratch.querySelectorAll('[data-ref-text]')) {
+    chip.replaceWith('\uFFFC')
+  }
+
+  for (const br of scratch.querySelectorAll('br')) {
+    br.replaceWith('\n')
+  }
+
+  return scratch.textContent ?? ''
 }
 
 export function detectTrigger(textBefore: string): TriggerState | null {

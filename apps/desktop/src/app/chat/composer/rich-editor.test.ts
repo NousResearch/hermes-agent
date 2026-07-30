@@ -35,6 +35,89 @@ describe('renderComposerContents', () => {
     expect(editor.textContent).toContain('<b>raw</b>')
     expect(composerPlainText(editor)).toBe('@file:`<img src=x onerror=alert(1)>` <b>raw</b>')
   })
+
+  it('hydrates a committed leading slash command back to its pill', () => {
+    // Text-hydration parity with @ refs: a re-render from serialized text
+    // (draft restore, undo, the trigger commit fallback) must not demote a
+    // committed no-arg command chip to plain text.
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '/some-skill @folder:`Desktop` ')
+
+    const pill = editor.querySelector('[data-slash-kind]')
+
+    expect(pill?.getAttribute('data-ref-text')).toBe('/some-skill')
+    expect(editor.querySelector('[data-ref-kind="folder"]')).not.toBeNull()
+    expect(composerPlainText(editor)).toBe('/some-skill @folder:`Desktop` ')
+  })
+
+  it('keeps a still-typed leading slash token as editable text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    // No trailing whitespace — not committed yet.
+    renderComposerContents(editor, '/some-skil')
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('/some-skil')
+  })
+
+  it('keeps an arg-taking command as text — its tail may be uncommitted prose', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '/goal ship the redesign')
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('/goal ship the redesign')
+  })
+})
+
+describe('replaceBeforeCaret across split text nodes', () => {
+  it('replaces a token that Chromium fragmented into multiple text nodes', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+    editor.append(document.createTextNode('see @Desk'), document.createTextNode('top/'))
+
+    const caret = document.createRange()
+    caret.setStart(editor.lastChild!, 4)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    const fragment = document.createDocumentFragment()
+    fragment.append(refChipElement('folder', '`Desktop`'), document.createTextNode(' '))
+
+    // Token `@Desktop/` (9 chars) spans both text nodes.
+    expect(replaceBeforeCaret(editor, 9, fragment)).toBe(true)
+    expect(composerPlainText(editor)).toBe('see @folder:`Desktop` ')
+
+    editor.remove()
+  })
+
+  it('refuses when a chip interrupts the span — the token is not contiguous text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+    editor.append(document.createTextNode('a'), refChipElement('file', '`x`'), document.createTextNode('bc'))
+
+    const caret = document.createRange()
+    caret.setStart(editor.lastChild!, 2)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    expect(replaceBeforeCaret(editor, 5, document.createDocumentFragment())).toBe(false)
+    expect(composerPlainText(editor)).toBe('a@file:`x`bc')
+
+    editor.remove()
+  })
 })
 
 describe('normalizeComposerEditorDom', () => {

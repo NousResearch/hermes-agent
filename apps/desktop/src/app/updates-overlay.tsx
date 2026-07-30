@@ -67,7 +67,8 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
-  const updateAvailable = status?.updateAvailable || behind > 0
+  // -2 = UPDATE_DIVERGED (banner); still an update signal, not a tip count.
+  const updateAvailable = status?.updateAvailable || behind > 0 || behind === -2
 
   const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'

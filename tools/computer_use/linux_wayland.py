@@ -274,7 +274,16 @@ def driver_supports_native_wayland(driver_cmd: Optional[str], env: Optional[Mapp
 
 def configured_wayland_mode(config: Optional[Mapping[str, Any]] = None) -> str:
     cfg = dict(config or {})
-    value = ((cfg.get("computer_use") or {}).get("linux") or {}).get("wayland", {}).get("enabled", "auto")
+    # Accept either the full Hermes config (with a ``computer_use`` top-level
+    # key) or the ``computer_use`` sub-dict already unwrapped (the shape
+    # returned by ``_computer_use_cfg()`` in cua_backend.py).
+    if "linux" in cfg:
+        cu = cfg
+    else:
+        cu = cfg.get("computer_use") or {}
+    if not isinstance(cu, dict):
+        cu = {}
+    value = (cu.get("linux") or {}).get("wayland", {}).get("enabled", "auto")
     if value is True:
         return "enabled"
     if value is False:

@@ -263,7 +263,7 @@ def test_doctor_health_report_passes_resolved_binary_and_sanitized_env(monkeypat
             self.stdin = FakeStream()
             self.stdout = FakeStream([
                 '{"jsonrpc":"2.0","id":1,"result":{}}\n',
-                '{"jsonrpc":"2.0","id":2,"result":{"structuredContent":{"schema_version":"1","overall":"ok"}}}\n',
+                '{"jsonrpc":"2.0","id":2,"result":{"structuredContent":{"schema_version":"1","overall":"ok","checks":[]}}}\n',
             ])
             self.stderr = FakeStream()
 
@@ -276,7 +276,7 @@ def test_doctor_health_report_passes_resolved_binary_and_sanitized_env(monkeypat
     monkeypatch.setattr(doctor, "_sanitized_cua_env", fake_env)
     monkeypatch.setattr(doctor.subprocess, "Popen", FakePopen)
 
-    assert doctor._drive_health_report("/resolved/cua-driver") == {"schema_version": "1", "overall": "ok"}
+    assert doctor._drive_health_report("/resolved/cua-driver") == {"schema_version": "1", "overall": "ok", "checks": []}
     assert captured["env_binary"] == "/resolved/cua-driver"
     assert captured["cmd"] == ["/resolved/cua-driver", "mcp"]
     assert captured["popen_env"] is expected_env

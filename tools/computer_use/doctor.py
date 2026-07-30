@@ -852,7 +852,8 @@ def run_doctor(
     ):
         try:
             from tools.computer_use.linux_wayland import arch_install_hint, diagnose_linux_computer_use
-            wayland_report = diagnose_linux_computer_use(binary)
+            from hermes_cli.config import load_config as _load_cfg
+            wayland_report = diagnose_linux_computer_use(binary, config=_load_cfg() or {})
             hint = arch_install_hint(wayland_report)
             if not json_output:
                 session = wayland_report["session"]

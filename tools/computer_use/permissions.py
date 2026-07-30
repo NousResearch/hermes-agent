@@ -162,7 +162,8 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
     if plat == "linux":
         try:
             from tools.computer_use.linux_wayland import arch_install_hint, diagnose_linux_computer_use
-            linux = diagnose_linux_computer_use(binary)
+            from hermes_cli.config import load_config as _load_cfg
+            linux = diagnose_linux_computer_use(binary, config=_load_cfg() or {})
             out["linux_wayland"] = linux
             hint = arch_install_hint(linux)
             if hint:

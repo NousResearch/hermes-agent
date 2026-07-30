@@ -47,6 +47,9 @@ Wire protocol
     # Inject context for pre_llm_call:
     {"context": "Today is Friday"}
 
+    # Rewrite the kanban goal loop's next continuation turn (pre_goal_turn):
+    {"prompt": "Checkpoint your state, then continue", "handed_off": true}
+
     # Silent no-op:
     <empty or any non-matching JSON object>
 
@@ -92,6 +95,21 @@ emitted by each built-in hook site.
     interrupted     – bool, True when the user interrupted
     model           – model name
     platform        – platform identifier
+
+``pre_goal_turn`` (emitted from ``hermes_cli/goals.py``)::
+
+    prompt          – the continuation prompt about to be sent
+    task_id         – kanban task id the goal loop is driving
+    goal_text       – the goal being pursued
+    progress        – the worker's response from the previous turn
+    next_step       – the judge's stated reason for continuing
+    turns_used      – turns spent so far
+    max_turns       – the loop's hard turn budget
+    handoffs_done   – handoffs a hook has reported so far this loop
+    runtime         – resolved probes: context_occupancy (0..1 or absent),
+                      compaction_active (bool).  The loop's session id is
+                      lifted to the top-level ``session_id`` field; control
+                      callables are Python-only and are not exposed here.
 
 ``subagent_stop`` (emitted from ``tools/delegate_tool.py``)::
 
@@ -533,10 +551,51 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
     return _callback
 
 
+# ``pre_goal_turn`` hands its callbacks a ``runtime`` dict of best-effort
+# callables.  A subprocess cannot call a Python function, so the read-only
+# probes below are evaluated while rendering the payload and delivered as
+# plain values — without this a shell hook would receive a dict of
+# stringified function reprs and could not see the context budget the hook
+# exists to react to.  Only these keys are ever invoked; control callables
+# (``reset_session_fn``) have no shell equivalent and are dropped rather
+# than called for a side effect the script never asked for.
+_GOAL_TURN_RUNTIME_PROBES = {
+    "context_occupancy_fn": "context_occupancy",
+    "compaction_active_fn": "compaction_active",
+    "session_id_fn": "session_id",
+}
+
+
+def _resolve_goal_turn_runtime(runtime: Any) -> Dict[str, Any]:
+    """Evaluate the read-only ``pre_goal_turn`` runtime probes.
+
+    Each probe is best-effort: a missing, non-callable, or raising entry
+    yields no key at all rather than failing the payload, so a script sees
+    "the loop could not tell me" as an absent field.
+    """
+    if not isinstance(runtime, dict):
+        return {}
+    resolved: Dict[str, Any] = {}
+    for fn_key, value_key in _GOAL_TURN_RUNTIME_PROBES.items():
+        probe = runtime.get(fn_key)
+        if not callable(probe):
+            continue
+        try:
+            resolved[value_key] = probe()
+        except Exception as exc:
+            logger.debug("pre_goal_turn runtime probe %s failed: %s", fn_key, exc)
+    return resolved
+
+
 def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
     """Render the stdin JSON payload.  Unserialisable values are
     stringified via ``default=str`` rather than dropped."""
     extras = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
+    session_id = kwargs.get("session_id") or kwargs.get("parent_session_id") or ""
+    if event == "pre_goal_turn":
+        runtime = _resolve_goal_turn_runtime(extras.get("runtime"))
+        session_id = session_id or str(runtime.pop("session_id", "") or "")
+        extras["runtime"] = runtime
     try:
         cwd = str(Path.cwd())
     except OSError:
@@ -545,7 +604,7 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
         "hook_event_name": event,
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
-        "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
+        "session_id": session_id,
         "cwd": cwd,
         "extra": extras,
     }
@@ -576,6 +635,9 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
     unchanged to match the existing plugin-hook contract.
+
+    For ``pre_goal_turn``, ``{"prompt": "...", "handed_off": bool}`` is
+    normalised to the shape ``goals.run_kanban_goal_loop`` consumes.
 
     Anything else returns ``None``.
     """
@@ -611,6 +673,17 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
             message = data.get("message") or data.get("reason")
             if isinstance(message, str) and message.strip():
                 return {"action": "continue", "message": message.strip()}
+        return None
+
+    if event == "pre_goal_turn":
+        # Rewrite the goal loop's next continuation prompt.  ``handed_off``
+        # is the hook's own bookkeeping — it is fed back as ``handoffs_done``
+        # on later firings so a hook can bound how often it intervenes.  A
+        # directive without a prompt is a no-op: the loop keeps the prompt it
+        # already had and spends the turn normally.
+        prompt = data.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return {"prompt": prompt, "handed_off": bool(data.get("handed_off"))}
         return None
 
     context = data.get("context")

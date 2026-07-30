@@ -373,7 +373,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Most hooks are fire-and-forget observers, but some have behavior-changing return values: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, [`pre_verify`](#pre_verify) can **keep the agent going**, [`pre_goal_turn`](#pre_goal_turn) can **rewrite the goal loop's next turn**, [`pre_gateway_dispatch`](#pre_gateway_dispatch) can **skip or rewrite** an incoming gateway message, and the three `transform_*` hooks can **replace** text on its way through. The **Returns** column in the table below is the authoritative list — anything marked *ignored* is an observer.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -385,6 +385,7 @@ def register(ctx):
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
+| [`pre_goal_turn`](#pre_goal_turn) | Before each continuation turn of a `goal_mode` kanban worker's loop | `{"prompt": str, "handed_off": bool}` to rewrite the next turn's prompt |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
@@ -717,6 +718,69 @@ def register(ctx):
 ```
 
 For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
+
+---
+
+### `pre_goal_turn`
+
+Fires **before each continuation turn** of the kanban goal loop: the Ralph-style loop a dispatcher-spawned `goal_mode` kanban worker runs in, re-prompting itself until an auxiliary judge agrees the card is done, the worker finalizes the task, or the turn budget runs out. The one-shot finalize nudge — the turn sent after the judge has already returned `done` — is never intercepted.
+
+**Callback signature:**
+
+```python
+def my_callback(prompt: str, task_id: str, goal_text: str, progress: str,
+                next_step: str, turns_used: int, max_turns: int,
+                handoffs_done: int, runtime: dict, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `prompt` | `str` | The continuation prompt the loop is about to send |
+| `task_id` | `str` | Kanban task id the loop is driving |
+| `goal_text` | `str` | The goal being pursued |
+| `progress` | `str` | The worker's response from the previous turn |
+| `next_step` | `str` | The judge's stated reason for continuing |
+| `turns_used` | `int` | Turns spent so far |
+| `max_turns` | `int` | The loop's hard turn budget |
+| `handoffs_done` | `int` | Handoffs a hook has already reported this loop — self-throttle on this |
+| `runtime` | `dict` | Caller-supplied best-effort callables (see below) |
+
+**Fires:** In `hermes_cli/goals.py` (`run_kanban_goal_loop`), after the turn-budget check and before the next turn is run.
+
+**The `runtime` dict** is supplied by whoever drives the loop; from the CLI it carries `context_occupancy_fn()` (live prompt tokens ÷ context window, or `None` when unknown), `compaction_active_fn()`, `session_id_fn()`, and `reset_session_fn()` (start a fresh session). Every entry is best-effort — treat a missing or raising callable as "unknown" and skip whatever depended on it.
+
+**Return value — rewrite the next turn:**
+
+```python
+return {"prompt": "Checkpoint your state to the task, then continue.", "handed_off": True}
+```
+
+The first returned dict with a non-empty `prompt` wins; later callbacks are not consulted. `handed_off` is bookkeeping — set it when the directive represents a handoff (state checkpointed, loop moved on) and it comes back as `handoffs_done` on later firings so a hook can bound how often it intervenes. Any other return leaves the turn untouched.
+
+**Bounded:** the loop's `max_turns` budget is checked *before* the hook and is unaffected by it, so a hook that rewrites every prompt can never extend the loop past its budget. A callback that raises is logged and the turn runs unchanged.
+
+**Use cases:** soft context-budget handoff (checkpoint the worker and restart on a clean window before the live one rides down into repeated compaction), injecting fresh external state into every continuation, escalating instructions as the turn budget runs low.
+
+**Example — hand off to a fresh session when the context window fills up:**
+
+```python
+def context_budget_handoff(prompt, runtime, handoffs_done, **kwargs):
+    if handoffs_done >= 2:
+        return None  # don't loop on handoffs
+    occupancy = (runtime.get("context_occupancy_fn") or (lambda: None))()
+    if occupancy is None or occupancy < 0.8:
+        return None
+    (runtime.get("reset_session_fn") or (lambda: None))()
+    return {
+        "prompt": "Fresh session — re-read the task, then continue:\n" + prompt,
+        "handed_off": True,
+    }
+
+def register(ctx):
+    ctx.register_hook("pre_goal_turn", context_budget_handoff)
+```
+
+**Shell hooks:** a shell hook returns the same `{"prompt": ..., "handed_off": ...}` JSON on stdout. It receives the resolved probe *values* — `extra.runtime.context_occupancy` and `extra.runtime.compaction_active`, with the loop's session id in the top-level `session_id` field — because a subprocess cannot call a Python callable. The control callables have no shell equivalent, so a shell hook cannot switch the loop to a fresh session; it influences the loop by rewriting the prompt.
 
 ---
 
@@ -1292,6 +1356,7 @@ Use shell hooks when you want a drop-in, single-file script (Bash, Python, anyth
 - **Block a tool call** — reject dangerous `terminal` commands, enforce per-directory policies, require approval for destructive `write_file` / `patch` operations.
 - **Run after a tool call** — auto-format Python or TypeScript files that the agent just wrote, log API calls, trigger a CI workflow.
 - **Inject context into the next LLM turn** — prepend `git status` output, the current weekday, or retrieved documents to the user message (see [`pre_llm_call`](#pre_llm_call)).
+- **Steer a long-running goal loop** — rewrite the next continuation prompt when the context window fills up or the turn budget runs low (see [`pre_goal_turn`](#pre_goal_turn)).
 - **Observe lifecycle events** — write a log line when a subagent completes (`subagent_stop`) or a session starts (`on_session_start`).
 
 Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at both CLI startup (`hermes_cli/main.py`) and gateway startup (`gateway/run.py`). They compose naturally with Python plugin hooks — both flow through the same dispatcher.
@@ -1307,6 +1372,7 @@ Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cf
 | Events | `VALID_HOOKS` (incl. `subagent_stop`) | `VALID_HOOKS` | Gateway lifecycle (`gateway:startup`, `agent:*`, `command:*`) |
 | Can block a tool call | Yes (`pre_tool_call`) | Yes (`pre_tool_call`) | No |
 | Can inject LLM context | Yes (`pre_llm_call`) | Yes (`pre_llm_call`) | No |
+| Can steer the goal loop | Prompt only (`pre_goal_turn`) | Yes (`pre_goal_turn`) | No |
 | Consent | First-use prompt per `(event, command)` pair | Implicit (Python plugin trust) | Implicit (dir trust) |
 | Inter-process isolation | Yes (subprocess) | No (in-process) | No (in-process) |
 
@@ -1341,7 +1407,7 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 }
 ```
 
-`tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
+`tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted — the one exception is [`pre_goal_turn`](#pre_goal_turn), whose `runtime` callables are evaluated into plain values so a script can read them.
 
 **stdout — optional response:**
 
@@ -1356,6 +1422,9 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 // Keep the agent going at the verify gate (pre_verify); both shapes accepted:
 {"action": "continue", "message": "Run the formatter, then finish."}
 {"decision": "block",  "reason":  "Run the formatter, then finish."}
+
+// Rewrite the goal loop's next continuation turn (pre_goal_turn):
+{"prompt": "Checkpoint your state to the task, then continue.", "handed_off": true}
 
 // Silent no-op — any empty / non-matching output is fine:
 ```

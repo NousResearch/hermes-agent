@@ -111,6 +111,31 @@ class TestHooksTest:
         assert seen["tool_name"] is None
         assert seen["tool_input"] is None
 
+    def test_pre_goal_turn_dry_run_resolves_runtime_probes(self, tmp_path):
+        """A goal-turn hook must be dry-runnable: the synthetic payload
+        carries the same callables the live loop passes, so the script sees
+        resolved values rather than function reprs it can't read."""
+        capture = tmp_path / "goal.json"
+        script = _hook_script(
+            tmp_path,
+            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+            name="goal.sh",
+        )
+        cfg = {"hooks": {"pre_goal_turn": [{"command": str(script)}]}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            _run(SimpleNamespace(
+                hooks_action="test", event="pre_goal_turn",
+                for_tool=None, payload_file=None,
+            ))
+
+        seen = json.loads(capture.read_text())
+        assert seen["session_id"] == "test-session"
+        runtime = seen["extra"]["runtime"]
+        assert isinstance(runtime["context_occupancy"], float)
+        assert runtime["compaction_active"] is False
+        assert seen["extra"]["handoffs_done"] == 0
+        assert seen["extra"]["prompt"]
+
     def test_fires_real_subprocess_and_parses_block(self, tmp_path):
         block_script = _hook_script(
             tmp_path,

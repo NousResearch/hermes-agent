@@ -115,6 +115,28 @@ class TestParseResponse:
         assert shell_hooks._parse_response("pre_verify", '{"action": "continue"}') is None
         assert shell_hooks._parse_response("pre_verify", '{"decision": "allow"}') is None
 
+    def test_pre_goal_turn_prompt_rewrite(self):
+        r = shell_hooks._parse_response(
+            "pre_goal_turn", '{"prompt": "checkpoint, then continue"}',
+        )
+        assert r == {"prompt": "checkpoint, then continue", "handed_off": False}
+
+    def test_pre_goal_turn_handoff_flag_preserved(self):
+        r = shell_hooks._parse_response(
+            "pre_goal_turn", '{"prompt": "fresh start", "handed_off": true}',
+        )
+        assert r == {"prompt": "fresh start", "handed_off": True}
+
+    def test_pre_goal_turn_without_prompt_is_noop(self):
+        # Nothing to rewrite the turn with — the loop keeps its own prompt.
+        assert shell_hooks._parse_response("pre_goal_turn", '{"handed_off": true}') is None
+        assert shell_hooks._parse_response("pre_goal_turn", '{"prompt": "  "}') is None
+        assert shell_hooks._parse_response("pre_goal_turn", '{"prompt": 42}') is None
+
+    def test_pre_goal_turn_prompt_ignored_for_other_events(self):
+        """Only pre_goal_turn honors prompt directives."""
+        assert shell_hooks._parse_response("pre_llm_call", '{"prompt": "x"}') is None
+
     def test_block_action_without_message_uses_default(self):
         """Block is honored even when message/reason is absent."""
         r = shell_hooks._parse_response("pre_tool_call", '{"action": "block"}')
@@ -178,6 +200,59 @@ class TestSerializePayload:
         )
         payload = json.loads(raw)
         assert payload["session_id"] == "p-1"
+
+    def test_pre_goal_turn_runtime_probes_resolved(self):
+        """A subprocess can't call a Python callable, so the read-only
+        probes are evaluated into plain values and the session id is
+        lifted to the top-level payload field."""
+        raw = shell_hooks._serialize_payload(
+            "pre_goal_turn",
+            {
+                "prompt": "keep going",
+                "turns_used": 3,
+                "runtime": {
+                    "context_occupancy_fn": lambda: 0.82,
+                    "compaction_active_fn": lambda: False,
+                    "session_id_fn": lambda: "sess-goal",
+                },
+            },
+        )
+        payload = json.loads(raw)
+        assert payload["session_id"] == "sess-goal"
+        assert payload["extra"]["prompt"] == "keep going"
+        assert payload["extra"]["turns_used"] == 3
+        assert payload["extra"]["runtime"] == {
+            "context_occupancy": 0.82,
+            "compaction_active": False,
+        }
+
+    def test_pre_goal_turn_control_callables_not_invoked(self):
+        """Only read-only probes are called while rendering the payload —
+        rendering must never reset the caller's session."""
+        called = []
+        raw = shell_hooks._serialize_payload(
+            "pre_goal_turn",
+            {"runtime": {"reset_session_fn": lambda: called.append("reset")}},
+        )
+        assert called == []
+        assert json.loads(raw)["extra"]["runtime"] == {}
+
+    def test_pre_goal_turn_failing_probe_omits_key(self):
+        def boom():
+            raise RuntimeError("no compressor")
+
+        raw = shell_hooks._serialize_payload(
+            "pre_goal_turn",
+            {"runtime": {"context_occupancy_fn": boom,
+                         "compaction_active_fn": lambda: True}},
+        )
+        runtime = json.loads(raw)["extra"]["runtime"]
+        assert "context_occupancy" not in runtime
+        assert runtime["compaction_active"] is True
+
+    def test_pre_goal_turn_missing_runtime_is_empty_dict(self):
+        raw = shell_hooks._serialize_payload("pre_goal_turn", {"prompt": "go"})
+        assert json.loads(raw)["extra"]["runtime"] == {}
 
     def test_unserialisable_extras_stringified(self):
         class Weird:

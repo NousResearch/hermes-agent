@@ -148,6 +148,24 @@ _DEFAULT_PAYLOADS = {
         "final_response": "All done — the change is applied.",
         "changed_paths": ["src/app.tsx"],
     },
+    "pre_goal_turn": {
+        "prompt": "Continue working toward the goal.",
+        "task_id": "test-task",
+        "goal_text": "Ship the feature",
+        "progress": "Wrote the module; two tests still failing.",
+        "next_step": "Fix the failing tests.",
+        "turns_used": 3,
+        "max_turns": 12,
+        "handoffs_done": 0,
+        # Callables, exactly as the live goal loop passes them — the
+        # serializer resolves the read-only probes, so a dry run shows the
+        # script the same resolved values it will see at runtime.
+        "runtime": {
+            "context_occupancy_fn": lambda: 0.62,
+            "compaction_active_fn": lambda: False,
+            "session_id_fn": lambda: "test-session",
+        },
+    },
     "on_session_start": {"session_id": "test-session"},
     "on_session_end": {"session_id": "test-session"},
     "on_session_finalize": {"session_id": "test-session"},

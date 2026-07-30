@@ -371,6 +371,7 @@ export interface ComposerActions {
   clearIn: () => void
   dequeue: () => string | undefined
   enqueue: (text: string, display?: string) => void
+  enqueueToSession: (sessionId: string, text: string, opts?: { display?: string; front?: boolean }) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem) => void

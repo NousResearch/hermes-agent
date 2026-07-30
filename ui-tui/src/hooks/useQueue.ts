@@ -110,6 +110,31 @@ export function createSessionQueueManager() {
     enqueue: (item: QueueItem) => {
       currentRef.current.push(item)
     },
+    /**
+     * Append (or unshift) into `sessionId`'s bucket regardless of which session
+     * is live right now — the path asynchronous requeues must use.
+     *
+     * `enqueue` writes through `currentRef`, so anything that resolves after a
+     * session switch lands in the wrong session's queue and the drain effect
+     * then sends it into that session. Callers that started a request against a
+     * known session capture its id and come back through here.
+     *
+     * The bucket is resolved by KEY at write time rather than by capturing the
+     * array up front: `setSession` drains the no-session bucket into the
+     * arriving session and leaves that array orphaned, so a captured reference
+     * can go stale. `sessionId` is deliberately non-nullable — an async requeue
+     * keyed to "no session" would land in exactly that orphaned bucket.
+     */
+    enqueueTo: (sessionId: string, item: QueueItem, opts: { front?: boolean } = {}) => {
+      const bucket = bucketFor(sessionId)
+
+      if (opts.front) {
+        prependQueueItem(bucket, item)
+      } else {
+        bucket.push(item)
+      }
+    },
+    isActive: (sessionId: string) => sessionKey === sessionId,
     prepend: (item: QueueItem) => prependQueueItem(currentRef.current, item),
     setSession,
     take: (i: number, editedDisplay?: string) => takeQueueItem(currentRef.current, i, editedDisplay)
@@ -163,6 +188,21 @@ export function useQueue() {
     [manager, syncQueue]
   )
 
+  // Requeue into the session the prompt came from, for callers whose write can
+  // resolve after a session switch. The display is only repainted when that
+  // session is still on screen — syncing unconditionally would render another
+  // session's queue under the current session's composer.
+  const enqueueToSession = useCallback(
+    (sessionId: string, text: string, opts: { display?: string; front?: boolean } = {}) => {
+      manager.enqueueTo(sessionId, queueItem(text, opts.display ?? text), { front: opts.front })
+
+      if (manager.isActive(sessionId)) {
+        syncQueue()
+      }
+    },
+    [manager, syncQueue]
+  )
+
   const dequeue = useCallback(() => {
     const head = manager.dequeue()
     syncQueue()
@@ -193,6 +233,7 @@ export function useQueue() {
   return {
     dequeue,
     enqueue,
+    enqueueToSession,
     prependQ,
     queueEditIdx,
     queueEditRef,

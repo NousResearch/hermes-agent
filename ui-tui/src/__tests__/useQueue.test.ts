@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { createSessionQueueManager, prependQueueItem, queueItem, removeAtInPlace, takeQueueItem } from '../hooks/useQueue.js'
+import {
+  createSessionQueueManager,
+  prependQueueItem,
+  queueItem,
+  removeAtInPlace,
+  takeQueueItem
+} from '../hooks/useQueue.js'
 
 describe('removeAtInPlace', () => {
   it('removes the item at the given index in place', () => {
@@ -124,6 +130,51 @@ describe('createSessionQueueManager', () => {
 
     manager.setSession('session-a')
     expect(manager.display()).toEqual(['pre-session prompt'])
+  })
+
+  it('routes an origin-keyed write to that session, not the active one', () => {
+    const manager = createSessionQueueManager()
+
+    manager.setSession('session-a')
+
+    // A `session.steer` / `prompt.submit` rejection for A resolves only after
+    // the user has switched to B. Writing through the active bucket here is the
+    // misdelivery bug: the drain effect would send A's prompt into B.
+    manager.setSession('session-b')
+    manager.enqueueTo('session-a', queueItem('delayed requeue for A'))
+
+    expect(manager.display()).toEqual([])
+
+    manager.setSession('session-a')
+    expect(manager.display()).toEqual(['delayed requeue for A'])
+  })
+
+  it('honors front placement on an origin-keyed write', () => {
+    const manager = createSessionQueueManager()
+
+    manager.setSession('session-a')
+    manager.enqueue(queueItem('already queued in A'))
+    manager.setSession('session-b')
+
+    // Queue-edit picks re-enter at the head so they keep their position.
+    manager.enqueueTo('session-a', queueItem('picked from A queue'), { front: true })
+    expect(manager.display()).toEqual([])
+
+    manager.setSession('session-a')
+    expect(manager.display()).toEqual(['picked from A queue', 'already queued in A'])
+  })
+
+  it('reports the origin session as inactive once the user has switched away', () => {
+    const manager = createSessionQueueManager()
+
+    manager.setSession('session-a')
+    expect(manager.isActive('session-a')).toBe(true)
+
+    // useQueue gates its display sync on this: repainting after an off-screen
+    // requeue would show A's queue under B's composer.
+    manager.setSession('session-b')
+    expect(manager.isActive('session-a')).toBe(false)
+    expect(manager.isActive('session-b')).toBe(true)
   })
 
   it('appends promoted prompts after the arriving session own backlog', () => {

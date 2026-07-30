@@ -2076,6 +2076,25 @@ export const en: Translations = {
     }
   },
 
+  runBoard: {
+    active: 'ACTIVE',
+    blockedNeedsYou: 'BLOCKED: NEEDS YOU',
+    blockedTechnical: 'BLOCKED: TECHNICAL',
+    done: 'DONE',
+    empty: 'No task plan yet',
+    progress: (done, total) => `${done} of ${total} resolved`,
+    ready: 'READY',
+    refresh: 'Refresh run board',
+    refreshed: 'Refreshed',
+    refreshFailed: 'Refresh failed',
+    refreshing: 'Refreshing…',
+    supportNeeded: answer => `Support needed: ${answer}`,
+    supportNo: 'No',
+    supportYes: 'Yes',
+    title: 'Run board',
+    waiting: 'WAITING: PROCESS'
+  },
+
   statusStack: {
     agents: 'Agents',
     background: count => `${count} Background`,

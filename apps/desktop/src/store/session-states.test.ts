@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { group, split } from '@/components/pane-shell/tree/model'
+import { $layoutTree } from '@/components/pane-shell/tree/store'
+import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
 import {
   blankDraftTile,
   focusedSessionNeedsRoute,
+  markSelectionRestore,
   orderTilesByTree,
   selectionHomesToWorkspace
 } from '@/store/session-states'
@@ -48,6 +51,36 @@ describe('selectionHomesToWorkspace', () => {
 
   it('skips homing when the selected id is already an open tile', () => {
     expect(selectionHomesToWorkspace('a', tiles)).toBe(false)
+  })
+})
+
+describe('boot-restore selection homing (⌘R tab persistence)', () => {
+  const mainGroup = () => group(['workspace', tilePane('t')], { active: tilePane('t'), id: 'main' })
+
+  const activePane = () => {
+    const tree = $layoutTree.get()
+
+    return tree?.type === 'group' ? tree.active : null
+  }
+
+  it('a normal selection change fronts the workspace tab over an active tile', () => {
+    $layoutTree.set(mainGroup())
+    $selectedStoredSessionId.set('nav-1')
+
+    expect(activePane()).toBe('workspace')
+  })
+
+  it('markSelectionRestore skips homing exactly once, so the persisted active tab survives a reload', () => {
+    $layoutTree.set(mainGroup())
+    markSelectionRestore()
+    $selectedStoredSessionId.set('boot-1')
+
+    // Boot restore: the tile tab the user reloaded on stays fronted.
+    expect(activePane()).toBe(tilePane('t'))
+
+    // One-shot consumed: the next selection change is a real navigation.
+    $selectedStoredSessionId.set('nav-2')
+    expect(activePane()).toBe('workspace')
   })
 })
 

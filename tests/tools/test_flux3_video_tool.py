@@ -372,6 +372,123 @@ class TestPollTransport:
         assert parsed["details"]["saved_path"] == str(tmp_path / "flux3-clip-2.mp4")
         assert (tmp_path / "flux3-clip.mp4").read_bytes() == b"an earlier clip"
 
+    def test_on_messaging_the_clip_lands_where_the_gateway_may_send_it(self, monkeypatch):
+        # A chat user has no filesystem: the attachment is the only way they
+        # ever see the clip. Downloads is not a delivery root on a strict
+        # gateway, so a clip saved there is dropped on the way out and the
+        # reply arrives with nothing attached.
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        # Strict mode also trusts anything written in the last 10 minutes, and
+        # a clip we just downloaded is always inside that window. Left on, the
+        # assertion below passes from any directory on earth and stops being a
+        # statement about where the clip was saved.
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        response = _FakeResponse(200, {
+            "id": "bfl_job_1",
+            "status": "Ready",
+            "result": {"sample": "https://cdn.example/x/flux3-clip.mp4?sig=a"},
+            "guidance": "Deliver the saved file.",
+        })
+
+        with _fake_download(b"x" * (128 * 1024)):
+            parsed, _requests = _call(flux3._handle_get_result, {"id": "bfl_job_1"}, response)
+
+        from gateway.platforms.base import validate_media_delivery_path
+
+        saved = parsed["details"]["saved_path"]
+        assert validate_media_delivery_path(saved), "the gateway must be allowed to send it"
+        # The exact line to copy, so the path is never retyped from memory.
+        assert f"\nMEDIA:{saved}\n" in parsed["result"]
+
+    def test_the_offered_tag_is_one_the_gateway_actually_delivers(self, monkeypatch):
+        # The whole point of spelling the line out is that the model pastes it
+        # verbatim, so the line has to survive the real extractor. A tag that
+        # parses but fails validation is the worst outcome: it is stripped from
+        # the reply either way, so the user is shown a message that looks like
+        # it simply forgot the attachment.
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        response = _FakeResponse(200, {
+            "id": "bfl_job_1",
+            "status": "Ready",
+            "result": {"sample": "https://cdn.example/x/flux3-clip.mp4?sig=a"},
+            "guidance": "Deliver the saved file.",
+        })
+
+        with _fake_download(b"x" * (128 * 1024)):
+            parsed, _requests = _call(flux3._handle_get_result, {"id": "bfl_job_1"}, response)
+
+        from gateway.platforms.base import BasePlatformAdapter
+
+        offered = [ln for ln in parsed["result"].splitlines() if ln.startswith("MEDIA:")]
+        assert len(offered) == 1, "exactly one line to copy"
+
+        reply = f"Here's the clip.\n\n{offered[0]}\n"
+        media, cleaned = BasePlatformAdapter.extract_media(reply)
+        assert BasePlatformAdapter.filter_media_delivery_paths(media), "must survive validation"
+        assert "MEDIA:" not in cleaned, "the tag is consumed, not shown to the user"
+
+    @pytest.mark.parametrize("platform", ["", "cli", "tui", "desktop"])
+    def test_off_messaging_the_clip_stays_a_file_and_no_tag_is_offered(self, tmp_path, monkeypatch, platform):
+        # The CLI has no attachment channel and its prompt forbids the tag —
+        # emitting one there just prints literal text at the user.
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
+        response = _FakeResponse(200, {
+            "id": "bfl_job_1",
+            "status": "Ready",
+            "result": {"sample": "https://cdn.example/x/flux3-clip.mp4?sig=a"},
+            "guidance": "Deliver the saved file.",
+        })
+
+        with _fake_download(b"x" * (128 * 1024)):
+            parsed, _requests = _call(
+                flux3._handle_get_result, {"id": "bfl_job_1", "save_to": str(tmp_path)}, response,
+            )
+
+        assert parsed["result"].startswith(f"Saved to {tmp_path / 'flux3-clip.mp4'}.")
+        assert "MEDIA:" not in parsed["result"]
+
+    @pytest.mark.parametrize("platform", ["api_server", "webhook", "msgraph_webhook", "local"])
+    def test_platforms_without_an_attachment_channel_are_offered_no_tag(self, tmp_path, monkeypatch, platform):
+        # These carry a real platform value but no way to attach a file. The
+        # API server in particular only inlines *images* as data URLs and
+        # leaves every other MEDIA: tag untouched, so offering one here puts
+        # the literal text in front of an OpenAI-compatible caller.
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
+        response = _FakeResponse(200, {
+            "id": "bfl_job_1",
+            "status": "Ready",
+            "result": {"sample": "https://cdn.example/x/flux3-clip.mp4?sig=a"},
+            "guidance": "Deliver the saved file.",
+        })
+
+        with _fake_download(b"x" * (128 * 1024)):
+            parsed, _requests = _call(
+                flux3._handle_get_result, {"id": "bfl_job_1", "save_to": str(tmp_path)}, response,
+            )
+
+        assert "MEDIA:" not in parsed["result"]
+
+    def test_a_cli_session_is_recognised_by_its_source(self, tmp_path, monkeypatch):
+        # The CLI, TUI, and desktop leave HERMES_SESSION_PLATFORM empty and
+        # identify themselves on HERMES_SESSION_SOURCE instead, so keying only
+        # on the platform would miss them.
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "tui")
+        response = _FakeResponse(200, {
+            "id": "bfl_job_1",
+            "status": "Ready",
+            "result": {"sample": "https://cdn.example/x/flux3-clip.mp4?sig=a"},
+            "guidance": "Deliver the saved file.",
+        })
+
+        with _fake_download(b"x" * (128 * 1024)):
+            parsed, _requests = _call(
+                flux3._handle_get_result, {"id": "bfl_job_1", "save_to": str(tmp_path)}, response,
+            )
+
+        assert "MEDIA:" not in parsed["result"]
+
     def test_a_rejected_download_fails_loudly_and_leaves_no_file(self, tmp_path):
         # The original bug: a bad signature returns an XML error body, curl
         # writes it to the .mp4 and exits 0, and it reads as success. A short

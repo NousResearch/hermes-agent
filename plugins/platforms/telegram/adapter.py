@@ -3674,12 +3674,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Not a duplicate of write_timeout: PTB routes any request
                 # carrying files to media_write_timeout instead, so the line
                 # above never applied to an upload and every upload was pinned
-                # to PTB's own 20s default. 60s covers Telegram's 50MB ceiling
-                # on a ~7Mbps uplink; going higher only lengthens how long a
-                # dead socket takes to report itself.
-                "media_write_timeout": _env_float(
-                    "HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 60.0
-                ),
+                # to PTB's own 20s default. httpx budgets this per socket
+                # write rather than across the upload, so it is stall
+                # tolerance, not a size or bandwidth allowance — a slow but
+                # steady uplink never accumulates against it. 60s rides out
+                # the buffer stalls a congested link produces; going higher
+                # only lengthens how long a dead socket takes to report
+                # itself.
+                "media_write_timeout": 60.0,
             }
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's

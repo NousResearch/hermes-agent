@@ -3762,8 +3762,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         try:
             event = self._normalize_platform_event(update)
-        except Exception as exc:
-            logger.debug("[%s] gateway_platform_event normalize error: %s", self.name, exc)
+        except Exception:
+            logger.debug("[%s] gateway_platform_event normalize error", self.name, exc_info=True)
             return
         if event is None:
             return
@@ -3775,8 +3775,8 @@ class TelegramAdapter(BasePlatformAdapter):
             authorized = self._is_source_authorized(
                 self._source_from_reaction_for_auth(update)
             )
-        except Exception as exc:
-            logger.debug("[%s] gateway_platform_event auth error: %s", self.name, exc)
+        except Exception:
+            logger.debug("[%s] gateway_platform_event auth error", self.name, exc_info=True)
             return
         if not authorized:
             return

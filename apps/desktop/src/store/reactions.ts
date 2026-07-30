@@ -62,10 +62,7 @@ export async function toggleMessageReaction(
   const gateway = activeGateway()
 
   if (!sessionId || !gateway) {
-    notifyError(
-      new Error(!sessionId ? 'No active session' : 'Gateway not connected'),
-      'Could not react'
-    )
+    notifyError(new Error(!sessionId ? 'No active session' : 'Gateway not connected'), 'Could not react')
 
     return
   }

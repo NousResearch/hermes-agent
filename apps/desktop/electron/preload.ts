@@ -212,6 +212,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:close-preview-requested', listener)
   },
+  onOpenFolderRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:open-folder-requested', listener)
+
+    return () => ipcRenderer.removeListener('hermes:open-folder-requested', listener)
+  },
   onOpenUpdatesRequested: callback => {
     const listener = () => callback()
     ipcRenderer.on('hermes:open-updates', listener)

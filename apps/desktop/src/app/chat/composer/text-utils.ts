@@ -1,6 +1,8 @@
 import { DATA_IMAGE_URL_RE, dataUrlToBlob } from '@/lib/embedded-images'
 import { $reactionsEnabled } from '@/store/reactions-enabled'
 
+import { serializeTextBefore } from './rich-editor'
+
 export interface TriggerState {
   /** True for a `/` typed mid-message — an inline skill/command reference in
    *  prose rather than a command invocation. Arg completion doesn't apply. */
@@ -141,23 +143,7 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
     return null
   }
 
-  const before = range.cloneRange()
-  before.selectNodeContents(editor)
-  before.setEnd(range.startContainer, range.startOffset)
-
-  const scratch = document.createElement('div')
-
-  scratch.append(before.cloneContents())
-
-  for (const chip of scratch.querySelectorAll('[data-ref-text]')) {
-    chip.replaceWith('\uFFFC')
-  }
-
-  for (const br of scratch.querySelectorAll('br')) {
-    br.replaceWith('\n')
-  }
-
-  return scratch.textContent ?? ''
+  return serializeTextBefore(editor, range.startContainer, range.startOffset)
 }
 
 export function detectTrigger(textBefore: string): TriggerState | null {

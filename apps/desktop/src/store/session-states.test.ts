@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
-import { group, split } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
@@ -136,5 +136,94 @@ describe('blankDraftTile', () => {
   it('is null when every open tab holds a conversation', () => {
     expect(blankDraftTile([bound('a', 'run-a')], { 'run-a': state(2) })).toBeNull()
     expect(blankDraftTile([], {})).toBeNull()
+  })
+})
+
+// ⌘⇧T used to only restore `$sessionTiles`. Adoption inserts silently
+// (activate:false), so the tab came back behind the still-fronted workspace.
+// Real path: register, adopt, focus — same as paneMirror + reopen.
+describe('reopenLastClosedTile focuses the restored tab', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  async function setup() {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+    const session = await import('@/store/session')
+    const states = await import('@/store/session-states')
+
+    registry.register({
+      area: 'panes',
+      data: { placement: 'main', uncloseable: true },
+      id: 'workspace',
+      render: () => null,
+      title: 'chat'
+    })
+
+    // panes ← $sessionTiles (paneMirror stub). Adoption is synchronous on
+    // register, so openSessionTile + focusOpenSession works the same tick.
+    const registered = new Map<string, () => void>()
+
+    const syncTiles = () => {
+      const wanted = new Set(states.$sessionTiles.get().map(t => t.storedSessionId))
+
+      for (const id of wanted) {
+        if (registered.has(id)) {
+          continue
+        }
+
+        registered.set(
+          id,
+          registry.register({
+            area: 'panes',
+            data: { dock: { pane: 'workspace', pos: 'center' }, placement: 'main' },
+            id: tilePane(id),
+            render: () => null,
+            title: id
+          })
+        )
+      }
+
+      for (const [id, dispose] of registered) {
+        if (!wanted.has(id)) {
+          dispose()
+          registered.delete(id)
+          tree.removeTreePane(tilePane(id))
+        }
+      }
+    }
+
+    states.$sessionTiles.listen(syncTiles)
+    tree.watchContributedPanes()
+    session.$selectedStoredSessionId.set('primary')
+    tree.declareDefaultTree(model.group(['workspace'], { active: 'workspace', id: 'grp-main' }))
+
+    states.openSessionTile('closed', 'center', 'workspace')
+    states.focusOpenSession('closed')
+    tree.noteActiveTreeGroup('grp-main')
+    expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
+
+    return { states, tree }
+  }
+
+  it('fronts the restored tab after ⌘⇧T', async () => {
+    const { states, tree } = await setup()
+
+    states.closeSessionTile('closed')
+    expect(states.$sessionTiles.get().some(t => t.storedSessionId === 'closed')).toBe(false)
+    expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')?.active).toBe('workspace')
+
+    states.reopenLastClosedTile()
+
+    expect(states.$sessionTiles.get().some(t => t.storedSessionId === 'closed')).toBe(true)
+    expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
+    expect(tree.$activeTreeGroup.get()).toBe('grp-main')
   })
 })

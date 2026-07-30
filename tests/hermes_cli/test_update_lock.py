@@ -22,6 +22,7 @@ import time
 import pytest
 
 from hermes_cli.update_lock import (
+    HANDOFF_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
     describe_holder,
@@ -175,3 +176,51 @@ def test_unwritable_marker_location_does_not_block_the_update(tmp_path):
 
     assert lock.acquire() is True
     assert lock.acquired is False, "nothing was written, so there is nothing to release"
+
+
+class TestHandoffFromOrchestratingUpdater:
+    """The Tauri updater holds the marker, then spawns ``hermes update``.
+
+    The regression: the child saw its own parent's live marker and exited 2,
+    so every GUI update failed with "Hermes is still running" and retrying
+    just re-ran the same self-deadlock. The parent names its pid in
+    HANDOFF_PID_ENV; a live holder matching it is our own orchestrator.
+    """
+
+    def test_child_runs_under_the_parents_live_claim(self, marker, monkeypatch):
+        # Stand in for the parent updater with our own (live) pid.
+        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(os.getpid()))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is True
+        assert lock.acquired is False, "the parent's claim is not ours to own"
+
+        lock.release()
+        assert marker.exists(), "the parent still needs its marker after our stage ends"
+        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+
+    def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(self, marker, monkeypatch):
+        """The env var alone must not bypass the lock."""
+        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(os.getpid() + 1))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is False
+        assert lock.holder is not None
+
+    @pytest.mark.parametrize("value", ["", "not-a-pid", "-1", "0"], ids=["empty", "garbage", "negative", "zero"])
+    def test_malformed_handoff_values_fall_back_to_refusal(self, marker, monkeypatch, value):
+        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+        monkeypatch.setenv(HANDOFF_PID_ENV, value)
+
+        assert UpdateLock(path=marker).acquire() is False
+
+    def test_handoff_env_with_no_marker_claims_normally(self, marker, monkeypatch):
+        """A handoff pid must not stop us writing our own claim when unlocked."""
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(os.getpid()))
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is True
+        assert lock.acquired is True
+        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()

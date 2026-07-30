@@ -154,6 +154,17 @@ VALID_HOOKS: Set[str] = {
     # verification-stop nudge; this hook is for user/plugin policy and is
     # bounded by agent.max_verify_nudges.
     "pre_verify",
+    # Kanban goal-loop turn boundary. Fired by goals.run_kanban_goal_loop
+    # before each CONTINUATION turn (never the one-shot finalize nudge).
+    # Kwargs: prompt, task_id, goal_text, progress, next_step, turns_used,
+    # max_turns, handoffs_done, runtime (caller-supplied dict of best-effort
+    # callables: context_occupancy_fn, compaction_active_fn,
+    # reset_session_fn, session_id_fn). A callback may return
+    #   {"prompt": "<replacement continuation prompt>", "handed_off": bool}
+    # to rewrite the prompt and/or record that it moved the loop to a fresh
+    # session (context-budget handoff). First such dict wins; None/other
+    # shapes leave the turn unchanged.
+    "pre_goal_turn",
     "pre_api_request",
     "post_api_request",
     "api_request_error",

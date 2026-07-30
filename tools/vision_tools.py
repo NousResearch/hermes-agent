@@ -274,11 +274,21 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
     # list keeps us from handing an AV1-coded file to the HEVC branch.
     if len(header) >= 12 and header[4:8] == b"ftyp":
         major = header[8:12]
-        # Bound the brand scan by the declared box size when it's sane, so we
-        # never read brands out of a following box; fall back to the sniffed
-        # header window otherwise (truncated reads, bogus size fields).
+        # Bound the brand scan by the declared box size so we never read brands
+        # out of a FOLLOWING box.
+        #
+        # A malformed size must fail CLOSED (scan no compatible brands) rather
+        # than fall back to the whole sniff window. Falling back widened the scan
+        # in exactly the case an attacker controls: a declared size of 0/4/8/12
+        # on a genuine HEIC let the literal bytes "avif" in a later box upgrade it
+        # to AVIF, defeating the bound this code exists to enforce. A size >= 16
+        # that overruns the sniffed window is merely a truncated read, so clamp
+        # that one to what we actually have.
         box_size = int.from_bytes(header[:4], "big")
-        limit = box_size if 16 <= box_size <= len(header) else len(header)
+        if box_size < 16:
+            limit = 16          # header too small to hold any compatible brand
+        else:
+            limit = min(box_size, len(header))
         compatibles = {
             header[i:i + 4] for i in range(16, limit - 3, 4)
         }

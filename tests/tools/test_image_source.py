@@ -339,6 +339,56 @@ class TestHeicDetection:
         )
         assert _detect_image_mime_type_from_bytes(hdr) == "image/heic"
 
+    @pytest.mark.parametrize("declared_size", [0, 1, 4, 8, 12, 15])
+    def test_malformed_box_size_fails_closed(self, declared_size):
+        """A malformed declared size must NOT widen the brand scan.
+
+        Regression: the bound previously fell back to the whole 64-byte sniff
+        window whenever the declared size was outside ``16 <= size <= len``. That
+        failed OPEN in precisely the attacker-controlled case — a declared size
+        of 0/4/8/12 on a genuine HEIC let the literal bytes ``avif`` in a LATER
+        box upgrade it to AVIF, defeating the box bound this code exists to
+        enforce. Every malformed size must still report HEIC.
+        """
+        import struct
+        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        hdr = (
+            struct.pack(">I", declared_size)
+            + b"ftyp" + b"mif1" + b"\x00" * 4 + b"heic"
+            + b"\x00\x00\x00\x10" + b"meta" + b"avif" + b"\x00" * 24
+        )
+        assert _detect_image_mime_type_from_bytes(hdr) == "image/heic", (
+            f"declared size {declared_size} widened the scan and leaked an "
+            f"'avif' token from a following box"
+        )
+
+    def test_honest_oversized_box_still_scans_what_arrived(self):
+        """A size >= 16 that overruns the sniff window is a truncated read, not
+        an attack: clamp to the available bytes rather than failing closed, so a
+        genuine AVIF whose ftyp box is larger than 64 bytes is still detected."""
+        import struct
+        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        hdr = (
+            struct.pack(">I", 9999)
+            + b"ftyp" + b"mif1" + b"\x00" * 4 + b"mif1avif"
+        )
+        assert _detect_image_mime_type_from_bytes(hdr) == "image/avif"
+
+    def test_misaligned_box_size_does_not_crash_or_misdetect(self):
+        """A size that is not a multiple of 4 must not misalign the brand loop
+        into reading a partial brand."""
+        import struct
+        from tools.vision_tools import _detect_image_mime_type_from_bytes
+        for size in (17, 18, 19, 21, 22, 23):
+            hdr = (
+                struct.pack(">I", size)
+                + b"ftyp" + b"mif1" + b"\x00" * 4 + b"heic"
+                + b"\x00\x00\x00\x10" + b"meta" + b"avif" + b"\x00" * 24
+            )
+            got = _detect_image_mime_type_from_bytes(hdr)
+            assert got == "image/heic", f"size {size} -> {got}"
+
+
     def test_truncated_ftyp_header_does_not_crash(self):
         """A short/garbage read must return a value, not raise."""
         from tools.vision_tools import _detect_image_mime_type_from_bytes

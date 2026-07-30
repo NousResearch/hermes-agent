@@ -168,7 +168,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       const editor = editorRef.current
 
       if (editor) {
-        renderComposerContents(editor, next)
+        renderComposerContents(editor, next, { trailingCommitted: true })
         placeCaretEnd(editor)
       }
 
@@ -187,7 +187,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       editor &&
       (editor.childNodes.length === 0 || (document.activeElement !== editor && composerPlainText(editor) !== draft))
     ) {
-      renderComposerContents(editor, draft)
+      // Inert by construction — this repaints on mount or when the editor
+      // isn't the one being typed into. A message opened for edit is finished
+      // text, so a `/command` ending it is committed and chips, matching how
+      // the transcript rendered that same message a moment ago.
+      renderComposerContents(editor, draft, { trailingCommitted: true })
 
       if (document.activeElement === editor) {
         placeCaretEnd(editor)

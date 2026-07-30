@@ -260,7 +260,9 @@ const PaletteRow = memo(function PaletteRow({
             shows exactly which words earned the row its rank. */}
         <HighlightMatches query={search.split(/\s+/)} text={item.label} />
       </span>
-      {item.detail && <span className="truncate text-muted-foreground/80">{item.detail}</span>}
+      {/* Reads as a suffix of the label, so it sits closer than the row's
+          icon-to-label gap-2 — negative margin trims that back to ~4px. */}
+      {item.detail && <span className="-ml-1 truncate text-muted-foreground/80">{item.detail}</span>}
       {combo && <KbdCombo className="ml-auto opacity-55" combo={combo} size="sm" />}
       {item.to && <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground/70', !combo && 'ml-auto')} />}
       {item.active && <Check className={cn('size-3.5 shrink-0 text-primary', !combo && !item.to && 'ml-auto')} />}
@@ -494,19 +496,16 @@ export function CommandPalette() {
 
   const contributedItems = usePaletteContributions()
 
-  const baseGroups = useMemo<PaletteGroup[]>(() => {
-    const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
-    const cc = t.commandCenter
-
-    // The active repo's worktrees → "new conversation in <branch>". This is the
-    // ⌘K-typed "I want to work on <branch>" reflex: each entry seeds a fresh
-    // session anchored to that worktree's checkout (requestStartWorkSession),
-    // so git is the source of truth and edits land in the right tree.
-    const branchGroup: PaletteGroup[] =
+  // The active repo's worktrees → "new conversation in <branch>". This is the
+  // ⌘K-typed "I want to work on <branch>" reflex: each entry seeds a fresh
+  // session anchored to that worktree's checkout (requestStartWorkSession),
+  // so git is the source of truth and edits land in the right tree.
+  const branchGroup = useMemo<PaletteGroup[]>(
+    () =>
       worktrees.length > 0
         ? [
             {
-              heading: cc.branches,
+              heading: t.commandCenter.branches,
               items: worktrees.map(wt => {
                 const name = wt.branch?.trim() || wt.path.split('/').pop() || wt.path
 
@@ -514,14 +513,46 @@ export function CommandPalette() {
                   icon: GitBranch,
                   id: `worktree-${wt.path}`,
                   keywords: ['branch', 'worktree', 'switch', name, wt.path],
-                  label: cc.startInBranch(name),
+                  label: t.commandCenter.startInBranch(name),
                   run: () => requestStartWorkSession(wt.path)
                 }
               })
             }
           ]
+        : [],
+    [t, worktrees]
+  )
+
+  const baseGroups = useMemo<PaletteGroup[]>(() => {
+    const settingsTab = (tab: string) => `${SETTINGS_ROUTE}?tab=${tab}`
+    const cc = t.commandCenter
+
+    // Registry-contributed rows (core features + plugins) — one group, omitted
+    // while nothing contributes.
+    const commandGroup: PaletteGroup[] =
+      contributedItems.length > 0
+        ? [
+            {
+              heading: cc.commands,
+              items: contributedItems.map(item => ({
+                action: item.action,
+                // Resolved per palette open (see the `open` dep below) so a
+                // state-describing row can't show a state it left.
+                detail: item.detail?.(),
+                icon: item.icon ?? Zap,
+                id: item.key,
+                keywords: item.keywords,
+                label: item.label,
+                run: item.run
+              }))
+            }
+          ]
         : []
 
+    // Group order is the tiebreaker rankGroups falls back on (stable sort), and
+    // exact ties are the common case — "yolo" hits both "Toggle YOLO" and a
+    // worktree named bb/yolo-* as a whole word. So this order IS the priority:
+    // where you're going, then what you can do, then what you can configure.
     return [
       {
         heading: cc.goTo,
@@ -602,7 +633,7 @@ export function CommandPalette() {
           }
         ]
       },
-      ...branchGroup,
+      ...commandGroup,
       {
         heading: cc.commandCenter,
         items: [
@@ -698,29 +729,9 @@ export function CommandPalette() {
             run: go(settingsTab(entry.tab))
           }))
         ]
-      },
-      // Registry-contributed rows (core features + plugins) — one group,
-      // omitted while nothing contributes.
-      ...(contributedItems.length > 0
-        ? [
-            {
-              heading: cc.commands,
-              items: contributedItems.map(item => ({
-                action: item.action,
-                // Resolved per palette open (see the `open` dep below) so a
-                // state-describing row can't show a state it left.
-                detail: item.detail?.(),
-                icon: item.icon ?? Zap,
-                id: item.key,
-                keywords: item.keywords,
-                label: item.label,
-                run: item.run
-              }))
-            }
-          ]
-        : [])
+      }
     ]
-  }, [contributedItems, go, open, settingsSectionLabel, t, updateVersionLabel, worktrees, yoloActive])
+  }, [contributedItems, go, open, settingsSectionLabel, t, updateVersionLabel, yoloActive])
 
   // The long, granular lists (settings fields, API keys, MCP servers, archived
   // chats) only surface once the user types — otherwise they'd bury the
@@ -900,7 +911,14 @@ export function CommandPalette() {
     themeName
   ])
 
-  const groups = useMemo(() => [...baseGroups, ...searchGroups], [baseGroups, searchGroups])
+  // Branch rows rank below BOTH the fixed groups and the typed-only lists: they
+  // scale with whatever worktrees happen to exist, so on a tie they're the least
+  // likely thing meant. Everything above is either always-present chrome or a
+  // list the search itself asked for.
+  const groups = useMemo(
+    () => [...baseGroups, ...searchGroups, ...branchGroup],
+    [baseGroups, branchGroup, searchGroups]
+  )
 
   // Nested palette pages (VS Code-style submenus). Reusable: add an entry here
   // and point a root item at it via `to`.

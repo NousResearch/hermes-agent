@@ -267,7 +267,7 @@ const PaletteRow = memo(function PaletteRow({
       value={paletteValue(item)}
     >
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="truncate">
+      <span className={cn('truncate', modPreview && 'text-muted-foreground/80')}>
         {modPreview ? (
           item.modLabel
         ) : (

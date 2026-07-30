@@ -2,6 +2,7 @@ import type { FC } from 'react'
 import { Fragment, useMemo } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { referenceRe } from '@/components/assistant-ui/reference-kinds'
 import { cn } from '@/lib/utils'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -42,6 +43,28 @@ const FENCE_RE = /```([^\n`]*)\n([\s\S]*?)```/g
 // Greedy backtick run length so ``code with `backticks` inside`` works.
 const INLINE_CODE_RE = /(`+)([^`\n][\s\S]*?)\1/g
 
+// A directive's value is BACKTICK-QUOTED whenever it needs to be (`@url:`
+// always, and any path with a space), so the inline-code scanner would claim
+// those backticks first and split one reference into a bare `@url:` plus a code
+// span — the composer's chip, flattened on send. Directives win: this is syntax
+// the composer wrote, not something the user typed as code.
+
+/** Inline-code matches that don't overlap a directive, so a quoted directive
+ *  value reaches DirectiveContent whole. */
+function inlineCodeOutsideDirectives(text: string): RegExpMatchArray[] {
+  const directives = Array.from(text.matchAll(referenceRe())).map(match => ({
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length
+  }))
+
+  return Array.from(text.matchAll(INLINE_CODE_RE)).filter(match => {
+    const start = match.index ?? 0
+    const end = start + match[0].length
+
+    return !directives.some(directive => start < directive.end && end > directive.start)
+  })
+}
+
 function splitFences(text: string): TopSegment[] {
   const segments: TopSegment[] = []
   let cursor = 0
@@ -72,7 +95,7 @@ function splitInlineCode(text: string): InlineNode[] {
   const nodes: InlineNode[] = []
   let cursor = 0
 
-  for (const match of text.matchAll(INLINE_CODE_RE)) {
+  for (const match of inlineCodeOutsideDirectives(text)) {
     const start = match.index ?? 0
 
     if (start > cursor) {

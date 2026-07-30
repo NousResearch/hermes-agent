@@ -129,3 +129,31 @@ export function referenceKind(type: string | undefined): ReferenceKind {
 export function referenceStyle(type: string | undefined): ReferenceStyle {
   return REFERENCE_STYLES[referenceKind(type)]
 }
+
+/**
+ * The kinds that travel in message text as `@kind:value`. A subset of the table
+ * above: `command`/`skill`/`theme` arrive via `/`, and `diff`/`staged`/`emoji`
+ * have no value to carry.
+ */
+export const WIRE_REFERENCE_KINDS = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
+
+/**
+ * The one pattern that recognises a reference in text.
+ *
+ * A value is quoted whenever it needs to be — `@url:` always, and any path with
+ * a space — so the quoted forms are tried BEFORE bare `\S+`, or a quoted value
+ * would end at the first space and strand the rest as prose.
+ */
+const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/
+
+/**
+ * A fresh matcher for every surface that has to find references in text: the
+ * composer hydrating a draft, the sent bubble, the edit composer.
+ *
+ * New instance per call on purpose — a shared `/g` regex carries `lastIndex`
+ * between callers, which is how a scanner silently skips the first reference in
+ * the next string it's handed.
+ */
+export function referenceRe(): RegExp {
+  return new RegExp(REFERENCE_PATTERN.source, 'g')
+}

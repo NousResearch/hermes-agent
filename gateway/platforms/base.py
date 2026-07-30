@@ -7045,7 +7045,29 @@ class BasePlatformAdapter(ABC):
         profile = None
         profile_route_rejected = False
         runner = getattr(self, "gateway_runner", None)
-        if runner is not None:
+        multiplexed = bool(
+            getattr(getattr(runner, "config", None), "multiplex_profiles", False)
+        )
+
+        # 1) Runtime per-source override (set via `/profile set <name>`). This
+        #    wins over profile_routes so a chat can pin its own profile live
+        #    without restarting the gateway. Hierarchical: thread > chat.
+        if multiplexed:
+            try:
+                from gateway.profile_overrides import resolve_override
+
+                _ov = resolve_override(
+                    self.platform.value if hasattr(self.platform, "value") else str(self.platform),
+                    str(chat_id),
+                    str(thread_id) if thread_id else None,
+                )
+                if _ov:
+                    profile = _ov
+            except Exception:
+                logger.debug("profile override lookup failed", exc_info=True)
+
+        # 2) Configured profile_routes (only consulted when no live override).
+        if profile is None and runner is not None:
             from gateway.profile_routing import ProfileRouteRejected
 
             try:

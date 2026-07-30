@@ -186,7 +186,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("ctx",), args_hint="[all]", subcommands=("all",),
                busy_policy="dispatch"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
-    CommandDef("profile", "Show active profile name and home directory", "Info",
+    CommandDef("profile", "Show or switch the profile serving this chat", "Info",
                busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),

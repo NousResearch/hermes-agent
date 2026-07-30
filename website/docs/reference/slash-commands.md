@@ -137,7 +137,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/image <path>` | Attach a local image file for your next prompt. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
 | `/update` | Update Hermes Agent to the latest version. |
-| `/profile` | Show active profile name and home directory |
+| `/profile` | Show or switch the profile serving this chat. With no args, opens a picker when multiplexing is enabled. Subcommands: `set NAME`, `clear`, and `list`; persistent changes require `gateway.multiplex_profiles: true` and admin access. |
 
 ### Exit
 

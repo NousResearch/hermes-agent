@@ -350,33 +350,144 @@ class GatewaySlashCommandsMixin:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
         return EphemeralReply(f"{header}{_tip_line}")
 
-    async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show the profile serving this source and its home.
+    def _profile_mutation_allowed(self, source: Optional[SessionSource]) -> bool:
+        """Return whether ``source`` may persist a profile pin.
 
-        On a multiplexed gateway the process-level active profile is always
-        the multiplexer's own (usually ``default``), so reporting it would
-        answer "default" in every chat regardless of which profile actually
-        serves the room/channel (``source.profile`` — stamped by the
-        ``/p/<profile>/`` URL prefix, a per-credential adapter, or a room→
-        profile map). When ``multiplex_profiles`` is on, report the stamped
-        profile and, like the scoped /reset banner (#59003), resolve the
-        displayed home under that profile's runtime scope. When multiplexing
-        is off (the default) the stamp is ignored — mirroring the gating in
-        ``_run_agent`` and ``_reset_notice_session_info`` — and the command
-        reports the active profile and default home, byte-identical to before.
+        ``/profile`` itself can be allowed to non-admin users for status, but
+        selecting or clearing a persistent runtime route is an admin-only
+        mutation whenever the platform policy has an admin list configured.
         """
+        if source is None:
+            return False
+        try:
+            from gateway.slash_access import policy_for_source
+
+            policy = policy_for_source(self.config, source)
+            # Preserve the compatibility contract: without an admin list the
+            # policy is unrestricted. Once admins are configured, a user
+            # command allowlist must not grant this persistent mutation.
+            return bool(policy.is_admin(getattr(source, "user_id", None)))
+        except Exception:
+            logger.warning("Failed to resolve /profile mutation authorization", exc_info=True)
+            return False
+
+    async def _handle_profile_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /profile — show or change the profile serving this source.
+
+        Subcommands:
+          /profile            → status, or an interactive picker when enabled
+          /profile set NAME   → pin this chat/thread to profile NAME
+          /profile clear      → drop this chat/thread's pin
+          /profile list       → list profiles on this machine
+
+        Persistent mutations require ``gateway.multiplex_profiles`` and the
+        source's admin policy. The read-only status command remains available
+        to users who are allowed to run ``/profile``.
+        """
+        import asyncio
+        import shlex
+
+        from hermes_cli.profiles import (
+            get_active_profile_name,
+            list_profiles,
+            normalize_profile_name,
+            profile_exists,
+            validate_profile_name,
+        )
         from hermes_constants import display_hermes_home
         from hermes_cli.slash_exec import CommandContext, execute_command
+
+        raw_args = (event.get_command_args() or "").strip()
+        argv = shlex.split(raw_args) if raw_args else []
+        sub = argv[0].lower() if argv else ""
+        # ``/profile set`` with no name opens the interactive picker.
+        if sub == "set" and len(argv) < 2:
+            sub = ""
 
         multiplexed = getattr(
             getattr(self, "config", None), "multiplex_profiles", False
         )
         source = getattr(event, "source", None)
+        platform = source.platform.value if source and source.platform else ""
+        chat_id = getattr(source, "chat_id", "") or ""
+        thread_id = getattr(source, "thread_id", None)
 
+        if sub == "list":
+            try:
+                infos = list_profiles()
+            except Exception:
+                infos = []
+            if not infos:
+                return "No profiles found."
+            active = get_active_profile_name() or "default"
+            rows = []
+            for info in infos:
+                name = getattr(info, "name", None) or getattr(info, "id", "?")
+                mark = " ●" if name == active else ""
+                rows.append(f"• {name}{mark}")
+            rows.extend(["", "(● = sticky default)"])
+            return "\n".join(rows)
+
+        if sub in ("set", "clear"):
+            if not multiplexed:
+                return (
+                    "⚠️ Switching profiles live requires "
+                    "`gateway.multiplex_profiles: true`.\n"
+                    "Set it with `hermes config set gateway.multiplex_profiles true` "
+                    "and restart the gateway, then run `/profile set NAME` again."
+                )
+            if not self._profile_mutation_allowed(source):
+                return "Only gateway admins can change the persistent profile pin."
+            if sub == "clear":
+                try:
+                    from gateway.profile_overrides import clear_override
+
+                    removed = clear_override(platform, chat_id, thread_id)
+                except Exception:
+                    removed = False
+                if removed:
+                    scope = "thread" if thread_id else "chat"
+                    return f"✅ Profile pin cleared for this {scope}. Falling back to routes/default."
+                return "Nothing to clear — this chat has no profile pin."
+
+            if len(argv) < 2:
+                return "Usage: `/profile set NAME`"
+            requested = argv[1]
+            try:
+                canon = normalize_profile_name(requested)
+                validate_profile_name(canon)
+            except ValueError as exc:
+                return f"❌ Invalid profile name: {exc}"
+            if not profile_exists(canon):
+                return (
+                    f"❌ Profile '{canon}' does not exist. "
+                    f"Create it first: `hermes profile create {canon}`"
+                )
+            try:
+                from gateway.profile_overrides import set_override
+
+                set_override(platform, chat_id, canon, thread_id)
+            except Exception as exc:
+                logger.exception("Failed to persist profile override")
+                return f"❌ Could not save profile pin: {exc}"
+            scope = "thread" if thread_id else "chat"
+            return (
+                f"✅ This {scope} now serves profile **{canon}** "
+                "(live — no restart needed). Next message runs under it.\n"
+                "To revert: `/profile clear`"
+            )
+
+        pinned = None
         profile_name = ""
         display = ""
         if multiplexed:
-            profile_name = (getattr(source, "profile", "") or "").strip()
+            try:
+                from gateway.profile_overrides import resolve_override
+
+                pinned = resolve_override(platform, chat_id, thread_id)
+            except Exception:
+                pinned = None
+            profile_name = pinned or (getattr(source, "profile", "") or "").strip()
             try:
                 from gateway.run import _profile_runtime_scope
 
@@ -386,8 +497,62 @@ class GatewaySlashCommandsMixin:
             except Exception:
                 display = display_hermes_home()
 
-        # Shared executor resolves process-level fallbacks; the multiplexed
-        # per-source overrides (when any) ride in via options.
+        profile_name = profile_name or get_active_profile_name()
+
+        # Plain /profile is read-only, so the picker callback is the actual
+        # mutation boundary and rechecks admin authority at callback time.
+        if not sub and multiplexed:
+            try:
+                infos = list_profiles()
+            except Exception:
+                infos = []
+            if infos:
+                choices = []
+                for info in infos:
+                    name = getattr(info, "name", None) or getattr(info, "id", "?")
+                    choices.append(
+                        {"value": name, "label": name, "is_current": name == profile_name}
+                    )
+
+                async def _on_profile_selected(_chat_id: str, value: str) -> str:
+                    if not self._profile_mutation_allowed(source):
+                        return "Only gateway admins can change the persistent profile pin."
+                    canon = normalize_profile_name(value)
+                    try:
+                        validate_profile_name(canon)
+                    except ValueError as exc:
+                        return f"❌ Invalid profile name: {exc}"
+                    if not profile_exists(canon):
+                        return (
+                            f"❌ Profile '{canon}' does not exist. "
+                            f"Create it first: `hermes profile create {canon}`"
+                        )
+                    try:
+                        from gateway.profile_overrides import set_override
+
+                        await asyncio.to_thread(
+                            set_override, platform, chat_id, canon, thread_id
+                        )
+                    except Exception as exc:
+                        logger.exception("Failed to persist profile override")
+                        return f"❌ Could not save profile pin: {exc}"
+                    scope = "thread" if thread_id else "chat"
+                    return (
+                        f"✅ This {scope} now serves profile **{canon}** "
+                        "(live — no restart needed). Next message runs under it.\n"
+                        "To revert: `/profile clear`"
+                    )
+
+                picker_sent = await self._try_send_choice_picker(
+                    event,
+                    self._session_key_for_source(source),
+                    title=t("gateway.profile.picker_title", current=profile_name),
+                    choices=choices,
+                    on_choice_selected=_on_profile_selected,
+                )
+                if picker_sent:
+                    return None
+
         reply = execute_command(
             "profile",
             CommandContext(
@@ -395,12 +560,20 @@ class GatewaySlashCommandsMixin:
                 options={"profile_name": profile_name, "home_display": display},
             ),
         )
-
         lines = [
             t("gateway.profile.header", profile=reply.data["profile"]),
             t("gateway.profile.home", home=reply.data["home"]),
         ]
-
+        if pinned:
+            lines.append(f"pinned: {pinned} (live override)")
+        if not sub and not multiplexed:
+            lines.extend(
+                [
+                    "",
+                    "⚠️ Live profile switching requires `gateway.multiplex_profiles: true`.",
+                    "Set it with `hermes config set gateway.multiplex_profiles true` and restart the gateway.",
+                ]
+            )
         return "\n".join(lines)
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:

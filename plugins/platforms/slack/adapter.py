@@ -549,21 +549,6 @@ def _slack_recovered_mentions(event: dict) -> list:
     return list(dict.fromkeys(mentions))
 
 
-def _slack_mention_detection_text(event: dict) -> str:
-    """Return the flat ``text`` with recovered mention tokens appended.
-
-    Only for consumers that substring-test the result for one specific
-    ``<@UID>`` — the appended tail corrupts any positional or anchored match.
-    Everything that routes on the message text must use the flat text plus
-    :func:`_slack_recovered_mentions` instead.
-    """
-    flat = event.get("text", "") or ""
-    extra = [m for m in _slack_recovered_mentions(event) if m not in flat]
-    if not extra:
-        return flat
-    return (flat.strip() + "\n" + " ".join(extra)).strip()
-
-
 def _rewrite_known_bang_command(text: str) -> str:
     """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
     if not text.startswith("!"):
@@ -5887,18 +5872,16 @@ class SlackAdapter(BasePlatformAdapter):
         # the bot even though the reply itself carries no mention.
         if is_thread_reply:
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            if bot_uid:
-                parent_text = await self._fetch_thread_parent_text(
-                    channel_id=channel_id,
-                    thread_ts=event_thread_ts,
-                    team_id=team_id,
-                    strip_bot_mention=False,
-                )
-                if parent_text and f"<@{bot_uid}>" in parent_text:
-                    # Remember the thread so later replies skip the fetch.
-                    if not self._slack_strict_mention():
-                        self._register_mentioned_thread(event_thread_ts)
-                    return True
+            if bot_uid and await self._thread_parent_mentions_bot(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                bot_uid=bot_uid,
+                team_id=team_id,
+            ):
+                # Remember the thread so later replies skip the fetch.
+                if not self._slack_strict_mention():
+                    self._register_mentioned_thread(event_thread_ts)
+                return True
         return False
 
     async def _handle_slack_message(
@@ -8156,41 +8139,30 @@ class SlackAdapter(BasePlatformAdapter):
             )
         return content, parent_text
 
-    async def _fetch_thread_parent_text(
+    async def _fetch_thread_parent_event(
         self,
         channel_id: str,
         thread_ts: str,
         team_id: str = "",
-        strip_bot_mention: bool = True,
-    ) -> str:
-        """Return the text of the thread parent message.
-
-        Used for reply_to_text injection (mention stripped) and for the
-        parent-mentioned-bot wake check (#24848 — pass
-        ``strip_bot_mention=False`` so the ``<@bot>`` token is preserved).
+    ) -> Optional[dict]:
+        """Return the raw thread-parent message payload, or ``None``.
 
         Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
         hitting ``conversations.replies`` twice. Falls back to a cheap single-
-        message fetch (``limit=1, inclusive=True``) when the cache is cold.
+        message fetch (``limit=1, inclusive=True``) when the cache holds no raw
+        payloads (cold, or a legacy entry predating ``messages``).
 
-        Returns empty string on any failure — callers should treat an empty
-        return as "no parent context to inject".
+        Callers that need a *decision* about the parent must use this rather than
+        :meth:`_fetch_thread_parent_text`: the rendered text deliberately
+        preserves quoted and shared content for the agent to read, which is the
+        opposite of what a mention gate needs.
         """
         cache_key = f"{channel_id}:{thread_ts}:{team_id}"
-        now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
-        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
-            if strip_bot_mention:
-                return cached.parent_text
-            # The cached parent_text has the bot mention stripped; recover
-            # the raw text from the cached message payloads when available.
+        if cached and (time.monotonic() - cached.fetched_at) < self._THREAD_CACHE_TTL:
             for msg in cached.messages:
-                if msg.get("ts", "") == thread_ts:
-                    # The wake check substring-tests this for <@bot>, so an
-                    # app-authored parent whose mention lives in blocks or
-                    # attachments must contribute it too (#52387).
-                    return _slack_mention_detection_text(msg).strip()
-            # No raw payloads cached (legacy entry) — fall through to fetch.
+                if isinstance(msg, dict) and msg.get("ts", "") == thread_ts:
+                    return msg
 
         try:
             client = self._get_client(channel_id, team_id=team_id)
@@ -8202,23 +8174,77 @@ class SlackAdapter(BasePlatformAdapter):
             )
             messages = result.get("messages", []) if result else []
             if not messages:
-                return ""
+                return None
             parent = messages[0]
-            if parent.get("ts", "") != thread_ts:
-                return ""
+            if not isinstance(parent, dict) or parent.get("ts", "") != thread_ts:
+                return None
+            return parent
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[Slack] Failed to fetch thread parent: %s", exc)
+            return None
+
+    async def _thread_parent_mentions_bot(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        bot_uid: str,
+        team_id: str = "",
+    ) -> bool:
+        """Return True when the thread PARENT @-mentioned the bot (#24848).
+
+        The decision is derived from the raw parent event through
+        :meth:`_slack_event_mentions_bot` — the very predicate the live channel
+        gates use — so every carve-out those gates honour applies here too:
+        ``rich_text_quote``, code/preformatted content, mrkdwn blockquote lines,
+        ``is_msg_unfurl``/``is_share`` attachments, and ``fallback``.
+
+        Deriving it from :meth:`_fetch_thread_parent_text` instead would wake the
+        bot on quoted or shared content, because that renderer intentionally
+        preserves both for the agent to read.
+        """
+        if not bot_uid:
+            return False
+        parent = await self._fetch_thread_parent_event(
+            channel_id, thread_ts, team_id=team_id
+        )
+        if not parent:
+            return False
+        return self._slack_event_mentions_bot(parent, bot_uid)
+
+    async def _fetch_thread_parent_text(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str = "",
+    ) -> str:
+        """Return the display text of the thread parent, bot mention stripped.
+
+        Used for reply_to_text injection. This is *display* text — it surfaces
+        quoted and shared content on purpose — so it must never be substring-
+        tested to decide whether the parent addressed the bot; use
+        :meth:`_thread_parent_mentions_bot` for that.
+
+        Returns empty string on any failure — callers should treat an empty
+        return as "no parent context to inject".
+        """
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+        cached = self._thread_context_cache.get(cache_key)
+        if cached and (time.monotonic() - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.parent_text
+
+        parent = await self._fetch_thread_parent_event(
+            channel_id, thread_ts, team_id=team_id
+        )
+        if not parent:
+            return ""
+        try:
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             text = self._render_message_text(parent, bot_uid=bot_uid or "")
-            if strip_bot_mention:
-                if bot_uid:
-                    text = text.replace(f"<@{bot_uid}>", "").strip()
-                return text
-            # Wake-check path: surface mentions the rendered text drops (#52387).
-            extra = [m for m in _slack_recovered_mentions(parent) if m not in text]
-            if extra:
-                text = (text.strip() + "\n" + " ".join(extra)).strip()
+            if bot_uid:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
             return text
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
+            logger.debug("[Slack] Failed to render thread parent text: %s", exc)
             return ""
 
     async def _collect_thread_root_images(

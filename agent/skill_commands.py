@@ -35,6 +35,29 @@ _publish_lock = threading.Lock()
 # into a different command name (#75620).
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9_-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+# Mirror hermes_cli.commands._sanitize_telegram_name for collision policy.
+_TG_SKILL_INVALID = re.compile(r"[^a-z0-9_]")
+_TG_SKILL_MULTI_UNDERSCORE = re.compile(r"_{2,}")
+
+
+def skill_command_slug(name: str) -> str:
+    """Normalize a skill frontmatter/dir name to a slash-command bare slug."""
+    cmd_name = name.lower().replace(" ", "-")
+    cmd_name = _SKILL_INVALID_CHARS.sub("", cmd_name)
+    cmd_name = _SKILL_MULTI_HYPHEN.sub("-", cmd_name).strip("-")
+    return cmd_name
+
+
+def telegram_bot_command_form(bare: str) -> str:
+    """Telegram Bot API form of a skill slug (hyphens → underscores, strip invalid).
+
+    Used for menu collision policy: two distinct skill keys that collapse to the
+    same Telegram command name must resolve deterministically (#75620).
+    """
+    name = bare.lower().lstrip("/").replace("-", "_")
+    name = _TG_SKILL_INVALID.sub("", name)
+    name = _TG_SKILL_MULTI_UNDERSCORE.sub("_", name)
+    return name.strip("_")
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -493,13 +516,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                                 description = line[:80]
                                 break
                     seen_names.add(name)
-                    # Normalize to a Telegram-safe slug: spaces → hyphens,
-                    # strip chars outside [a-z0-9_-]. Underscores are kept so
-                    # intentional names (``__demo``, ``git_helper``) stay
-                    # distinct from hyphenated siblings (#75620).
-                    cmd_name = name.lower().replace(" ", "-")
-                    cmd_name = _SKILL_INVALID_CHARS.sub("", cmd_name)
-                    cmd_name = _SKILL_MULTI_HYPHEN.sub("-", cmd_name).strip("-")
+                    # Spaces → hyphens; keep underscores so intentional names
+                    # (``__demo``, ``git_helper``) stay distinct (#75620).
+                    cmd_name = skill_command_slug(name)
                     if not cmd_name:
                         continue
                     # Skip if this skill's auto-generated /command collides
@@ -646,11 +665,15 @@ def reload_skills() -> Dict[str, Any]:
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical skill_cmds key.
 
-    Keys preserve intentional underscores from the skill name (#75620). Exact
-    match is tried first so ``/__demo`` and ``/git_helper`` resolve to those
-    keys. When the exact key is missing, underscores are rewritten to hyphens
-    so Telegram clients that forbid hyphens in bot commands can still hit a
-    hyphenated skill key (``/claude_code`` → ``/claude-code``).
+    Keys preserve intentional underscores from the skill name (#75620).
+
+    Telegram bot commands cannot contain hyphens, so a skill registered as
+    ``/claude-code`` arrives as ``claude_code``. When **both** ``/git_helper``
+    and ``/git-helper`` exist they collapse to the same Telegram menu name
+    ``git_helper`` (menu first-wins via ``sorted`` key order in
+    ``telegram_menu_commands``). Dispatch must use the same first-wins rule:
+    among all keys whose Telegram form matches the input, pick the
+    lexicographically first ``/key``.
 
     Returns the matching ``/slug`` key from ``get_skill_commands()`` or
     ``None`` if no match.
@@ -658,11 +681,27 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     if not command:
         return None
     commands = get_skill_commands()
-    exact = f"/{command}"
+    bare = command.lstrip("/")
+    tg = telegram_bot_command_form(bare)
+    if not tg:
+        return None
+
+    # All registered keys that Telegram would present as the same bot command.
+    collisions = sorted(
+        key
+        for key in commands
+        if telegram_bot_command_form(key.lstrip("/")) == tg
+    )
+    if collisions:
+        # Deterministic first-wins — matches sorted(skill_cmds) menu build order.
+        return collisions[0]
+
+    # No telegram-form match: allow direct key when the bare token is already
+    # a stored slug (e.g. CLI typed exactly).
+    exact = f"/{bare}"
     if exact in commands:
         return exact
-    # Telegram may swap hyphens for underscores in bot-command names.
-    hyphenated = f"/{command.replace('_', '-')}"
+    hyphenated = f"/{bare.replace('_', '-')}"
     if hyphenated != exact and hyphenated in commands:
         return hyphenated
     return None

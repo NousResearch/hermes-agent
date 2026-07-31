@@ -544,6 +544,21 @@ class TestResolveSkillCommandKey:
             assert resolve_skill_command_key("git_helper") == "/git_helper"
             assert resolve_skill_command_key("__missing") is None
 
+    def test_telegram_collision_first_wins_hyphen_over_underscore_pair(self, tmp_path):
+        """When /git-helper and /git_helper both exist, Telegram form git_helper
+        dispatches to the lexicographically first key (menu first-wins, #75620)."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            for name in ("git_helper", "git-helper"):
+                d = tmp_path / name
+                d.mkdir()
+                (d / "SKILL.md").write_text(
+                    f"---\nname: {name}\ndescription: {name}.\n---\n\nBody.\n"
+                )
+            scan_skill_commands()
+            # sorted keys: /git-helper before /git_helper
+            assert resolve_skill_command_key("git_helper") == "/git-helper"
+            assert resolve_skill_command_key("git-helper") == "/git-helper"
+
     def test_unknown_command_returns_none(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "claude-code")

@@ -3440,11 +3440,15 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
             break
     if not declared_name:
         return None, None
-    slug = declared_name.lower().replace(" ", "-").replace("_", "-")
-    # Mirror _SKILL_INVALID_CHARS and _SKILL_MULTI_HYPHEN from skill_commands
-    import re as _re
-    slug = _re.sub(r"[^a-z0-9-]", "", slug)
-    slug = _re.sub(r"-{2,}", "-", slug).strip("-")
+    # Mirror agent.skill_commands.skill_command_slug (keep underscores, #75620).
+    try:
+        from agent.skill_commands import skill_command_slug
+        slug = skill_command_slug(declared_name)
+    except Exception:
+        import re as _re
+        slug = declared_name.lower().replace(" ", "-")
+        slug = _re.sub(r"[^a-z0-9_-]", "", slug)
+        slug = _re.sub(r"-{2,}", "-", slug).strip("-")
     if not slug:
         return None, declared_name
     return slug, declared_name
@@ -3464,11 +3468,16 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     directory name would miss that slug entirely and fall through to the
     generic "unknown command" path.
     """
-    # Normalize: command uses hyphens, skill names may use hyphens or underscores
-    normalized = command_name.lower().replace("_", "-")
+    # Match by Telegram bot-command form so hyphenated skills still match when
+    # Telegram sends underscores, without collapsing intentional underscore
+    # names into a different skill (#75620).
     try:
+        from agent.skill_commands import telegram_bot_command_form
         from tools.skills_tool import _get_disabled_skill_names
         from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+        command_tg = telegram_bot_command_form(command_name)
+        if not command_tg:
+            return None
         disabled = _get_disabled_skill_names()
 
         # Check disabled skills across all dirs (local + external)
@@ -3483,7 +3492,10 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                     continue
                 # disabled is keyed by the declared frontmatter name (what
                 # skills.disabled / skills.platform_disabled store).
-                if slug == normalized and declared_name in disabled:
+                if (
+                    telegram_bot_command_form(slug) == command_tg
+                    and declared_name in disabled
+                ):
                     return (
                         f"The **{command_name}** skill is installed but disabled.\n"
                         f"Enable it with: `hermes skills config`"
@@ -3500,7 +3512,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                 slug, _declared = _skill_slug_from_frontmatter(skill_md)
                 if not slug:
                     continue
-                if slug == normalized:
+                if telegram_bot_command_form(slug) == command_tg:
                     # Build install path: official/<category>/<name>
                     rel = skill_md.parent.relative_to(optional_dir)
                     parts = list(rel.parts)

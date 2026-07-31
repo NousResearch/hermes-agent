@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
-import { getSession, getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
+import { deleteSession, getSession, getSessionMessages, type SessionInfo, setSessionArchived } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
@@ -77,7 +77,7 @@ function deferred<T>() {
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'archiveSession' | 'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  'archiveSession' | 'createBackendSessionForSend' | 'removeSession' | 'selectSidebarItem' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -534,6 +534,32 @@ describe('startFreshSessionDraft', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-tile' })
     expect(setSessionArchived).toHaveBeenCalledWith('stored-old', true, undefined)
+  })
+
+  it('closes an unselected tiled runtime before deleting', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    vi.mocked(deleteSession).mockClear()
+    setSessions([storedSession({ id: 'stored-old' })])
+    render(
+      <Harness
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionId={new Map([['stored-old', 'runtime-tile']])}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.removeSession('stored-old')
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-tile' })
+    expect(deleteSession).toHaveBeenCalledWith('stored-old', undefined)
+    expect(requestGateway.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(deleteSession).mock.invocationCallOrder[0]
+    )
   })
 
   it('deduplicates the selected and tiled runtime before archiving', async () => {

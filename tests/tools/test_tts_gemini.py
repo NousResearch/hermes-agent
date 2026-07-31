@@ -220,6 +220,45 @@ class TestGenerateGeminiTts:
         mock_sleep.assert_not_called()
         assert (tmp_path / "test.wav").exists()
 
+    def test_retries_transient_http_status_then_succeeds(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        unavailable = MagicMock()
+        unavailable.status_code = 503
+        unavailable.headers = {"Retry-After": "0"}
+        unavailable.json.return_value = {"error": {"message": "try later"}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch(
+            "requests.post",
+            side_effect=[unavailable, mock_gemini_response],
+        ) as mock_post, patch("time.sleep") as mock_sleep:
+            _generate_gemini_tts(
+                "Hi",
+                str(tmp_path / "test.wav"),
+                {"gemini": {"max_attempts": 3}},
+            )
+
+        assert mock_post.call_count == 2
+        mock_sleep.assert_not_called()
+
+    def test_does_not_retry_deterministic_http_error(self, tmp_path, monkeypatch):
+        from tools.tts_tool import _generate_gemini_tts
+
+        bad_request = MagicMock()
+        bad_request.status_code = 400
+        bad_request.headers = {}
+        bad_request.json.return_value = {"error": {"message": "Invalid voice"}}
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch("requests.post", return_value=bad_request) as mock_post:
+            with pytest.raises(RuntimeError, match="HTTP 400.*Invalid voice"):
+                _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
+
+        mock_post.assert_called_once()
+
     def test_raises_after_configured_attempts(
         self, tmp_path, monkeypatch, caplog
     ):

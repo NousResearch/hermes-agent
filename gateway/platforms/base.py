@@ -5970,6 +5970,8 @@ class BasePlatformAdapter(ABC):
                                     tts_data.get("error") or "TTS tool returned success=false"
                                 )
                             _tts_path = tts_data.get("file_path") or _tts_requested_path
+                        else:
+                            raise RuntimeError("TTS provider requirements are unavailable")
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
                         _tts_error_notice = (

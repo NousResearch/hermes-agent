@@ -2340,6 +2340,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     except (TypeError, ValueError):
         retry_delay = 1.0
     retry_delay = max(0.0, retry_delay)
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
 
     data: Optional[Dict[str, Any]] = None
     for attempt in range(1, max_attempts + 1):
@@ -2355,11 +2356,33 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             )
 
             if response.status_code != 200:
-                # Surface the API error message when present. HTTP responses
-                # are deterministic application failures, so they are not
-                # retried; transport failures while reading the streamed body
-                # are caught below and retried.
+                # Consume and close the bounded response before deciding
+                # whether the status is transient. Deterministic client errors
+                # fail fast; common timeout, throttling, and server statuses
+                # retry within the same attempt budget as transport errors.
                 raw_body = _read_tts_response_bytes(response, label="Gemini TTS")
+                if (
+                    response.status_code in retryable_statuses
+                    and attempt < max_attempts
+                ):
+                    delay = retry_delay
+                    retry_after = getattr(response, "headers", {}).get("Retry-After")
+                    if retry_after is not None:
+                        try:
+                            # Support the common delta-seconds form and bound
+                            # an upstream-controlled delay to one minute.
+                            delay = min(60.0, max(0.0, float(retry_after)))
+                        except (TypeError, ValueError):
+                            pass
+                    logger.warning(
+                        "Gemini TTS request attempt %d/%d returned retryable HTTP %d",
+                        attempt,
+                        max_attempts,
+                        response.status_code,
+                    )
+                    if delay:
+                        time.sleep(delay)
+                    continue
                 try:
                     if raw_body:
                         err = json.loads(raw_body.decode("utf-8")).get("error", {})

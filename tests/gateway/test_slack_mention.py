@@ -570,7 +570,7 @@ async def test_block_extraction_debug_log_does_not_include_message_preview(caplo
 # ---------------------------------------------------------------------------
 
 from plugins.platforms.slack.adapter import (  # noqa: E402
-    _slack_mention_detection_text,
+    _ThreadContextCache,
     _slack_recovered_mentions,
 )
 
@@ -597,7 +597,7 @@ def _blockkit_mention_event(bot_user_id=BOT_USER_ID, flat_text="Release notifica
     }
 
 
-def test_mention_detection_text_ignores_quoted_blockkit_mention():
+def test_recovered_mentions_ignore_quoted_blockkit_mention():
     """A mention inside rich_text_quote (forwarded content) must NOT count."""
     event = {
         "text": "please review",
@@ -622,7 +622,7 @@ def test_mention_detection_text_ignores_quoted_blockkit_mention():
             }
         ],
     }
-    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+    assert f"<@{BOT_USER_ID}>" not in _slack_recovered_mentions(event)
 
 
 # ---------------------------------------------------------------------------
@@ -685,18 +685,18 @@ def _mrkdwn_section(text):
         ),
     ],
 )
-def test_mention_detection_text_recovers_mrkdwn_token_carriers(carrier, event):
+def test_recovered_mentions_cover_mrkdwn_token_carriers(carrier, event):
     """Every carrier an app can author a mention in must reach the gates."""
-    assert f"<@{BOT_USER_ID}>" in _slack_mention_detection_text(event), carrier
+    assert f"<@{BOT_USER_ID}>" in _slack_recovered_mentions(event), carrier
 
 
-def test_mention_detection_text_normalizes_labelled_mention():
+def test_recovered_mentions_normalize_labelled_mention():
     """``<@U123|alice>`` must normalize to the bare token the gates compare."""
     event = {"text": "", "blocks": [_mrkdwn_section(f"<@{BOT_USER_ID}|hermes> ping")]}
-    assert f"<@{BOT_USER_ID}>" in _slack_mention_detection_text(event)
+    assert f"<@{BOT_USER_ID}>" in _slack_recovered_mentions(event)
 
 
-def test_mention_detection_text_ignores_quoted_mrkdwn_token():
+def test_recovered_mentions_ignore_quoted_mrkdwn_token():
     """The quote carve-out must cover raw tokens, not just `user` elements."""
     event = {
         "text": "see above",
@@ -708,10 +708,10 @@ def test_mention_detection_text_ignores_quoted_mrkdwn_token():
             }],
         }],
     }
-    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+    assert f"<@{BOT_USER_ID}>" not in _slack_recovered_mentions(event)
 
 
-def test_mention_detection_text_ignores_section_nested_in_quote():
+def test_recovered_mentions_ignore_section_nested_in_quote():
     """A section nested under a quote stays quoted, however deep."""
     event = {
         "text": "see above",
@@ -723,24 +723,23 @@ def test_mention_detection_text_ignores_section_nested_in_quote():
             }],
         }],
     }
-    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+    assert f"<@{BOT_USER_ID}>" not in _slack_recovered_mentions(event)
 
 
-def test_mention_detection_text_dedupes_repeated_carriers():
-    """One addressed user appends one token, however many carriers repeat it."""
+def test_recovered_mentions_dedupe_repeated_carriers():
+    """One addressed user yields one token, however many carriers repeat it."""
     event = {
         "text": "",
         "blocks": [_mrkdwn_section(f"<@{BOT_USER_ID}> rollout started")],
         "attachments": [{"text": f"<@{BOT_USER_ID}> rollout started"}],
     }
-    detected = _slack_mention_detection_text(event)
-    assert detected.count(f"<@{BOT_USER_ID}>") == 1
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
 
 
-def test_mention_detection_text_unchanged_without_recoverable_mention():
-    """A message with no recoverable mention is returned as the flat text."""
+def test_recovered_mentions_empty_without_a_recoverable_mention():
+    """A message whose carriers hold no mention recovers nothing."""
     event = {"text": "nightly backup finished", "blocks": [_mrkdwn_section("all green")]}
-    assert _slack_mention_detection_text(event) == "nightly backup finished"
+    assert _slack_recovered_mentions(event) == []
 
 
 @pytest.mark.parametrize(
@@ -754,9 +753,9 @@ def test_mention_detection_text_unchanged_without_recoverable_mention():
         {"text": "hi", "attachments": [{"fields": "not-a-list"}]},
     ],
 )
-def test_mention_detection_text_never_raises_on_malformed_payload(event):
+def test_recovered_mentions_never_raise_on_malformed_payload(event):
     """Gating degrades to the flat text; a bad payload must never break it."""
-    assert _slack_mention_detection_text(event) == "hi"
+    assert _slack_recovered_mentions(event) == []
 
 
 def test_attachment_mentions_survive_a_malformed_sibling():
@@ -998,3 +997,140 @@ def test_gate_wake_word_pattern_still_matches_with_an_attachment():
     }
     _, is_mentioned = adapter._slack_mention_gate_inputs(event, BOT_USER_ID)
     assert is_mentioned is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: the thread-parent wake check (#24848) obeys the same carve-outs
+#
+# A reply carrying no mention of its own wakes the bot when the thread PARENT
+# addressed it. That decision must come from the raw parent event through the
+# live gate's predicate — NOT from `_fetch_thread_parent_text`, which renders
+# display text and deliberately preserves quoted and shared content for the
+# agent to read. Both the cold and the cached parent path are covered, because
+# they are separate code paths that must agree.
+# ---------------------------------------------------------------------------
+
+PARENT_TS = "1700000000.000100"
+
+
+def _make_parent_adapter(parent, cached):
+    """Adapter whose thread parent is *parent*, served from cache or the API."""
+    adapter = _make_adapter()
+    adapter._THREAD_CACHE_TTL = 60.0
+    adapter._thread_context_cache = {}
+    client = AsyncMock()
+    if cached:
+        adapter._thread_context_cache[f"{CHANNEL_ID}:{PARENT_TS}:"] = (
+            _ThreadContextCache(content="", parent_text="", messages=[parent])
+        )
+        client.conversations_replies = AsyncMock(
+            side_effect=AssertionError("a cached parent must not re-hit the API")
+        )
+    else:
+        client.conversations_replies = AsyncMock(return_value={"messages": [parent]})
+    adapter._get_client = MagicMock(return_value=client)
+    return adapter
+
+
+def _parent(**payload):
+    return {"ts": PARENT_TS, "text": "", **payload}
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["cold", "cached"])
+@pytest.mark.parametrize(
+    "carrier,parent",
+    [
+        (
+            "rich_text_quote",
+            _parent(blocks=[{"type": "rich_text", "elements": [{
+                "type": "rich_text_quote",
+                "elements": [{"type": "user", "user_id": BOT_USER_ID}],
+            }]}]),
+        ),
+        (
+            "is_msg_unfurl attachment",
+            _parent(text="look at this", attachments=[
+                {"is_msg_unfurl": True, "text": f"<@{BOT_USER_ID}> deploy prod"}
+            ]),
+        ),
+        (
+            "is_share attachment",
+            _parent(text="look at this", attachments=[
+                {"is_share": True, "text": f"<@{BOT_USER_ID}> deploy prod"}
+            ]),
+        ),
+        (
+            "fallback-only attachment",
+            _parent(attachments=[{"fallback": f"<@{BOT_USER_ID}> ping"}]),
+        ),
+        (
+            "preformatted mention",
+            _parent(blocks=[{"type": "rich_text", "elements": [{
+                "type": "rich_text_preformatted",
+                "elements": [{"type": "user", "user_id": BOT_USER_ID}],
+            }]}]),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_thread_parent_verbatim_mention_does_not_wake(carrier, parent, cached):
+    """Quoted / shared / code content in the parent must not wake the thread."""
+    adapter = _make_parent_adapter(parent, cached)
+    assert await adapter._thread_parent_mentions_bot(
+        channel_id=CHANNEL_ID, thread_ts=PARENT_TS, bot_uid=BOT_USER_ID
+    ) is False, carrier
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["cold", "cached"])
+@pytest.mark.parametrize(
+    "carrier,parent",
+    [
+        ("flat text", _parent(text=f"<@{BOT_USER_ID}> watch the rollout")),
+        (
+            "section block only",
+            _parent(blocks=[_mrkdwn_section(f"<@{BOT_USER_ID}> watch the rollout")]),
+        ),
+        (
+            "attachment field only",
+            _parent(attachments=[
+                {"fields": [{"title": "owner", "value": f"<@{BOT_USER_ID}>"}]}
+            ]),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_thread_parent_genuine_mention_wakes(carrier, parent, cached):
+    """A parent that really addressed the bot still wakes its thread (#24848)."""
+    adapter = _make_parent_adapter(parent, cached)
+    assert await adapter._thread_parent_mentions_bot(
+        channel_id=CHANNEL_ID, thread_ts=PARENT_TS, bot_uid=BOT_USER_ID
+    ) is True, carrier
+
+
+@pytest.mark.asyncio
+async def test_thread_parent_wake_ignores_a_ts_mismatch():
+    """A fetch that returned a different message is not the parent."""
+    adapter = _make_parent_adapter(
+        {"ts": "1699999999.000000", "text": f"<@{BOT_USER_ID}> ping"}, cached=False
+    )
+    assert await adapter._thread_parent_mentions_bot(
+        channel_id=CHANNEL_ID, thread_ts=PARENT_TS, bot_uid=BOT_USER_ID
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_thread_parent_text_still_surfaces_quoted_content():
+    """The display renderer must keep preserving quotes — only the gate changed.
+
+    `_fetch_thread_parent_text` feeds reply_to_text injection, where the agent
+    *should* see what was quoted. This pins the split: display keeps it, the
+    wake decision above drops it.
+    """
+    parent = _parent(blocks=[{"type": "rich_text", "elements": [{
+        "type": "rich_text_quote",
+        "elements": [{"type": "text", "text": "the earlier ask"}],
+    }]}])
+    adapter = _make_parent_adapter(parent, cached=False)
+    assert "the earlier ask" in await adapter._fetch_thread_parent_text(
+        channel_id=CHANNEL_ID, thread_ts=PARENT_TS
+    )

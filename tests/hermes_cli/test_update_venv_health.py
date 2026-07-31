@@ -26,6 +26,87 @@ import pytest
 from hermes_cli import main as cli_main
 
 
+def _fake_ancestor(pid: int, cmdline: list[str], name: str = "python.exe"):
+    proc = MagicMock()
+    proc.pid = pid
+    proc.cmdline.return_value = cmdline
+    proc.name.return_value = name
+    return proc
+
+
+@pytest.mark.parametrize(
+    "cmdline",
+    [
+        ["python.exe", "-m", "tui_gateway.slash_worker", "--session-key", "abc"],
+        ["pythonw.exe", "-m", "hermes_cli.main", "serve", "--port", "9119"],
+    ],
+)
+def test_detect_active_update_ancestor(cmdline):
+    me = MagicMock()
+    me.parents.return_value = [_fake_ancestor(555, cmdline)]
+    fake_psutil = types.SimpleNamespace(Process=lambda: me)
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        result = cli_main._detect_active_update_ancestor()
+
+    expected_kind = (
+        "Desktop slash worker"
+        if "tui_gateway.slash_worker" in cmdline
+        else "Desktop backend"
+    )
+    assert result == (555, "python.exe", expected_kind)
+
+
+def test_detect_active_update_ancestor_ignores_unrelated_parent():
+    me = MagicMock()
+    me.parents.return_value = [
+        _fake_ancestor(
+            555,
+            ["python.exe", "script.py", "--note", "hermes_cli.main serve"],
+        ),
+    ]
+    fake_psutil = types.SimpleNamespace(Process=lambda: me)
+
+    with patch.dict(sys.modules, {"psutil": fake_psutil}):
+        assert cli_main._detect_active_update_ancestor() is None
+
+
+def test_active_update_ancestor_guard_precedes_backup(capsys):
+    args = _update_args(force=False)
+    backup = MagicMock()
+
+    with patch.object(
+        cli_main,
+        "_detect_active_update_ancestor",
+        return_value=(555, "python.exe", "Desktop slash worker"),
+    ), patch.object(cli_main, "_run_pre_update_backup", backup):
+        with pytest.raises(SystemExit, match="2"):
+            cli_main._cmd_update_impl(args, gateway_mode=False)
+
+    backup.assert_not_called()
+    output = capsys.readouterr().out
+    assert "active Desktop session or worker" in output
+    assert "hermes update --force" in output
+    assert "stopped or interrupted" in output
+
+
+def test_force_bypasses_active_update_ancestor_guard():
+    args = _update_args(force=True)
+
+    class _PastGuard(Exception):
+        pass
+
+    with patch.object(
+        cli_main,
+        "_detect_active_update_ancestor",
+        return_value=(555, "python.exe", "Desktop slash worker"),
+    ), patch.object(
+        cli_main, "_run_pre_update_backup", side_effect=_PastGuard
+    ):
+        with pytest.raises(_PastGuard):
+            cli_main._cmd_update_impl(args, gateway_mode=False)
+
+
 # ---------------------------------------------------------------------------
 # _venv_core_imports_healthy
 # ---------------------------------------------------------------------------
@@ -124,6 +205,8 @@ def _run_update_until_guard(args):
             raise _PastGuard
 
     with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
+        cli_main, "_detect_active_update_ancestor", return_value=None
+    ), patch.object(
         cli_main, "_venv_scripts_dir", return_value=None
     ), patch.object(cli_main, "_run_pre_update_backup"), patch.object(
         cli_main, "_pause_windows_gateways_for_update", return_value=None

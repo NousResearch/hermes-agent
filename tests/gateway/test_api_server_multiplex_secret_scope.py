@@ -159,3 +159,70 @@ async def test_profile_middleware_binds_auth_before_handler(
         assert (await accepted.json())["profile"] == "worker"
 
 
+@pytest.mark.asyncio
+async def test_profile_aliases_and_credentials_partition_adapter_idempotency(
+    adapter, tmp_path, monkeypatch
+):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from gateway.config import GatewayConfig
+
+    worker_home = tmp_path / "profiles" / "worker"
+    worker_home.mkdir(parents=True)
+    profile_key = "w" * 32
+    default_key = "d" * 32
+    (worker_home / ".env").write_text(
+        f"API_SERVER_KEY={profile_key}\n", encoding="utf-8"
+    )
+    adapter._api_key = default_key
+    adapter.gateway_runner = type(
+        "_Runner", (), {"config": GatewayConfig(multiplex_profiles=True)}
+    )()
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda multiplex: [("default", tmp_path), ("worker", worker_home)],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda name: tmp_path if name == "default" else worker_home,
+    )
+    ss.set_multiplex_active(True)
+
+    async def run_agent(**kwargs):
+        return (
+            {"final_response": "ok", "session_id": kwargs["session_id"], "messages": []},
+            {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        )
+
+    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/p/{profile}/v1/chat/completions", adapter._handle_chat_completions)
+    body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+
+    async with TestClient(TestServer(app)) as client:
+        from unittest.mock import patch
+
+        with patch.object(adapter, "_run_agent", side_effect=run_agent) as mock_run:
+            default_headers = {
+                "Authorization": f"Bearer {default_key}",
+                "Idempotency-Key": "profile-key",
+            }
+            first = await client.post("/v1/chat/completions", headers=default_headers, json=body)
+            default_alias = await client.post(
+                "/p/default/v1/chat/completions", headers=default_headers, json=body
+            )
+            worker = await client.post(
+                "/p/worker/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {profile_key}",
+                    "Idempotency-Key": "profile-key",
+                },
+                json=body,
+            )
+
+    assert first.status == default_alias.status == worker.status == 200
+    assert mock_run.call_count == 2
+    assert first.headers["X-Hermes-Session-Id"] == default_alias.headers["X-Hermes-Session-Id"]
+    assert worker.headers["X-Hermes-Session-Id"] != first.headers["X-Hermes-Session-Id"]
+
+

@@ -1035,7 +1035,7 @@ class _IdempotencyCache:
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
         from collections import OrderedDict
         self._store = OrderedDict()
-        self._inflight: Dict[tuple[str, str], "asyncio.Task[Any]"] = {}
+        self._inflight: Dict[tuple[tuple[str, ...], str, str], "asyncio.Task[Any]"] = {}
         self._ttl = ttl_seconds
         self._max = max_items
 
@@ -1047,19 +1047,29 @@ class _IdempotencyCache:
         while len(self._store) > self._max:
             self._store.popitem(last=False)
 
-    async def get_or_set(self, key: str, fingerprint: str, compute_coro):
+    async def get_or_set(
+        self,
+        scope: Optional[tuple[str, ...]],
+        key: str,
+        fingerprint: str,
+        compute_coro,
+    ):
+        if scope is None:
+            return await compute_coro()
+
         self._purge()
-        item = self._store.get(key)
+        store_key = (scope, key)
+        item = self._store.get(store_key)
         if item and item["fp"] == fingerprint:
             return item["resp"]
 
-        inflight_key = (key, fingerprint)
+        inflight_key = (scope, key, fingerprint)
         task = self._inflight.get(inflight_key)
         if task is None:
             async def _compute_and_store():
                 resp = await compute_coro()
                 import time as _t
-                self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
+                self._store[store_key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
                 self._purge()
                 return resp
 
@@ -1075,31 +1085,10 @@ class _IdempotencyCache:
         return await asyncio.shield(task)
 
 
-_idem_cache = _IdempotencyCache()
-
-
 def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
     return sha256(repr(subset).encode("utf-8")).hexdigest()
-
-
-def _derive_chat_session_id(
-    system_prompt: Optional[str],
-    first_user_message: str,
-) -> str:
-    """Derive a stable session ID from the conversation's first user message.
-
-    OpenAI-compatible frontends (Open WebUI, LibreChat, etc.) send the full
-    conversation history with every request.  The system prompt and first user
-    message are constant across all turns of the same conversation, so hashing
-    them produces a deterministic session ID that lets the API server reuse
-    the same Hermes session (and therefore the same Docker container sandbox
-    directory) across turns.
-    """
-    seed = f"{system_prompt or ''}\n{first_user_message}"
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
-    return f"api-{digest}"
 
 
 _CRON_AVAILABLE = False
@@ -1253,6 +1242,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._idempotency_cache = _IdempotencyCache()
         # Last-known-good resolved model per session (keyed by gateway_session_key
         # ONLY — never session_id, which rotates/is ephemeral for one-off API
         # server requests; "*" is the process-wide fallback), mirroring
@@ -1536,6 +1526,44 @@ class APIServerAdapter(BasePlatformAdapter):
                 type(exc).__name__,
             )
             return ""
+
+    @staticmethod
+    def _idempotency_header_scope(
+        request: "web.Request", header_name: str
+    ) -> tuple[str, str]:
+        if header_name not in request.headers:
+            return "absent", ""
+        return "present", request.headers.get(header_name, "").strip()
+
+    def _idempotency_scope(
+        self, request: "web.Request", endpoint: str
+    ) -> Optional[tuple[str, ...]]:
+        """Build the non-secret logical scope for an authenticated retry."""
+        expected_key = self._expected_api_key()
+        if not expected_key:
+            return None
+
+        profile = _api_request_profile.get()
+        normalized_profile = (profile or "default").strip() or "default"
+        credential_digest = hashlib.sha256(
+            b"hermes-api-idempotency-credential-v1\0"
+            + expected_key.encode("utf-8")
+        ).hexdigest()
+        session_id_state, session_id_value = self._idempotency_header_scope(
+            request, "X-Hermes-Session-Id"
+        )
+        session_key_state, session_key_value = self._idempotency_header_scope(
+            request, "X-Hermes-Session-Key"
+        )
+        return (
+            endpoint,
+            normalized_profile,
+            f"credential:{credential_digest}",
+            f"session-id:{session_id_state}",
+            session_id_value,
+            f"session-key:{session_key_state}",
+            session_key_value,
+        )
 
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
@@ -3818,16 +3846,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
         else:
-            # Derive a stable session ID from the conversation fingerprint so
-            # that consecutive messages from the same Open WebUI (or similar)
-            # conversation map to the same Hermes session.  The first user
-            # message + system prompt are constant across all turns.
-            first_user = ""
-            for cm in conversation_messages:
-                if cm.get("role") == "user":
-                    first_user = cm.get("content", "")
-                    break
-            session_id = _derive_chat_session_id(system_prompt, first_user)
+            session_id = f"api-{uuid.uuid4().hex}"
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -3961,13 +3980,16 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
-        if idempotency_key:
+        idempotency_scope = self._idempotency_scope(request, "chat_completions")
+        if idempotency_key and idempotency_scope is not None:
             fp = _make_request_fingerprint(
                 body,
                 keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
             )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+                result, usage = await self._idempotency_cache.get_or_set(
+                    idempotency_scope, idempotency_key, fp, _compute_completion
+                )
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
@@ -5083,7 +5105,8 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
-        if idempotency_key:
+        idempotency_scope = self._idempotency_scope(request, "responses")
+        if idempotency_key and idempotency_scope is not None:
             fp = _make_request_fingerprint(
                 body,
                 keys=[
@@ -5098,7 +5121,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 ],
             )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
+                result, usage = await self._idempotency_cache.get_or_set(
+                    idempotency_scope, idempotency_key, fp, _compute_response
+                )
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
@@ -5949,6 +5974,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     return (
                         {
                             "final_response": f"⚠️ Provider authentication failed: {exc}",
+                            "session_id": session_id,
                             "messages": [],
                             "api_calls": 0,
                             "tools": [],

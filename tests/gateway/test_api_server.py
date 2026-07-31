@@ -31,7 +31,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
-    _derive_chat_session_id,
+    _ProviderAuthResolutionError,
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
@@ -124,6 +124,7 @@ class TestIdempotencyCache:
     @pytest.mark.asyncio
     async def test_concurrent_same_key_and_fingerprint_runs_once(self):
         cache = _IdempotencyCache()
+        scope = ("chat_completions", "default", "credential:digest", "session-id:absent", "", "session-key:absent", "")
         gate = asyncio.Event()
         started = asyncio.Event()
         calls = 0
@@ -135,8 +136,8 @@ class TestIdempotencyCache:
             await gate.wait()
             return ("response", {"total_tokens": 1})
 
-        first = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
-        second = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
+        first = asyncio.create_task(cache.get_or_set(scope, "idem-key", "fp-1", compute))
+        second = asyncio.create_task(cache.get_or_set(scope, "idem-key", "fp-1", compute))
 
         await started.wait()
         assert calls == 1
@@ -145,6 +146,60 @@ class TestIdempotencyCache:
         first_result, second_result = await asyncio.gather(first, second)
 
         assert first_result == second_result == ("response", {"total_tokens": 1})
+
+    @pytest.mark.asyncio
+    async def test_completed_entries_partition_by_scope_and_fingerprint(self):
+        cache = _IdempotencyCache()
+        calls = []
+
+        async def compute(label):
+            calls.append(label)
+            return label
+
+        scope_a = ("chat_completions", "default", "credential:a", "session-id:absent", "", "session-key:absent", "")
+        scope_b = ("chat_completions", "default", "credential:b", "session-id:absent", "", "session-key:absent", "")
+        assert await cache.get_or_set(scope_a, "same-key", "same-body", lambda: compute("a1")) == "a1"
+        assert await cache.get_or_set(scope_a, "same-key", "same-body", lambda: compute("a2")) == "a1"
+        assert await cache.get_or_set(scope_b, "same-key", "same-body", lambda: compute("b1")) == "b1"
+        assert await cache.get_or_set(scope_a, "same-key", "other-body", lambda: compute("a2")) == "a2"
+        assert calls == ["a1", "b1", "a2"]
+
+    @pytest.mark.asyncio
+    async def test_inflight_entries_partition_by_scope(self):
+        cache = _IdempotencyCache()
+        gate = asyncio.Event()
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            await gate.wait()
+            return calls
+
+        scope_a = ("chat_completions", "default", "credential:a", "session-id:absent", "", "session-key:absent", "")
+        scope_b = ("responses", "default", "credential:a", "session-id:absent", "", "session-key:absent", "")
+        tasks = [
+            asyncio.create_task(cache.get_or_set(scope_a, "same-key", "same-body", compute)),
+            asyncio.create_task(cache.get_or_set(scope_a, "same-key", "same-body", compute)),
+            asyncio.create_task(cache.get_or_set(scope_b, "same-key", "same-body", compute)),
+        ]
+        await asyncio.sleep(0.01)
+        assert calls == 2
+        gate.set()
+        assert await asyncio.gather(*tasks) == [2, 2, 2]
+
+    @pytest.mark.asyncio
+    async def test_none_scope_bypasses_cache(self):
+        cache = _IdempotencyCache()
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            return calls
+
+        assert await cache.get_or_set(None, "same-key", "same-body", compute) == 1
+        assert await cache.get_or_set(None, "same-key", "same-body", compute) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +798,118 @@ class TestChatCompletionsEndpoint:
             data = await resp.json()
             assert "messages" in data["error"]["message"]
 
+    @pytest.mark.asyncio
+    async def test_same_scope_idempotency_replays_generated_session_identity(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+        calls = []
+
+        async def run_agent(**kwargs):
+            calls.append(kwargs["session_id"])
+            return (
+                {"final_response": "ok", "session_id": kwargs["session_id"], "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", side_effect=run_agent) as mock_run:
+                first = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": "retry-1"},
+                    json=body,
+                )
+                retry = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": "retry-1"},
+                    json=body,
+                )
+
+        assert first.status == retry.status == 200
+        assert mock_run.call_count == 1
+        assert first.headers["X-Hermes-Session-Id"] == retry.headers["X-Hermes-Session-Id"] == calls[0]
+
+    @pytest.mark.asyncio
+    async def test_provider_auth_failure_replay_preserves_session_identity(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+        auth_failure = _ProviderAuthResolutionError("provider unavailable")
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", side_effect=auth_failure) as create_agent:
+                headers = {"Authorization": "Bearer sk-secret", "Idempotency-Key": "auth-failure-retry"}
+                first = await cli.post("/v1/chat/completions", headers=headers, json=body)
+                retry = await cli.post("/v1/chat/completions", headers=headers, json=body)
+                first_data = await first.json()
+                retry_data = await retry.json()
+
+        assert first.status == retry.status == 200
+        assert create_agent.call_count == 1
+        assert first_data["choices"] == retry_data["choices"]
+        assert first.headers["X-Hermes-Session-Id"] == retry.headers["X-Hermes-Session-Id"]
+        assert first.headers["X-Hermes-Session-Id"].startswith("api-")
+
+    @pytest.mark.asyncio
+    async def test_idempotency_partitions_each_session_header_coordinate(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        auth_adapter._session_db = mock_db
+
+        async def run_agent(**kwargs):
+            return (
+                {"final_response": kwargs["session_id"], "session_id": kwargs["session_id"], "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", side_effect=run_agent) as mock_run:
+                common = {"Authorization": "Bearer sk-secret", "Idempotency-Key": "partitioned"}
+                await cli.post("/v1/chat/completions", headers=common, json=body)
+                await cli.post(
+                    "/v1/chat/completions",
+                    headers={**common, "X-Hermes-Session-Key": "memory-a"},
+                    json=body,
+                )
+                await cli.post(
+                    "/v1/chat/completions",
+                    headers={**common, "X-Hermes-Session-Id": "explicit-a"},
+                    json=body,
+                )
+                await cli.post(
+                    "/v1/chat/completions",
+                    headers={**common, "X-Hermes-Session-Key": "memory-b"},
+                    json=body,
+                )
+
+        assert mock_run.call_count == 4
+
+    @pytest.mark.asyncio
+    async def test_no_auth_idempotency_key_bypasses_cache(self, adapter):
+        app = _create_app(adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+        session_ids = []
+
+        async def run_agent(**kwargs):
+            session_ids.append(kwargs["session_id"])
+            return (
+                {"final_response": "ok", "session_id": kwargs["session_id"], "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=run_agent) as mock_run:
+                for _ in range(2):
+                    response = await cli.post(
+                        "/v1/chat/completions",
+                        headers={"Idempotency-Key": "unauthenticated"},
+                        json=body,
+                    )
+                    assert response.status == 200
+
+        assert mock_run.call_count == 2
+        assert session_ids[0] != session_ids[1]
+
 
     @pytest.mark.asyncio
     async def test_chat_completions_stream_passes_request_model_provider_options(self, adapter):
@@ -779,6 +946,45 @@ class TestChatCompletionsEndpoint:
         assert kwargs["requested_model"] == "MiniMax-M3"
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
+
+    @pytest.mark.asyncio
+    async def test_streaming_no_header_requests_keep_fresh_ids_and_skip_cache(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }
+        session_ids = []
+
+        async def run_agent(**kwargs):
+            session_ids.append(kwargs["session_id"])
+            callback = kwargs.get("stream_delta_callback")
+            if callback:
+                callback("ok")
+            return (
+                {"final_response": "ok", "session_id": kwargs["session_id"], "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", side_effect=run_agent) as mock_run:
+                responses = [
+                    await cli.post(
+                        "/v1/chat/completions",
+                        headers={
+                            "Authorization": "Bearer sk-secret",
+                            "Idempotency-Key": "stream-retry",
+                        },
+                        json=body,
+                    )
+                    for _ in range(2)
+                ]
+
+        assert all(response.status == 200 for response in responses)
+        assert mock_run.call_count == 2
+        assert session_ids[0] != session_ids[1]
+        assert responses[0].headers["X-Hermes-Session-Id"] != responses[1].headers["X-Hermes-Session-Id"]
 
 
     @pytest.mark.asyncio
@@ -1053,22 +1259,55 @@ class TestChatCompletionsEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# _derive_chat_session_id unit tests
+# Fresh no-header Chat Completions identities
 # ---------------------------------------------------------------------------
 
 
-class TestDeriveChatSessionId:
-    def test_deterministic(self):
-        """Same inputs always produce the same session ID."""
-        a = _derive_chat_session_id("sys", "hello")
-        b = _derive_chat_session_id("sys", "hello")
-        assert a == b
+class TestFreshChatSessionIdentity:
+    @pytest.mark.asyncio
+    async def test_identical_no_header_requests_receive_distinct_uuid4_sessions(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+        session_ids = []
 
+        async def run_agent(**kwargs):
+            session_ids.append(kwargs["session_id"])
+            return (
+                {"final_response": "ok", "session_id": kwargs["session_id"], "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
 
-    def test_different_system_prompt(self):
-        a = _derive_chat_session_id("You are a pirate.", "Hello")
-        b = _derive_chat_session_id("You are a robot.", "Hello")
-        assert a != b
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", side_effect=run_agent):
+                first = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json=body,
+                )
+                second = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json=body,
+                )
+
+        assert first.status == second.status == 200
+        assert len(session_ids) == 2
+        assert session_ids[0] != session_ids[1]
+        for session_id, response in zip(session_ids, (first, second)):
+            assert session_id.startswith("api-")
+            assert uuid.UUID(session_id[4:]).version == 4
+            assert response.headers["X-Hermes-Session-Id"] == session_id
+
+    def test_authenticated_scope_contains_only_a_digest_of_the_api_key(self, auth_adapter):
+        request = types.SimpleNamespace(
+            headers={"Authorization": "Bearer sk-secret"},
+        )
+        scope = auth_adapter._idempotency_scope(request, "chat_completions")
+        assert scope is not None
+        assert "sk-secret" not in repr(scope)
+        assert scope[0] == "chat_completions"
+        assert scope[1] == "default"
+        assert scope[2].startswith("credential:")
 
 
 # ---------------------------------------------------------------------------
@@ -1109,6 +1348,101 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+
+    @pytest.mark.asyncio
+    async def test_same_scope_idempotency_replays_responses_result(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "input": "hello", "store": False}
+
+        async def run_agent(**kwargs):
+            return (
+                {"final_response": "stable", "session_id": "responses-session", "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", side_effect=run_agent) as mock_run:
+                first = await cli.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": "responses-retry"},
+                    json=body,
+                )
+                retry = await cli.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": "responses-retry"},
+                    json=body,
+                )
+                first_data = await first.json()
+                retry_data = await retry.json()
+
+        assert first.status == retry.status == 200
+        assert mock_run.call_count == 1
+        assert first_data["output"] == retry_data["output"]
+        assert retry.headers["X-Hermes-Session-Id"] == "responses-session"
+
+    @pytest.mark.asyncio
+    async def test_provider_auth_failure_replay_preserves_responses_session_identity(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "input": "hello", "store": False}
+        auth_failure = _ProviderAuthResolutionError("provider unavailable")
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", side_effect=auth_failure) as create_agent:
+                headers = {"Authorization": "Bearer sk-secret", "Idempotency-Key": "auth-failure-responses"}
+                first = await cli.post("/v1/responses", headers=headers, json=body)
+                retry = await cli.post("/v1/responses", headers=headers, json=body)
+                first_data = await first.json()
+                retry_data = await retry.json()
+
+        assert first.status == retry.status == 200
+        assert create_agent.call_count == 1
+        assert first_data["output"] == retry_data["output"]
+        assert first.headers["X-Hermes-Session-Id"] == retry.headers["X-Hermes-Session-Id"]
+        assert first.headers["X-Hermes-Session-Id"]
+
+    @pytest.mark.asyncio
+    async def test_endpoint_and_adapter_namespaces_partition_idempotency(self, auth_adapter):
+        other_adapter = _make_adapter(api_key="sk-secret")
+        chat_app = _create_app(auth_adapter)
+        responses_app = _create_app(auth_adapter)
+        other_app = _create_app(other_adapter)
+        chat_body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hello"}]}
+        responses_body = {"model": "hermes-agent", "input": "hello", "store": False}
+
+        async def chat_run(**kwargs):
+            return (
+                {"final_response": "chat", "session_id": "chat-session", "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        async def responses_run(**kwargs):
+            return (
+                {"final_response": "responses", "session_id": "responses-session", "messages": []},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        async with (
+            TestClient(TestServer(chat_app)) as chat_cli,
+            TestClient(TestServer(responses_app)) as responses_cli,
+            TestClient(TestServer(other_app)) as other_cli,
+        ):
+            with (
+                patch.object(auth_adapter, "_run_agent", side_effect=chat_run) as chat_mock,
+                patch.object(other_adapter, "_run_agent", side_effect=responses_run) as other_mock,
+                patch("gateway.platforms.api_server._make_request_fingerprint", return_value="same-fp"),
+            ):
+                headers = {"Authorization": "Bearer sk-secret", "Idempotency-Key": "shared-key"}
+                chat_response = await chat_cli.post("/v1/chat/completions", headers=headers, json=chat_body)
+                response_result = await responses_cli.post("/v1/responses", headers=headers, json=responses_body)
+                other_result = await other_cli.post("/v1/responses", headers=headers, json=responses_body)
+                response_data = await response_result.json()
+                other_data = await other_result.json()
+
+        assert chat_response.status == response_result.status == other_result.status == 200
+        assert chat_mock.call_count == 2
+        assert other_mock.call_count == 1
+        assert response_data["output"][0]["content"][0]["text"] == "chat"
+        assert other_data["output"][0]["content"][0]["text"] == "responses"
 
 
     @pytest.mark.asyncio

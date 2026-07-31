@@ -5838,22 +5838,38 @@ class DiscordAdapter(BasePlatformAdapter):
                 view = None
                 option_lines_full = ""
 
-            # Mirror the question (and, for multi-choice, the full option
-            # text) in plain content — embeds are invisible on some clients
-            # (see send_exec_approval). The plain-text mirror uses the
-            # untruncated option list; Discord's message content cap (2000
-            # chars) is a separate, much larger limit than the embed field's
-            # 1024, so reusing the embed-truncated value here would cut off
-            # options unnecessarily.
+            # Mirror full choice text in plain content because embeds may be
+            # hidden and mobile button labels have almost no usable width.
+            content_header = "❓ **Hermes needs your input**"
+            question_text = str(question or "").strip()
             if clean_choices:
+                instruction = (
+                    "Pick a button below, or click ✏️ Other to type a custom answer."
+                )
+                truncation_notice = "\n[additional choice text truncated]"
+                question_reserve = min(len(question_text), 500)
+                fixed_length = (
+                    len(f"{content_header}\n\n")
+                    + question_reserve
+                    + len("\n\n")
+                    + len("\n\n")
+                    + len(instruction)
+                )
+                options_budget = max(0, self.MAX_MESSAGE_LENGTH - fixed_length)
+                mirrored_options = option_lines_full
+                if len(mirrored_options) > options_budget:
+                    text_budget = max(0, options_budget - len(truncation_notice))
+                    mirrored_options = (
+                        mirrored_options[:text_budget].rstrip()
+                        + truncation_notice
+                    )
                 clarify_tail = (
-                    f"\n\n{option_lines_full}\n\nPick a button below, or click "
-                    "✏️ Other to type a custom answer."
+                    f"\n\n{mirrored_options}\n\n{instruction}"
                 )
             else:
                 clarify_tail = "\n\nReply in this channel with your answer."
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(),
+                content_header, question_text,
                 tail=clarify_tail,
             )
             msg = await channel.send(content=content, embed=embed, view=view) if view else await channel.send(content=content, embed=embed)

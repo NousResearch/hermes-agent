@@ -368,6 +368,29 @@ class TestDiscordSendClarify:
         assert len(kwargs["view"].children) == 4
 
     @pytest.mark.asyncio
+    async def test_plain_content_respects_discord_2000_character_cap(self):
+        adapter = _make_adapter()
+        channel = MagicMock()
+        sent_msg = MagicMock(id=1000)
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick one of these detailed choices",
+            choices=[f"choice-{index}-" + "x" * 200 for index in range(24)],
+            clarify_id="cid-content-cap",
+            session_key="sk-content-cap",
+        )
+
+        content = channel.send.call_args.kwargs["content"]
+        assert len(content) <= 2000
+        assert "[additional choice text truncated]" in content
+        assert content.endswith(
+            "Pick a button below, or click ✏️ Other to type a custom answer."
+        )
+
+    @pytest.mark.asyncio
     async def test_open_ended_omits_view(self):
         adapter = _make_adapter()
         channel = MagicMock()

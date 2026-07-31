@@ -358,13 +358,21 @@ def finalize_turn(
         if not interrupted and not failed:
             try:
                 _compressor = getattr(agent, "context_compressor", None)
+                # Strict `is True` + isinstance gates: plugin context engines
+                # (and MagicMock compressors in tests) satisfy getattr/duck
+                # checks with truthy auto-attributes — a bare truthiness check
+                # here called _micro_compact on a mock and spliced its (empty-
+                # iterating) return value over the transcript, wiping it.
                 if (
                     _compressor
-                    and getattr(_compressor, '_micro_compact_enabled', False)
+                    and getattr(_compressor, '_micro_compact_enabled', False) is True
+                    and callable(getattr(_compressor, '_micro_compact', None))
                     and final_response
                 ):
                     _before = len(messages)
-                    messages[:] = _compressor._micro_compact(messages) or messages
+                    _compacted = _compressor._micro_compact(messages)
+                    if isinstance(_compacted, list) and _compacted:
+                        messages[:] = _compacted
                     _after = len(messages)
                     if _before != _after:
                         logger.info(

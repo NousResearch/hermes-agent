@@ -1790,9 +1790,19 @@ class AIAgent:
             review_skills=review_skills,
         )
         # Carry the active profile into the review thread so MEMORY.md / skill
-        # review writes land in the right profile (#54937).
+        # review writes land in the right profile (#54937), but explicitly
+        # suppress foreground preload grants across the unrelated autonomous
+        # review boundary. The wrapper covers both fork construction and run.
+        def _run_isolated_review() -> None:
+            from agent.skill_utils import suppress_skill_read_grants
+
+            with suppress_skill_read_grants():
+                target()
+
         t = threading.Thread(
-            target=propagate_context_to_thread(target), daemon=True, name="bg-review"
+            target=propagate_context_to_thread(_run_isolated_review),
+            daemon=True,
+            name="bg-review",
         )
         t.start()
 

@@ -34,6 +34,33 @@ from agent.transports import get_transport
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def isolate_anthropic_credentials(monkeypatch, tmp_path):
+    """Keep adapter unit tests isolated from machine-local auth sources."""
+    for env_var in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+
+    keychain_reader = MagicMock(return_value=None)
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        keychain_reader,
+    )
+
+    empty_pool = SimpleNamespace(_available_entries=lambda **_kwargs: [])
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool",
+        lambda _provider: empty_pool,
+    )
+
+    return keychain_reader
+
+
 class TestIsOAuthToken:
     def test_setup_token(self):
         assert _is_oauth_token("sk-ant-oat01-abcdef1234567890") is True
@@ -131,12 +158,22 @@ class TestBuildAnthropicClient:
 
 
 class TestReadClaudeCodeCredentials:
-    @pytest.fixture(autouse=True)
-    def no_keychain(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
-            lambda: None,
+    def test_module_isolation_fails_closed_before_keychain_subprocess(
+        self,
+        isolate_anthropic_credentials,
+        monkeypatch,
+    ):
+        subprocess_run = MagicMock(
+            side_effect=AssertionError("adapter unit tests must not invoke Keychain subprocesses")
         )
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.subprocess.run",
+            subprocess_run,
+        )
+
+        assert read_claude_code_credentials() is None
+        isolate_anthropic_credentials.assert_called_once_with()
+        subprocess_run.assert_not_called()
 
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):
         cred_file = tmp_path / ".claude" / ".credentials.json"

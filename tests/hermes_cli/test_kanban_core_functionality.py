@@ -749,8 +749,114 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
 
 
 
+def test_spawned_worker_executes_disabled_categorized_skill_with_scoped_grant(
+    kanban_home, monkeypatch
+):
+    """Persisted task -> dispatcher argv/env -> CLI preload uses one scoped grant."""
+    import cli as cli_mod
+    from agent import skill_utils
+    from tools import skills_tool
 
+    profile_home = kanban_home / "profiles" / "build"
+    skill_dir = profile_home / "skills" / "category" / "directory-alias"
+    skill_dir.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: [category:directory-alias]\n", encoding="utf-8"
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: integration\n---\n\nkanban body\n",
+        encoding="utf-8",
+    )
+    original_config = (profile_home / "config.yaml").read_bytes()
+    captured = {}
 
+    class FakeProc:
+        pid = 45678
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn,
+            title="real skill route",
+            assignee="build",
+            skills=["category/directory-alias"],
+        )
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    command = captured["cmd"]
+    skill_args = [
+        command[index + 1]
+        for index, value in enumerate(command[:-1])
+        if value == "--skills"
+    ]
+    assert skill_args == ["category/directory-alias"]
+    assert not any("SKILL_GRANT" in key for key in captured["env"])
+
+    for key, value in captured["env"].items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", profile_home / "skills")
+    skill_utils._raw_config_cache_clear()
+    original_disabled = skill_utils.get_disabled_skill_names()
+    observed = {}
+
+    class WorkerCLI:
+        def __init__(self, **_kwargs):
+            self.session_id = "kanban-session"
+            self.system_prompt = "base"
+            self.preloaded_skills = []
+            self.conversation_history = [
+                {"role": "user", "content": "prior-kanban-user"},
+                {"role": "assistant", "content": "prior-kanban-assistant"},
+            ]
+
+        def run(self):
+            observed["granted"] = skill_utils.is_skill_read_granted(
+                "category/directory-alias"
+            )
+            viewed = json.loads(skills_tool.skill_view("category/directory-alias"))
+            observed["content"] = viewed.get("content", "")
+            observed["system_prompt"] = self.system_prompt
+            observed["history"] = list(self.conversation_history)
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", WorkerCLI)
+    cli_mod.main(skills=skill_args, toolsets="safe")
+
+    assert observed["granted"] is True
+    assert observed["content"] == (
+        "---\nname: alpha\ndescription: integration\n---\n\nkanban body\n"
+    )
+    assert observed["system_prompt"].startswith("base\n\n")
+    assert observed["history"] == [
+        {"role": "user", "content": "prior-kanban-user"},
+        {"role": "assistant", "content": "prior-kanban-assistant"},
+    ]
+    assert skill_utils.is_skill_read_granted("alpha") is False
+    assert (profile_home / "config.yaml").read_bytes() == original_config
+    assert skill_utils.get_disabled_skill_names() == original_disabled == {
+        "category:directory-alias"
+    }
+    events = [
+        json.loads(line)
+        for line in (profile_home / "logs" / "skill-grants.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert events[0]["skill_names"] == ["category/directory-alias"]
+    assert events[0]["source"] == "kanban"
+    assert events[0]["task_id"] == task_id
+    assert events[0]["profile"] == "build"
+    assert events[-1]["terminal_status"] == "completed"
 
 
 def test_legacy_db_without_skills_column_migrates(tmp_path):
@@ -1406,5 +1512,4 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
 

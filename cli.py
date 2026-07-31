@@ -39,6 +39,7 @@ import time
 import uuid
 import textwrap
 from collections import deque
+from contextvars import copy_context
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
@@ -4627,6 +4628,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # don't auto-queue another continuation on top of a user-cancelled
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
+        self._last_run_cancelled = False
         self._should_exit = False
         # /exit --delete: when True, the current session's SQLite history and
         # on-disk transcripts are deleted during shutdown. Set by
@@ -13944,7 +13946,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # finishes; reset on the next turn.
             self._prompt_start_time = time.time()
             self._prompt_duration = 0.0
-            agent_thread = threading.Thread(target=run_agent, daemon=True)
+            from tools.thread_context import propagate_context_to_thread
+
+            agent_thread = threading.Thread(
+                target=propagate_context_to_thread(run_agent), daemon=True
+            )
             agent_thread.start()
 
             # Ambient "thinking" sound: calm bubble blips while the agent
@@ -17432,7 +17438,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
         
         # Start processing thread
-        process_thread = threading.Thread(target=process_loop, daemon=True)
+        process_context = copy_context()
+        process_thread = threading.Thread(
+            target=process_context.run,
+            args=(process_loop,),
+            daemon=True,
+        )
         process_thread.start()
 
         # Wake word ("Hey Hermes") — start the always-on hotword listener if
@@ -17489,6 +17500,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # never arm its own watchdog — leaving a "dead" CLI alive for
             # minutes (#65998 class).  Never raises.
             _arm_exit_watchdog_on_shutdown_signal()
+            self._last_run_cancelled = True
             try:
                 if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
                     self.agent.interrupt(f"received signal {signum}")
@@ -17641,7 +17653,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Drive the petdex mascot animation (no-op when no pet enabled).
                 self._pet_start_anim()
                 app.run()
-        except (EOFError, KeyboardInterrupt, BrokenPipeError):
+        except KeyboardInterrupt:
+            self._last_run_cancelled = True
+        except (EOFError, BrokenPipeError):
             pass
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393)
@@ -17862,6 +17876,56 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     )
 
 
+def _active_skill_grant_profile() -> str:
+    """Resolve audit attribution from the active profile environment/home."""
+    explicit = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if explicit:
+        return explicit
+    home = get_hermes_home()
+    if home.parent.name == "profiles" and home.name:
+        return home.name
+    return "default"
+
+
+def _skill_grant_lifecycle(func):
+    """Close any grant created by one CLI invocation on every exit path."""
+    from functools import wraps
+
+    @wraps(func)
+    def _wrapped(*args, **kwargs):
+        from agent.skill_utils import close_skill_read_grant, current_skill_read_grant
+
+        previous = current_skill_read_grant()
+        terminal_status = "completed"
+        try:
+            return func(*args, **kwargs)
+        except KeyboardInterrupt:
+            terminal_status = "cancelled"
+            raise
+        except TimeoutError:
+            terminal_status = "timed_out"
+            raise
+        except SystemExit as exc:
+            terminal_status = (
+                "completed"
+                if exc.code in (None, 0)
+                else "cancelled"
+                if exc.code == 130
+                else "failed"
+            )
+            raise
+        except BaseException:
+            terminal_status = "failed"
+            raise
+        finally:
+            current = current_skill_read_grant()
+            if current is not None and current is not previous:
+                close_skill_read_grant(current, terminal_status)
+
+    return _wrapped
+
+
+@_skill_grant_lifecycle
 def main(
     query: str = None,
     q: str = None,
@@ -18026,6 +18090,29 @@ def main(
         ignore_rules=ignore_rules,
     )
 
+    # Explicit CLI/Kanban --skills requests may need a narrow exception to the
+    # profile's disabled-skill baseline. Resolve aliases and categorized paths
+    # to the exact identity checked by skill_view before issuing the grant.
+    from agent.skill_utils import close_skill_read_grant, issue_skill_read_grant
+    from tools.skills_tool import resolve_skill_read_grant_targets
+
+    _kanban_task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip() or None
+    _skill_grant_source = "kanban" if _kanban_task_id else "cli"
+    _skill_grant_profile = _active_skill_grant_profile()
+    _skill_grant_targets = resolve_skill_read_grant_targets(parsed_skills)
+    _skill_grant_names = list(_skill_grant_targets)
+    _skill_grant = issue_skill_read_grant(
+        _skill_grant_names,
+        session_id=cli.session_id,
+        task_id=_kanban_task_id,
+        profile=_skill_grant_profile,
+        requester=_skill_grant_profile if _kanban_task_id else "local-cli",
+        source=_skill_grant_source,
+        authorization_aliases=_skill_grant_targets,
+    )
+    # Idempotent safety net for setup errors and hard-to-reach exit paths.
+    atexit.register(close_skill_read_grant, _skill_grant, "failed")
+
     if parsed_skills:
         skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
             parsed_skills,
@@ -18125,6 +18212,9 @@ def main(
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
         if os.environ.get("HERMES_KANBAN_TASK"):
+            # Dispatcher timeout uses SIGTERM; close the metadata-only grant
+            # before os._exit bypasses normal finally/atexit cleanup.
+            close_skill_read_grant(_skill_grant, "timed_out")
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):
@@ -18384,8 +18474,11 @@ def main(
             _finalize_single_query(cli)
         return
     
-    # Run interactive mode
+    # Run interactive mode. The outer lifecycle boundary handles every raised
+    # exit; a swallowed prompt cancellation is the sole status override.
     cli.run()
+    if getattr(cli, "_last_run_cancelled", False):
+        close_skill_read_grant(_skill_grant, "cancelled")
 
 
 if __name__ == "__main__":

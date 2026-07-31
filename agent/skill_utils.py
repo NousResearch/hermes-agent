@@ -5,14 +5,22 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import contextvars
+import json
 import logging
 import os
 import re
 import sys
+import threading
+import time
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import get_config_path, get_hermes_home, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +380,289 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 
 
 # ── Disabled skills ───────────────────────────────────────────────────────
+
+# A scoped read grant is an exception to the disabled-skill deny check only.
+# ContextVar keeps parallel sessions isolated while allowing the existing tool
+# executor context propagation to carry the grant to that session's tool calls.
+# Delegation explicitly suppresses it at the child boundary.
+DEFAULT_SKILL_READ_GRANT_TTL_SECONDS = 24 * 60 * 60
+_SKILL_GRANT_TERMINAL_STATUSES = frozenset(
+    {"completed", "failed", "cancelled", "timed_out", "expired"}
+)
+
+
+@dataclass(frozen=True)
+class SkillReadGrant:
+    """Immutable authorization claims for one scoped disabled-skill read grant."""
+
+    grant_id: str
+    skill_names: frozenset[str]
+    session_id: str
+    task_id: Optional[str]
+    profile: str
+    requester: str
+    source: str
+    issued_at: float
+    expires_at: float
+    audit_path: Path
+
+
+@dataclass
+class _SkillReadGrantLifecycle:
+    """Mutable request lifecycle kept separate from immutable grant claims."""
+
+    grant: SkillReadGrant
+    terminal_status: Optional[str] = None
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    token: Optional[contextvars.Token] = field(default=None, repr=False)
+
+
+_ACTIVE_SKILL_READ_GRANT: contextvars.ContextVar[
+    Optional[_SkillReadGrantLifecycle]
+] = (
+    contextvars.ContextVar("active_skill_read_grant", default=None)
+)
+
+
+def _iso_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def _skill_grant_audit_record(
+    grant: SkillReadGrant, *, event: str, terminal_status: str
+) -> Dict[str, Any]:
+    return {
+        "event": event,
+        "grant_id": grant.grant_id,
+        "session_id": grant.session_id,
+        "task_id": grant.task_id,
+        "profile": grant.profile,
+        "skill_names": sorted(grant.skill_names),
+        "requester": grant.requester,
+        "source": grant.source,
+        "issued_at": _iso_timestamp(grant.issued_at),
+        "expires_at": _iso_timestamp(grant.expires_at),
+        "terminal_status": terminal_status,
+        "recorded_at": _iso_timestamp(time.time()),
+    }
+
+
+def _write_skill_grant_audit(
+    grant: SkillReadGrant, *, event: str, terminal_status: str
+) -> bool:
+    """Append one metadata-only audit event; never include skill/prompt content."""
+    try:
+        grant.audit_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            _skill_grant_audit_record(
+                grant, event=event, terminal_status=terminal_status
+            ),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ) + "\n"
+        fd = os.open(
+            grant.audit_path,
+            os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+            0o600,
+        )
+        try:
+            encoded = payload.encode("utf-8")
+            if os.write(fd, encoded) != len(encoded):
+                raise OSError("short write while appending skill-grant audit event")
+        finally:
+            os.close(fd)
+        return True
+    except Exception:
+        logger.warning("Could not append scoped skill-grant audit event", exc_info=True)
+        return False
+
+
+def issue_skill_read_grant(
+    skill_names,
+    *,
+    session_id: str,
+    profile: str,
+    requester: str,
+    source: str,
+    task_id: Optional[str] = None,
+    ttl_seconds: float = DEFAULT_SKILL_READ_GRANT_TTL_SECONDS,
+    audit_path: Optional[Path] = None,
+    authorization_aliases: Optional[Dict[str, Any]] = None,
+) -> Optional[SkillReadGrant]:
+    """Activate an exact-name, time-bounded exception for skill reads.
+
+    This does not mutate config, skill files, prompt state, or process-global
+    environment. Only selectors whose exact-target aliases are disabled in the
+    active profile are kept, so enabled-skill preloads retain their existing path.
+    """
+    if not isinstance(source, str) or source not in {"cli", "kanban"}:
+        raise ValueError("skill grant source must be exactly 'cli' or 'kanban'")
+    if source == "kanban" and (
+        not isinstance(task_id, str) or not task_id.strip()
+    ):
+        raise ValueError("kanban skill grants require a non-empty task_id")
+    for field_name, value in (
+        ("session_id", session_id),
+        ("profile", profile),
+        ("requester", requester),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} is required for a skill grant")
+    if ttl_seconds <= 0:
+        raise ValueError("skill grant ttl_seconds must be greater than zero")
+
+    requested = _normalize_string_set(skill_names)
+    disabled = get_disabled_skill_names()
+    if authorization_aliases is None:
+        granted = requested & disabled
+    else:
+        normalized_aliases = {
+            str(identity).strip(): _normalize_string_set(aliases)
+            for identity, aliases in authorization_aliases.items()
+            if str(identity).strip()
+        }
+        granted = {
+            identity
+            for identity in requested
+            if disabled & (normalized_aliases.get(identity, set()) | {identity})
+        }
+    if not granted:
+        return None
+
+    issued_at = time.time()
+    grant = SkillReadGrant(
+        grant_id=uuid.uuid4().hex,
+        skill_names=frozenset(granted),
+        session_id=str(session_id),
+        task_id=str(task_id) if task_id else None,
+        profile=str(profile),
+        requester=str(requester),
+        source=str(source),
+        issued_at=issued_at,
+        expires_at=issued_at + float(ttl_seconds),
+        audit_path=audit_path or (get_hermes_home() / "logs" / "skill-grants.jsonl"),
+    )
+    if not _write_skill_grant_audit(
+        grant, event="issued", terminal_status="active"
+    ):
+        raise RuntimeError("could not create required skill-grant audit record")
+    lifecycle = _SkillReadGrantLifecycle(grant=grant)
+    lifecycle.token = _ACTIVE_SKILL_READ_GRANT.set(lifecycle)
+    return grant
+
+
+def close_skill_read_grant(
+    grant: Optional[SkillReadGrant], terminal_status: str = "completed"
+) -> None:
+    """Close *grant* idempotently and clear it from the current context."""
+    if grant is None:
+        return
+    if terminal_status not in _SKILL_GRANT_TERMINAL_STATUSES:
+        raise ValueError(f"invalid skill grant terminal status: {terminal_status}")
+
+    lifecycle = _ACTIVE_SKILL_READ_GRANT.get()
+    if lifecycle is None or lifecycle.grant is not grant:
+        return
+
+    with lifecycle.lock:
+        if lifecycle.terminal_status is None:
+            if time.time() >= grant.expires_at:
+                terminal_status = "expired"
+            lifecycle.terminal_status = terminal_status
+            _write_skill_grant_audit(
+                grant, event="closed", terminal_status=terminal_status
+            )
+    if _ACTIVE_SKILL_READ_GRANT.get() is lifecycle:
+        _ACTIVE_SKILL_READ_GRANT.set(None)
+
+
+def current_skill_read_grant() -> Optional[SkillReadGrant]:
+    """Return the active grant for lifecycle boundaries and diagnostics."""
+    lifecycle = _ACTIVE_SKILL_READ_GRANT.get()
+    return lifecycle.grant if lifecycle is not None else None
+
+
+def is_skill_read_granted(skill_name: str) -> bool:
+    """Return whether the active scope grants this exact disabled skill name."""
+    lifecycle = _ACTIVE_SKILL_READ_GRANT.get()
+    if lifecycle is None:
+        return False
+    grant = lifecycle.grant
+    with lifecycle.lock:
+        if lifecycle.terminal_status is not None:
+            return False
+        if time.time() < grant.expires_at:
+            return skill_name in grant.skill_names
+    close_skill_read_grant(grant, "expired")
+    return False
+
+
+@contextmanager
+def skill_read_grant_scope(
+    skill_names,
+    *,
+    session_id: str,
+    profile: str,
+    requester: str,
+    source: str,
+    task_id: Optional[str] = None,
+    ttl_seconds: float = DEFAULT_SKILL_READ_GRANT_TTL_SECONDS,
+    audit_path: Optional[Path] = None,
+    authorization_aliases: Optional[Dict[str, Any]] = None,
+) -> Iterator[Optional[SkillReadGrant]]:
+    """Context-manager API with completion/error/cancel/timeout cleanup."""
+    previous = _ACTIVE_SKILL_READ_GRANT.get()
+    grant = issue_skill_read_grant(
+        skill_names,
+        session_id=session_id,
+        task_id=task_id,
+        profile=profile,
+        requester=requester,
+        source=source,
+        ttl_seconds=ttl_seconds,
+        audit_path=audit_path,
+        authorization_aliases=authorization_aliases,
+    )
+    lifecycle = _ACTIVE_SKILL_READ_GRANT.get()
+    owns_lifecycle = grant is not None and lifecycle is not previous
+    try:
+        yield grant
+    except KeyboardInterrupt:
+        close_skill_read_grant(grant, "cancelled")
+        raise
+    except TimeoutError:
+        close_skill_read_grant(grant, "timed_out")
+        raise
+    except SystemExit as exc:
+        terminal_status = (
+            "completed"
+            if exc.code in (None, 0)
+            else "cancelled"
+            if exc.code == 130
+            else "failed"
+        )
+        close_skill_read_grant(grant, terminal_status)
+        raise
+    except BaseException:
+        close_skill_read_grant(grant, "failed")
+        raise
+    else:
+        close_skill_read_grant(grant, "completed")
+    finally:
+        if owns_lifecycle and lifecycle is not None and lifecycle.token is not None:
+            _ACTIVE_SKILL_READ_GRANT.reset(lifecycle.token)
+
+
+@contextmanager
+def suppress_skill_read_grants() -> Iterator[None]:
+    """Fail-closed boundary used while constructing/running delegated agents."""
+    token = _ACTIVE_SKILL_READ_GRANT.set(None)
+    try:
+        yield
+    finally:
+        _ACTIVE_SKILL_READ_GRANT.reset(token)
 
 
 _RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}

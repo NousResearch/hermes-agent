@@ -143,5 +143,54 @@ async def test_steer_agent_without_steer_method_falls_back():
     )
 
 
+@pytest.mark.parametrize("agent_kind", ["pending", "missing_steer"])
+@pytest.mark.asyncio
+async def test_secondary_profile_steer_fallback_preserves_adapter_fifo(agent_kind):
+    """Fallback work must use the adapter slot while overflow stays profile-scoped."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    source = _make_source()
+    source.profile = "coder"
+    event = MessageEvent(text="/steer fallback", source=source, message_id="steer-1")
+    session_key = build_session_key(source, profile="coder")
+    adapter_session_key = build_session_key(source)
+    assert adapter_session_key != session_key
+
+    runner, adapter = _make_runner(_session_entry())
+    runner.config.multiplex_profiles = True
+    runner._profile_adapters = {"coder": {Platform.TELEGRAM: adapter}}
+    adapter.session_key_for_source.return_value = adapter_session_key
+    adapter.get_pending_message.side_effect = (
+        lambda key: adapter._pending_messages.pop(key, None)
+    )
+    running_agent = (
+        _AGENT_PENDING_SENTINEL if agent_kind == "pending" else MagicMock(spec=[])
+    )
+    runner._session_state(session_key).turn.agent = running_agent
+
+    older_user = MessageEvent(text="older user", source=source, message_id="user-1")
+    adapter._pending_messages[adapter_session_key] = older_user
+
+    result = await runner._busy_steer_command(event, session_key, source)
+
+    assert "queued" in result.lower()
+    assert [
+        queued.text
+        for queued in runner._session_state(session_key).conversation.queued_events
+    ] == ["fallback"]
+    first = runner._dequeue_and_promote_queued_event(
+        session_key, adapter, source
+    )
+    assert adapter._pending_messages[adapter_session_key].text == "fallback"
+    second = runner._dequeue_and_promote_queued_event(
+        session_key, adapter, source
+    )
+    assert first is older_user
+    assert second is not None
+    assert second.text == "fallback"
+    assert second.source.profile == "coder"
+    assert session_key not in adapter._pending_messages
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

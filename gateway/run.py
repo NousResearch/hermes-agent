@@ -14575,21 +14575,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return "Usage: /steer <prompt>"
+
+        def _queue_turn_boundary_fallback() -> None:
+            adapter = self._adapter_for_source(source)
+            if not adapter:
+                return
+            adapter_session_key = quick_key
+            adapter_key_for_source = getattr(adapter, "session_key_for_source", None)
+            if callable(adapter_key_for_source):
+                resolved_adapter_key = adapter_key_for_source(source)
+                if isinstance(resolved_adapter_key, str) and resolved_adapter_key:
+                    adapter_session_key = resolved_adapter_key
+            queued_event = MessageEvent(
+                text=steer_text,
+                message_type=MessageType.TEXT,
+                source=event.source,
+                message_id=event.message_id,
+                channel_prompt=event.channel_prompt,
+                channel_context=event.channel_context,
+            )
+            self._enqueue_fifo(
+                quick_key,
+                queued_event,
+                adapter,
+                adapter_session_key=adapter_session_key,
+            )
+
         _steer_state = self._peek_session_state(quick_key)
         running_agent = _steer_state.turn.agent if _steer_state else None
         if running_agent is _AGENT_PENDING_SENTINEL:
             # Agent hasn't started yet — queue as turn-boundary fallback.
-            adapter = self._adapter_for_source(source)
-            if adapter:
-                queued_event = MessageEvent(
-                    text=steer_text,
-                    message_type=MessageType.TEXT,
-                    source=event.source,
-                    message_id=event.message_id,
-                    channel_prompt=event.channel_prompt,
-                    channel_context=event.channel_context,
-                )
-                self._enqueue_fifo(quick_key, queued_event, adapter)
+            _queue_turn_boundary_fallback()
             return "Agent still starting — /steer queued for the next turn."
         if running_agent and hasattr(running_agent, "steer"):
             try:
@@ -14602,17 +14618,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
             return "Steer rejected (empty payload)."
         # Running agent is missing or lacks steer() — fall back to queue.
-        adapter = self._adapter_for_source(source)
-        if adapter:
-            queued_event = MessageEvent(
-                text=steer_text,
-                message_type=MessageType.TEXT,
-                source=event.source,
-                message_id=event.message_id,
-                channel_prompt=event.channel_prompt,
-                channel_context=event.channel_context,
-            )
-            self._enqueue_fifo(quick_key, queued_event, adapter)
+        _queue_turn_boundary_fallback()
         return "No active agent — /steer queued for the next turn."
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
@@ -23594,10 +23600,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 daemon=True,
             ).start()
         adapter = self._adapter_for_source(source)
-        interrupt_session_activity = getattr(
-            type(adapter), "interrupt_session_activity", None
+        adapter_session_key = session_key
+        adapter_key_for_source = getattr(adapter, "session_key_for_source", None)
+        if callable(adapter_key_for_source):
+            resolved_adapter_key = adapter_key_for_source(source)
+            if isinstance(resolved_adapter_key, str) and resolved_adapter_key:
+                adapter_session_key = resolved_adapter_key
+        interrupt_session_activity = cast(
+            Any, getattr(type(adapter), "interrupt_session_activity", None)
         )
-        if adapter and callable(interrupt_session_activity):
+        bound_interrupt_session_activity = cast(
+            Any, getattr(adapter, "interrupt_session_activity", None)
+        )
+        if callable(bound_interrupt_session_activity):
             metadata = self._thread_metadata_for_source(source)
             try:
                 params = inspect.signature(interrupt_session_activity).parameters
@@ -23608,13 +23623,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except (TypeError, ValueError):
                 accepts_metadata = False
             if accepts_metadata:
-                await adapter.interrupt_session_activity(
-                    session_key, source.chat_id, metadata=metadata
+                await bound_interrupt_session_activity(
+                    adapter_session_key, source.chat_id, metadata=metadata
                 )
             else:
-                await adapter.interrupt_session_activity(session_key, source.chat_id)
-        if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+                await bound_interrupt_session_activity(
+                    adapter_session_key, source.chat_id
+                )
+        get_pending_message = getattr(adapter, "get_pending_message", None)
+        if callable(get_pending_message):
+            get_pending_message(adapter_session_key)  # consume and discard
         if _iac_state is not None:
             _iac_state.persistent.pending_command_text = None
         if release_running_state:

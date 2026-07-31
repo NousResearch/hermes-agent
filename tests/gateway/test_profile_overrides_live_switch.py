@@ -354,7 +354,9 @@ class TestProfileCommand:
         out = await mixin._handle_profile_command(self._make_event(""))
         assert out is None
         names = [c["value"] for c in captured["choices"]]
-        assert names == ["default", "product"]
+        # Profiles come first, then the explicit Cancel escape hatch (parity
+        # with /model's cost-confirm cancel).
+        assert names == ["default", "product", "cancel"]
         assert any(c["is_current"] for c in captured["choices"] if c["value"] == "default")
 
         result = await captured["on_choice_selected"]("chatA", "product")

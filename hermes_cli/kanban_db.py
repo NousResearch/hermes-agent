@@ -10867,26 +10867,203 @@ def reopen_workflow(
         return json.loads(response_json)
 
 
+def _workflow_replay_subscription(
+    raw: Any, *, tenant: str,
+) -> Optional[dict[str, Any]]:
+    """Normalize immutable destination facts into their replay representation."""
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise WorkflowIntegrityError("workflow subscription event is invalid")
+    platform = raw.get("platform")
+    chat_id = raw.get("chat_id")
+    notifier_profile = raw.get("notifier_profile")
+    metadata = raw.get("delivery_metadata")
+    targets = raw.get("target_states")
+    if targets is None:
+        targets = sorted(_WORKFLOW_STATES - {"ACTIVE"})
+    if (not isinstance(platform, str) or not platform.strip()
+            or not isinstance(chat_id, str) or not chat_id.strip()
+            or not isinstance(notifier_profile, str) or not notifier_profile.strip()
+            or (metadata is not None and not isinstance(metadata, Mapping))
+            or not isinstance(targets, list)
+            or not set(targets) <= _WORKFLOW_STATES):
+        raise WorkflowIntegrityError("workflow subscription event is invalid")
+    return {
+        "role": "origin", "platform": platform, "chat_id": chat_id,
+        "chat_type": raw.get("chat_type"), "thread_id": raw.get("thread_id") or "",
+        "user_id": raw.get("user_id"), "notifier_profile": notifier_profile,
+        "delivery_metadata": dict(metadata) if metadata is not None else None,
+        "target_states": list(targets), "tenant": tenant,
+    }
+
+
+def _workflow_request_from_canonical_event(
+    *, workflow_id: str, row: sqlite3.Row, payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rebuild the idempotency request whose digest is pinned by the ledger."""
+    mutation = payload["mutation"]
+    op = mutation["op"]
+    expected_version = int(row["expected_version"])
+    if op == "create":
+        actor = payload["actor"]
+        return {
+            "op": "create", "workflow_id": workflow_id, "name": mutation["name"],
+            "tenant": payload["tenant"], "root_task_id": mutation.get("root_task_id"),
+            "designated_acceptance_task_id": mutation["designated_acceptance_task_id"],
+            "subscription": mutation.get("subscription"),
+            "actor_principal": actor["principal_id"],
+            "board_identity": payload["board_identity"],
+        }
+    if op == "add_member":
+        member = mutation["member"]
+        return {
+            "op": op, "workflow_id": workflow_id, "task_id": member["task_id"],
+            "stage_key": member["stage_key"], "stage_role": member["stage_role"],
+            "required": bool(member["required"]), "expected_version": expected_version,
+        }
+    if op == "remove_member":
+        return {
+            "op": op, "workflow_id": workflow_id, "task_id": mutation["task_id"],
+            "expected_version": expected_version, "reason": mutation["reason"],
+        }
+    if op == "cancel":
+        return {
+            "op": op, "workflow_id": workflow_id,
+            "expected_version": expected_version, "reason": mutation["reason"],
+        }
+    if op == "set_subscription":
+        return {
+            **{key: value for key, value in mutation.items() if key != "op"},
+            "op": op, "expected_version": expected_version,
+        }
+    if op == "outcome":
+        return {
+            "op": op, "workflow_id": workflow_id, "task_id": mutation["task_id"],
+            "outcome": mutation["outcome"], "run_id": mutation.get("run_id"),
+            "supersedes_outcome_id": mutation.get("supersedes_outcome_id"),
+            "summary": mutation.get("summary"), "metadata": mutation.get("metadata"),
+            "expected_version": expected_version,
+        }
+    if op == "reopen":
+        members = [
+            {key: member[key] for key in ("task_id", "stage_key", "stage_role", "required")}
+            for member in mutation["members"]
+        ]
+        return {
+            "op": op, "workflow_id": workflow_id,
+            "designated_acceptance_task_id": mutation["designated_acceptance_task_id"],
+            "members": members, "reason": mutation["reason"],
+            "expected_version": expected_version,
+        }
+    if op == "skip_subscription_event":
+        return {
+            "op": op, "workflow_id": workflow_id, "role": mutation["role"],
+            "event_id": int(mutation["event_id"]), "expected_version": expected_version,
+            "reason": mutation["reason"],
+        }
+    raise WorkflowIntegrityError(f"unsupported workflow replay operation: {op}")
+
+
+def _validate_workflow_mutation_ledger(
+    conn: sqlite3.Connection, *, workflow_id: str,
+    batches: Mapping[str, list[tuple[sqlite3.Row, dict[str, Any]]]],
+) -> None:
+    """Fail closed unless immutable event batches and idempotency rows are bijective."""
+    ledger_rows = conn.execute(
+        "SELECT * FROM kanban_workflow_mutations WHERE workflow_id=? ORDER BY first_event_id",
+        (workflow_id,),
+    ).fetchall()
+    ledger = {row["mutation_id"]: row for row in ledger_rows}
+    if len(ledger_rows) != len(ledger) or set(ledger) != set(batches):
+        raise WorkflowIntegrityError("workflow mutation ledger is incomplete or duplicated")
+    for mutation_id, batch in batches.items():
+        ledger_row = ledger[mutation_id]
+        canonical = [row for row, _ in batch if row["event_role"] == "canonical"]
+        if len(canonical) != 1:
+            raise WorkflowIntegrityError(
+                f"workflow mutation ledger canonical event is invalid for {mutation_id}"
+            )
+        canonical_row = canonical[0]
+        event_ids = [int(row["id"]) for row, _ in batch]
+        if int(ledger_row["canonical_event_id"]) != int(canonical_row["id"]):
+            raise WorkflowIntegrityError(
+                f"workflow mutation ledger canonical event differs for {mutation_id}"
+            )
+        if (int(ledger_row["first_event_id"]) != min(event_ids)
+                or int(ledger_row["last_event_id"]) != max(event_ids)):
+            raise WorkflowIntegrityError(
+                f"workflow mutation ledger event range differs for {mutation_id}"
+            )
+        payload = next(payload for row, payload in batch if row["id"] == canonical_row["id"])
+        try:
+            expected_request = _workflow_request_from_canonical_event(
+                workflow_id=workflow_id, row=canonical_row, payload=payload,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorkflowIntegrityError(
+                f"workflow mutation ledger request facts are incomplete for {mutation_id}"
+            ) from exc
+        if ledger_row["request_digest"] != _workflow_digest(expected_request):
+            raise WorkflowIntegrityError(
+                f"workflow mutation ledger request digest differs for {mutation_id}"
+            )
+        if int(ledger_row["committed_version"]) != int(payload["resulting_version"]):
+            raise WorkflowIntegrityError(
+                f"workflow mutation ledger committed version differs for {mutation_id}"
+            )
+        try:
+            response = json.loads(ledger_row["response_json"])
+            response_workflow = response["workflow"]
+        except Exception as exc:
+            raise WorkflowIntegrityError(
+                f"workflow mutation ledger response is invalid for {mutation_id}"
+            ) from exc
+        if (not isinstance(response, dict) or not isinstance(response_workflow, dict)
+                or response_workflow.get("id") != workflow_id
+                or int(response_workflow.get("version", -1)) != int(payload["resulting_version"])
+                or response_workflow.get("state") != payload["resulting_state"]
+                or int(response_workflow.get("last_event_id", -1)) != max(event_ids)):
+            raise WorkflowIntegrityError(
+                f"workflow mutation ledger response linkage differs for {mutation_id}"
+            )
+
+
 def replay_workflow_events(
     conn: sqlite3.Connection, *, workflow_id: str,
     actor: Optional[KanbanActorContext],
 ) -> dict[str, Any]:
     """Reconstruct aggregate data from ordered immutable mutation batches."""
-    workflow = conn.execute(
-        "SELECT tenant,board_identity FROM kanban_workflows WHERE id=?", (workflow_id,)
-    ).fetchone()
-    if workflow is None:
-        raise KeyError(f"unknown workflow: {workflow_id}")
-    _require_workflow_actor(
-        actor, "workflow.read", tenant=workflow["tenant"],
-        board_identity=workflow["board_identity"],
-    )
     rows = conn.execute(
         "SELECT * FROM kanban_workflow_events WHERE workflow_id=? ORDER BY id",
         (workflow_id,),
     ).fetchall()
     if not rows:
         raise WorkflowIntegrityError("workflow event log is empty")
+
+    first_row = rows[0]
+    try:
+        first_payload = json.loads(first_row["payload"])
+    except Exception as exc:
+        raise WorkflowIntegrityError("invalid workflow event JSON") from exc
+    if (int(first_row["payload_schema_version"]) != 1
+            or first_row["event_role"] != "canonical"
+            or int(first_row["batch_seq"]) != 0
+            or first_row["kind"] != "workflow_created"
+            or not isinstance(first_payload, dict)
+            or first_payload.get("workflow_id") != workflow_id
+            or not isinstance(first_payload.get("tenant"), str)
+            or not first_payload["tenant"].strip()
+            or not isinstance(first_payload.get("board_identity"), str)
+            or not first_payload["board_identity"].strip()
+            or not isinstance(first_payload.get("mutation"), dict)
+            or first_payload["mutation"].get("op") != "create"):
+        raise WorkflowIntegrityError("workflow event log has no valid canonical create event")
+    tenant = first_payload["tenant"]
+    board_identity = first_payload["board_identity"]
+    _require_workflow_actor(
+        actor, "workflow.read", tenant=tenant, board_identity=board_identity,
+    )
 
     required_payload = {
         "workflow_id", "generation", "prior_version", "resulting_version",
@@ -10907,8 +11084,8 @@ def replay_workflow_events(
         if not isinstance(payload, dict) or not required_payload.issubset(payload):
             raise WorkflowIntegrityError("workflow event payload is incomplete")
         if (payload["workflow_id"] != workflow_id
-                or payload["tenant"] != workflow["tenant"]
-                or payload["board_identity"] != workflow["board_identity"]
+                or payload["tenant"] != tenant
+                or payload["board_identity"] != board_identity
                 or int(payload["generation"]) != int(row["generation"])):
             raise WorkflowIntegrityError("workflow event identity/tenant/board mismatch")
         batches.setdefault(row["mutation_id"], []).append((row, payload))
@@ -10918,6 +11095,10 @@ def replay_workflow_events(
             "batch_seq": int(row["batch_seq"]), "event_role": row["event_role"],
             "payload": payload,
         })
+
+    _validate_workflow_mutation_ledger(
+        conn, workflow_id=workflow_id, batches=batches,
+    )
 
     state: Optional[str] = None
     version = 0
@@ -10965,7 +11146,9 @@ def replay_workflow_events(
             member["removed"] = False
             member["joined_event_id"] = int(canonical_row["id"])
             members[f"{generation}:{member['task_id']}"] = member
-            subscription = mutation.get("subscription")
+            subscription = _workflow_replay_subscription(
+                mutation.get("subscription"), tenant=tenant,
+            )
         elif op == "reopen":
             generations[generation_key] = {
                 "designated_acceptance_task_id": mutation["designated_acceptance_task_id"],
@@ -11038,7 +11221,7 @@ def replay_workflow_events(
                 "source_event_id": int(canonical_row["id"]),
             }
         elif op == "set_subscription":
-            subscription = mutation.get("subscription")
+            subscription = _workflow_replay_subscription(mutation, tenant=tenant)
         elif op not in {"cancel", "skip_subscription_event"}:
             raise WorkflowIntegrityError(f"unsupported workflow replay operation: {op}")
         state = str(payload["resulting_state"])
@@ -11046,6 +11229,8 @@ def replay_workflow_events(
 
     return {
         "workflow_id": workflow_id,
+        "tenant": tenant,
+        "board_identity": board_identity,
         "state": state,
         "version": version,
         "active_generation": generation,
@@ -11107,6 +11292,36 @@ def workflow_integrity_report(
                 or replay["active_generation"] != int(row["active_generation"])
                 or replay["last_event_id"] != int(row["last_event_id"])):
             errors.append(f"workflow {wid}: replay head differs from materialized state")
+        subscription_row = conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions "
+            "WHERE workflow_id=? AND role='origin'", (wid,),
+        ).fetchone()
+        try:
+            materialized_subscription = None
+            if subscription_row is not None:
+                materialized_subscription = _workflow_replay_subscription(
+                    {
+                        "platform": subscription_row["platform"],
+                        "chat_id": subscription_row["chat_id"],
+                        "chat_type": subscription_row["chat_type"],
+                        "thread_id": subscription_row["thread_id"],
+                        "user_id": subscription_row["user_id"],
+                        "notifier_profile": subscription_row["notifier_profile"],
+                        "delivery_metadata": (
+                            json.loads(subscription_row["delivery_metadata"])
+                            if subscription_row["delivery_metadata"] else None
+                        ),
+                        "target_states": json.loads(subscription_row["target_states"]),
+                    },
+                    tenant=subscription_row["tenant"],
+                )
+        except (TypeError, ValueError, json.JSONDecodeError, WorkflowIntegrityError) as exc:
+            errors.append(f"workflow {wid}: materialized subscription is invalid: {exc}")
+            materialized_subscription = None
+        if replay["subscription"] != materialized_subscription:
+            errors.append(
+                f"workflow {wid}: replay subscription differs from materialized subscription"
+            )
         materialized_members = {}
         for member in conn.execute(
             "SELECT * FROM kanban_workflow_members WHERE workflow_id=?",

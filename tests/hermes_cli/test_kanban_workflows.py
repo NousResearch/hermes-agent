@@ -261,6 +261,186 @@ def test_replay_and_integrity_report_detect_materialized_state_corruption(workfl
         )
 
 
+def test_replay_bootstraps_identity_and_aggregate_without_materialized_rows(workflow_db):
+    acceptance = _new_workflow(workflow_db)
+    implementation = kb.create_task(
+        workflow_db, title="implementation", assignee="builder", tenant="tenant-a"
+    )
+    kb.add_workflow_member(
+        workflow_db, workflow_id="wf_test", task_id=implementation,
+        stage_key="implementation", stage_role="implementation", required=True,
+        actor=_actor(), mutation_id="add-for-empty-replay", expected_version=1,
+    )
+    kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_test", task_id=implementation, outcome="PASS",
+        actor=_actor(capabilities=("workflow.outcome",)),
+        mutation_id="pass-for-empty-replay", expected_version=2,
+    )
+
+    workflow_db.commit()
+    workflow_db.execute("PRAGMA foreign_keys=OFF")
+    for table in (
+        "kanban_workflow_outcomes", "kanban_workflow_subscriptions",
+        "kanban_workflow_members", "kanban_workflow_generations", "kanban_workflows",
+    ):
+        workflow_db.execute(f"DELETE FROM {table} WHERE workflow_id='wf_test'" if table != "kanban_workflows"
+                            else "DELETE FROM kanban_workflows WHERE id='wf_test'")
+    workflow_db.commit()
+    workflow_db.execute("PRAGMA foreign_keys=ON")
+
+    replay = kb.replay_workflow_events(
+        workflow_db, workflow_id="wf_test",
+        actor=_actor(capabilities=("workflow.read",)),
+    )
+
+    assert replay["tenant"] == "tenant-a"
+    assert replay["board_identity"] == "board:test"
+    assert replay["state"] == "ACTIVE"
+    assert replay["version"] == 3
+    assert replay["generations"]["1"]["designated_acceptance_task_id"] == acceptance
+    assert replay["members"][f"1:{implementation}"]["stage_key"] == "implementation"
+    assert replay["outcomes"][f"1:{implementation}"]["outcome"] == "PASS"
+
+    with pytest.raises(kb.WorkflowAuthorizationError, match="tenant"):
+        kb.replay_workflow_events(
+            workflow_db, workflow_id="wf_test",
+            actor=_actor(tenant="tenant-b", capabilities=("workflow.read",)),
+        )
+
+
+def test_replay_reconstructs_create_and_replaced_subscription_destinations(workflow_db):
+    acceptance = kb.create_task(
+        workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"
+    )
+    kb.create_workflow(
+        workflow_db, workflow_id="wf_subscription_replay", name="release",
+        tenant="tenant-a", designated_acceptance_task_id=acceptance,
+        actor=_actor(), mutation_id="create-subscription-replay",
+        subscription={
+            "platform": "telegram", "chat_id": "chat-original",
+            "chat_type": "group", "thread_id": "thread-original",
+            "user_id": "user-original", "notifier_profile": "default",
+            "delivery_metadata": {"topic": "release"},
+            "target_states": ["PASS"],
+        },
+    )
+    created_replay = kb.replay_workflow_events(
+        workflow_db, workflow_id="wf_subscription_replay",
+        actor=_actor(capabilities=("workflow.read",)),
+    )
+    assert created_replay["subscription"]["chat_id"] == "chat-original"
+
+    kb.set_workflow_subscription(
+        workflow_db, workflow_id="wf_subscription_replay", platform="discord",
+        chat_id="chat-replacement", chat_type="channel", thread_id="thread-replacement",
+        user_id="user-replacement", notifier_profile="qa",
+        delivery_metadata={"channel_name": "release-qa"}, target_states=["NEEDS_INPUT", "PASS"],
+        actor=_actor(capabilities=("workflow.admin",)),
+        mutation_id="replace-subscription", expected_version=1,
+    )
+
+    replay = kb.replay_workflow_events(
+        workflow_db, workflow_id="wf_subscription_replay",
+        actor=_actor(capabilities=("workflow.read",)),
+    )
+    assert replay["subscription"] == {
+        "role": "origin", "platform": "discord", "chat_id": "chat-replacement",
+        "chat_type": "channel", "thread_id": "thread-replacement",
+        "user_id": "user-replacement", "notifier_profile": "qa",
+        "delivery_metadata": {"channel_name": "release-qa"},
+        "target_states": ["NEEDS_INPUT", "PASS"], "tenant": "tenant-a",
+    }
+
+
+def test_integrity_detects_subscription_destination_divergence(workflow_db):
+    acceptance = kb.create_task(
+        workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"
+    )
+    kb.create_workflow(
+        workflow_db, workflow_id="wf_subscription_integrity", name="release",
+        tenant="tenant-a", designated_acceptance_task_id=acceptance,
+        actor=_actor(), mutation_id="create-subscription-integrity",
+        subscription={
+            "platform": "telegram", "chat_id": "chat-canonical",
+            "notifier_profile": "default", "target_states": ["PASS"],
+        },
+    )
+    assert kb.workflow_integrity_report(
+        workflow_db, workflow_id="wf_subscription_integrity"
+    )["ok"] is True
+
+    workflow_db.execute(
+        "UPDATE kanban_workflow_subscriptions SET chat_id='chat-corrupted' "
+        "WHERE workflow_id='wf_subscription_integrity'"
+    )
+
+    report = kb.workflow_integrity_report(
+        workflow_db, workflow_id="wf_subscription_integrity"
+    )
+    assert report["ok"] is False
+    assert any("subscription" in error for error in report["errors"])
+
+
+def test_replay_and_integrity_reject_missing_mutation_ledger_entry(workflow_db):
+    _new_workflow(workflow_db)
+    workflow_db.execute(
+        "DELETE FROM kanban_workflow_mutations "
+        "WHERE workflow_id='wf_test' AND mutation_id='create-wf_test'"
+    )
+
+    with pytest.raises(kb.WorkflowIntegrityError, match="mutation ledger"):
+        kb.replay_workflow_events(
+            workflow_db, workflow_id="wf_test",
+            actor=_actor(capabilities=("workflow.read",)),
+        )
+    report = kb.workflow_integrity_report(workflow_db, workflow_id="wf_test")
+    assert report["ok"] is False
+    assert any("mutation ledger" in error for error in report["errors"])
+
+
+@pytest.mark.parametrize(
+    ("tamper_sql", "expected_error"),
+    [
+        (
+            "UPDATE kanban_workflow_mutations SET request_digest='corrupt' "
+            "WHERE workflow_id='wf_test' AND mutation_id='pass-ledger'",
+            "request digest",
+        ),
+        (
+            "UPDATE kanban_workflow_mutations SET canonical_event_id=last_event_id "
+            "WHERE workflow_id='wf_test' AND mutation_id='pass-ledger'",
+            "canonical event",
+        ),
+        (
+            "UPDATE kanban_workflow_mutations SET last_event_id=first_event_id "
+            "WHERE workflow_id='wf_test' AND mutation_id='pass-ledger'",
+            "event range",
+        ),
+        (
+            "UPDATE kanban_workflow_mutations SET response_json='{}' "
+            "WHERE workflow_id='wf_test' AND mutation_id='pass-ledger'",
+            "response",
+        ),
+    ],
+)
+def test_replay_rejects_corrupt_mutation_ledger_linkage(
+    workflow_db, tamper_sql, expected_error,
+):
+    acceptance = _new_workflow(workflow_db)
+    kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_test", task_id=acceptance, outcome="PASS",
+        actor=_actor(capabilities=("workflow.outcome",)),
+        mutation_id="pass-ledger", expected_version=1,
+    )
+    workflow_db.execute(tamper_sql)
+
+    with pytest.raises(kb.WorkflowIntegrityError, match=expected_error):
+        kb.replay_workflow_events(
+            workflow_db, workflow_id="wf_test",
+            actor=_actor(capabilities=("workflow.read",)),
+        )
+
+
 def test_qa_outcome_requires_active_dispatch_run_and_claim_binding(workflow_db):
     _new_workflow(workflow_db)
     qa_task = kb.create_task(

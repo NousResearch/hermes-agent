@@ -1887,9 +1887,9 @@ class TestMessageRouting:
         assert msg_event.text == "Hi"
         assert "@WorkspaceBot" in prompt
         assert "already applied" in prompt
-        assert "may have been removed" in prompt
-        assert "Do not ask for another mention" in prompt
-        assert "free-response channel or active thread" in prompt
+        assert "may have been stripped" in prompt
+        assert "do not reject or ignore" in prompt
+        assert "intentionally routed" in prompt
         assert "not a mention of you" in prompt
         assert "Only treat a message as directed" not in prompt
 

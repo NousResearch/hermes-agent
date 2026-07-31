@@ -247,6 +247,14 @@ async def execute_current_async(
     )
 
 
+def _has_running_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def stream_current(
     request: dict[str, Any],
     stream_factory: Callable[[dict[str, Any]], Any],
@@ -271,6 +279,17 @@ def stream_current(
     """
     turn = relay_runtime.active_turn()
     if turn is None:
+        return stream_factory(request)
+    if _has_running_event_loop():
+        # Managed provider callbacks execute on the Relay session's event
+        # loop. A nested ManagedLlmStream built here would be synchronously
+        # iterated on that same loop thread, which asyncio forbids
+        # ("Cannot run the event loop while another loop is running").
+        # Return the raw factory result instead: the outer managed stream
+        # already provides Relay tracking for the enclosing attempt, and its
+        # own completed_response_predicate traps a completed response (e.g.
+        # the MoA facade's auxiliary ``call_llm(stream=True)`` returning a
+        # full response when an adapter ignores ``stream=True``).
         return stream_factory(request)
     managed = stream(
         request,

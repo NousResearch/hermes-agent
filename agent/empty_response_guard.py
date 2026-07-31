@@ -26,27 +26,37 @@ Two independent guards, both failing OPEN to today's behaviour:
    and keep the full retry budget.
 
 2. **Cost-aware retry budget** — when the estimated input cost of a
-   single empty attempt exceeds ``HERMES_EMPTY_RETRY_COST_THRESHOLD_USD``
-   (default $0.25), the empty-retry budget for this streak drops from 3
-   to 1. Unknown pricing, missing usage, or included/subscription routes
+   single empty attempt exceeds the configured threshold (default
+   $0.25), the empty-retry budget for this streak drops from 3 to 1.
+   Unknown pricing, missing usage, or included/subscription routes
    leave the budget untouched.
 
-Set ``HERMES_DETERMINISTIC_EMPTY_GUARD=0`` to disable both guards.
+Configured via the additive ``agent.empty_response_guard`` section in
+``config.yaml`` (resolved once at agent init by ``agent_init``)::
+
+    agent:
+      empty_response_guard:
+        enabled: true            # false = legacy fixed 3-retry behaviour
+        cost_threshold_usd: 0.25 # per-attempt cost that halves the budget
+
+Per project policy, no ``HERMES_*`` environment variables are involved —
+``.env`` is reserved for credentials; behavioural settings live in
+``config.yaml``.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMPTY_RETRY_BUDGET = 3
 REDUCED_EMPTY_RETRY_BUDGET = 1
 DEFAULT_COST_THRESHOLD_USD = Decimal("0.25")
+DEFAULT_GUARD_ENABLED = True
 
 # Attribute names stashed on the agent object. State is scoped to one
 # consecutive empty streak: it is cleared whenever a streak starts
@@ -55,6 +65,8 @@ DEFAULT_COST_THRESHOLD_USD = Decimal("0.25")
 # success, fallback activation) without touching them.
 _ATTEMPTS_ATTR = "_empty_attempt_history"
 _STREAK_COST_ATTR = "_empty_streak_cost_usd"
+_ENABLED_ATTR = "_empty_guard_enabled"
+_THRESHOLD_ATTR = "_empty_guard_cost_threshold_usd"
 
 
 @dataclass(frozen=True)
@@ -72,26 +84,56 @@ class EmptyAttempt:
         return (self.model, self.provider, self.finish_reason)
 
 
-def guard_enabled() -> bool:
-    return os.environ.get("HERMES_DETERMINISTIC_EMPTY_GUARD", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
+def resolve_guard_settings(section: Any) -> Tuple[bool, Decimal]:
+    """Resolve ``agent.empty_response_guard`` config into (enabled, threshold).
+
+    Tolerant of malformed input: anything that isn't a well-formed dict
+    (or well-formed values within it) falls back to the schema defaults.
+    Called once per agent at init; the resolved values are stashed on the
+    agent object so the hot loop never re-reads config.
+    """
+    if not isinstance(section, dict):
+        return (DEFAULT_GUARD_ENABLED, DEFAULT_COST_THRESHOLD_USD)
+
+    enabled_raw = section.get("enabled", DEFAULT_GUARD_ENABLED)
+    if isinstance(enabled_raw, bool):
+        enabled = enabled_raw
+    elif isinstance(enabled_raw, str):
+        # YAML quoting can turn true/false into strings.
+        enabled = enabled_raw.strip().lower() not in ("0", "false", "no", "off")
+    else:
+        enabled = DEFAULT_GUARD_ENABLED
+
+    threshold = DEFAULT_COST_THRESHOLD_USD
+    threshold_raw = section.get("cost_threshold_usd")
+    if threshold_raw is not None and not isinstance(threshold_raw, bool):
+        try:
+            candidate = Decimal(str(threshold_raw))
+            if candidate > 0:
+                threshold = candidate
+        except Exception:  # noqa: BLE001 — malformed config must not break init
+            logger.debug(
+                "empty-guard: invalid cost_threshold_usd %r, using default",
+                threshold_raw,
+            )
+    return (enabled, threshold)
 
 
-def _cost_threshold_usd() -> Decimal:
-    raw = os.environ.get("HERMES_EMPTY_RETRY_COST_THRESHOLD_USD", "").strip()
-    if not raw:
-        return DEFAULT_COST_THRESHOLD_USD
-    try:
-        value = Decimal(raw)
-    except Exception:
-        return DEFAULT_COST_THRESHOLD_USD
-    if value <= 0:
-        return DEFAULT_COST_THRESHOLD_USD
-    return value
+def guard_enabled(agent: Any) -> bool:
+    """Whether the guard is enabled for this agent (config-resolved).
+
+    Agents built before the config was threaded through (tests, embedded
+    callers) simply get the default: enabled.
+    """
+    value = getattr(agent, _ENABLED_ATTR, DEFAULT_GUARD_ENABLED)
+    return value if isinstance(value, bool) else DEFAULT_GUARD_ENABLED
+
+
+def _cost_threshold_usd(agent: Any) -> Decimal:
+    value = getattr(agent, _THRESHOLD_ATTR, None)
+    if isinstance(value, Decimal) and value > 0:
+        return value
+    return DEFAULT_COST_THRESHOLD_USD
 
 
 def _attempts(agent: Any) -> List[EmptyAttempt]:
@@ -197,7 +239,7 @@ def deterministic_empty(agent: Any) -> bool:
     signature. Any attempt with missing usage or non-zero output keeps
     this False (fail open — transients deserve their retries).
     """
-    if not guard_enabled():
+    if not guard_enabled(agent):
         return False
     attempts = getattr(agent, _ATTEMPTS_ATTR, None) or []
     if len(attempts) < 2:
@@ -212,12 +254,12 @@ def deterministic_empty(agent: Any) -> bool:
 def empty_retry_budget(agent: Any, response: Any) -> int:
     """Empty-retry budget for the current streak (3, or 1 when a single
     attempt is estimated to cost more than the configured threshold)."""
-    if not guard_enabled():
+    if not guard_enabled(agent):
         return DEFAULT_EMPTY_RETRY_BUDGET
     cost = _estimate_attempt_cost(agent, response)
     if cost is None:
         return DEFAULT_EMPTY_RETRY_BUDGET
-    if cost >= _cost_threshold_usd():
+    if cost >= _cost_threshold_usd(agent):
         return REDUCED_EMPTY_RETRY_BUDGET
     return DEFAULT_EMPTY_RETRY_BUDGET
 

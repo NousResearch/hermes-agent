@@ -3293,6 +3293,31 @@ class TestRunConversation:
         # proves determinism, remaining retries are skipped.
         assert result["api_calls"] == 2
 
+    def test_guard_disabled_via_config_restores_legacy_retries(self, agent):
+        """NS-503: agent.empty_response_guard.enabled: false in config.yaml
+        (resolved to _empty_guard_enabled at init) restores the legacy
+        fixed 3-retry behaviour even for deterministic empties."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._empty_guard_enabled = False  # as set by agent_init from config
+        zero_usage = {
+            "prompt_tokens": 25_900,
+            "completion_tokens": 0,
+            "total_tokens": 25_900,
+        }
+        empty_resp = _mock_response(
+            content=None, finish_reason="stop", usage=zero_usage
+        )
+        agent.client.chat.completions.create.side_effect = [empty_resp] * 6
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+        assert result["completed"] is True
+        assert result["api_calls"] == 4  # legacy: 1 original + 3 retries
+
     def test_empty_without_usage_keeps_full_retry_budget(self, agent):
         """NS-503 fail-open: no usage data means no evidence of a
         deterministic empty — legacy 3-retry behaviour must be preserved

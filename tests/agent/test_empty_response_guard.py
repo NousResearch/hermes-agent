@@ -8,13 +8,12 @@ Fail-open contract under test:
 - Missing usage -> never deterministic, default budget.
 - Any generated tokens (output or reasoning) -> never deterministic.
 - Different model/provider/finish_reason across attempts -> not deterministic.
-- Guard disabled via env -> everything falls back to defaults.
+- Guard disabled via config (agent.empty_response_guard.enabled: false) ->
+  everything falls back to defaults.
 """
 
 from decimal import Decimal
 from types import SimpleNamespace
-
-import pytest
 
 from agent import empty_response_guard as guard
 
@@ -125,9 +124,8 @@ class TestDeterministicEmpty:
         agent._empty_content_retries += 1
         assert guard.deterministic_empty(agent) is False
 
-    def test_guard_disabled_via_env(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DETERMINISTIC_EMPTY_GUARD", "0")
-        agent = _agent()
+    def test_guard_disabled_via_config(self):
+        agent = _agent(_empty_guard_enabled=False)
         _record_streak(agent, [_response(), _response()])
         assert guard.deterministic_empty(agent) is False
 
@@ -169,29 +167,41 @@ class TestEmptyRetryBudget:
             == guard.DEFAULT_EMPTY_RETRY_BUDGET
         )
 
-    def test_custom_threshold_env(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EMPTY_RETRY_COST_THRESHOLD_USD", "5.00")
+    def test_custom_threshold_config(self, monkeypatch):
         monkeypatch.setattr(
             guard, "_estimate_attempt_cost", lambda a, r: Decimal("0.80")
         )
         assert (
-            guard.empty_retry_budget(_agent(), _response())
+            guard.empty_retry_budget(
+                _agent(_empty_guard_cost_threshold_usd=Decimal("5.00")),
+                _response(),
+            )
             == guard.DEFAULT_EMPTY_RETRY_BUDGET
         )
 
-    def test_bad_threshold_env_falls_back(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EMPTY_RETRY_COST_THRESHOLD_USD", "banana")
-        assert guard._cost_threshold_usd() == guard.DEFAULT_COST_THRESHOLD_USD
-        monkeypatch.setenv("HERMES_EMPTY_RETRY_COST_THRESHOLD_USD", "-1")
-        assert guard._cost_threshold_usd() == guard.DEFAULT_COST_THRESHOLD_USD
+    def test_bad_threshold_attr_falls_back(self):
+        # Non-Decimal or non-positive resolved values fall back to default.
+        assert (
+            guard._cost_threshold_usd(_agent(_empty_guard_cost_threshold_usd="banana"))
+            == guard.DEFAULT_COST_THRESHOLD_USD
+        )
+        assert (
+            guard._cost_threshold_usd(
+                _agent(_empty_guard_cost_threshold_usd=Decimal("-1"))
+            )
+            == guard.DEFAULT_COST_THRESHOLD_USD
+        )
+        assert (
+            guard._cost_threshold_usd(_agent())  # attr absent entirely
+            == guard.DEFAULT_COST_THRESHOLD_USD
+        )
 
     def test_guard_disabled_keeps_default_budget(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DETERMINISTIC_EMPTY_GUARD", "0")
         monkeypatch.setattr(
             guard, "_estimate_attempt_cost", lambda a, r: Decimal("9.99")
         )
         assert (
-            guard.empty_retry_budget(_agent(), _response())
+            guard.empty_retry_budget(_agent(_empty_guard_enabled=False), _response())
             == guard.DEFAULT_EMPTY_RETRY_BUDGET
         )
 
@@ -278,3 +288,56 @@ class TestZeroOutputExtraction:
         present, zero = guard._zero_output(agent, SimpleNamespace(usage=usage))
         assert present is False
         assert zero is False
+
+
+class TestResolveGuardSettings:
+    """resolve_guard_settings maps the additive agent.empty_response_guard
+    config.yaml section into (enabled, threshold), tolerating malformed
+    input by falling back to schema defaults."""
+
+    def test_missing_section_uses_defaults(self):
+        assert guard.resolve_guard_settings(None) == (
+            guard.DEFAULT_GUARD_ENABLED,
+            guard.DEFAULT_COST_THRESHOLD_USD,
+        )
+
+    def test_non_dict_section_uses_defaults(self):
+        assert guard.resolve_guard_settings("nope") == (
+            guard.DEFAULT_GUARD_ENABLED,
+            guard.DEFAULT_COST_THRESHOLD_USD,
+        )
+
+    def test_disabled(self):
+        enabled, _ = guard.resolve_guard_settings({"enabled": False})
+        assert enabled is False
+
+    def test_yaml_string_bool(self):
+        enabled, _ = guard.resolve_guard_settings({"enabled": "false"})
+        assert enabled is False
+        enabled, _ = guard.resolve_guard_settings({"enabled": "true"})
+        assert enabled is True
+
+    def test_custom_threshold(self):
+        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": 5})
+        assert threshold == Decimal("5")
+        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": "1.50"})
+        assert threshold == Decimal("1.50")
+
+    def test_bad_threshold_falls_back(self):
+        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": "banana"})
+        assert threshold == guard.DEFAULT_COST_THRESHOLD_USD
+        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": -1})
+        assert threshold == guard.DEFAULT_COST_THRESHOLD_USD
+        _, threshold = guard.resolve_guard_settings({"cost_threshold_usd": True})
+        assert threshold == guard.DEFAULT_COST_THRESHOLD_USD
+
+    def test_default_config_schema_matches(self):
+        """The shipped DEFAULT_CONFIG section resolves to the module
+        defaults — keeps config_defaults.py and this module in sync."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        section = DEFAULT_CONFIG["agent"]["empty_response_guard"]
+        assert guard.resolve_guard_settings(section) == (
+            guard.DEFAULT_GUARD_ENABLED,
+            guard.DEFAULT_COST_THRESHOLD_USD,
+        )

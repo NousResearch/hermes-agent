@@ -507,11 +507,29 @@ class PluginContext:
         Returns True if the message was queued successfully.
         """
         cli = self._manager._cli_ref
-        if cli is None:
-            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
-            return False
-
         msg = content if role == "user" else f"[{role}] {content}"
+
+        if cli is None:
+            # No interactive CLI in this process. The dashboard/desktop chat
+            # hosts its sessions in the in-process tui_gateway server instead
+            # — route the message to its most recently active session. Gate on
+            # sys.modules: a process that never imported the dashboard stack
+            # (e.g. a pure messaging gateway) has no sessions to route to, and
+            # must not pay the import for a guaranteed miss.
+            tui_server = sys.modules.get("tui_gateway.server")
+            if tui_server is not None:
+                try:
+                    if tui_server.inject_external_message(msg):
+                        return True
+                except Exception:
+                    logger.warning(
+                        "inject_message: tui_gateway routing failed", exc_info=True
+                    )
+            logger.warning(
+                "inject_message: no CLI reference and no active dashboard "
+                "session (not available in gateway mode)"
+            )
+            return False
 
         if getattr(cli, "_agent_running", False):
             # Agent is mid-turn — interrupt with the message

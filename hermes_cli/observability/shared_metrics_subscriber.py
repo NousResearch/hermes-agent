@@ -13,7 +13,7 @@ from hermes_cli.config import detect_install_method
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
-    MODEL_CALL_METRIC,
+    MODEL_ROUTE_METRIC,
     TOOL_CALL_METRIC,
     client_active_counter,
     client_resource,
@@ -68,7 +68,7 @@ class SharedMetricsSubscriber:
             metric_name, dimensions = metric
         if dimensions is None:
             dimensions = model_call_dimensions(event)
-            metric_name = MODEL_CALL_METRIC
+            metric_name = MODEL_ROUTE_METRIC
         if dimensions is None:
             dimensions = tool_call_dimensions(event)
             metric_name = TOOL_CALL_METRIC

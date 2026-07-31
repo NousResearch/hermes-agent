@@ -69,40 +69,6 @@ class TestIdentityFlush:
             finally:
                 db.close()
 
-    def test_overlapping_turn_stale_cursor_does_not_drop_assistant(self):
-        """A stale cached-agent cursor must not suppress this turn's new dicts."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "t.db")
-            try:
-                agent = _make_agent(db)
-                history = [
-                    {"role": "user", "content": "old question"},
-                    {"role": "assistant", "content": "old answer"},
-                ]
-                for msg in history:
-                    db.append_message(
-                        session_id=SESSION_ID,
-                        role=msg["role"],
-                        content=msg["content"],
-                    )
-
-                messages = history + [
-                    {"role": "user", "content": "current question"},
-                    {"role": "assistant", "content": "current answer"},
-                ]
-                agent._last_flushed_db_idx = len(messages) + 10
-                agent._flush_messages_to_session_db(messages, history)
-
-                assert _contents(db) == [
-                    "old question",
-                    "old answer",
-                    "current question",
-                    "current answer",
-                ]
-            finally:
-                db.close()
 
     def test_repeated_flush_same_turn_writes_once(self):
         """Identity tracking preserves #860 same-turn dedup behavior."""

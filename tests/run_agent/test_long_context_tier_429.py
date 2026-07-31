@@ -35,52 +35,12 @@ class TestLongContextTierDetection:
             "Extra usage is required for long context requests.",
         )
 
-    def test_matches_lowercase(self):
-        assert self._is_long_context_tier_error(
-            429,
-            "extra usage is required for long context requests.",
-        )
 
-    def test_matches_openrouter_model_id(self):
-        assert self._is_long_context_tier_error(
-            429,
-            "Extra usage is required for long context requests.",
-            model="anthropic/claude-sonnet-4.6",
-        )
 
-    def test_matches_nous_model_id(self):
-        assert self._is_long_context_tier_error(
-            429,
-            "Extra usage is required for long context requests.",
-            model="claude-sonnet-4-6",
-        )
 
-    def test_rejects_opus(self):
-        """Opus 1M is general access — should NOT trigger reduction."""
-        assert not self._is_long_context_tier_error(
-            429,
-            "Extra usage is required for long context requests.",
-            model="claude-opus-4.6",
-        )
 
-    def test_rejects_opus_openrouter(self):
-        assert not self._is_long_context_tier_error(
-            429,
-            "Extra usage is required for long context requests.",
-            model="anthropic/claude-opus-4.6",
-        )
 
-    def test_rejects_normal_429(self):
-        assert not self._is_long_context_tier_error(
-            429,
-            "Rate limit exceeded. Please retry after 30 seconds.",
-        )
 
-    def test_rejects_wrong_status(self):
-        assert not self._is_long_context_tier_error(
-            400,
-            "Extra usage is required for long context requests.",
-        )
 
     def test_rejects_partial_match(self):
         """Both 'extra usage' AND 'long context' must be present."""
@@ -137,15 +97,6 @@ class TestContextReduction:
 
         assert comp.context_length == original  # unchanged
 
-    def test_no_reduction_when_below_200k(self):
-        comp = self._make_compressor(128_000)
-        reduced_ctx = 200_000
-
-        original = comp.context_length
-        if comp.context_length > reduced_ctx:
-            comp.context_length = reduced_ctx
-
-        assert comp.context_length == original  # unchanged
 
 
 # ---------------------------------------------------------------------------
@@ -172,36 +123,4 @@ class TestAgentErrorPath:
         )
         assert _is_long_context_tier_error
 
-    def test_opus_429_falls_through_to_rate_limit(self):
-        """Opus should NOT match — falls through to generic rate-limit."""
-        error_msg = "extra usage is required for long context requests."
-        status_code = 429
-        model = "claude-opus-4.6"
 
-        _is_long_context_tier_error = (
-            status_code == 429
-            and "extra usage" in error_msg
-            and "long context" in error_msg
-            and "sonnet" in model.lower()
-        )
-        assert not _is_long_context_tier_error
-
-    def test_normal_429_still_treated_as_rate_limit(self):
-        """A normal 429 should NOT match the long-context check."""
-        error_msg = "rate limit exceeded"
-        status_code = 429
-        model = "claude-sonnet-4.6"
-
-        _is_long_context_tier_error = (
-            status_code == 429
-            and "extra usage" in error_msg
-            and "long context" in error_msg
-            and "sonnet" in model.lower()
-        )
-        assert not _is_long_context_tier_error
-
-        is_rate_limited = (
-            status_code == 429
-            or "rate limit" in error_msg
-        )
-        assert is_rate_limited

@@ -16,8 +16,8 @@ import {
   getSkills,
   getToolsets,
   getUsageAnalytics,
-  toggleSkill,
-  toggleToolset
+  setSkillEnabled,
+  setToolsetEnabled
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
@@ -340,7 +340,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     setSkills(current => current?.map(row => (row.name === skill.name ? { ...row, enabled } : row)) ?? current)
 
     try {
-      await toggleSkill(skill.name, enabled)
+      await setSkillEnabled(skill.name, enabled)
       // A disabled skill loses its `/name` command, so the composer's cached
       // `/` list has to be dropped along with the row repaint.
       invalidateSlashCompletions()
@@ -359,7 +359,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     )
 
     try {
-      await toggleToolset(toolset.name, enabled)
+      await setToolsetEnabled(toolset.name, enabled)
     } catch (err) {
       setToolsets(
         current =>
@@ -383,13 +383,13 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
 
     try {
       for (const row of skillTargets) {
-        await toggleSkill(row.name, enabled)
+        await setSkillEnabled(row.name, enabled)
         setSkills(cur => cur?.map(r => (r.name === row.name ? { ...r, enabled } : r)) ?? cur)
         done += 1
       }
 
       for (const row of toolsetTargets) {
-        await toggleToolset(row.name, enabled)
+        await setToolsetEnabled(row.name, enabled)
         setToolsets(cur => cur?.map(r => (r.name === row.name ? { ...r, enabled, available: enabled } : r)) ?? cur)
         done += 1
       }
@@ -664,7 +664,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   onToggle={checked => void handleToggleToolset(toolset, checked)}
                   subtitle={asText(toolset.description)}
                   title={label}
-                  toggleLabel={t.skills.toggleToolset(label)}
+                  toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
                 />
               )
             })}

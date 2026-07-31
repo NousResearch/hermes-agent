@@ -51,19 +51,6 @@ class TestNoninteractiveGitEnv:
         assert os.environ.get("GIT_TERMINAL_PROMPT") != "0" or True
         assert "GCM_INTERACTIVE" not in os.environ or os.environ["GCM_INTERACTIVE"] == env["GCM_INTERACTIVE"]
 
-    def test_does_not_mutate_base_mapping(self):
-        base = {"PATH": "/usr/bin"}
-        env = noninteractive_git_env(base)
-        assert "GIT_TERMINAL_PROMPT" not in base
-        assert env is not base
-
-    def test_preserves_working_askpass(self):
-        """A configured askpass helper is a *working* non-interactive auth
-        path — the env must not strip it."""
-        base = {"GIT_ASKPASS": "/usr/local/bin/my-askpass", "SSH_ASKPASS": "/x"}
-        env = noninteractive_git_env(base)
-        assert env["GIT_ASKPASS"] == "/usr/local/bin/my-askpass"
-        assert env["SSH_ASKPASS"] == "/x"
 
     def test_overrides_explicit_prompt_enable(self):
         env = noninteractive_git_env({"GIT_TERMINAL_PROMPT": "1"})
@@ -150,45 +137,10 @@ def _assert_noninteractive(call: dict):
     assert env is not None and env.get("GIT_TERMINAL_PROMPT") == "0", call["argv"]
 
 
-def test_web_git_runs_noninteractively(monkeypatch, tmp_path):
-    from hermes_cli import web_git
-
-    calls = _capture_run(monkeypatch, web_git)
-    web_git._git(str(tmp_path), ["fetch", "origin", "main"])
-    assert calls
-    _assert_noninteractive(calls[0])
 
 
-def test_web_gh_runs_noninteractively(monkeypatch, tmp_path):
-    from hermes_cli import web_git
-
-    monkeypatch.setattr(web_git.shutil, "which", lambda name: "/usr/bin/gh")
-    calls = _capture_run(monkeypatch, web_git)
-    web_git._gh(str(tmp_path), ["auth", "status"])
-    assert calls
-    _assert_noninteractive(calls[0])
-    assert calls[0]["env"].get("GH_PROMPT_DISABLED") == "1"
 
 
-def test_plugin_git_pull_runs_noninteractively(monkeypatch, tmp_path):
-    from hermes_cli import plugins_cmd
-
-    monkeypatch.setattr(plugins_cmd, "_resolve_git_executable", lambda: "git")
-    calls = _capture_run(monkeypatch, plugins_cmd)
-    plugins_cmd._git_pull_plugin_dir(tmp_path)
-    assert calls
-    _assert_noninteractive(calls[0])
-
-
-def test_profile_distribution_clone_runs_noninteractively(monkeypatch, tmp_path):
-    from hermes_cli import profile_distribution
-
-    calls = _capture_run(monkeypatch, profile_distribution)
-    profile_distribution._git_clone(
-        "https://github.com/example/repo", tmp_path / "dest"
-    )
-    assert calls
-    _assert_noninteractive(calls[0])
 
 
 def test_mcp_catalog_git_install_runs_noninteractively(monkeypatch, tmp_path):

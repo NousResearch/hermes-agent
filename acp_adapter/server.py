@@ -114,6 +114,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
             load_config,
         )
         from hermes_cli.models import fetch_api_models
+        from hermes_cli.providers import custom_provider_slug
     except ImportError:
         return []
 
@@ -145,8 +146,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         base_url = str(entry.get("base_url", "") or "").strip()
         if not name or not base_url:
             continue
-        slug_source = provider_key or name
-        slug = "custom:" + slug_source.strip().lower().replace(" ", "-")
+        slug = custom_provider_slug(name, provider_key)
 
         api_key = str(entry.get("api_key", "") or "").strip()
         if not api_key:

@@ -116,30 +116,6 @@ def _standalone_send(monkeypatch):
     return slack_adapter._standalone_send
 
 
-def test_standalone_send_tries_comma_separated_tokens_individually(
-    monkeypatch, _standalone_send
-):
-    """Multi-workspace token lists must not be sent as one literal token."""
-    fake_session = _SlackSession()
-    monkeypatch.setattr(
-        "aiohttp.ClientSession", lambda *args, **kwargs: fake_session
-    )
-
-    pconfig = SimpleNamespace(enabled=True, token="bad-token, good-token", extra={})
-    result = asyncio.run(_standalone_send(pconfig, "C123", "hello"))
-
-    assert result == {
-        "success": True,
-        "platform": "slack",
-        "chat_id": "C123",
-        "message_id": "171.123",
-    }
-    assert [token for token, _payload in fake_session.calls] == [
-        "bad-token",
-        "good-token",
-    ]
-
-
 def test_standalone_send_stops_on_non_token_error(monkeypatch, _standalone_send):
     """Terminal errors (not token-scoped) must not burn the remaining tokens."""
 

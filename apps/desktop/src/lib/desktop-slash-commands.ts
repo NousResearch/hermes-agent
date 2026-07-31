@@ -56,6 +56,7 @@ export type DesktopActionId =
   | 'profile'
   | 'skin'
   | 'title'
+  | 'wake'
   | 'yolo'
 
 /** A command fulfilled by opening a desktop overlay picker. */
@@ -168,6 +169,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('branch')
   },
   { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
+  {
+    name: '/wake',
+    description: 'Control the desktop wake-word listener [on|off|status]',
+    surface: action('wake'),
+    argumentMode: 'options'
+  },
   {
     name: '/handoff',
     description: 'Hand off this session to a messaging platform',

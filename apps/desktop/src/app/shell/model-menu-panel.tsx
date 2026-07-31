@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { createContext, useContext, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { Codicon } from '@/components/ui/codicon'
@@ -16,6 +16,8 @@ import {
   DropdownMenuSub,
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
+import { HighlightMatches } from '@/components/ui/highlight-matches'
+import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -212,9 +214,139 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     [pickerProviders, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
+  const q = normalize(search)
+
+  // Presets are searchable rows like everything else — an unfiltered preset
+  // sitting under zero model matches would otherwise become the "first match"
+  // Enter commits.
+  const shownMoaPresets = useMemo(
+    () => (q ? moaPresets.filter(preset => `moa ${preset}`.toLowerCase().includes(q)) : moaPresets),
+    [moaPresets, q]
+  )
+
+  // ── Keyboard selection (cmdk semantics on a Radix menu) ───────────────────
+  // One flat list mirroring EXACTLY what's rendered (collapse, filter, presets),
+  // so the selection can never sit on a hidden row. The selected index is
+  // derived — current model with no query (Enter = close), first match while
+  // typing — with an arrow-key override that resets on every keystroke. Focus
+  // stays in the search input throughout: ⌘⇧M → type → ↑/↓ → Enter.
+  type KbRow =
+    | { family: ModelFamily; key: string; kind: 'family'; provider: ModelOptionProvider }
+    | { key: string; kind: 'moa'; preset: string }
+
+  const kbRows = useMemo<KbRow[]>(
+    () => [
+      ...groups.flatMap(group =>
+        collapsedProviders.includes(group.provider.slug) && !search
+          ? []
+          : group.families.map(
+              (family): KbRow => ({
+                family,
+                key: `${group.provider.slug}:${family.id}`,
+                kind: 'family',
+                provider: group.provider
+              })
+            )
+      ),
+      ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset }))
+    ],
+    [groups, collapsedProviders, search, shownMoaPresets]
+  )
+
+  const [kbOverride, setKbOverride] = useState<null | number>(null)
+  // A parked cursor is not a cursor in use: until the mouse actually moves,
+  // hover can't take rows out from under the keyboard (rows re-flow beneath it
+  // as the filter narrows). One real movement hands hover back.
+  const pointerQuiet = usePointerQuiet()
+
+  const currentKey = optionsProvider === 'moa' ? `moa:${optionsModel}` : `${optionsProvider}:${optionsModel}`
+
+  const autoIndex = q
+    ? kbRows.length > 0
+      ? 0
+      : -1
+    : kbRows.findIndex(row => row.key === currentKey || (row.kind === 'family' && row.family.fastId === optionsModel))
+
+  const kbIndex = kbOverride !== null && kbOverride < kbRows.length ? kbOverride : autoIndex
+  const kbActiveKey = kbIndex >= 0 ? kbRows[kbIndex].key : null
+
+  const stepKb = (delta: -1 | 1) => {
+    if (kbRows.length === 0) {
+      return
+    }
+
+    const from = kbIndex >= 0 ? kbIndex : delta === 1 ? -1 : 0
+
+    setKbOverride((from + delta + kbRows.length) % kbRows.length)
+  }
+
+  const commitKbRow = () => {
+    const row = kbIndex >= 0 ? kbRows[kbIndex] : undefined
+
+    if (!row) {
+      return
+    }
+
+    if (row.kind === 'moa') {
+      void selectMoaPreset(row.preset)
+
+      return
+    }
+
+    if (row.key !== currentKey && row.family.fastId !== optionsModel) {
+      void selectFamily(row.family, row.provider)
+    }
+
+    closeMenu()
+  }
+
+  // Keep the selected row in view while arrowing through the scrollable list.
+  const listRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    listRef.current?.querySelector('[data-kb-active]')?.scrollIntoView({ block: 'nearest' })
+  }, [kbActiveKey])
+
+  // The keyboard-selected row, styled + tagged for scrollIntoView. Pointer
+  // suppression is NOT here — it belongs on the containers (below), so one
+  // class covers every row inside them.
+  const kbRowProps = (key: string) => {
+    const active = kbActiveKey === key
+
+    return {
+      className: cn(dropdownMenuRow, active && 'bg-(--ui-control-active-background) text-foreground'),
+      ...(active ? { 'data-kb-active': '' } : {})
+    }
+  }
+
+  // Rows are hover-selectable, so they go inert with the pointer (usePointerQuiet).
+  const quietRows = pointerQuiet && 'pointer-events-none'
+
   return (
     <>
-      <DropdownMenuSearch aria-label={copy.search} onValueChange={setSearch} placeholder={copy.search} value={search} />
+      <DropdownMenuSearch
+        aria-label={copy.search}
+        onKeyDown={event => {
+          // Claim arrows and Enter from Radix so DOM focus stays in the input
+          // and Enter commits the highlighted row without a DownArrow first
+          // (VS Code's checked-or-first pattern).
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault()
+            event.stopPropagation()
+            stepKb(event.key === 'ArrowDown' ? 1 : -1)
+          } else if (event.key === 'Enter') {
+            event.preventDefault()
+            event.stopPropagation()
+            commitKbRow()
+          }
+        }}
+        onValueChange={value => {
+          setSearch(value)
+          setKbOverride(null)
+        }}
+        placeholder={copy.search}
+        value={search}
+      />
 
       <DropdownMenuSeparator className="mx-0" />
 
@@ -240,7 +372,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
           {copy.noModels}
         </DropdownMenuItem>
       ) : (
-        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5">
+        <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
           {groups.map(group => {
             const slug = group.provider.slug
 
@@ -258,7 +390,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                   }}
                   textValue=""
                 >
-                  <span className="truncate">{group.provider.name}</span>
+                  <span className="truncate">
+                    <HighlightMatches query={search} text={group.provider.name} />
+                  </span>
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
                     open={!collapsed}
@@ -322,7 +456,6 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                     return (
                       <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
                         <DropdownMenuSubTrigger
-                          className={dropdownMenuRow}
                           hideChevron
                           onClick={activate}
                           onKeyDown={event => {
@@ -330,9 +463,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                               activate()
                             }
                           }}
+                          {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
                           <span className="min-w-0 flex-1 truncate">
-                            {name}
+                            <HighlightMatches query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                           </span>
                           {isCurrent ? (
@@ -360,28 +494,30 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
       <DropdownMenuSeparator className="mx-0" />
 
-      {moaPresets.length > 0 ? (
-        <>
+      {shownMoaPresets.length > 0 ? (
+        <div className={cn(quietRows)}>
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
-          {moaPresets.map(preset => {
+          {shownMoaPresets.map(preset => {
             const isCurrentMoa = optionsProvider === 'moa' && optionsModel === preset
 
             return (
               <DropdownMenuItem
-                className={dropdownMenuRow}
                 key={`moa:${preset}`}
                 onSelect={event => {
                   event.preventDefault()
                   void selectMoaPreset(preset)
                 }}
+                {...kbRowProps(`moa:${preset}`)}
               >
-                <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  MoA: <HighlightMatches query={search} text={preset} />
+                </span>
                 {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )
           })}
           <DropdownMenuSeparator className="mx-0" />
-        </>
+        </div>
       ) : null}
 
       <DropdownMenuItem
@@ -452,9 +588,11 @@ function groupModels(
 
     // Always include the active model — but keep every row in the provider's
     // stable curated order (filter `allFamilies`, never reorder), so selecting
-    // a model can't shuffle the list.
+    // a model can't shuffle the list. While SEARCHING, the pin is skipped: a
+    // query means "show me matches", and a pinned non-match sitting above them
+    // reads like the top result (type "grok", see the current Fable first).
     const activeId =
-      provider.slug === current.provider && current.model
+      !q && provider.slug === current.provider && current.model
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 

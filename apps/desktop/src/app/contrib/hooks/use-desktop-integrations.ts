@@ -5,6 +5,7 @@ import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
 import { $activeGatewayProfile } from '@/store/profile'
+import { openFolderAsProject } from '@/store/projects'
 import {
   $sessions,
   getRememberedRoute,
@@ -71,15 +72,17 @@ export function useDesktopIntegrations({
   // lands where you were. Overlays (settings/command-center/…) aren't stored —
   // you don't want to boot into a modal.
   useEffect(() => {
+    const routeProfile = rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
+
     if (routedSessionId) {
-      setRememberedSessionId(
-        routedSessionId,
-        rememberedSessionProfile($sessions.get(), routedSessionId, $activeGatewayProfile.get())
-      )
+      setRememberedSessionId(routedSessionId, routeProfile)
     }
 
     if (!isOverlayView(appViewForPath(locationPathname))) {
-      setRememberedRoute(locationPathname)
+      // Keyed by the same owner as the id above: a session route embeds a
+      // session id, so remembering it globally would restore another profile's
+      // conversation on cold start.
+      setRememberedRoute(locationPathname, routeProfile)
     }
   }, [locationPathname, routedSessionId])
 
@@ -97,7 +100,8 @@ export function useDesktopIntegrations({
     }
 
     restoredRef.current = true
-    const route = getRememberedRoute()
+    const activeProfile = $activeGatewayProfile.get()
+    const route = getRememberedRoute(activeProfile)
 
     if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
       navigate(route, { replace: true })
@@ -105,7 +109,7 @@ export function useDesktopIntegrations({
       return
     }
 
-    const last = getRememberedSessionId($activeGatewayProfile.get())
+    const last = getRememberedSessionId(activeProfile)
 
     if (last) {
       navigate(sessionRoute(last), { replace: true })
@@ -125,12 +129,14 @@ export function useDesktopIntegrations({
   }, [resumeExhaustedSessionId])
 
   // Native-notification click -> jump to the session WHERE IT ALREADY IS (open
-  // tile / main) instead of forcing main. Runtime id is translated to the
-  // stored id the chat route is keyed by; action buttons resolve in place.
+  // tile / main), else beside what's loaded rather than over it — the click
+  // came from outside the app and shouldn't cost the user the chat they left
+  // on screen. Runtime id is translated to the stored id the chat route is
+  // keyed by; action buttons resolve in place.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate)
+        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate, 'stack')
       }
     })
 
@@ -181,6 +187,13 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [navigate])
+
+  // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => void openFolderAsProject())
+
+    return () => unsubscribe?.()
+  }, [])
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {

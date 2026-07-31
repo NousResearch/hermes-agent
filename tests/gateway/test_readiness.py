@@ -18,6 +18,15 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
     with sqlite3.connect(home / "state.db") as conn:
         conn.execute("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Pin disk usage so this healthy-runtime assertion doesn't flip to
+    # "degraded" on a dev box whose real disk is >=90% full (the readiness
+    # threshold). Overall status == "ok" requires every check, incl. disk, ok.
+    import shutil as _shutil
+
+    monkeypatch.setattr(
+        "gateway.readiness.shutil.disk_usage",
+        lambda _p: _shutil._ntuple_diskusage(1000, 100, 900),
+    )
 
     result = collect_runtime_readiness(
         configured_model="test/model",

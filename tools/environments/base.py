@@ -419,12 +419,8 @@ def _export_dump_excluding_session_vars(tmp_path: str) -> str:
     lines. ``|| true`` keeps the success contract for callers that chain on it.
 
     The dump MUST be wrapped in a brace group with the redirection applied to
-    the group. *tmp_path* typically embeds ``$BASHPID`` for concurrency-safe
-    temp names; a redirection attached to a pipeline segment would expand
-    ``$BASHPID`` inside that segment's subshell (a different PID than the
-    parent that expands the follow-up ``mv``), silently orphaning the dump.
-    The brace-group redirect is expanded in the current shell, keeping both
-    expansions consistent.
+    the group. Keeping the redirect and follow-up ``mv`` in one shell scope
+    ensures both use the same Python-generated, per-writer temp path.
     """
     # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are fine
     # because ``unset`` with only missing names is ignored under 2>/dev/null.
@@ -542,16 +538,12 @@ class BaseEnvironment(ABC):
         # source() either sees the old complete snapshot or the new complete
         # one — never a partial/truncated file.
         #
-        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
-        # bash PID, but in ``&``-launched subshells (how concurrent terminal
-        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
-        # writers would pick the SAME temp name, clobber each other's temp
-        # mid-write, and mv would then publish a torn file (the corruption is
-        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
-        # and is genuinely unique per writer, which closes the race.  The
-        # static path is shell-quoted (Windows/Git-Bash drive letters, spaces)
-        # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Generate the writer-unique suffix in Python. macOS ships bash 3.2,
+        # where ``$BASHPID`` is unset and ``$$`` is shared by background
+        # subshells; either shell-side form lets concurrent writers clobber the
+        # same temp file before mv publishes it. A UUID is shell-version
+        # independent and unique before the command is spawned.
+        _snap_tmp = self._new_snapshot_temp_path()
         bootstrap = (
             f"umask 077\n"
             f"{_export_dump_excluding_session_vars(_snap_tmp)}\n"
@@ -651,6 +643,12 @@ class BaseEnvironment(ABC):
         """
         return shlex.quote(path)
 
+    def _new_snapshot_temp_path(self) -> str:
+        """Return a shell-quoted, per-writer snapshot staging path."""
+        return self._quote_shell_path(
+            f"{self._snapshot_path}.tmp.{uuid.uuid4().hex}"
+        )
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -660,13 +658,11 @@ class BaseEnvironment(ABC):
         # rewrites ``C:/...`` to ``/c/...`` so MSYS doesn't mangle it).
         _quoted_snap = self._quote_shell_path(self._snapshot_path)
         # Use atomic file replacement for env snapshot updates (issue #38249).
-        # Assemble into a per-writer-unique temp file, then mv to atomically
-        # replace the snapshot so concurrent source() calls never read a
-        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
-        # subshell PID — unique per concurrent ``&``-launched writer — so two
-        # writers never share a temp name and clobber each other before the mv.
-        # Static path shell-quoted (Windows/spaces); ``$BASHPID`` left to expand.
-        _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Assemble into a Python-generated per-writer temp file, then mv to
+        # atomically replace the snapshot so concurrent source() calls never
+        # read a truncated/half-written file. Python-side UUIDs work on macOS's
+        # bash 3.2, where ``$BASHPID`` is unset.
+        _snap_tmp = self._new_snapshot_temp_path()
 
         parts = []
 
@@ -698,11 +694,8 @@ class BaseEnvironment(ABC):
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
-        # NOTE: the redirection must be attached to a brace group — ``_snap_tmp``
-        # embeds ``$BASHPID``, and a redirect on a pipeline segment expands
-        # inside that segment's subshell (a different PID than the parent that
-        # expands the ``mv`` operand), silently orphaning the dump. See
-        # _export_dump_excluding_session_vars.
+        # Keep the redirect and mv in one brace group so they share the same
+        # staging path. See _export_dump_excluding_session_vars.
         if self._snapshot_ready:
             parts.append(
                 f"{{ {_export_dump_excluding_session_vars(_snap_tmp)} "

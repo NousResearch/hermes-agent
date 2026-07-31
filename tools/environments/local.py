@@ -1614,7 +1614,7 @@ class LocalEnvironment(BaseEnvironment):
                 os.unlink(f)
             except OSError:
                 pass
-        # Remove any orphaned atomic-write temp snapshots (snap.tmp.<bashpid>)
+        # Remove any orphaned atomic-write temp snapshots (snap.tmp.<uuid>)
         # a failed/interrupted mv could have left behind (#38249).
         try:
             import glob

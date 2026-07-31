@@ -380,6 +380,20 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
         if stripped.startswith("rg: ") or stripped.startswith("grep: "):
             diagnostics.append(line)
             continue
+        # Older ripgrep (e.g. 0.10) emits per-file I/O errors WITHOUT the
+        # "rg: " prefix, e.g. "<path>: Permission denied (os error 13)". The
+        # shape regex below already rejects most of those, but it mis-reads the
+        # ones whose path contains "-<digit>" (e.g. "/tmp/pytest-686/x: ...
+        # (os error 13)"), classifying the diagnostic as a match. Catch that
+        # narrow gap here -- but ONLY for lines that are not a real,
+        # line-numbered search hit, so a legitimate match whose *content* ends
+        # in "(os error N)" (e.g. "a.py:1:needle (os error 13)") is kept.
+        if (
+            _OS_ERROR_DIAGNOSTIC_RE.search(line)
+            and not _SEARCH_LINE_NUMBERED_RE.match(line)
+        ):
+            diagnostics.append(line)
+            continue
         # Otherwise classify by output shape. rg's regex-parse-error block
         # also emits an indented caret line and a trailing "error: ..." line
         # with no tool prefix; neither matches a search-output shape, so they
@@ -392,6 +406,17 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
         else:
             diagnostics.append(line)
     return '\n'.join(diagnostics), '\n'.join(payload)
+
+
+# Matches an rg/grep per-file I/O diagnostic that some rg versions emit
+# WITHOUT a "rg: " prefix, e.g. "<path>: Permission denied (os error 13)".
+_OS_ERROR_DIAGNOSTIC_RE = re.compile(r"\(os error \d+\)\s*$")
+
+# Matches a REAL, line-numbered search hit: "<path>:<line>:<content>" (rg is
+# always invoked with --line-number/--with-filename for content mode). Used to
+# exempt genuine matches from the unprefixed-diagnostic heuristic above, so a
+# match whose content happens to end in "(os error N)" is never discarded.
+_SEARCH_LINE_NUMBERED_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?:\d+:')
 
 
 # A real rg/grep output line starts with a path token and is followed by a
@@ -768,10 +793,22 @@ def _pattern_has_regex_newline(pattern: str) -> bool:
 
 
 def _is_line_oriented_newline_error(error: Optional[str]) -> bool:
-    """Return True for rg's hard error when multiline mode is required."""
+    """Return True for rg's hard error when multiline mode is required.
+
+    The stable signal across ripgrep versions is the "literal ... newline ...
+    is not allowed" phrasing. The exact quoting of the newline differs by
+    version (rg 0.10 emits `the literal \'"\\n"\' is not allowed in a regex`;
+    newer rg emits `the literal \'"\\n"\' is not allowed`, sometimes with a
+    `-U/--multiline` hint). Match on the version-stable core so the guard works
+    regardless of which rg is on PATH, rather than requiring the `--multiline`
+    hint that older rg omits.
+    """
     if not error:
         return False
-    return "literal \"\\n\" is not allowed" in error and "--multiline" in error
+    lowered = error.lower()
+    return "is not allowed in a regex" in lowered or (
+        "not allowed" in lowered and "\\n" in error and "literal" in lowered
+    )
 
 
 def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str) -> SearchResult:

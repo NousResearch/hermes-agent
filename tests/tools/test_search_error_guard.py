@@ -130,3 +130,35 @@ class TestSplitToolDiagnostics:
         assert diagnostics == ""
         assert "--" in payload
         assert "a.py-6-after" in payload
+
+
+    @pytest.mark.parametrize("line", [
+        # Older ripgrep (0.10) omits the "rg: " prefix on per-file I/O errors.
+        # The path contains "-<digit>", which the generic shape regex reads as
+        # a context line -- so without the os-error heuristic this diagnostic
+        # is mis-classified as a match.
+        "/tmp/pytest-686/locked.txt: Permission denied (os error 13)",
+        "/var/db-2/x: Operation not permitted (os error 1)",
+    ])
+    def test_unprefixed_old_ripgrep_os_error_is_a_diagnostic(self, line):
+        diagnostics, payload = _split_tool_diagnostics(line + "\n")
+        assert payload.strip() == "", (
+            f"old-ripgrep diagnostic leaked into the payload: {payload!r}"
+        )
+        assert line in diagnostics
+
+
+    @pytest.mark.parametrize("line", [
+        # A REAL match whose matched content happens to end in "(os error N)".
+        # A blanket "endswith (os error N) => diagnostic" rule silently drops
+        # these; the guard must only fire on non-line-numbered lines.
+        "a.py:1:needle (os error 13)",
+        "src/io-3/mod.rs:42:    warn!(\"open failed (os error 2)\");",
+        "C:/proj/app.py:7:raise OSError(\"boom (os error 5)\")",
+    ])
+    def test_real_match_ending_in_os_error_is_kept(self, line):
+        diagnostics, payload = _split_tool_diagnostics(line + "\n")
+        assert line in payload, (
+            f"legitimate match was discarded as a diagnostic: {diagnostics!r}"
+        )
+        assert diagnostics.strip() == ""

@@ -192,6 +192,20 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 # tests/docker/test_s6_profile_gateway_integration.py.
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_umask():
+    # These tests assert exact directory modes (0o3730 setgid+sticky, 0o755).
+    # _seed_supervise_skeleton chmods explicitly, but pin a known umask anyway
+    # so a sibling test that left a nonstandard process umask can't perturb any
+    # intermediate mkdir before the chmod. Restore the caller's umask after.
+    import os
+    prev = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(prev)
+
+
 def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     """Verifies the dirs + FIFO + modes the helper lays down."""
     import stat

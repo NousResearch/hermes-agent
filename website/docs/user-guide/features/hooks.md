@@ -562,6 +562,55 @@ def my_callback(name: str, category: str, path: str, success: bool, **kwargs):
 `path` is the absolute path to the created skill directory, or `""`
 when creation was handled externally by a plugin.
 
+### Nested guard hooks (`:guard` suffix)
+
+Each skill lifecycle operation has a **nested-hook model** with two hook
+phases:
+
+```
+:guard hook  →  guards (existence, org-mirror, review)  →  pre hook  →  execute
+```
+
+- **`:guard` hook** — fires **before** guard checks.  Used for pre-processing
+  independent of filesystem state (e.g. skill-graph resolving a non-existent
+  skill).  Accepts the same kwargs as the pre hook, except `old_content` (the
+  skill may not exist yet).  Supports `handled` and `block` actions.
+- **`pre` hook** — fires **after** guards pass.  The skill exists and is safe
+  to modify.  Supports `handled` and `block` actions.
+
+If no plugin registers a `:guard` hook, the default behaviour is
+guard-first — matching expectations before nested hooks existed.
+
+The `:guard` variants are listed immediately before their corresponding pre
+hooks below.
+
+
+
+---
+
+### `pre_skill_edit:guard`
+
+Fires **before** existence + write-guard checks for `skill_manage(action='edit')`.
+Use when you need to intercept at the guard level (e.g. to resolve a
+skill from a graph catalog before checking the filesystem).
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, content: str, **kwargs):
+```
+
+- `name` — the skill name the model requested to edit
+- `content` — the raw SKILL.md content to write
+
+**Return value:**
+
+| Return | Effect |
+|--------|--------|
+| `None` / `{}` | Fall through to existence and write-guard checks |
+| `{"action": "handled"}` | Edit was handled; skip Hermes edit |
+| `{"action": "block", "reason": "..."}` | Abort with error |
+
 ---
 
 ### `pre_skill_edit`
@@ -597,6 +646,21 @@ def my_callback(name: str, path: str, success: bool, **kwargs):
 
 ---
 
+### `pre_skill_patch:guard`
+
+Fires **before** existence + write-guard checks for `skill_manage(action='patch')`.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, old_string: str, new_string: str,
+                file_path: str | None, replace_all: bool, **kwargs):
+```
+
+**Return value:** same as `pre_skill_edit:guard`.
+
+---
+
 ### `pre_skill_patch`
 
 Fires before `skill_manage(action='patch')` applies a targeted edit.
@@ -614,6 +678,20 @@ def my_callback(name: str, old_string: str, new_string: str,
 | Block   | `{"action": "block", "reason": "…"}` | Abort patch |
 | Handle  | `{"action": "handled"}` | Plugin handled the patch; Hermes skips |
 | Fallthrough | `None`, `{}`, or any other dict | Hermes proceeds |
+
+---
+
+### `pre_skill_write_file:guard`
+
+Fires **before** existence + write-guard checks for `skill_manage(action='write_file')`.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, file_path: str, file_content: str, **kwargs):
+```
+
+**Return value:** same as `pre_skill_edit:guard`.
 
 ---
 
@@ -636,6 +714,20 @@ def my_callback(name: str, file_path: str, file_content: str, **kwargs):
 
 ---
 
+### `pre_skill_remove_file:guard`
+
+Fires **before** existence + write-guard checks for `skill_manage(action='remove_file')`.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, file_path: str, **kwargs):
+```
+
+**Return value:** same as `pre_skill_edit:guard`.
+
+---
+
 ### `pre_skill_remove_file`
 
 Fires before `skill_manage(action='remove_file')` removes a supporting file.
@@ -651,6 +743,20 @@ def my_callback(name: str, file_path: str, **kwargs):
 | Block   | `{"action": "block", "reason": "…"}` | Abort |
 | Handle  | `{"action": "handled"}` | Plugin removed the file; Hermes skips |
 | Fallthrough | `None`, `{}`, or any other dict | Hermes proceeds |
+
+---
+
+### `pre_skill_delete:guard`
+
+Fires **before** existence + pinned + curator-guard checks for `skill_manage(action='delete')`.
+
+**Callback signature:**
+
+```python
+def my_callback(name: str, **kwargs):
+```
+
+**Return value:** same as `pre_skill_edit:guard`.
 
 ---
 

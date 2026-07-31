@@ -48,7 +48,7 @@
     "eslint-plugin-react-refresh": "0.5.3",
     "three": "0.180.0",
     "typescript": "6.0.3",
-    "vite": "8.1.5",
+    "vite": "8.2.0",
     "vitest": "4.1.10"
   }
 }

@@ -7945,6 +7945,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def show_history(self):
         """Display conversation history."""
+        from hermes_cli.history_projection import project_history_message_content
+
         if not self.conversation_history:
             if not self._show_recent_sessions(reason="history"):
                 _cli_visible_print("(._.) No conversation history yet.")
@@ -7998,7 +8000,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             flush_tool_summary()
             visible_index += 1
 
-            content = msg.get("content")
+            content = (
+                project_history_message_content(msg)
+                if role == "user"
+                else msg.get("content")
+            )
             content_text = "" if content is None else str(content)
 
             if role == "user":

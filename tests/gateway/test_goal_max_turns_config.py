@@ -383,3 +383,85 @@ def test_gateway_goal_resume_fifo_separates_multiplexed_slot_and_state_keys():
     assert removed == 2
     assert adapter._pending_messages == {}
     assert runner._session_state(state_key).conversation.queued_events == [user_event]
+
+
+@pytest.mark.asyncio
+async def test_gateway_busy_secondary_adapter_stamps_real_user_before_fifo():
+    """Real adapter ingestion must retain the secondary profile before queueing."""
+    platform_config = PlatformConfig(enabled=True, token="token")
+    adapter = _DrainAdapter(platform_config, Platform.DISCORD)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={Platform.DISCORD: platform_config},
+    )
+    runner.__dict__["session_store"] = _MultiplexSessionStore()
+    runner.__dict__["adapters"] = {}
+    runner._profile_adapters = {"coder": {Platform.DISCORD: adapter}}
+    runner._active_profile_name = lambda: "default"
+    runner._queued_events = {}
+    runner._busy_text_mode = "queue"
+    setattr(adapter, "gateway_runner", runner)
+    runner._configure_profile_adapter(adapter, "coder", Platform.DISCORD)
+    # Avoid the optional text-debounce timer so this test observes the owner
+    # slot synchronously; the busy handler still declines interruption.
+    adapter._busy_text_mode = "interrupt"
+
+    source = adapter.build_source(
+        chat_id="chat-goal-busy-race",
+        chat_type="channel",
+        user_id="user-goal-busy-race",
+    )
+    assert source.profile == "coder"
+    adapter_key = adapter.session_key_for_source(source)
+    state_key = runner._session_key_for_source(source)
+    default_source = SessionSource(
+        platform=source.platform,
+        chat_id=source.chat_id,
+        chat_type=source.chat_type,
+        user_id=source.user_id,
+    )
+    default_state_key = runner._session_key_for_source(default_source)
+    assert state_key != default_state_key
+
+    # Exercise the pre-wrapper shape identified by review: even a source that
+    # reaches transport ingress without a profile must be stamped before the
+    # active-session busy slot owns it.
+    source.profile = None
+    user_event = MessageEvent(
+        text="older real user",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    adapter._active_sessions[adapter_key] = asyncio.Event()
+    current_task = asyncio.current_task()
+    assert current_task is not None
+    adapter._session_tasks[adapter_key] = current_task
+
+    async def _decline_busy(_event, _key):
+        return False
+
+    adapter.set_busy_session_handler(_decline_busy)
+    await adapter.handle_message(user_event)
+
+    continuation = MessageEvent(
+        text="[Continuing toward your standing goal]\nGoal: ship safely",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    runner._enqueue_fifo(
+        state_key,
+        continuation,
+        adapter,
+        adapter_session_key=adapter_key,
+    )
+
+    first = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
+    assert first is not None
+    assert first is user_event
+    assert first.source.profile == "coder"
+    assert runner._session_key_for_source(first.source) == state_key
+    assert runner._promote_queued_event(default_state_key, adapter, None) is None
+    second = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
+    assert second is continuation
+    assert runner._dequeue_and_promote_queued_event(state_key, adapter, source) is None

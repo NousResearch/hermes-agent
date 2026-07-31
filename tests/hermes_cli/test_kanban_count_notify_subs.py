@@ -63,3 +63,29 @@ def test_legacy_db_without_subs_table_counts_zero_and_stays_unmigrated(tmp_path)
     )
 
 
+def test_count_notify_subs_filters_profile_owners(tmp_path):
+    db_path = tmp_path / "owners.db"
+    kb.init_db(db_path)
+    conn = kb.connect(db_path)
+    try:
+        for profile in ("default", "writer", None):
+            task_id = kb.create_task(conn, title=f"owned by {profile}")
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform="telegram",
+                chat_id=f"chat-{profile}",
+                notifier_profile=profile,
+            )
+    finally:
+        conn.close()
+
+    assert kb.count_notify_subs(
+        db_path=db_path, notifier_profiles={"writer"},
+    ) == 1
+    assert kb.count_notify_subs(
+        db_path=db_path,
+        notifier_profiles={"default"},
+        include_unowned=True,
+    ) == 2
+

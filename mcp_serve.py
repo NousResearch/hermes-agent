@@ -705,7 +705,7 @@ def _register_registry_tools_as_mcp(
         )
 
     plugin_tool_names = get_plugin_manager().get_registered_tool_names()
-    registered: List[str] = []
+    candidate_entries = {}
     for name in registry.get_all_tool_names():
         entry = registry.get_entry(name)
         if not entry:
@@ -723,15 +723,22 @@ def _register_registry_tools_as_mcp(
                 name,
             )
             continue
-        if entry.check_fn:
-            try:
-                if not entry.check_fn():
-                    continue
-            except Exception:
-                logger.debug("Skipping MCP-exposed tool %s because check_fn failed", name, exc_info=True)
-                continue
+        candidate_entries[name] = entry
 
-        schema = {**(entry.schema or {}), "name": entry.name}
+    # Use the same authoritative schema/availability path as the agent. This
+    # applies dynamic_schema_overrides and the cached, transient-failure-safe
+    # check_fn policy. Reading ToolEntry.schema or calling check_fn directly
+    # would expose stale schemas and let one flaky probe hide a tool from MCP.
+    definitions = {
+        definition["function"]["name"]: definition["function"]
+        for definition in registry.get_definitions(set(candidate_entries), quiet=True)
+    }
+
+    registered: List[str] = []
+    for name, entry in candidate_entries.items():
+        schema = definitions.get(name)
+        if schema is None:
+            continue
         parameters_schema = schema.get("parameters") or {}
         properties = parameters_schema.get("properties") or {}
         required = set(parameters_schema.get("required") or [])
@@ -741,14 +748,12 @@ def _register_registry_tools_as_mcp(
             if property_name not in required
             and not _schema_allows_null(property_schema)
         }
-        wrapper = _make_registry_tool_wrapper(
-            entry.name, omit_none_for=omit_none_for
-        )
+        wrapper = _make_registry_tool_wrapper(entry.name, omit_none_for=omit_none_for)
         wrapper = _apply_schema_signature(wrapper, schema)
         mcp.add_tool(
             wrapper,
             name=entry.name,
-            description=entry.description or schema.get("description") or "Hermes tool",
+            description=schema.get("description") or entry.description or "Hermes tool",
         )
         tool = mcp._tool_manager.get_tool(entry.name)
         if tool is not None:

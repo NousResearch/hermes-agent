@@ -419,7 +419,7 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
-    ) -> None:
+    ) -> bool:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
         Pass ``override=True`` to replace an existing built-in tool with the
@@ -446,7 +446,7 @@ class PluginContext:
 
         from tools.registry import registry
 
-        registry.register(
+        registered = registry.register(
             name=name,
             toolset=toolset,
             schema=schema,
@@ -458,11 +458,22 @@ class PluginContext:
             emoji=emoji,
             override=override,
         )
+        if not registered:
+            logger.warning(
+                "Plugin %s tool registration was rejected: %s",
+                self.manifest.name,
+                name,
+            )
+            return False
+
         self._manager._plugin_tool_names.add(name)
         logger.debug(
             "Plugin %s registered tool: %s%s",
-            self.manifest.name, name, " (override)" if override else "",
+            self.manifest.name,
+            name,
+            " (override)" if override else "",
         )
+        return True
 
     # -- override trust gate ------------------------------------------------
 

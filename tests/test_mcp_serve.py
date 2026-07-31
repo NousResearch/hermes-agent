@@ -761,6 +761,122 @@ class TestServerCreation:
         finally:
             registry.deregister(tool_name)
 
+    def test_plugin_only_exposure_ignores_rejected_builtin_collision(self, monkeypatch):
+        import model_tools  # noqa: F401 - ensure built-in registry discovery ran
+        import mcp_serve
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from tools.registry import registry
+
+        assert registry.get_entry("terminal") is not None
+        manager = PluginManager()
+        context = PluginContext(
+            manager=manager,
+            manifest=PluginManifest(name="collision-plugin", source="user"),
+        )
+        context.register_tool(
+            name="terminal",
+            toolset="plugin-collision-toolset",
+            schema={
+                "name": "terminal",
+                "description": "Plugin collision",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda args, **kw: "plugin",
+        )
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda force=False: None)
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+        server = _FakeFastMCP()
+
+        with pytest.raises(
+            RuntimeError, match="No enabled plugin tools are available for MCP exposure"
+        ):
+            mcp_serve._register_registry_tools_as_mcp(server, expose_plugin_tools=True)
+
+        assert manager.get_registered_tool_names() == set()
+        assert server._tool_manager.get_tool("terminal") is None
+
+    def test_registry_exposure_uses_dynamic_schema_and_cached_check(self, monkeypatch):
+        import mcp_serve
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        tool_name = "test_mcp_dynamic_registry_schema"
+        check_calls = 0
+
+        def check_fn():
+            nonlocal check_calls
+            check_calls += 1
+            return check_calls == 1
+
+        registry.register(
+            name=tool_name,
+            toolset="test-mcp-dynamic",
+            schema={
+                "name": tool_name,
+                "description": "static placeholder",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda args, **_kwargs: json.dumps({"ok": True}),
+            check_fn=check_fn,
+            dynamic_schema_overrides=lambda: {
+                "description": "runtime authoritative description",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"runtime_value": {"type": "integer"}},
+                    "required": ["runtime_value"],
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.discover_plugins", lambda force=False: None
+        )
+        invalidate_check_fn_cache()
+        try:
+            # Prime the authoritative cache. A raw second check_fn call would
+            # return False and incorrectly hide the tool.
+            assert registry.get_definitions({tool_name}, quiet=True)
+
+            server = _FakeFastMCP()
+            registered = mcp_serve._register_registry_tools_as_mcp(
+                server, expose_tools=[tool_name]
+            )
+            tool = server._tool_manager.get_tool(tool_name)
+
+            assert registered == [tool_name]
+            assert check_calls == 1
+            assert tool.description == "runtime authoritative description"
+            assert tool.parameters["properties"]["runtime_value"]["type"] == "integer"
+        finally:
+            registry.deregister(tool_name)
+            invalidate_check_fn_cache()
+
+    def test_video_generate_exposure_does_not_publish_placeholder(self, monkeypatch):
+        import model_tools  # noqa: F401 - ensure video_generate is registered
+        import mcp_serve
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        entry = registry.get_entry("video_generate")
+        assert entry is not None
+        original_check_fn = entry.check_fn
+        monkeypatch.setattr(entry, "check_fn", lambda: True)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.discover_plugins", lambda force=False: None
+        )
+        invalidate_check_fn_cache()
+        try:
+            server = _FakeFastMCP()
+            mcp_serve._register_registry_tools_as_mcp(
+                server, expose_tools=["video_generate"]
+            )
+            tool = server._tool_manager.get_tool("video_generate")
+
+            assert tool is not None
+            assert "rebuilt at get_definitions() time" not in tool.description
+            assert "Generate a video" in tool.description
+        finally:
+            entry.check_fn = original_check_fn
+            invalidate_check_fn_cache()
+
     def test_registry_tool_wrapper_uses_guarded_dispatch(self, monkeypatch):
         import mcp_serve
         import model_tools

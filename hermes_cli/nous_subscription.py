@@ -297,7 +297,7 @@ def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, 
         "parallel": _any_env("PARALLEL_API_KEY") and not web_gw,
         "tavily": (_any_env("TAVILY_API_KEY") or "tavily" in {backend, search_backend, extract_backend}) and not web_gw,
         "perplexity": _any_env("PERPLEXITY_API_KEY") and not web_gw,
-        "searxng": _any_env("SEARXNG_URL"),
+        "searxng": _any_env("SEARXNG_URL") and not web_gw,
         "brave-free": _any_env("BRAVE_SEARCH_API_KEY") and not web_gw,
     }
     web_managed = backend == "firecrawl" and managed and not direct_firecrawl

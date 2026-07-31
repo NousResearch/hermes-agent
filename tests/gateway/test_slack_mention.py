@@ -794,6 +794,154 @@ def test_attachment_fallback_alone_does_not_wake_the_bot():
 
 
 # ---------------------------------------------------------------------------
+# Tests: code / preformatted content is displayed, not spoken
+#
+# A `<@UID>` a human formatted as code, or an app emitted inside a payload
+# dump, is being shown to the reader — not addressed to anyone. Slack does not
+# even linkify mrkdwn inside code, so such a token notifies nobody. These pin
+# the same carve-out `rich_text_quote` gets, for every verbatim carrier.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "carrier,event",
+    [
+        (
+            "user element inside rich_text_preformatted",
+            {"text": "", "blocks": [{"type": "rich_text", "elements": [{
+                "type": "rich_text_preformatted",
+                "elements": [{"type": "user", "user_id": BOT_USER_ID}],
+            }]}]},
+        ),
+        (
+            "raw token inside rich_text_preformatted",
+            {"text": "", "blocks": [{"type": "rich_text", "elements": [{
+                "type": "rich_text_preformatted",
+                "elements": [{"type": "text", "text": f'{{"who": "<@{BOT_USER_ID}>"}}'}],
+            }]}]},
+        ),
+        (
+            "code-styled text element",
+            {"text": "", "blocks": [{"type": "rich_text", "elements": [{
+                "type": "rich_text_section",
+                "elements": [{
+                    "type": "text",
+                    "text": f"<@{BOT_USER_ID}>",
+                    "style": {"code": True},
+                }],
+            }]}]},
+        ),
+        (
+            "code-styled user element",
+            {"text": "", "blocks": [{"type": "rich_text", "elements": [{
+                "type": "rich_text_section",
+                "elements": [{
+                    "type": "user",
+                    "user_id": BOT_USER_ID,
+                    "style": {"code": True},
+                }],
+            }]}]},
+        ),
+        (
+            "mrkdwn fenced code block",
+            {"text": "", "blocks": [
+                _mrkdwn_section(f"deploy log:\n```\nnotify <@{BOT_USER_ID}>\n```")
+            ]},
+        ),
+        (
+            "mrkdwn fence opening and closing on one line",
+            {"text": "", "blocks": [_mrkdwn_section(f"```<@{BOT_USER_ID}>```")]},
+        ),
+        (
+            "mrkdwn inline code span",
+            {"text": "", "blocks": [
+                _mrkdwn_section(f"the owner field holds `<@{BOT_USER_ID}>` verbatim")
+            ]},
+        ),
+        (
+            "fenced code inside an attachment",
+            {"text": "", "attachments": [
+                {"text": f"```\npayload: <@{BOT_USER_ID}>\n```"}
+            ]},
+        ),
+    ],
+)
+def test_code_content_mention_does_not_wake_the_bot(carrier, event):
+    """A token shown as code addresses nobody and must not summon the bot."""
+    assert _slack_recovered_mentions(event) == [], carrier
+
+
+def test_escaped_token_in_code_stays_ignored():
+    """Slack escapes a human-typed literal token; that must stay a non-mention.
+
+    The positive bound on the escaping: without this, relaxing
+    `_SLACK_USER_MENTION_RE` would silently start waking on pasted logs.
+    """
+    event = {"text": "", "blocks": [{"type": "rich_text", "elements": [{
+        "type": "rich_text_preformatted",
+        "elements": [{"type": "text", "text": f"&lt;@{BOT_USER_ID}&gt;"}],
+    }]}]}
+    assert _slack_recovered_mentions(event) == []
+
+
+def test_text_after_a_closed_fence_still_yields_a_mention():
+    """The fence carve-out must end at the closing fence, not swallow the rest."""
+    event = {
+        "text": "",
+        "blocks": [_mrkdwn_section(f"```\nsome log\n```\n<@{BOT_USER_ID}> please look")],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+def test_mention_beside_an_inline_code_span_still_counts():
+    """Stripping inline code must not strip the address that surrounds it."""
+    event = {
+        "text": "",
+        "blocks": [_mrkdwn_section(f"<@{BOT_USER_ID}> check `disk_usage` please")],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+def test_a_lone_backtick_does_not_hide_a_mention():
+    """An unpaired backtick opens no code span, so the mention still counts."""
+    event = {
+        "text": "",
+        "blocks": [_mrkdwn_section(f"it's at 91` — <@{BOT_USER_ID}> ack?")],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+@pytest.mark.parametrize(
+    "styling,element",
+    [
+        # `style` is a plain string on rich_text_list ("bullet"/"ordered") but a
+        # dict on inline elements — reading it without a type check crashes the
+        # walker on every bulleted message.
+        ("bulleted list", {
+            "type": "rich_text_list",
+            "style": "bullet",
+            "elements": [{
+                "type": "rich_text_section",
+                "elements": [{"type": "user", "user_id": BOT_USER_ID}],
+            }],
+        }),
+        ("bold text", {
+            "type": "rich_text_section",
+            "elements": [{
+                "type": "user",
+                "user_id": BOT_USER_ID,
+                "style": {"bold": True},
+            }],
+        }),
+    ],
+)
+def test_non_code_styling_still_yields_a_mention(styling, element):
+    """Only `style.code` is verbatim; other styling must not drop the mention."""
+    event = {"text": "", "blocks": [{"type": "rich_text", "elements": [element]}]}
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"], styling
+
+
+# ---------------------------------------------------------------------------
 # Tests: the routing gate itself, not just the detection helper (#52387)
 #
 # The helper tests above prove a mention is *recoverable*; these prove the

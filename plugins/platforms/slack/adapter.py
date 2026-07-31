@@ -141,6 +141,19 @@ _SLACK_USER_MENTION_RE = re.compile(r"<@([^>|\s]+)(?:\|[^>]*)?>")
 # structured ``rich_text_quote`` node check cannot see.
 _SLACK_BLOCKQUOTE_PREFIXES = (">", "&gt;")
 
+# Rich-text containers whose contents are *displayed*, not spoken. Quoted text
+# carries someone else's words; code/preformatted text carries a token being
+# shown to the reader (a log line, a payload dump, an example). A ``<@UID>``
+# inside either is not an address, so neither may summon the bot — the same
+# contract #52390 established for ``rich_text_quote``, applied to every carrier
+# that shares its "verbatim content" nature.
+_SLACK_VERBATIM_RICH_TEXT_TYPES = ("rich_text_quote", "rich_text_preformatted")
+
+# An mrkdwn inline code span (``` `<@U123>` ```). Only single-line spans are
+# matched, so a lone stray backtick in prose strips nothing. Triple-backtick
+# runs are consumed by the fence handling in _extract_mention_tokens.
+_SLACK_MRKDWN_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+
 # Cap on how many thread-root images are downloaded and delivered when the
 # bot is mentioned mid-thread (cold-start hydrate). Prior thread messages'
 # attachments are surfaced as text markers only — the root is special
@@ -368,16 +381,35 @@ def _extract_mention_tokens(value: str) -> list:
     """Return the ``<@UID>`` tokens authored in a mrkdwn string.
 
     Labelled mentions (``<@U123|alice>``) normalize to the bare ``<@U123>`` the
-    gates compare against. Lines opening with a mrkdwn blockquote marker are
-    skipped so quoted/forwarded content cannot summon the bot — the same
-    contract the structured ``rich_text_quote`` check enforces, applied to the
-    carrier that check cannot see.
+    gates compare against.
+
+    Two kinds of region are skipped, because a token inside them is being shown
+    rather than addressed to anyone:
+
+    * Lines opening with a mrkdwn blockquote marker — quoted/forwarded content,
+      the same contract the structured ``rich_text_quote`` check enforces
+      applied to the carrier that check cannot see.
+    * Fenced (``` ``` ```) and inline (`` ` ``) code spans. Slack does not
+      linkify mrkdwn inside code, so a token there notifies nobody; a bot that
+      dumps a payload or relays a log line must not summon us with it.
     """
     tokens: list = []
+    in_fence = False
     for line in value.split("\n"):
-        if line.lstrip().startswith(_SLACK_BLOCKQUOTE_PREFIXES):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            # An odd number of runs opens or closes the fence; an even number
+            # (```code```) opens and closes on this line, leaving state as-is.
+            # Either way the line itself is code, so nothing is harvested.
+            if stripped.count("```") % 2:
+                in_fence = not in_fence
             continue
-        tokens.extend(f"<@{uid}>" for uid in _SLACK_USER_MENTION_RE.findall(line))
+        if in_fence:
+            continue
+        if stripped.startswith(_SLACK_BLOCKQUOTE_PREFIXES):
+            continue
+        scanned = _SLACK_MRKDWN_INLINE_CODE_RE.sub(" ", line)
+        tokens.extend(f"<@{uid}>" for uid in _SLACK_USER_MENTION_RE.findall(scanned))
     return tokens
 
 
@@ -394,22 +426,36 @@ def _collect_slack_block_mentions(blocks: list) -> list:
     raw ``<@UID>`` token into a ``section``/``header``/``context`` block's
     ``text`` or ``fields`` string, where there is no ``user`` node to find.
 
-    Mentions nested inside ``rich_text_quote`` (quoted/forwarded content) are
-    deliberately ignored, so quoted text cannot trick the bot into responding
-    (matches the existing channel-routing contract).
+    Mentions inside verbatim content are deliberately ignored, so text the
+    author is *displaying* rather than speaking cannot trick the bot into
+    responding (matches the existing channel-routing contract). That covers
+    ``rich_text_quote`` (quoted/forwarded content) and ``rich_text_preformatted``
+    plus ``style.code`` elements (a token shown as code — a log line, a payload
+    dump). The flag propagates down the subtree, so a mention nested any depth
+    below a verbatim node stays ignored.
     """
     mentions: list = []
 
-    def _walk(node, in_quote: bool) -> None:
+    def _is_code_styled(node: dict) -> bool:
+        # ``style`` is a dict on inline elements but a plain string on
+        # ``rich_text_list`` ("bullet"/"ordered"), so the type check matters.
+        style = node.get("style")
+        return isinstance(style, dict) and bool(style.get("code"))
+
+    def _walk(node, in_verbatim: bool) -> None:
         if isinstance(node, list):
             for item in node:
-                _walk(item, in_quote)
+                _walk(item, in_verbatim)
             return
         if not isinstance(node, dict):
             return
         node_type = node.get("type")
-        quoted = in_quote or node_type == "rich_text_quote"
-        if node_type == "user" and not quoted:
+        verbatim = (
+            in_verbatim
+            or node_type in _SLACK_VERBATIM_RICH_TEXT_TYPES
+            or _is_code_styled(node)
+        )
+        if node_type == "user" and not verbatim:
             uid = node.get("user_id", "")
             if uid:
                 mentions.append(f"<@{uid}>")
@@ -418,10 +464,10 @@ def _collect_slack_block_mentions(blocks: list) -> list:
             if child is None:
                 continue
             if isinstance(child, str):
-                if not quoted:
+                if not verbatim:
                     mentions.extend(_extract_mention_tokens(child))
                 continue
-            _walk(child, quoted)
+            _walk(child, verbatim)
 
     try:
         _walk(blocks, False)

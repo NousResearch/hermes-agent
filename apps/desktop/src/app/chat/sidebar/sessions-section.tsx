@@ -1,6 +1,6 @@
 import type { useSensors } from '@dnd-kit/core'
 import type * as React from 'react'
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -225,52 +225,77 @@ export function SidebarSessionsSection({
     [sessions, preserveInputOrder]
   )
 
-  const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string) => {
-    const rowProps = {
-      branchStem,
-      isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
-      onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
-      onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id),
-      reorderable: draggable && !branchStem,
-      session,
-      showProfile: showProfileTags
-    }
+  const renderRow = useCallback(
+    (session: SessionInfo, draggable: boolean, branchStem?: string) => {
+      const rowProps = {
+        branchStem,
+        isPinned: pinned,
+        isSelected: session.id === activeSessionId,
+        isWorking: workingSessionIdSet.has(session.id),
+        onArchive: () => onArchiveSession(session.id),
+        onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
+        onDelete: () => onDeleteSession(session.id),
+        onPin: () => onTogglePin(sessionPinId(session)),
+        onResume: () => onResumeSession(session.id),
+        reorderable: draggable && !branchStem,
+        session,
+        showProfile: showProfileTags
+      }
 
-    return draggable && !branchStem ? (
-      <SortableSidebarSessionRow key={session.id} {...rowProps} />
-    ) : (
-      <SidebarSessionRow key={session.id} {...rowProps} />
-    )
-  }
+      return draggable && !branchStem ? (
+        <SortableSidebarSessionRow key={session.id} {...rowProps} />
+      ) : (
+        <SidebarSessionRow key={session.id} {...rowProps} />
+      )
+    },
+    [
+      activeSessionId,
+      onArchiveSession,
+      onBranchSession,
+      onDeleteSession,
+      onResumeSession,
+      onTogglePin,
+      pinned,
+      showProfileTags,
+      workingSessionIdSet
+    ]
+  )
 
   // A single flat/virtual/lane list row — either a date divider or a session.
-  const renderListRow = (row: SidebarListRow, draggable: boolean) =>
-    row.kind === 'divider' ? (
-      <SidebarDateDivider key={row.key} label={sessionBucketLabel(row.bucket, dividerLabels)} />
-    ) : (
-      renderRow(row.entry.session, draggable, row.entry.branchStem)
-    )
+  const renderListRow = useCallback(
+    (row: SidebarListRow, draggable: boolean) =>
+      row.kind === 'divider' ? (
+        <SidebarDateDivider key={row.key} label={sessionBucketLabel(row.bucket, dividerLabels)} />
+      ) : (
+        renderRow(row.entry.session, draggable, row.entry.branchStem)
+      ),
+    [dividerLabels, renderRow]
+  )
 
   // Sessions inside repos/worktrees are date-ordered and static.
-  const renderRows = (items: SessionInfo[]) =>
-    flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem))
+  const renderRows = useCallback(
+    (items: SessionInfo[]) =>
+      flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem)),
+    [renderRow]
+  )
 
   // Same as `renderRows`, but with date dividers folded in — used for
   // entered-project lanes so a lane spanning multiple days reads
   // chronologically, matching the flat recents list.
-  const renderRowsDated = (items: SessionInfo[]) => {
-    const entries = flattenSessionsWithBranches(items)
+  const renderRowsDated = useCallback(
+    (items: SessionInfo[]) => {
+      const entries = flattenSessionsWithBranches(items)
 
-    return (dateGrouped ? groupEntriesByRecency(entries) : toSessionRows(entries)).map(row => renderListRow(row, false))
-  }
+      return (dateGrouped ? groupEntriesByRecency(entries) : toSessionRows(entries)).map(row => renderListRow(row, false))
+    },
+    [dateGrouped, renderListRow]
+  )
 
   // Flat recents as list rows: grouped by recency when enabled, plain otherwise.
-  const flatRows: SidebarListRow[] = dateGrouped ? groupEntriesByRecency(displayEntries) : toSessionRows(displayEntries)
+  const flatRows: SidebarListRow[] = useMemo(
+    () => (dateGrouped ? groupEntriesByRecency(displayEntries) : toSessionRows(displayEntries)),
+    [dateGrouped, displayEntries]
+  )
 
   const flatVirtualized =
     !showEmptyState &&

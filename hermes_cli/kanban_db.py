@@ -8841,6 +8841,24 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
+    """Reclaim pre-tag worker rows in state.db so they leave the session lists.
+
+    Best-effort and gated to run once per database — a dispatcher tick must
+    never fail because a session DB was busy or missing.
+    """
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.retag_kanban_worker_sessions(workspaces_root_path)
+        finally:
+            db.close()
+    except Exception as exc:
+        _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -8898,6 +8916,14 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Tag the worker's session so it lands in state.db as `kanban`, not as an
+    # untitled `cli` row. A worker is a dispatcher-owned run whose transcript is
+    # read on the board and in `hermes kanban log` — it is not a conversation
+    # the user started, so every session-browsing surface (desktop sidebar, TUI
+    # resume picker, session_search) filters it out by source. Without this the
+    # sidebar renders one row per attempt, labeled with the worker's own prompt
+    # ("work kanban task t_…").
+    env["HERMES_SESSION_SOURCE"] = "kanban"
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
     # context-file loader anchor on the workspace, not whatever cwd the
     # dispatching gateway happened to export. The worker subprocess is already
@@ -8945,6 +8971,7 @@ def _default_spawn(
     # but unusual symlink / Docker layouts are caught here too.
     env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
     env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    _retag_legacy_worker_sessions(env["HERMES_KANBAN_WORKSPACES_ROOT"])
     # Board slug — the final defense-in-depth pin. If the worker ever
     # resolves kanban paths without the DB / workspaces env vars, the
     # board slug still forces it to the right directory.

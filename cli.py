@@ -9397,19 +9397,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
-        # Surface structured side-effect metadata so a parent process can
-        # mirror the model switch without re-deriving whether the typed
-        # command was an alias. ``raw_args`` is what the user actually
-        # typed after /model (preserved verbatim); ``target`` is the
-        # resolved model name. ``side_effect`` is always ``"model_switch"``
-        # because /model is the only canonical command that mutates the
-        # live model.
+        # Surface structured resolved-result metadata so the parent TUI
+        # process can mirror the live session without re-deriving any
+        # alias or re-reading the parent's profile-scoped provider
+        # config. The worker (this process) ran inside the session's
+        # ``profile_home`` scope, so these resolved values reflect that
+        # profile's provider / model resolution.
+        #
+        # SECURITY: never include credentials (``api_key``, tokens,
+        # ``Authorization``). The parent re-resolves credentials by
+        # entering the session's ``profile_home`` scope.
+        scope_value = (
+            "once" if one_turn
+            else ("global" if persist_global else "session")
+        )
         self._last_slash_metadata = {
-            "canonical": "model",
-            "raw_args": raw_args,
-            "args": model_input,
-            "target": result.new_model if result is not None else model_input,
             "side_effect": "model_switch",
+            "canonical": "model",
+            "scope": scope_value,
+            "resolved_model": str(result.new_model or ""),
+            "resolved_provider": str(result.target_provider or ""),
+            "base_url": str(result.base_url or "") or None,
+            "api_mode": str(result.api_mode or "") or None,
+            "raw_args": raw_args,
         }
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:

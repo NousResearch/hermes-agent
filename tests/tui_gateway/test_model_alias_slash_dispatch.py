@@ -89,68 +89,64 @@ def _apply_model_switch_double(server):
 
 def test_alias_mirror_command_is_canonical_model(server, session, monkeypatch):
     """When slash.exec receives /sonnet and the worker reports the
-    canonical ``model`` side-effect, the command passed to
-    _mirror_slash_side_effects must be rewritten to /model sonnet so
-    the live agent actually switches. The parent's mirror decision is
-    driven by the worker's structured metadata — not by re-deriving
-    whether the typed token is in any global alias cache."""
+    canonical ``model`` side-effect, _mirror_resolved_model_switch
+    is called with the worker's resolved metadata."""
     sid, _, sess = session
 
-    captured_mirror_cmd: list[str] = []
+    captured_meta: list[dict] = []
 
-    def fake_mirror(sid_arg, sess_arg, cmd):
-        captured_mirror_cmd.append(cmd)
+    def fake_mirror(sid_arg, sess_arg, meta):
+        captured_meta.append(meta)
         return ""
 
-    monkeypatch.setattr(server, "_mirror_slash_side_effects", fake_mirror)
-    # The real worker reports model_switch because it routed /sonnet
-    # through the canonical /model path inside the session's profile.
+    monkeypatch.setattr(server, "_mirror_resolved_model_switch", fake_mirror)
     fake_worker = _make_worker_double(
         slash_meta={
-            "canonical": "model",
-            "raw_args": "sonnet",
-            "args": "sonnet",
-            "target": "anthropic/claude-sonnet",
             "side_effect": "model_switch",
+            "canonical": "model",
+            "scope": "session",
+            "resolved_model": "anthropic/claude-sonnet",
+            "resolved_provider": "anthropic",
+            "base_url": None,
+            "api_mode": None,
+            "raw_args": "sonnet",
         }
     )
     _install_worker(server, sess, fake_worker)
 
     r = server._methods["slash.exec"](1, {"command": "/sonnet", "session_id": sid})
     assert "result" in r
-    assert len(captured_mirror_cmd) == 1, (
-        f"_mirror_slash_side_effects must be called exactly once, "
-        f"got calls: {captured_mirror_cmd}"
+    assert len(captured_meta) == 1, (
+        f"_mirror_resolved_model_switch must be called exactly once, "
+        f"got calls: {captured_meta}"
     )
-    cmd = captured_mirror_cmd[0].lower()
-    assert cmd.startswith("/model"), (
-        f"alias /sonnet must be rewritten to /model sonnet before "
-        f"reaching _mirror_slash_side_effects, got: {captured_mirror_cmd[0]!r}"
-    )
-    assert "sonnet" in cmd
+    meta = captured_meta[0]
+    assert meta["resolved_model"] == "anthropic/claude-sonnet"
+    assert meta["resolved_provider"] == "anthropic"
 
 
 def test_alias_mirror_preserves_extra_args(server, session, monkeypatch):
     """If the user types /sonnet --provider openrouter, the worker's
-    metadata ``raw_args`` field carries those flags verbatim and the
-    mirror command must include them so the live-session model switch
-    respects them."""
+    metadata resolved fields carry those flags verbatim."""
     sid, _, sess = session
 
-    captured: list[str] = []
+    captured: list[dict] = []
 
-    def fake_mirror(sid_arg, sess_arg, cmd):
-        captured.append(cmd)
+    def fake_mirror(sid_arg, sess_arg, meta):
+        captured.append(meta)
         return ""
 
-    monkeypatch.setattr(server, "_mirror_slash_side_effects", fake_mirror)
+    monkeypatch.setattr(server, "_mirror_resolved_model_switch", fake_mirror)
     fake_worker = _make_worker_double(
         slash_meta={
-            "canonical": "model",
-            "raw_args": "sonnet --provider openrouter",
-            "args": "sonnet --provider openrouter",
-            "target": "anthropic/claude-sonnet",
             "side_effect": "model_switch",
+            "canonical": "model",
+            "scope": "session",
+            "resolved_model": "anthropic/claude-sonnet",
+            "resolved_provider": "openrouter",
+            "base_url": "https://openrouter.ai/api",
+            "api_mode": "chat_completions",
+            "raw_args": "sonnet --provider openrouter",
         }
     )
     _install_worker(server, sess, fake_worker)
@@ -160,35 +156,35 @@ def test_alias_mirror_preserves_extra_args(server, session, monkeypatch):
     )
     assert "result" in r
     assert len(captured) == 1
-    cmd = captured[0].lower()
-    assert cmd.startswith("/model")
-    assert "sonnet" in cmd
-    assert "--provider openrouter" in cmd
+    meta = captured[0]
+    assert meta["resolved_model"] == "anthropic/claude-sonnet"
+    assert meta["resolved_provider"] == "openrouter"
 
 
 def test_canonical_model_command_still_routes_to_model(
     server, session, monkeypatch
 ):
     """Sanity: typing /model sonnet directly must still route to
-    /model sonnet in the mirror. The worker reports
-    ``side_effect == "model_switch"`` for canonical /model too, so the
-    parent re-emits ``/model sonnet`` unchanged."""
+    _mirror_resolved_model_switch."""
     sid, _, sess = session
 
-    captured: list[str] = []
+    captured: list[dict] = []
 
-    def fake_mirror(sid_arg, sess_arg, cmd):
-        captured.append(cmd)
+    def fake_mirror(sid_arg, sess_arg, meta):
+        captured.append(meta)
         return ""
 
-    monkeypatch.setattr(server, "_mirror_slash_side_effects", fake_mirror)
+    monkeypatch.setattr(server, "_mirror_resolved_model_switch", fake_mirror)
     fake_worker = _make_worker_double(
         slash_meta={
-            "canonical": "model",
-            "raw_args": "sonnet",
-            "args": "sonnet",
-            "target": "anthropic/claude-sonnet",
             "side_effect": "model_switch",
+            "canonical": "model",
+            "scope": "session",
+            "resolved_model": "anthropic/claude-sonnet",
+            "resolved_provider": "anthropic",
+            "base_url": None,
+            "api_mode": None,
+            "raw_args": "sonnet",
         }
     )
     _install_worker(server, sess, fake_worker)
@@ -198,9 +194,8 @@ def test_canonical_model_command_still_routes_to_model(
     )
     assert "result" in r
     assert len(captured) == 1
-    cmd = captured[0].lower()
-    assert cmd.startswith("/model")
-    assert "sonnet" in cmd
+    meta = captured[0]
+    assert meta["resolved_model"] == "anthropic/claude-sonnet"
 
 
 def test_non_alias_command_is_passed_through_unchanged(

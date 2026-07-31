@@ -4018,6 +4018,143 @@ def _persist_model_switch(result) -> None:
         save_config_value("model.base_url", None)
 
 
+def _mirror_resolved_model_switch(sid: str, session: dict, slash_meta: dict) -> str:
+    """Mirror the worker-resolved model switch onto the live TUI session.
+
+    This is the canonical TUI mirror path. Unlike the legacy
+    ``_apply_model_switch(raw_input=...)`` path — which calls
+    ``switch_model()`` and re-resolves the alias through the parent's
+    provider cache — this helper ONLY consumes the structured
+    ``resolved_model`` / ``resolved_provider`` / ``base_url`` /
+    ``api_mode`` / ``scope`` snapshot the worker reported.
+
+    Why this exists:
+      * The worker ran inside the session's ``profile_home`` scope.
+        Profile A and Profile B with the same alias name can map to
+        different providers / models.
+      * The parent process must NOT re-parse ``raw_args`` (which was
+        deliberately removed from the mirror decision); doing so would
+        read the parent's *own* alias cache and pin the session to a
+        provider/model from a different profile.
+      * The parent re-resolves credentials by re-entering the session's
+        ``profile_home`` scope via ``HERMES_HOME`` for the duration of
+        the mirror — ``resolve_runtime_provider`` picks up the right
+        custom providers from that profile's config.yaml.
+
+    Returns a warning string (or empty) for the ``slash.exec`` payload.
+    Raises ``ValueError`` if the metadata is malformed or the worker's
+    snapshot is missing the required fields.
+    """
+    if not isinstance(slash_meta, dict) or slash_meta.get("side_effect") != "model_switch":
+        return ""
+    resolved_model = str(slash_meta.get("resolved_model") or "").strip()
+    resolved_provider = str(slash_meta.get("resolved_provider") or "").strip()
+    scope_value = str(slash_meta.get("scope") or "session").strip()
+    if not resolved_model or not resolved_provider:
+        # Worker reported the side effect but the resolved result is
+        # incomplete — refuse to mirror and let the user see the worker's
+        # own error output instead of silently drifting.
+        raise ValueError(
+            "slash worker reported model_switch without resolved_model/resolved_provider"
+        )
+
+    base_url = slash_meta.get("base_url") or ""
+    api_mode = slash_meta.get("api_mode") or ""
+
+    # Re-enter the session's profile_home scope for credential resolution.
+    # The worker already chose the provider; the parent only needs to look
+    # up ``api_key`` / ``base_url`` against THIS profile's providers.
+    profile_home = session.get("profile_home")
+    prev_home = os.environ.get("HERMES_HOME")
+    try:
+        if profile_home:
+            os.environ["HERMES_HOME"] = str(profile_home)
+            try:
+                from hermes_cli.config import load_config as _tui_load_config
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+            except ImportError:
+                _tui_load_config = None
+                resolve_runtime_provider = None
+            if resolve_runtime_provider is not None:
+                try:
+                    runtime = resolve_runtime_provider(
+                        requested=resolved_provider,
+                        target_model=resolved_model,
+                        explicit_base_url=str(base_url or "") or None,
+                    )
+                    api_key = str(runtime.get("api_key") or "")
+                    base_url = str(runtime.get("base_url") or base_url or "")
+                    api_mode = str(runtime.get("api_mode") or api_mode or "")
+                except Exception:
+                    # Profile-scoped resolve failed — fall back to the
+                    # values the worker reported (no api_key, but base_url
+                    # may still be usable for endpoint-only switches).
+                    api_key = ""
+        else:
+            api_key = ""
+    finally:
+        # Restore the parent's HERMES_HOME so the rest of the gateway
+        # continues using the parent's profile, not the session's.
+        if prev_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = prev_home
+
+    agent = session.get("agent")
+    if agent is not None:
+        try:
+            agent.switch_model(
+                new_model=resolved_model,
+                new_provider=resolved_provider,
+                api_key=api_key,
+                base_url=base_url,
+                api_mode=api_mode,
+            )
+        except Exception as exc:
+            # Mirror failed — propagate so the user sees the warning.
+            return f"model mirror failed: {exc}"
+
+    # Persist scope-aware state on the session dict so a /model restore,
+    # /status, and downstream turns pick up the resolved model.
+    if scope_value == "global":
+        # Persist to THIS profile's config.yaml (worker wrote its own
+        # profile too, but the parent's mirror must converge the live
+        # TUI's persistence state — the worker is sandboxed).
+        try:
+            from cli import save_config_value as _tui_save
+
+            if profile_home:
+                prev_home = os.environ.get("HERMES_HOME")
+                os.environ["HERMES_HOME"] = str(profile_home)
+                try:
+                    _tui_save("model.default", resolved_model)
+                    _tui_save("model.provider", resolved_provider)
+                    _tui_save("model.base_url", base_url or None)
+                    _tui_save("model.api_mode", api_mode or None)
+                finally:
+                    if prev_home is None:
+                        os.environ.pop("HERMES_HOME", None)
+                    else:
+                        os.environ["HERMES_HOME"] = prev_home
+            else:
+                _tui_save("model.default", resolved_model)
+                _tui_save("model.provider", resolved_provider)
+                _tui_save("model.base_url", base_url or None)
+                _tui_save("model.api_mode", api_mode or None)
+        except Exception as exc:
+            return f"model persistence failed: {exc}"
+
+    session["model_override"] = {
+        "provider": resolved_provider,
+        "model": resolved_model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_mode": api_mode,
+        "scope": scope_value,
+    }
+    return ""
+
+
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
     return {

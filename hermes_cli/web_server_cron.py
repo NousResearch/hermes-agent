@@ -214,6 +214,26 @@ def _find_cron_job_profile(job_id: str) -> Optional[str]:
     return None
 
 
+def _load_cron_config_for_profile(profile: Optional[str]) -> Dict[str, Any]:
+    """Load Chronos settings from the resolved cron profile home."""
+    from hermes_cli.config import load_config
+
+    if not profile:
+        return load_config()
+
+    _profile_name, home = _cron_profile_home(profile)
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    token = set_hermes_home_override(str(home))
+    try:
+        return load_config()
+    finally:
+        reset_hermes_home_override(token)
+
+
 async def _run_cron_dashboard_io(func, *args, **kwargs):
     """Run cron dashboard profile/job I/O outside the FastAPI event loop."""
     from starlette.concurrency import run_in_threadpool

@@ -290,9 +290,10 @@ async def cron_fire_webhook(request: Request):
     except Exception:
         body = {}
     job_id = (body or {}).get("job_id") if isinstance(body, dict) else None
+    verifier = get_fire_verifier()
 
     def _verify_with_config(cfg):
-        return get_fire_verifier()(
+        return verifier(
             token=token,
             expected_audience=cfg_get(
                 cfg, "cron", "chronos", "expected_audience", default=""

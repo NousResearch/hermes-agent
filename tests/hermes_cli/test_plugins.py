@@ -466,6 +466,12 @@ class TestPluginDiscovery:
         mgr._plugin_skills["p:skill"] = {}
         mgr._aux_tasks["task"] = {"plugin": "p"}
         mgr._slack_action_handlers.append(("aid", lambda **_: None, "p"))
+        # Aux providers live in a module global rather than on the manager,
+        # but they are plugin-owned state and must clear with the rest.
+        from agent import auxiliary_client as aux
+        aux.register_aux_provider(
+            "force-test-pool", lambda model=None, *, task=None: (None, None),
+            aliases=("force-test-subs",), owner="p")
         mgr._discovered = True
 
         monkeypatch.setattr(PluginManager, "_discover_and_load_inner", lambda self_inner: None)
@@ -483,6 +489,8 @@ class TestPluginDiscovery:
         assert mgr._plugin_skills == {}
         assert mgr._aux_tasks == {}
         assert mgr._slack_action_handlers == []
+        assert aux._PLUGIN_AUX_PROVIDERS == {}
+        assert "force-test-subs" not in aux._PROVIDER_ALIASES
 
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────

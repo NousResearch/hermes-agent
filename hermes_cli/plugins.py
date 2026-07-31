@@ -1176,12 +1176,21 @@ class PluginContext:
         Async-native clients (subprocess/IPC facades) should set
         ``aux_async_passthrough = True`` on themselves.
 
+        Registrations are owned by the registering plugin. Re-registering the
+        same name from the same plugin replaces the builder and rewrites its
+        aliases; a *different* plugin claiming that name — or aliasing onto
+        it — is rejected rather than allowed to reroute it silently.
+        Registrations are dropped on forced re-discovery and re-made by the
+        plugins that survive it.
+
         Raises:
-            ValueError: if *name* is empty or shadows a built-in provider.
+            ValueError: if *name* is empty, shadows a built-in provider, or
+                collides with a name/alias owned by another plugin.
         """
         from agent.auxiliary_client import register_aux_provider as _register
 
-        _register(name, builder, aliases=tuple(aliases))
+        _register(name, builder, aliases=tuple(aliases),
+                  owner=self.manifest.name)
         logger.info(
             "Plugin '%s' registered aux provider: %s",
             self.manifest.name, name,
@@ -1277,6 +1286,20 @@ class PluginContext:
 # PluginManager
 # ---------------------------------------------------------------------------
 
+def _clear_plugin_aux_providers() -> None:
+    """Drop aux providers registered via :meth:`PluginContext.register_aux_provider`.
+
+    Their registry is a module global in ``agent.auxiliary_client`` rather than
+    a manager attribute, so it needs an explicit hand in the force-rediscover
+    teardown. Nothing can be registered without that module being imported
+    first, so an unimported module means an empty registry — worth skipping,
+    since plugin discovery runs on every startup and that module is heavy.
+    """
+    aux = sys.modules.get("agent.auxiliary_client")
+    if aux is not None:
+        aux.clear_plugin_aux_providers()
+
+
 class PluginManager:
     """Central manager that discovers, loads, and invokes plugins."""
 
@@ -1333,6 +1356,7 @@ class PluginManager:
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
+            _clear_plugin_aux_providers()
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
         # raises so a failed scan is NOT cached as "discovered with an empty

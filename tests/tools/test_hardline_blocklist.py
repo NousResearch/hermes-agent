@@ -721,12 +721,12 @@ _ABS_PATH_ALLOW = [
     "command -pv /sbin/reboot",
     # a word outside a wrapper's option list is the program name, and the
     # shell fails to run it — blocking these would be a false positive
+    # (time/setsid are the exception: their unknown options fail safe, see
+    # the time/setsid section below)
     "exec -x /sbin/reboot",
     "exec -- -c /sbin/reboot",
     "nohup -x /sbin/reboot",
     "nohup -- -x /sbin/reboot",
-    "setsid -x /sbin/reboot",
-    "time -x /sbin/reboot",
     "builtin -x /sbin/reboot",
     "builtin -- -x /sbin/reboot",
     "echo /sbin/shutdown",
@@ -813,3 +813,137 @@ def test_pass_through_launcher_wrappers_resolve_command_word_under_yolo(
 
     assert result["approved"] is approved, command
     assert bool(result.get("hardline")) is hardline, command
+
+
+# -------------------------------------------------------------------------
+# time / setsid option grammar
+# -------------------------------------------------------------------------
+#
+# `time` and `setsid` accept options of their own ahead of the program word
+# (GNU time: -p/-a/-v/-q/-V, -f/-o with an operand; setsid: -c/-f/-w/-V/-h).
+# Without a grammar for them the walker treats the option itself as the
+# command word and never inspects the executable behind it.
+
+_TIME_SETSID_BLOCK = [
+    "time -p /sbin/reboot",
+    "setsid -f /sbin/reboot",
+    "setsid -w -c /sbin/reboot",
+    "setsid -fw /sbin/reboot",
+    "setsid --fork /sbin/reboot",
+    "time --quiet /sbin/reboot",
+    # an option's operand is skipped as data, then the executable resolves
+    "time -o /tmp/x /sbin/reboot",
+    "time -f '%e' /sbin/reboot",
+    "time --format=%e /sbin/reboot",
+    "time -p -- /sbin/reboot",
+]
+
+
+@pytest.mark.parametrize("command", _TIME_SETSID_BLOCK)
+def test_time_setsid_options_resolve_command_word(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"time/setsid option hid the executable: {command!r}"
+    assert desc, "hardline match must provide a description"
+
+
+_TIME_SETSID_ALLOW = [
+    # an option's operand is data, not the command word
+    "time -o /sbin/reboot /bin/echo hi",
+    "time -f /sbin/reboot /bin/echo hi",
+    "time --output=/sbin/reboot /bin/echo hi",
+    # ordinary launches keep working
+    "time -p /bin/echo hi",
+    "setsid -f /bin/echo hi",
+    "setsid -w sleep 1",
+    # a lone wrapper word has no command to resolve
+    "time",
+    "setsid",
+]
+
+
+@pytest.mark.parametrize("command", _TIME_SETSID_ALLOW)
+def test_time_setsid_option_operands_are_data(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, f"time/setsid false positive: {command!r} (got: {desc})"
+
+
+# An option word we do NOT model (`time -Z`) means the walker cannot tell
+# where the program word starts. That must fail safe (detected), never fall
+# back to "the option is the program" — that misread is exactly how
+# `time -p /sbin/reboot` walked past the floor.
+_TIME_SETSID_UNKNOWN_OPTION = [
+    "time -Z /sbin/reboot",
+    "time -x /sbin/reboot",
+    "time --bogus /sbin/reboot",
+    "setsid -x /sbin/reboot",
+    "setsid --bogus /sbin/reboot",
+]
+
+
+@pytest.mark.parametrize("command", _TIME_SETSID_UNKNOWN_OPTION)
+def test_unknown_time_setsid_option_fails_safe(command):
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"unknown time/setsid option fell open: {command!r}"
+    assert desc
+
+
+def test_time_setsid_hardline_under_yolo(clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    for cmd in ("time -p /sbin/reboot", "setsid -f /sbin/reboot"):
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"yolo leaked {cmd!r}"
+        assert result.get("hardline") is True, cmd
+
+
+# -------------------------------------------------------------------------
+# Walker termination: no pass-through exit
+# -------------------------------------------------------------------------
+#
+# The walk over the command prefix must end in exactly three ways: the
+# command word resolves, the input ends, or the defensive word cap trips and
+# the command is treated as unresolvable (detected). A fixed wrapper budget
+# used to be a fourth exit that silently gave up and let the executable
+# through uninspected.
+
+def test_wrapper_chain_depth_is_not_a_bypass():
+    import tools.approval as approval_mod
+
+    capped = {approval_mod._PARSER_LIMIT_DESCRIPTION,
+              approval_mod._MALFORMED_EXEC_DESCRIPTION}
+    for depth in (11, 12, 13):
+        command = "env " * depth + "/sbin/reboot"
+        is_hl, desc = detect_hardline_command(command)
+        assert is_hl, f"{depth} wrappers let the executable through"
+        assert desc not in capped, (
+            f"{depth} wrappers should resolve fully, not hit the cap: {desc!r}"
+        )
+
+
+def test_wrapper_chain_depth_bypass_closed_under_yolo(clean_session, monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    command = "env " * 12 + "/sbin/reboot"
+    result = check_all_command_guards(command, "local")
+    assert result["approved"] is False, "12 wrappers leaked under yolo"
+    assert result.get("hardline") is True
+
+
+def test_walker_word_cap_fails_safe_never_open():
+    import tools.approval as approval_mod
+
+    capped = {approval_mod._PARSER_LIMIT_DESCRIPTION,
+              approval_mod._MALFORMED_EXEC_DESCRIPTION}
+    max_words = approval_mod._WALKER_MAX_WORDS
+    for total_words, resolves in ((max_words - 1, True),
+                                  (max_words, False),
+                                  (max_words + 1, False)):
+        command = "env " * (total_words - 1) + "/sbin/reboot"
+        is_hl, desc = detect_hardline_command(command)
+        assert is_hl, f"{total_words}-word walk fell open"
+        if resolves:
+            assert desc not in capped, (
+                f"{total_words} words is under the cap and must resolve: {desc!r}"
+            )
+        else:
+            assert desc in capped, (
+                f"{total_words} words must trip the defensive cap: {desc!r}"
+            )

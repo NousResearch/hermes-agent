@@ -514,11 +514,14 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(normalized)
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
-    for command_variant in _command_detection_variants(command):
-        variant_lower = command_variant.lower()
-        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-            if pattern_re.search(variant_lower):
-                return (True, description)
+    try:
+        for command_variant in _command_detection_variants(command):
+            variant_lower = command_variant.lower()
+            for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+                if pattern_re.search(variant_lower):
+                    return (True, description)
+    except _UnresolvedCommandWalk as unresolved:
+        return (True, unresolved.description)
     return (False, None)
 
 
@@ -546,11 +549,16 @@ def _match_user_deny_rule(command: str) -> str | None:
              if isinstance(p, str) and p.strip()]
     if not globs:
         return None
-    for command_variant in _command_detection_variants(command):
-        candidate = command_variant.lower().strip()
-        for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
-                return pattern
+    try:
+        for command_variant in _command_detection_variants(command):
+            candidate = command_variant.lower().strip()
+            for pattern in globs:
+                if fnmatch.fnmatchcase(candidate, pattern.lower()):
+                    return pattern
+    except _UnresolvedCommandWalk:
+        # No deny rule can be confirmed on an unresolvable command; the
+        # hardline detector already fails it safe.
+        return None
     return None
 
 
@@ -1109,6 +1117,41 @@ _STDBUF_OPTIONS_WITH_ARG = frozenset({
 })
 _STDBUF_OPTIONS = _STDBUF_OPTIONS_WITH_ARG
 
+# `time` is both a bash reserved word (accepting only -p) and GNU time
+# (-f/--format and -o/--output take an operand; -p -a -v -q -V do not). The
+# walker only sees the spelling, so it accepts the union of both grammars.
+# Option names are matched lowercased, so -V folds onto -v (both take no
+# operand under either spelling).
+_TIME_OPTIONS_WITH_ARG = frozenset({
+    "-f", "--format",
+    "-o", "--output",
+})
+_TIME_OPTIONS = _TIME_OPTIONS_WITH_ARG | frozenset({
+    "-p", "--portability",
+    "-a", "--append",
+    "-v", "--verbose",
+    "-q", "--quiet",
+    "--version",
+    "--help",
+})
+
+# util-linux setsid's getopt string is "+Vhcfw" — every option is a flag,
+# and the leading "+" stops option parsing at the first non-option word.
+_SETSID_OPTIONS = frozenset({
+    "-c", "--ctty",
+    "-f", "--fork",
+    "-w", "--wait",
+    "-v", "--version",
+    "-h", "--help",
+})
+
+# For these wrappers the option grammar above is exhaustive, so an option
+# word outside it means the walker cannot tell where the program word
+# starts. Resolving anyway risks projecting an option (or its operand) as
+# the command word, so the walk reports the command as unresolvable and the
+# caller fails safe.
+_WRAPPERS_UNRESOLVED_ON_UNKNOWN_OPTION = frozenset({"time", "setsid"})
+
 _WRAPPER_SHORT_FLAGS = {
     "command": frozenset("pv"),
     "exec": frozenset("cl"),
@@ -1116,12 +1159,15 @@ _WRAPPER_SHORT_FLAGS = {
     # --preserve-status, so v/f/p are the no-argument short flags that can
     # appear bundled (-vpf) ahead of the duration.
     "timeout": frozenset("vfp"),
+    "time": frozenset("pavq"),
+    "setsid": frozenset("cfwvh"),
 }
 _WRAPPER_SHORT_OPTIONS_WITH_ARG = {
     "exec": frozenset("a"),
     "timeout": frozenset("ks"),
     "nice": frozenset("n"),
     "stdbuf": frozenset("ioe"),
+    "time": frozenset("fo"),
 }
 
 
@@ -1162,7 +1208,9 @@ def _wrapper_option_action(wrapper: str, word: str) -> tuple[str | None, bool]:
     """Classify one option-shaped word for a pass-through wrapper.
 
     The action is ``skip`` for a recognized option, ``end`` for ``--``,
-    ``stop`` for command lookup-only modes, and ``None`` when the word is the
+    ``stop`` for command lookup-only modes, ``unresolved`` for an option the
+    wrapper's exhaustive grammar does not know (the walker cannot place the
+    program word and must fail safe), and ``None`` when the word is the
     program name rather than an option. The boolean reports whether the next
     word is the option's separate operand.
     """
@@ -1201,11 +1249,19 @@ def _wrapper_option_action(wrapper: str, word: str) -> tuple[str | None, bool]:
     elif wrapper == "stdbuf":
         options = _STDBUF_OPTIONS
         options_with_arg = _STDBUF_OPTIONS_WITH_ARG
+    elif wrapper == "time":
+        options = _TIME_OPTIONS
+        options_with_arg = _TIME_OPTIONS_WITH_ARG
+    elif wrapper == "setsid":
+        options = _SETSID_OPTIONS
+        options_with_arg = frozenset()
     else:
         options = frozenset()
         options_with_arg = frozenset()
 
     if options is not None and option_name not in options:
+        if wrapper in _WRAPPERS_UNRESOLVED_ON_UNKNOWN_OPTION:
+            return ("unresolved", False)
         return (None, False)
     return (
         "skip",
@@ -1278,6 +1334,30 @@ _MAX_SEPARATOR_FREE_COMMAND_CHARS = 4_096
 _MAX_DETECTION_SEGMENTS = 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
+_UNRESOLVED_WRAPPER_OPTION_DESCRIPTION = (
+    "unrecognized wrapper option ahead of the command word"
+)
+
+# Defensive cap on the words a command-position walk may consume per command
+# start. It is not a termination condition — every iteration consumes at
+# least one word, so the walk already terminates on input length — it bounds
+# the work spent on pathological prefixes. Reaching it means the command
+# word was never resolved, and that must surface as "unresolvable" (callers
+# fail safe), never as a silent pass-through.
+_WALKER_MAX_WORDS = 256
+
+
+class _UnresolvedCommandWalk(Exception):
+    """A command-position walk could not resolve the command word.
+
+    Raised when the walk hits ``_WALKER_MAX_WORDS`` or an option the
+    wrapper grammar cannot place. Detection entry points map this to a
+    positive detection: an uninspectable command must not run uninspected.
+    """
+
+    def __init__(self, description: str) -> None:
+        super().__init__(description)
+        self.description = description
 
 
 
@@ -1381,7 +1461,11 @@ def _quoted_grep_pattern_spans(command: str) -> tuple[list[tuple[int, int]], boo
     for segment in _iter_top_level_shell_segments(command):
         segment_at = command.find(segment, offset)
         offset = segment_at + len(segment)
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        try:
+            command_words = list(_iter_shell_command_word_spans(segment))
+        except _UnresolvedCommandWalk:
+            return [], True
+        for start, _, word in command_words:
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() not in {
                 "grep", "egrep",
             }:
@@ -1663,7 +1747,12 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        try:
+            command_words = list(_iter_shell_command_word_spans(segment))
+        except _UnresolvedCommandWalk:
+            yield (_MALFORMED_EXEC_DESCRIPTION, None)
+            continue
+        for start, _, word in command_words:
             executable = _deobfuscate_shell_word_for_detection(word)
             tokens = _shell_segment_tokens(segment, start)
             executable_name = os.path.basename(executable).lower()
@@ -2030,43 +2119,46 @@ def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
     for command_start in _iter_shell_command_starts(command):
         pos = command_start
-        prefix_words = 0
+        words_walked = 0
         active_wrapper = ""
         skip_wrapper_options = False
         skip_next_wrapper_arg = False
         skip_timeout_duration = False
-        while prefix_words < 12:
+        while True:
             word_start, word_end, word = _read_shell_word(command, pos)
             if word_start == word_end:
                 break
+            words_walked += 1
+            if words_walked >= _WALKER_MAX_WORDS:
+                raise _UnresolvedCommandWalk(_PARSER_LIMIT_DESCRIPTION)
             deobfuscated = _deobfuscate_shell_word_for_detection(word)
             lower_word = deobfuscated.lower()
             if skip_next_wrapper_arg:
                 skip_next_wrapper_arg = False
                 pos = word_end
-                prefix_words += 1
                 continue
             if skip_wrapper_options and lower_word.startswith("-"):
                 action, skip_next_wrapper_arg = _wrapper_option_action(
                     active_wrapper, lower_word
                 )
+                if action == "unresolved":
+                    raise _UnresolvedCommandWalk(
+                        _UNRESOLVED_WRAPPER_OPTION_DESCRIPTION
+                    )
                 if action == "stop":
                     break
                 if action is not None:
                     if action == "end":
                         skip_wrapper_options = False
                     pos = word_end
-                    prefix_words += 1
                     continue
             if skip_timeout_duration:
                 skip_timeout_duration = False
                 skip_wrapper_options = False
                 pos = word_end
-                prefix_words += 1
                 continue
 
             yield (word_start, word_end, word)
-            prefix_words += 1
 
             if lower_word in _COMMAND_WRAPPER_WORDS:
                 active_wrapper = lower_word
@@ -2153,17 +2245,19 @@ def _project_path_spelled_executables(command: str) -> str | None:
         skip_wrapper_options = False
         skip_next_wrapper_arg = False
         skip_timeout_duration = False
-        # Bound the WRAPPER chain, not the whole prefix: shell grammar puts no
-        # limit on assignment prefixes or on a wrapper option list, so counting
-        # those let a caller push the executable past a fixed budget and out of
-        # the projection (`A0=1 ... A11=1 /sbin/reboot` — egilewski on #71996;
-        # eleven repeated options — Sol). Only a wrapper word spends budget; the
-        # walk still terminates because every iteration consumes input.
-        wrapper_budget = 12
-        while wrapper_budget > 0:
+        # Shell grammar puts no limit on assignment prefixes, wrapper chains,
+        # or wrapper option lists, so no fixed budget may end this walk — any
+        # such exit lets a caller push the executable out of the projection.
+        # The walk terminates because every iteration consumes input; the
+        # shared word cap only bounds pathological prefixes and fails safe.
+        words_walked = 0
+        while True:
             word_start, raw_end, _raw_word = _read_shell_word(command, pos)
             if word_start == raw_end:
                 break
+            words_walked += 1
+            if words_walked >= _WALKER_MAX_WORDS:
+                raise _UnresolvedCommandWalk(_PARSER_LIMIT_DESCRIPTION)
             pos = raw_end
             # Trim group/substitution closers the word reader keeps
             # (`(/sbin/reboot)` reads as `/sbin/reboot)`); the closer stays
@@ -2184,6 +2278,10 @@ def _project_path_spelled_executables(command: str) -> str | None:
                 action, skip_next_wrapper_arg = _wrapper_option_action(
                     active_wrapper, deobfuscated
                 )
+                if action == "unresolved":
+                    raise _UnresolvedCommandWalk(
+                        _UNRESOLVED_WRAPPER_OPTION_DESCRIPTION
+                    )
                 if action == "stop":
                     break
                 if action is not None:
@@ -2199,7 +2297,6 @@ def _project_path_spelled_executables(command: str) -> str | None:
             if basename is not None and word_start not in replacements:
                 replacements[word_start] = (word_end, basename)
             if effective in _COMMAND_WRAPPER_WORDS:
-                wrapper_budget -= 1  # only the wrapper CHAIN is bounded
                 active_wrapper = effective
                 resolved_through_wrapper = True
                 skip_wrapper_options = True
@@ -2335,12 +2432,15 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
 
-    for command_variant in _command_detection_variants(command):
-        command_lower = command_variant.lower()
-        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-            if pattern_re.search(command_lower):
-                pattern_key = description
-                return (True, pattern_key, description)
+    try:
+        for command_variant in _command_detection_variants(command):
+            command_lower = command_variant.lower()
+            for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+                if pattern_re.search(command_lower):
+                    pattern_key = description
+                    return (True, pattern_key, description)
+    except _UnresolvedCommandWalk as unresolved:
+        return (True, unresolved.description, unresolved.description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

@@ -1359,6 +1359,7 @@ class GatewaySlashCommandsMixin:
         Standing ``/goal`` loops are also paused (CLI Ctrl+C parity) and any
         queued synthetic goal continuations are drained — otherwise ``/stop``
         only kills the current turn and the Ralph loop immediately re-queues.
+        Real user follow-ups in the pending slot survive interrupt.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
@@ -1367,7 +1368,24 @@ class GatewaySlashCommandsMixin:
         session_id = getattr(session_entry, "session_id", None) or ""
         adapter = getattr(self, "adapters", {}).get(source.platform) if source else None
 
-        def _pause_goal() -> bool:
+        async def _stop_one(key: str, *, sid: str = "", inv_reason: str) -> bool:
+            try:
+                return bool(
+                    await self._interrupt_stop_and_pause_goal(
+                        key,
+                        source,
+                        interrupt_reason=_INTERRUPT_REASON_STOP,
+                        invalidation_reason=inv_reason,
+                        session_id=sid,
+                        reason="user-interrupted (/stop)",
+                    )
+                )
+            except Exception as exc:
+                logger.debug("/stop goal pause failed for %s: %s", key, exc)
+                return False
+
+        def _pause_only() -> bool:
+            # No running agent: still pause caller's goal + drain continuations.
             try:
                 return bool(
                     self._pause_active_goal_for_session(
@@ -1376,6 +1394,7 @@ class GatewaySlashCommandsMixin:
                         source=source,
                         reason="user-interrupted (/stop)",
                         adapter=adapter,
+                        preserve_non_goal_pending=True,
                     )
                 )
             except Exception as exc:
@@ -1384,29 +1403,18 @@ class GatewaySlashCommandsMixin:
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
-            # Force-clean the sentinel so the session is unlocked.
-            await self._interrupt_and_clear_session(
-                session_key,
-                source,
-                interrupt_reason=_INTERRUPT_REASON_STOP,
-                invalidation_reason="stop_command_pending",
+            goal_paused = await _stop_one(
+                session_key, sid=session_id, inv_reason="stop_command_pending"
             )
-            goal_paused = _pause_goal()
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
             msg = t("gateway.stop.stopped_pending")
             if goal_paused:
                 msg = f"{msg}\n⏸ Goal paused — use /goal resume to continue, or /goal clear to stop."
             return EphemeralReply(msg)
         if agent:
-            # Force-clean the session lock so a truly hung agent doesn't
-            # keep it locked forever.
-            await self._interrupt_and_clear_session(
-                session_key,
-                source,
-                interrupt_reason=_INTERRUPT_REASON_STOP,
-                invalidation_reason="stop_command_handler",
+            goal_paused = await _stop_one(
+                session_key, sid=session_id, inv_reason="stop_command_handler"
             )
-            goal_paused = _pause_goal()
             msg = t("gateway.stop.stopped")
             if goal_paused:
                 msg = f"{msg}\n⏸ Goal paused — use /goal resume to continue, or /goal clear to stop."
@@ -1418,16 +1426,28 @@ class GatewaySlashCommandsMixin:
         # a different key.  Authorized users should still be able to /stop it
         # (#bernard-thread-stop).  Fall back to interrupting any running
         # agent(s) that share this thread, gated on authorization.
+        #
+        # Pause goals on EACH interrupted sibling session (not just the
+        # caller's), since the standing goal lives on the session that was
+        # actually running.
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
         if sibling_keys and self._is_user_authorized(source):
+            any_paused = False
             for sibling_key in sibling_keys:
-                await self._interrupt_and_clear_session(
+                sibling_sid = ""
+                try:
+                    sibling_sid = self._session_id_for_session_key(sibling_key)
+                except Exception:
+                    sibling_sid = ""
+                if await _stop_one(
                     sibling_key,
-                    source,
-                    interrupt_reason=_INTERRUPT_REASON_STOP,
-                    invalidation_reason="stop_command_thread_sibling",
-                )
-            goal_paused = _pause_goal()
+                    sid=sibling_sid,
+                    inv_reason="stop_command_thread_sibling",
+                ):
+                    any_paused = True
+            # Also pause the caller's own goal if they have one active.
+            if _pause_only():
+                any_paused = True
             logger.info(
                 "STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
                 session_key,
@@ -1435,7 +1455,7 @@ class GatewaySlashCommandsMixin:
                 ", ".join(sibling_keys),
             )
             msg = t("gateway.stop.stopped")
-            if goal_paused:
+            if any_paused:
                 msg = f"{msg}\n⏸ Goal paused — use /goal resume to continue, or /goal clear to stop."
             return EphemeralReply(msg)
 
@@ -1446,7 +1466,7 @@ class GatewaySlashCommandsMixin:
         # /stop always dismisses a phantom "is thinking...".
         # Also pause standing goals here: between Ralph-loop turns there is
         # often no active agent, but synthetic continuations keep firing.
-        goal_paused = _pause_goal()
+        goal_paused = _pause_only()
         if adapter and hasattr(adapter, "_stop_typing_with_metadata"):
             try:
                 await adapter._stop_typing_with_metadata(

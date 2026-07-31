@@ -7423,11 +7423,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _looks_like_goal_blocking_provider_failure(text: str) -> bool:
-        """True when the turn failed due to model/provider infrastructure.
+        """True when text looks like a short model/provider failure envelope.
 
-        Standing goals must not self-continue on these responses: the judge
-        fail-opens to ``continue`` (no evidence of progress), which re-queues
-        synthetic goal turns and burns the full turn budget on a dead model.
+        Secondary signal only — prefer structured ``failed`` /
+        ``failure_reason`` from the agent result when available.
         """
         body = str(text or "").strip()
         if not body:
@@ -7452,13 +7451,117 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "no longer in nous catalog",
             "non-retryable client error",
             "non-retryable error",
+            "the request failed:",
         )
         if any(m in lowered for m in markers):
             return True
         # Model-id 404s: Model 'foo' not found
-        if "not found" in lowered and ("model '" in lowered or "model \"" in lowered):
+        if "not found" in lowered and ("model '" in lowered or 'model "' in lowered):
             return True
         return False
+
+    # Failure reasons that are provider/infra problems where re-running the
+    # standing goal will not make progress until the operator fixes config.
+    # Context/payload overflow is intentionally excluded — recovery is
+    # /compact, not goal pause.
+    _GOAL_BLOCKING_FAILURE_REASONS = frozenset({
+        "auth",
+        "auth_permanent",
+        "billing",
+        "rate_limit",
+        "upstream_rate_limit",
+        "overloaded",
+        "server_error",
+        "timeout",
+        "ssl_cert_verification",
+        "model_not_found",
+        "provider_policy_blocked",
+    })
+
+    @classmethod
+    def _is_goal_blocking_agent_failure(
+        cls,
+        *,
+        failed: bool = False,
+        failure_reason: Optional[str] = None,
+        error: Optional[str] = None,
+        final_response: str = "",
+    ) -> bool:
+        """Decide whether a standing goal should auto-pause after this turn.
+
+        Prefer structured agent-result fields (``failed`` / ``failure_reason``)
+        over free-text matching so normal short assistant replies are never
+        mistaken for infra failures.
+        """
+        reason = str(failure_reason or "").strip().lower()
+        if failed:
+            if reason in {"context_overflow", "payload_too_large", "image_too_large"}:
+                return False
+            if reason in cls._GOAL_BLOCKING_FAILURE_REASONS:
+                return True
+            # failed=True without a known reason (or unknown): fall back to
+            # error/final_response envelope detection.
+            blob = "\n".join(
+                part for part in (str(error or ""), str(final_response or "")) if part
+            )
+            return cls._looks_like_goal_blocking_provider_failure(blob)
+
+        # Not structurally failed — only pause on explicit short provider
+        # envelopes (sanitized gateway replies, etc.).
+        return cls._looks_like_goal_blocking_provider_failure(final_response)
+
+    def _session_id_for_session_key(self, session_key: str) -> str:
+        """Best-effort map gateway session_key → durable conversation session_id."""
+        if not session_key:
+            return ""
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return ""
+        try:
+            # Production SessionStore path.
+            entries = getattr(store, "_entries", None)
+            if isinstance(entries, dict):
+                entry = entries.get(session_key)
+                if entry is not None:
+                    return str(getattr(entry, "session_id", None) or "")
+        except Exception:
+            pass
+        try:
+            # Locked helper used elsewhere in the runner.
+            sid = self._lookup_session_id_under_store_lock(store, session_key)
+            return str(sid or "")
+        except Exception:
+            return ""
+
+    def _snapshot_pending_non_goal(
+        self, session_key: str, adapter: Any
+    ) -> Optional[Any]:
+        """Peek the adapter pending slot if it is a real user follow-up."""
+        if not session_key or adapter is None:
+            return None
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if not isinstance(pending_slot, dict):
+            return None
+        pending = pending_slot.get(session_key)
+        if pending is None:
+            return None
+        if self._is_goal_continuation_event(pending):
+            return None
+        return pending
+
+    def _restore_pending_non_goal(
+        self, session_key: str, adapter: Any, pending: Any
+    ) -> None:
+        """Put back a non-goal pending event after interrupt discarded the slot."""
+        if pending is None or not session_key or adapter is None:
+            return
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if not isinstance(pending_slot, dict):
+            return
+        # Don't overwrite a newer pending event that landed after interrupt.
+        if session_key in pending_slot:
+            return
+        pending_slot[session_key] = pending
 
     def _pause_active_goal_for_session(
         self,
@@ -7468,15 +7571,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: Any = None,
         reason: str = "user-interrupted",
         adapter: Any = None,
+        preserve_non_goal_pending: bool = True,
     ) -> bool:
         """Pause an active standing goal and drain its queued continuations.
 
         Mirrors CLI Ctrl+C auto-pause so gateway ``/stop`` (and provider-dead
         turns) cannot leave a Ralph loop re-queuing synthetic user messages.
         Returns True when a goal was active and got paused.
+
+        When ``preserve_non_goal_pending`` is True (default), a real user
+        follow-up sitting in the adapter pending slot is not removed — only
+        synthetic goal continuations are drained from pending + overflow.
         """
         paused = False
         sid = (session_id or "").strip()
+        if not sid and session_key:
+            sid = self._session_id_for_session_key(session_key)
+
+        key = session_key
+        if not key and source is not None:
+            try:
+                key = self._session_key_for_source(source)
+            except Exception:
+                key = None
+
+        ad = adapter
+        if ad is None and source is not None:
+            try:
+                ad = self._adapter_for_source(source)
+            except Exception:
+                ad = None
+
+        saved_pending = None
+        if preserve_non_goal_pending and key:
+            saved_pending = self._snapshot_pending_non_goal(key, ad)
 
         if sid:
             try:
@@ -7490,21 +7618,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.debug("goal pause-on-stop failed: %s", exc)
 
-        # Always attempt to drain synthetic goal FIFO even if pause failed
-        # (e.g. goal already paused but continuations still queued).
+        # Drain synthetic goal FIFO (pending slot + overflow). Real user
+        # queue items are preserved by _clear_goal_pending_continuations.
         try:
-            key = session_key
-            if not key and source is not None:
-                key = self._session_key_for_source(source)
-            ad = adapter
-            if ad is None and source is not None:
-                ad = self._adapter_for_source(source)
             if key:
                 self._clear_goal_pending_continuations(key, ad)
         except Exception as exc:
             logger.debug("goal continuation drain on pause failed: %s", exc)
 
+        if preserve_non_goal_pending and key:
+            self._restore_pending_non_goal(key, ad, saved_pending)
+
         return paused
+
+    async def _interrupt_stop_and_pause_goal(
+        self,
+        session_key: str,
+        source: Any,
+        *,
+        interrupt_reason: str,
+        invalidation_reason: str,
+        session_id: Optional[str] = None,
+        reason: str = "user-interrupted (/stop)",
+    ) -> bool:
+        """Interrupt a run, preserve non-goal pending follow-ups, pause goal.
+
+        ``_interrupt_and_clear_session`` discards the adapter pending slot
+        wholesale. Goal continuations should die; ordinary user follow-ups
+        queued while the agent was busy must survive.
+        """
+        adapter = None
+        try:
+            adapter = self._adapter_for_source(source) if source is not None else None
+        except Exception:
+            adapter = None
+
+        saved_pending = self._snapshot_pending_non_goal(session_key, adapter)
+        await self._interrupt_and_clear_session(
+            session_key,
+            source,
+            interrupt_reason=interrupt_reason,
+            invalidation_reason=invalidation_reason,
+        )
+        # Restore real user pending before goal drain so clear only removes
+        # synthetic goal continuations from overflow/pending.
+        self._restore_pending_non_goal(session_key, adapter, saved_pending)
+
+        sid = (session_id or "").strip() or self._session_id_for_session_key(session_key)
+        return self._pause_active_goal_for_session(
+            session_id=sid,
+            session_key=session_key,
+            source=source,
+            reason=reason,
+            adapter=adapter,
+            preserve_non_goal_pending=True,
+        )
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         try:
@@ -13501,25 +13669,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # is truly hung — the executor thread is blocked and never checks
         # _interrupt_requested.  Force-clean _running_agents so the session
         # is unlocked and subsequent messages are processed normally.
-        await self._interrupt_and_clear_session(
+        #
+        # Also pause standing /goal (CLI Ctrl+C parity) while preserving any
+        # real user follow-up that was sitting in the pending slot.
+        try:
+            session_entry = await self.async_session_store.get_or_create_session(source)
+            sid = getattr(session_entry, "session_id", None) or ""
+        except Exception:
+            sid = ""
+        await self._interrupt_stop_and_pause_goal(
             quick_key,
             source,
             interrupt_reason=_INTERRUPT_REASON_STOP,
             invalidation_reason="stop_command",
+            session_id=sid,
+            reason="user-interrupted (/stop)",
         )
-        # Parity with CLI Ctrl+C: pause standing /goal so the Ralph loop
-        # cannot re-queue synthetic continuations after the interrupt.
-        try:
-            session_entry = await self.async_session_store.get_or_create_session(source)
-            sid = getattr(session_entry, "session_id", None) or ""
-            self._pause_active_goal_for_session(
-                session_id=sid,
-                session_key=quick_key,
-                source=source,
-                reason="user-interrupted (/stop)",
-            )
-        except Exception as exc:
-            logger.debug("busy /stop goal pause failed: %s", exc)
         logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
         return EphemeralReply(t("gateway.stop.stopped"))
 
@@ -15017,14 +15182,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # broken judge never breaks normal message handling.
             try:
                 _final_text = ""
+                _agent_failed = False
+                _failure_reason = None
+                _agent_error = None
                 if isinstance(_agent_result, dict):
                     _final_text = str(_agent_result.get("final_response") or "")
+                    _agent_failed = bool(_agent_result.get("failed"))
+                    _failure_reason = _agent_result.get("failure_reason")
+                    _agent_error = _agent_result.get("error")
+                    # Interrupted turns must not re-arm the Ralph loop via
+                    # judge fail-open on partial text.
+                    if _agent_result.get("interrupted"):
+                        _final_text = ""
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
                 # on error. Let the user drive the next turn.
-                if _final_text.strip():
+                # Exception: structured failed=True still runs the goal
+                # short-circuit so provider deaths pause the standing goal.
+                if _final_text.strip() or _agent_failed:
                     try:
                         session_entry = await self.async_session_store.get_or_create_session(source)
                     except Exception:
@@ -15034,6 +15211,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_entry=session_entry,
                             source=source,
                             final_response=_final_text,
+                            failed=_agent_failed,
+                            failure_reason=_failure_reason,
+                            error=_agent_error,
                         )
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
@@ -17999,6 +18179,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_entry: Any,
         source: Any,
         final_response: str,
+        failed: bool = False,
+        failure_reason: Optional[str] = None,
+        error: Optional[str] = None,
     ) -> None:
         """Run the goal judge after a gateway turn and, if still active,
         enqueue a continuation prompt for the same session.
@@ -18027,10 +18210,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         # Provider/infra failure short-circuit: do NOT call the judge.
-        # Judge fail-open returns "continue" on "no evidence of progress",
-        # which turns a dead model (404 / auth / rate-limit) into a tight
-        # self-continuation loop that burns the full turn budget.
-        if self._looks_like_goal_blocking_provider_failure(final_response or ""):
+        # Prefer structured agent_result.failed / failure_reason; fall back
+        # to short provider envelopes. Judge fail-open returns "continue"
+        # on "no evidence of progress", which turns a dead model into a
+        # tight self-continuation loop that burns the full turn budget.
+        if self._is_goal_blocking_agent_failure(
+            failed=failed,
+            failure_reason=failure_reason,
+            error=error,
+            final_response=final_response or "",
+        ):
             try:
                 _quick_key = self._session_key_for_source(source) if source is not None else None
             except Exception:
@@ -18049,9 +18238,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if source is not None:
                 await self._defer_goal_status_notice_after_delivery(source, notice)
             logger.info(
-                "goal auto-paused after provider failure for session %s",
+                "goal auto-paused after provider failure for session %s "
+                "(failed=%s failure_reason=%s)",
                 sid,
+                failed,
+                failure_reason,
             )
+            return
+
+        # Empty successful responses: nothing to judge.
+        if not str(final_response or "").strip():
             return
 
         try:

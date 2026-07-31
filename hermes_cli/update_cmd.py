@@ -3517,8 +3517,33 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+                # force-pushed or rebase, OR the local checkout has its own
+                # COMMITTED work ahead of origin). The stash above only covers
+                # uncommitted working-tree changes — a committed local fix
+                # shows up clean in `git status` and is NOT in that stash, so
+                # a bare `reset --hard origin/{branch}` here would silently
+                # destroy it with no warning and no way to recover it. Preserve
+                # any local-only commits to a backup ref before resetting, then
+                # try to replay them on top automatically.
+                local_only = _count_commits_between(
+                    git_cmd, _m().PROJECT_ROOT, f"origin/{branch}", "HEAD"
+                )
+                backup_ref = None
+                if local_only > 0:
+                    backup_ref = (
+                        f"refs/hermes-update-backups/{branch}-"
+                        f"{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    )
+                    subprocess.run(
+                        git_cmd + ["update-ref", backup_ref, "HEAD"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                    )
+                    print(
+                        f"  ℹ Preserving {local_only} local commit(s) not on "
+                        f"origin/{branch} before resetting (backed up to {backup_ref})..."
+                    )
+
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
@@ -3536,6 +3561,37 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
                     )
                     sys.exit(1)
+
+                if backup_ref:
+                    # HEAD now equals origin/{branch}; replay the preserved
+                    # commits on top. Best-effort — on any conflict, abort
+                    # cleanly and leave the backup ref in place rather than
+                    # leaving conflict markers in source files.
+                    cherry_result = subprocess.run(
+                        git_cmd + ["cherry-pick", f"HEAD..{backup_ref}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if cherry_result.returncode == 0:
+                        print(
+                            f"  ✓ Reapplied {local_only} local commit(s) on top of the update."
+                        )
+                    else:
+                        subprocess.run(
+                            git_cmd + ["cherry-pick", "--abort"],
+                            cwd=_m().PROJECT_ROOT,
+                            capture_output=True,
+                        )
+                        print(
+                            f"  ⚠ Could not automatically reapply your {local_only} local "
+                            "commit(s) — they conflict with the update."
+                        )
+                        print(f"    Nothing is lost — they're saved at: {backup_ref}")
+                        print(f"    Review them with: git log {backup_ref}")
+                        print(
+                            f"    Reapply manually with: git cherry-pick HEAD..{backup_ref}"
+                        )
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit

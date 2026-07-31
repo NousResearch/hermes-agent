@@ -4155,17 +4155,30 @@ def _mirror_resolved_model_switch(sid: str, session: dict, slash_meta: dict) -> 
             except Exception as exc:
                 return f"model persistence failed: {exc}"
 
-        session["model_override"] = {
-            "provider": resolved_provider,
-            "model": resolved_model,
-            "base_url": base_url,
-            "api_key": api_key,
-            "api_mode": api_mode,
-            "scope": scope_value,
-            "restore_snapshot": restore_snapshot,
-        }
-        if scope_value == "once" and restore_snapshot is not None:
-            session["one_turn_model_restore"] = restore_snapshot
+        if scope_value == "once":
+            # Upstream native one-turn semantics (see _apply_model_switch):
+            # a /model --once must NOT pin a persistent session
+            # model_override — doing so would permanently skip config sync
+            # (_sync_agent_model_with_config returns early when
+            # session["model_override"] is set) and re-apply the temporary
+            # model on session rebuild/resume//new. Only the restore
+            # snapshot is latched; the turn finally consumes it and restores
+            # the agent runtime. A pre-existing session override (e.g. a
+            # prior /model A) is deliberately left untouched: the agent
+            # runtime snapshot restores the agent, and the original override
+            # dict still drives rebuilds exactly as before the once switch.
+            if restore_snapshot is not None:
+                session["one_turn_model_restore"] = restore_snapshot
+        else:
+            session["model_override"] = {
+                "provider": resolved_provider,
+                "model": resolved_model,
+                "base_url": base_url,
+                "api_key": api_key,
+                "api_mode": api_mode,
+                "scope": scope_value,
+            }
+            session.pop("one_turn_model_restore", None)
         # Successful end: ExitStack __exit__ resets the tokens in
         # reverse order (secret_token, home_token) before returning.
         return ""

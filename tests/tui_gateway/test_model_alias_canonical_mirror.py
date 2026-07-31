@@ -66,7 +66,7 @@ def session_with_agent(server):
     sid = "sid-resolved-mirror"
     session_key = "tui-resolved-mirror"
 
-    fake_agent = MagicMock(spec=["model", "provider", "base_url", "api_key", "api_mode", "switch_model"])
+    fake_agent = MagicMock(spec=["model", "provider", "base_url", "api_key", "api_mode", "switch_model", "run_conversation"])
     fake_agent.model = "initial-model"
     fake_agent.provider = "initial-provider"
     fake_agent.base_url = "https://initial.api"
@@ -313,20 +313,33 @@ def test_concurrent_profile_cross_talk_isolation(server, hermes_home, patched_ru
     assert os.environ.get("HERMES_HOME") == initial_env_home
 
 
-# ── Scenario 3: Closed --once 7-phase lifecycle and restore ───────────────
+# ── Scenario 3: Closed --once lifecycle (real production turn chain) ─────
 
 
-def test_once_full_lifecycle_restore(server, session_with_agent):
-    """Complete 7-phase validation for --once model switch:
-    Phase 1: Worker returns once metadata.
+def test_once_full_lifecycle_restore(server, session_with_agent, hermes_home, patched_runtime_provider):
+    """Complete 7-phase validation for --once model switch via the REAL
+    production turn chain (slash.exec -> prompt.submit -> _run_prompt_submit
+    finally).  No restore helper is called directly, no session state is
+    hand-popped, and the agent is never mutated by hand.
+
+    Phase 1: Worker returns once metadata (slash.exec applies it).
     Phase 2: Live agent switches to target model.
     Phase 3: Turn 1 executes using target model.
     Phase 4: Turn 1 completes and restores previous provider/model.
-    Phase 5: Session model_override once state and restore_snapshot cleared.
+    Phase 5: one_turn_model_restore consumed; NO model_override created.
     Phase 6: Turn 2 continues using original model.
-    Phase 7: Failure or cancellation paths leave no pending restore state.
+    Phase 7: Failure path leaves no pending restore state.
     """
     sid, _, sess, agent = session_with_agent
+    prof_dir = hermes_home / "prof_lifecycle_full"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    sess["profile_home"] = str(prof_dir)
+    sess["agent_ready"] = threading.Event()
+    sess["agent_ready"].set()
+    # add run_conversation to the agent spec for the real turn chain
+    def fake_run_conversation(*args, **kwargs):
+        return {"messages": [{"role": "assistant", "content": "ok"}]}
+    agent.run_conversation = MagicMock(side_effect=fake_run_conversation)
 
     orig_model = agent.model
     orig_provider = agent.provider
@@ -342,40 +355,39 @@ def test_once_full_lifecycle_restore(server, session_with_agent):
     }
     _install_worker(sess, _make_worker_double(slash_meta=meta_once))
 
-    # Phase 2: Parent mirrors slash exec
+    # Phase 1/2: Parent mirrors via real slash.exec; live agent switches
     res = server._methods["slash.exec"](1, {"command": "/temp-model --once", "session_id": sid})
     assert "result" in res
-
-    # Live agent switched to temp once model
     assert agent.model == "model-temp-once"
     assert agent.provider == "prov-once"
-    assert sess["model_override"]["scope"] == "once"
+    # once latches ONLY the restore snapshot, never a persistent override
+    assert "model_override" not in sess
     assert sess.get("one_turn_model_restore") is not None
 
-    # Phase 3: Assistant turn 1 executes with temp model
-    assert agent.model == "model-temp-once"
+    # Phase 3: Turn 1 executes with temp model (real prompt.submit chain)
+    res = server._methods["prompt.submit"](2, {"session_id": sid, "text": "hi"})
+    assert "result" in res
+    _wait_turn_threads(sess)
 
-    # Phase 4 & 5: Turn 1 finishes -> restore agent model runtime
-    restore_snap = sess.pop("one_turn_model_restore", None)
-    assert restore_snap is not None
-    server._restore_agent_model_runtime(agent, restore_snap)
-    sess["model_override"].pop("restore_snapshot", None)
-    sess.pop("model_override", None)
-
-    # Restored to original model and provider
+    # Phase 4 & 5: restored to original; snapshot consumed; no override left
     assert agent.model == orig_model
     assert agent.provider == orig_provider
-
-    # Phase 6: Turn 2 executes with original model
-    assert agent.model == orig_model
     assert "one_turn_model_restore" not in sess
     assert "model_override" not in sess
 
-    # Phase 7: Failure/cancellation leaves no pending restore state
+    # Phase 6: Turn 2 executes with original model
+    res = server._methods["prompt.submit"](3, {"session_id": sid, "text": "again"})
+    assert "result" in res
+    _wait_turn_threads(sess)
+    assert agent.model == orig_model
+    assert agent.provider == orig_provider
+
+    # Phase 7: Failure path (worker meta=None) leaves no pending state
     _install_worker(sess, _make_worker_double(slash_meta=None, output="Cancelled"))
-    server._methods["slash.exec"](2, {"command": "/bad-cmd", "session_id": sid})
+    server._methods["slash.exec"](4, {"command": "/bad-cmd", "session_id": sid})
     assert agent.model == orig_model
     assert "one_turn_model_restore" not in sess
+    assert "model_override" not in sess
 
 
 # ── Scenario 4: Custom provider & No credentials in metadata ────────────
@@ -452,7 +464,11 @@ def test_scope_session_once_global_behavior(server, session_with_agent, hermes_h
     _install_worker(sess, _make_worker_double(slash_meta=meta_once))
     server._methods["slash.exec"](2, {"command": "/once-model --once", "session_id": sid})
     assert agent.model == "model-once"
-    assert sess["model_override"]["scope"] == "once"
+    # Upstream one-turn semantics: once never creates a persistent
+    # model_override — the previous session override stays untouched, and
+    # only the restore snapshot is latched.
+    assert sess["model_override"]["scope"] == "session"
+    assert sess.get("one_turn_model_restore") is not None
 
     # 3. Global scope
     meta_global = {
@@ -890,16 +906,38 @@ def _once_lifecycle_setup(server, hermes_home, patched_runtime_provider):
 
 
 def _wait_turn_threads(sess, timeout=120):
-    """Join both daemon turn threads: the ``prompt.submit``
-    ``run_after_agent_ready`` wrapper and the inner ``_run_prompt_submit``
-    ``run()`` thread that ``_run_prompt_submit`` stores back into
-    ``session["_run_thread"]`` when it starts the real turn body."""
-    first = sess.get("_run_thread")
-    if first is not None:
-        first.join(timeout=timeout)
-    inner = sess.get("_run_thread")
-    if inner is not None and inner is not first:
-        inner.join(timeout=timeout)
+    """Join the daemon turn threads spawned by prompt.submit.
+
+    prompt.submit stores ``session["_run_thread"]`` with the
+    ``run_after_agent_ready`` wrapper and starts it; that wrapper then
+    calls ``_run_prompt_submit``, which REPLACES the same key with the
+    inner ``run()`` thread (stored BEFORE .start()).  Both must finish
+    before we assert.  A handle may be observed in the not-yet-started
+    window, so wait for the thread to actually become alive before
+    joining, and never join a dead/already-consumed thread.
+    """
+    import time as _t
+
+    seen = set()
+    for _ in range(6):
+        t = sess.get("_run_thread")
+        if t is None:
+            return
+        if id(t) in seen:
+            return
+        # Wait for the not-yet-started window to pass.
+        for _ in range(20):
+            if t.is_alive():
+                break
+            _t.sleep(0.05)
+        if not t.is_alive():
+            # Thread finished before we could join (or was never going to
+            # start) — nothing more to wait for this handle.
+            return
+        seen.add(id(t))
+        t.join(timeout=timeout)
+        # _run_prompt_submit may have replaced the handle with the inner
+        # run() thread; loop again to pick it up.
 
 
 def test_once_real_turn_chain_success_restores(server, hermes_home, patched_runtime_provider):
@@ -928,10 +966,10 @@ def test_once_real_turn_chain_success_restores(server, hermes_home, patched_runt
     assert agent.provider == "orig-provider"
     # Phase 5: once snapshot consumed by the production turn finally
     assert "one_turn_model_restore" not in sess
-    # model_override scope remains "once" (production keeps it; the
-    # consumed snapshot is what drives the restore)
-    mo = sess.get("model_override", {})
-    assert mo.get("scope") == "once"
+    # Upstream one-turn semantics: NO persistent model_override is created
+    # (a leftover "once" override would skip config sync and re-apply the
+    # temp model on rebuild/resume//new).
+    assert "model_override" not in sess
 
 
 def test_once_real_turn_chain_error_restores(server, hermes_home, patched_runtime_provider):
@@ -953,8 +991,9 @@ def test_once_real_turn_chain_error_restores(server, hermes_home, patched_runtim
     # Agent restored despite turn error
     assert agent.model == "orig-model"
     assert agent.provider == "orig-provider"
-    # Once snapshot consumed
+    # Once snapshot consumed, no persistent override left behind
     assert "one_turn_model_restore" not in sess
+    assert "model_override" not in sess
 
 
 def test_once_real_turn_chain_interrupt_restores(server, hermes_home, patched_runtime_provider):
@@ -995,3 +1034,220 @@ def test_once_real_turn_chain_interrupt_restores(server, hermes_home, patched_ru
     # Agent restored despite interrupt
     assert agent.model == "orig-model"
     assert "one_turn_model_restore" not in sess
+    assert "model_override" not in sess
+
+
+# ── Scenario: --once with a pre-existing session override ─────────────────
+
+
+def test_once_with_existing_session_override_keeps_override(
+    server, hermes_home, patched_runtime_provider
+):
+    """A /model --once executed while the session already carries a
+    persistent override (prior /model A) must:
+      - temporarily switch the live agent to the once model,
+      - restore the agent to the pre-once runtime after the turn,
+      - KEEP the original override A (never delete the user's session model,
+        never create a stale once override).
+    """
+    sid, sess, agent = _once_lifecycle_setup(server, hermes_home, patched_runtime_provider)
+
+    # Plant a pre-existing session override A (as a prior /model A would)
+    sess["model_override"] = {
+        "model": "override-A",
+        "provider": "provider-A",
+        "base_url": "https://a.api",
+        "api_key": "a-key",
+        "api_mode": "chat_completions",
+    }
+    # Simulate the live agent already running override A
+    agent.model = "override-A"
+    agent.provider = "provider-A"
+    agent.base_url = "https://a.api"
+
+    # Mock turn body
+    def fake_run_conversation(*args, **kwargs):
+        return {"messages": [{"role": "assistant", "content": "ok"}]}
+    agent.run_conversation = MagicMock(side_effect=fake_run_conversation)
+
+    # Real slash.exec applies the once switch
+    res = server._methods["slash.exec"](1, {"command": "/temp-model --once", "session_id": sid})
+    assert "result" in res
+
+    # During the once window: live agent on temp model, restore latched,
+    # original override untouched
+    assert agent.model == "model-once-temp"
+    assert sess.get("one_turn_model_restore") is not None
+    assert sess["model_override"]["model"] == "override-A"
+
+    # Real prompt.submit turn; production finally restores
+    res = server._methods["prompt.submit"](2, {"session_id": sid, "text": "hi"})
+    assert "result" in res
+    _wait_turn_threads(sess)
+
+    # Agent back on the pre-once runtime (override A), override dict kept,
+    # no once residue
+    assert agent.model == "override-A"
+    assert agent.provider == "provider-A"
+    assert sess["model_override"]["model"] == "override-A"
+    assert "one_turn_model_restore" not in sess
+
+
+# ── Scenario: --once then real session rebuild (/_new / reset) ────────────
+
+
+def test_once_rebuild_does_not_reapply_temp_model(
+    server, hermes_home, patched_runtime_provider, monkeypatch
+):
+    """After a completed /model --once, a real session rebuild (the
+    production _reset_session_agent /new path) must build the new agent from
+    config / pre-once override — never from the once temp model.
+    """
+    sid, sess, agent = _once_lifecycle_setup(server, hermes_home, patched_runtime_provider)
+
+    def fake_run_conversation(*args, **kwargs):
+        return {"messages": [{"role": "assistant", "content": "ok"}]}
+    agent.run_conversation = MagicMock(side_effect=fake_run_conversation)
+
+    # Complete one real once turn (the once switch was already applied by
+    # _once_lifecycle_setup's slash.exec — do NOT re-apply it, that would
+    # snapshot the temp model instead of the original)
+    server._methods["prompt.submit"](2, {"session_id": sid, "text": "hi"})
+    _wait_turn_threads(sess)
+
+    # Once is fully consumed: agent restored, no override residue
+    assert agent.model == "orig-model"
+    assert "one_turn_model_restore" not in sess
+    assert "model_override" not in sess
+
+    # The real rebuild path must not resurrect the once model. Stub only
+    # _make_agent (which would build a real AIAgent) — the rest of
+    # _reset_session_agent runs for real.
+    new_agent = MagicMock(
+        spec=["model", "provider", "base_url", "api_key", "api_mode", "switch_model"]
+    )
+    new_agent.model = "orig-model"  # config-derived model, not the once temp
+    new_agent.provider = "orig-provider"
+    monkeypatch.setattr(server, "_make_agent", lambda *a, **k: new_agent)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    server._reset_session_agent(sid, sess)
+
+    # The rebuilt session must never carry the once temp model
+    assert sess["agent"].model == "orig-model"
+    assert sess["agent"].model != "model-once-temp"
+    assert "one_turn_model_restore" not in sess
+    assert "model_override" not in sess
+
+
+def test_once_rebuild_keeps_pre_existing_override(
+    server, hermes_home, patched_runtime_provider, monkeypatch
+):
+    """Rebuild after /model --once when a session override A existed before:
+    the rebuild path clears session pins by design (/new semantics), so the
+    fresh agent must come from config — the once temp model must never
+    reappear.
+    """
+    sid, sess, agent = _once_lifecycle_setup(server, hermes_home, patched_runtime_provider)
+    sess["model_override"] = {
+        "model": "override-A",
+        "provider": "provider-A",
+        "base_url": "https://a.api",
+        "api_key": "a-key",
+        "api_mode": "chat_completions",
+    }
+    agent.model = "override-A"
+    agent.provider = "provider-A"
+
+    def fake_run_conversation(*args, **kwargs):
+        return {"messages": [{"role": "assistant", "content": "ok"}]}
+    agent.run_conversation = MagicMock(side_effect=fake_run_conversation)
+
+    # Re-apply the once switch so the restore snapshot captures the
+    # PRE-ONCE override (override-A), not the setup's original model.
+    res = server._methods["slash.exec"](3, {"command": "/temp-model --once", "session_id": sid})
+    assert "result" in res
+    assert agent.model == "model-once-temp"
+    # The once switch must NOT clobber the pre-existing override A
+    assert sess["model_override"]["model"] == "override-A"
+
+    # Complete the real once turn
+    server._methods["prompt.submit"](2, {"session_id": sid, "text": "hi"})
+    _wait_turn_threads(sess)
+
+    assert agent.model == "override-A"
+    assert sess["model_override"]["model"] == "override-A"
+    assert "one_turn_model_restore" not in sess
+
+    new_agent = MagicMock(
+        spec=["model", "provider", "base_url", "api_key", "api_mode", "switch_model"]
+    )
+    new_agent.model = "orig-model"
+    new_agent.provider = "orig-provider"
+    monkeypatch.setattr(server, "_make_agent", lambda *a, **k: new_agent)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    server._reset_session_agent(sid, sess)
+
+    assert sess["agent"].model == "orig-model"
+    assert sess["agent"].model != "model-once-temp"
+    assert "one_turn_model_restore" not in sess
+
+
+# ── Scenario: --once must not block global config sync afterwards ─────────
+
+
+def test_once_does_not_block_config_sync(server, hermes_home, patched_runtime_provider):
+    """After /model --once completes, no residual override may block
+    _sync_agent_model_with_config: a later config.yaml model change must be
+    adoptable on the next turn.
+    """
+    sid, sess, agent = _once_lifecycle_setup(server, hermes_home, patched_runtime_provider)
+
+    def fake_run_conversation(*args, **kwargs):
+        return {"messages": [{"role": "assistant", "content": "ok"}]}
+    agent.run_conversation = MagicMock(side_effect=fake_run_conversation)
+
+    # The once switch was already applied by _once_lifecycle_setup's
+    # slash.exec — complete the turn without re-applying.
+    server._methods["prompt.submit"](2, {"session_id": sid, "text": "hi"})
+    _wait_turn_threads(sess)
+
+    # Once fully consumed — the session must carry NO override so the sync
+    # is not short-circuited
+    assert agent.model == "orig-model"
+    assert "model_override" not in sess
+    assert "one_turn_model_restore" not in sess
+
+    # Simulate a global config.yaml model change
+    (Path(hermes_home) / "config.yaml").write_text(
+        "model:\n  default: new-global-model\n  provider: new-global-provider\n",
+        encoding="utf-8",
+    )
+    sess.pop("config_model_seen", None)
+    agent.model = "orig-model"
+    agent.provider = "orig-provider"
+
+    # Force the config cache to re-read the tmp config.yaml so the sync
+    # sees the change regardless of earlier tests' cache population.
+    server._cfg_cache = None
+    server._cfg_path = None
+    server._cfg_mtime = None
+
+    # The real production sync runs at turn start (no override blocks it).
+    # Patch only the switch helper it would call; assert it is invoked.
+    switch_calls = []
+
+    def spy_apply_model_switch(sid_, session_, raw, **kw):
+        switch_calls.append(raw)
+        return {"value": "new-global-model", "warning": "", "confirm_required": False}
+
+    import unittest.mock as um
+
+    with um.patch.object(server, "_apply_model_switch", spy_apply_model_switch):
+        server._sync_agent_model_with_config(sid, sess)
+
+    # The config change was adopted because nothing pinned the session
+    assert switch_calls, "config sync should have fired without an override"

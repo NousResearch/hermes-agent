@@ -11,7 +11,7 @@ import json
 import queue
 from collections import OrderedDict
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -46,6 +46,7 @@ def _runner(adapter, *, origins=None):
     runner._completion_deliveries_inflight = set()
     runner._completion_deliveries_delivered = OrderedDict()
     runner._completion_delivery_retention = 2048
+    runner._background_tasks = set()
     return runner
 
 
@@ -469,6 +470,30 @@ def test_coalesced_success_records_every_completion_identity():
         assert identity in runner._completion_deliveries_delivered
 
 
+def test_coalesced_format_bounds_details_and_reports_omitted_count():
+    async def _format():
+        loop = asyncio.get_running_loop()
+        entries = [
+            (
+                f"event-{index}",
+                _completion_event(
+                    started_at=float(index), session_id=f"proc_bound_{index}"
+                ),
+                loop.create_future(),
+            )
+            for index in range(12)
+        ]
+        return GatewayRunner._format_coalesced_process_completions(entries)
+
+    text = asyncio.run(_format())
+
+    for index in range(10):
+        assert f"proc_bound_{index}" in text
+    assert "proc_bound_10" not in text
+    assert "proc_bound_11" not in text
+    assert "and 2 more completion(s)" in text
+
+
 def test_duplicate_primary_does_not_discard_fresh_batch_sibling():
     adapter = SimpleNamespace(handle_message=AsyncMock())
     runner = _runner(adapter)
@@ -511,3 +536,152 @@ def test_batch_format_failure_resolves_waiters_for_retry(monkeypatch):
 
     assert asyncio.run(_exercise()) == [False, False]
     adapter.handle_message.assert_not_awaited()
+
+
+def test_shutdown_cancels_batch_during_window_and_settles_waiter_for_retry():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    sleep_entered = asyncio.Event()
+    release_sleep = asyncio.Event()
+    real_sleep = asyncio.sleep
+    event = _completion_event(started_at=1.0, session_id="proc_cancel_window")
+
+    async def _controlled_sleep(delay):
+        if delay == runner._completion_notification_batch_window:
+            sleep_entered.set()
+            await release_sleep.wait()
+            return
+        await real_sleep(delay)
+
+    async def _exercise():
+        pending = asyncio.create_task(
+            runner._enqueue_process_completion_notification("completion", event)
+        )
+        await sleep_entered.wait()
+        flush_task = next(iter(runner._completion_notification_batch_tasks.values()))
+        assert flush_task in runner._background_tasks
+
+        await runner._cancel_process_completion_batch_tasks()
+
+        assert await asyncio.wait_for(pending, timeout=1.0) is False
+        assert flush_task.cancelled()
+        assert flush_task not in runner._background_tasks
+        assert runner._completion_notification_batches == {}
+        assert runner._completion_notification_batch_tasks == {}
+
+    with patch("gateway.run.asyncio.sleep", new=_controlled_sleep):
+        asyncio.run(_exercise())
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_shutdown_cancels_blocked_batch_delivery_and_keeps_it_retryable():
+    delivery_entered = asyncio.Event()
+
+    async def _blocked_delivery(_event):
+        delivery_entered.set()
+        await asyncio.Event().wait()
+
+    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_blocked_delivery))
+    runner = _runner(adapter)
+    runner._completion_notification_batch_window = 0
+    event = _completion_event(started_at=1.0, session_id="proc_cancel_delivery")
+
+    async def _exercise():
+        pending = asyncio.create_task(
+            runner._enqueue_process_completion_notification("completion", event)
+        )
+        await delivery_entered.wait()
+        flush_task = next(iter(runner._completion_notification_batch_flush_tasks))
+
+        await runner._cancel_process_completion_batch_tasks()
+
+        assert await asyncio.wait_for(pending, timeout=1.0) is False
+        assert flush_task.cancelled()
+        assert runner._completion_delivery_identity(event) not in runner._completion_deliveries_inflight
+        assert runner._completion_delivery_identity(event) not in runner._completion_deliveries_delivered
+        assert runner._completion_notification_batches == {}
+        assert runner._completion_notification_batch_tasks == {}
+
+    asyncio.run(_exercise())
+    adapter.handle_message.assert_awaited_once()
+
+
+def test_completion_enqueue_stays_retryable_after_shutdown_starts():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+
+    async def _exercise():
+        await runner._cancel_process_completion_batch_tasks()
+        return await runner._enqueue_process_completion_notification(
+            "completion",
+            _completion_event(started_at=1.0, session_id="proc_after_shutdown"),
+        )
+
+    assert asyncio.run(_exercise()) is False
+    assert runner._completion_notification_batches == {}
+    assert runner._completion_notification_batch_tasks == {}
+    adapter.handle_message.assert_not_awaited()
+
+
+def test_successful_batch_releases_all_lifecycle_task_references():
+    adapter = SimpleNamespace(handle_message=AsyncMock(return_value=None))
+    runner = _runner(adapter)
+    runner._completion_notification_batch_window = 0
+
+    async def _exercise():
+        result = await runner._enqueue_process_completion_notification(
+            "completion",
+            _completion_event(started_at=1.0, session_id="proc_success_cleanup"),
+        )
+        await asyncio.sleep(0)
+        return result
+
+    assert asyncio.run(_exercise()) is True
+    assert runner._completion_notification_batch_tasks == {}
+    assert runner._completion_notification_batch_flush_tasks == set()
+    assert runner._background_tasks == set()
+
+
+def test_shutdown_cancels_overlapping_flushes_for_same_route():
+    delivery_entered = asyncio.Event()
+
+    async def _blocked_delivery(_event):
+        delivery_entered.set()
+        await asyncio.Event().wait()
+
+    adapter = SimpleNamespace(handle_message=AsyncMock(side_effect=_blocked_delivery))
+    runner = _runner(adapter)
+    runner._completion_notification_batch_window = 0
+    first_event = _completion_event(started_at=1.0, session_id="proc_old_flush")
+    second_event = _completion_event(started_at=2.0, session_id="proc_new_flush")
+
+    async def _exercise():
+        first = asyncio.create_task(
+            runner._enqueue_process_completion_notification("first", first_event)
+        )
+        await delivery_entered.wait()
+
+        # The first task has detached from the route index while blocked in
+        # adapter delivery.  A new completion for the same route must create a
+        # second flush, and shutdown must still own and cancel both tasks.
+        assert runner._completion_notification_batch_tasks == {}
+        runner._completion_notification_batch_window = 3600
+        second = asyncio.create_task(
+            runner._enqueue_process_completion_notification("second", second_event)
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        flush_tasks = set(runner._completion_notification_batch_flush_tasks)
+        assert len(flush_tasks) == 2
+
+        await runner._cancel_process_completion_batch_tasks()
+
+        assert await asyncio.gather(first, second) == [False, False]
+        assert all(task.cancelled() for task in flush_tasks)
+        assert runner._completion_notification_batches == {}
+        assert runner._completion_notification_batch_tasks == {}
+        assert runner._completion_notification_batch_flush_tasks == set()
+        assert runner._background_tasks == set()
+
+    asyncio.run(_exercise())
+    adapter.handle_message.assert_awaited_once()

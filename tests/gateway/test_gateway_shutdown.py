@@ -105,6 +105,49 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
 
 
 @pytest.mark.asyncio
+async def test_gateway_stop_settles_completion_batch_before_adapter_disconnect():
+    runner, adapter = make_restart_runner()
+    runner._completion_notification_batch_window = 3600
+    event = {
+        "session_id": "shutdown-batch",
+        "started_at": 1.0,
+        "session_key": "telegram:dm:123456:u1",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123456",
+        "user_id": "u1",
+        "exit_code": 0,
+        "output": "done",
+    }
+    call_order: list[str] = []
+    original_cancel = runner._cancel_process_completion_batch_tasks
+
+    async def _tracked_cancel():
+        call_order.append("batch_cancel_start")
+        await original_cancel()
+        call_order.append("batch_cancel_done")
+
+    async def _disconnect():
+        call_order.append("disconnect")
+
+    runner._cancel_process_completion_batch_tasks = _tracked_cancel
+    adapter.disconnect = _disconnect
+    pending = asyncio.create_task(
+        runner._enqueue_process_completion_notification("completion", event)
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert runner._completion_notification_batch_flush_tasks
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    assert await asyncio.wait_for(pending, timeout=1.0) is False
+    assert call_order == ["batch_cancel_start", "batch_cancel_done", "disconnect"]
+    assert runner._completion_notification_batch_flush_tasks == set()
+
+
+@pytest.mark.asyncio
 async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")

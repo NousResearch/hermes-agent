@@ -6578,7 +6578,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # one synthetic turn instead of one turn per process (#70300).
         self._completion_notification_batches: dict[tuple[str, ...], list[tuple[str, dict, asyncio.Future]]] = {}
         self._completion_notification_batch_tasks: dict[tuple[str, ...], asyncio.Task] = {}
+        self._completion_notification_batch_flush_tasks: set[asyncio.Task] = set()
         self._completion_notification_batch_window = 0.1
+        self._completion_notification_batches_stopping = False
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -13897,6 +13899,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self._cleanup_agent_resources_off_loop(
                         _agent, context="shutdown idle-cache"
                     )
+
+            # Completion flush tasks can be sleeping in their fan-in window or
+            # blocked in adapter delivery.  Cancel and await them while adapters
+            # are still alive so every watcher receives a retryable result
+            # before platform teardown begins.
+            cancel_completion_batches = getattr(
+                self, "_cancel_process_completion_batch_tasks", None
+            )
+            if cancel_completion_batches is not None:
+                await cancel_completion_batches()
 
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)
@@ -24051,39 +24063,72 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._completion_notification_batch_tasks.pop(key, None)
             if not entries:
                 return
-            try:
-                if len(entries) == 1:
-                    synth_text = entries[0][0]
-                else:
-                    synth_text = self._format_coalesced_process_completions(entries)
+            if len(entries) == 1:
+                synth_text = entries[0][0]
+            else:
+                synth_text = self._format_coalesced_process_completions(entries)
 
-                # A duplicate primary can legitimately return None from the
-                # lifecycle dedupe seam.  Try the next batch identity so a
-                # fresh sibling is never discarded with that duplicate.
-                delivered = None
-                for _text, candidate_evt, _future in entries:
-                    delivered = await self._deliver_completion_notification(
-                        synth_text, candidate_evt,
-                    )
-                    if delivered is not None:
-                        break
-                if delivered is True and len(entries) > 1:
-                    self._record_coalesced_completion_siblings(
-                        [evt for _text, evt, _future in entries]
-                    )
-            except Exception:
-                logger.exception("Coalesced process completion delivery failed")
-                delivered = False
-            finally:
-                # Never strand watcher futures if formatting or delivery fails.
-                # False follows the existing watcher retry path.
-                for _text, _evt, future in entries:
-                    if not future.done():
-                        future.set_result(delivered)
+            # A duplicate primary can legitimately return None from the
+            # lifecycle dedupe seam.  Try the next batch identity so a
+            # fresh sibling is never discarded with that duplicate.
+            delivered = None
+            for _text, candidate_evt, _future in entries:
+                delivered = await self._deliver_completion_notification(
+                    synth_text, candidate_evt,
+                )
+                if delivered is not None:
+                    break
+            if delivered is True and len(entries) > 1:
+                self._record_coalesced_completion_siblings(
+                    [evt for _text, evt, _future in entries]
+                )
+        except asyncio.CancelledError:
+            # Shutdown may cancel us either during the fan-in window or while
+            # adapter delivery is blocked.  Recover entries that have not yet
+            # detached and resolve every waiter as retryable before adapters
+            # are torn down.
+            delivered = False
+            if not entries:
+                entries = self._completion_notification_batches.pop(key, [])
+            raise
+        except Exception:
+            logger.exception("Coalesced process completion delivery failed")
+            delivered = False
         finally:
+            # Never strand watcher futures if formatting, delivery, or task
+            # cancellation interrupts a batch.  False follows the existing
+            # watcher retry path; None remains the ordinary dedupe result.
+            for _text, _evt, future in entries:
+                if not future.done():
+                    future.set_result(delivered)
             # Do not remove a newer flush task that reused the same route key.
             if self._completion_notification_batch_tasks.get(key) is current_task:
                 self._completion_notification_batch_tasks.pop(key, None)
+
+    async def _cancel_process_completion_batch_tasks(self) -> None:
+        """Settle pending completion batches before adapter teardown."""
+        self._completion_notification_batches_stopping = True
+        tasks = {
+            task
+            for task in getattr(
+                self, "_completion_notification_batch_flush_tasks", set()
+            )
+            if not task.done()
+        }
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Defensive cleanup for an orphaned queue with no live flush task.
+        batches = getattr(self, "_completion_notification_batches", {})
+        for entries in batches.values():
+            for _text, _evt, future in entries:
+                if not future.done():
+                    future.set_result(False)
+        batches.clear()
+        getattr(self, "_completion_notification_batch_tasks", {}).clear()
+        getattr(self, "_completion_notification_batch_flush_tasks", set()).clear()
 
     async def _enqueue_process_completion_notification(
         self, synth_text: str, evt: dict,
@@ -24093,8 +24138,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # batching seam lazy so those focused lifecycle tests remain valid.
         if not hasattr(self, "_completion_notification_batches"):
             self._completion_notification_batches = {}
+        if not hasattr(self, "_completion_notification_batch_tasks"):
             self._completion_notification_batch_tasks = {}
+        if not hasattr(self, "_completion_notification_batch_flush_tasks"):
+            self._completion_notification_batch_flush_tasks = set()
+        if not hasattr(self, "_completion_notification_batch_window"):
             self._completion_notification_batch_window = 0.1
+        if not hasattr(self, "_completion_notification_batches_stopping"):
+            self._completion_notification_batches_stopping = False
+
+        if self._completion_notification_batches_stopping:
+            return False
 
         key = self._completion_notification_batch_key(evt)
         future = asyncio.get_running_loop().create_future()
@@ -24102,8 +24156,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             (synth_text, evt, future)
         )
         if key not in self._completion_notification_batch_tasks:
-            self._completion_notification_batch_tasks[key] = asyncio.create_task(
+            task = asyncio.create_task(
                 self._flush_process_completion_batch(key)
+            )
+            self._completion_notification_batch_tasks[key] = task
+            # Keep the flush alive and include it in the gateway's normal
+            # lifecycle accounting.  Focused tests that construct a runner via
+            # object.__new__ lazily receive the same ownership set.
+            if not hasattr(self, "_background_tasks"):
+                self._background_tasks = set()
+            self._background_tasks.add(task)
+            self._completion_notification_batch_flush_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(
+                self._completion_notification_batch_flush_tasks.discard
             )
         return await future
 

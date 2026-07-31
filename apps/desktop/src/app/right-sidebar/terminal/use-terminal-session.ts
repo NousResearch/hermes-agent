@@ -1,7 +1,6 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
-import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -16,6 +15,7 @@ import { $terminalInjection } from '../store'
 
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
+import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
   isAddSelectionShortcut,
   isMacPlatform,
@@ -514,6 +514,10 @@ export function useTerminalSession({
       fontWeightBold: 'bold',
       letterSpacing: 0,
       lineHeight: 1.12,
+      // OSC 8 hyperlinks (gh, cargo, npm, ls --hyperlink) activate through this
+      // handler; without it xterm shows a raw confirm() and then a window.open
+      // Electron denies.
+      linkHandler: terminalLinkHandler,
       // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
       // can't select — ⌥-drag (macOS) / Shift-drag (else) forces a native
       // selection over mouse-mode apps, which ⌘/Ctrl+L then sends to chat.
@@ -536,7 +540,7 @@ export function useTerminalSession({
     term.loadAddon(fit)
     term.loadAddon(serialize)
     term.loadAddon(new Unicode11Addon())
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
 
     // Replay last session's scrollback before the fresh shell boots. The process

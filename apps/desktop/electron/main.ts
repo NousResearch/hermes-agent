@@ -519,6 +519,8 @@ import {
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import { createRemoteOwnerCache } from './remote-owner-cache'
 import { remoteSessionCookies } from './remote-session-cookies'
+import { startRendererServer } from './renderer-server'
+import { isRendererUrl } from './renderer-url'
 import {
   attachRemoteRequestHeaderListener,
   collectRemoteHeaderSources,
@@ -697,6 +699,7 @@ if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+let packagedRendererServer: Awaited<ReturnType<typeof startRendererServer>> | null = null
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -5178,6 +5181,10 @@ function resolveRendererIndexWithMissing(): { index: string; missing: string[] }
 // need the torn-asset list.
 function resolveRendererIndex() {
   return resolveRendererIndexWithMissing().index
+}
+
+function rendererBaseUrl() {
+  return DEV_SERVER || packagedRendererServer?.origin || pathToFileURL(resolveRendererIndex()).toString()
 }
 
 // True when `dir` lives inside the packaged app bundle / install tree.
@@ -13702,7 +13709,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     }
   })
   win.webContents.on('will-navigate', (event, url) => {
-    if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
+    if (isRendererUrl(url, rendererBaseUrl())) {
       return
     }
 
@@ -13910,9 +13917,14 @@ function spawnSecondaryWindow({
     win,
     buildSessionWindowUrl(sessionId, {
       connectionId,
-      devServer: DEV_SERVER,
       profile,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+      // Prefer the packaged renderer HTTP server when it is running: loading the
+      // renderer over http:// gives embeds a real origin, which `file://` cannot
+      // provide (YouTube rejects file-origin embeds). Fall back to upstream's
+      // rendererIndexPath path so the file:// URL is still built correctly --
+      // passing a file:// URL as `devServer` would yield `index.html/?win=...`.
+      devServer: DEV_SERVER || packagedRendererServer?.origin,
+      rendererIndexPath: DEV_SERVER || packagedRendererServer?.origin ? undefined : resolveRendererIndex(),
       watch
     }),
     'Session window'
@@ -13995,8 +14007,10 @@ function spawnBrowserWindow(tabId) {
   loadWindowUrl(
     win,
     buildBrowserWindowUrl(tabId, {
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+      // Prefer the packaged renderer HTTP server when it is running (real
+      // origin for embeds — see rendererBaseUrl()).
+      devServer: DEV_SERVER || packagedRendererServer?.origin,
+      rendererIndexPath: DEV_SERVER || packagedRendererServer?.origin ? undefined : resolveRendererIndex()
     }),
     'Browser window'
   )
@@ -14113,8 +14127,10 @@ function createInstanceWindow(
     win,
     buildInstanceWindowUrl({
       ...route,
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+      // Prefer the packaged renderer HTTP server when it is running (real
+      // origin for embeds — see rendererBaseUrl()).
+      devServer: DEV_SERVER || packagedRendererServer?.origin,
+      rendererIndexPath: DEV_SERVER || packagedRendererServer?.origin ? undefined : resolveRendererIndex()
     }),
     'Instance window'
   )
@@ -14161,11 +14177,9 @@ let appQuitting = false
 let petOverlayClosing = false
 
 function petOverlayUrl() {
-  if (DEV_SERVER) {
-    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=overlay#/`
-  }
+  const base = rendererBaseUrl().replace(/\/$/, '')
 
-  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=overlay#/`
+  return `${base}/?win=overlay#/`
 }
 
 function spawnPetOverlayWindow(bounds) {
@@ -14666,9 +14680,11 @@ function hudUrl(sessionId, profile) {
   // non-primary profile's conversation resolves the session id against the
   // wrong backend and falls back to the default profile's last session.
   return buildHudWindowUrl(sessionId, {
-    devServer: DEV_SERVER,
+    // Prefer the packaged renderer HTTP server when it is running (real
+    // origin for embeds — see rendererBaseUrl()).
+    devServer: DEV_SERVER || packagedRendererServer?.origin,
     profile,
-    rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+    rendererIndexPath: DEV_SERVER || packagedRendererServer?.origin ? undefined : resolveRendererIndex()
   })
 }
 
@@ -14949,11 +14965,9 @@ function writeQuickEntrySettings(settings) {
 }
 
 function quickEntryUrl() {
-  if (DEV_SERVER) {
-    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=quick#/`
-  }
+  const base = rendererBaseUrl().replace(/\/$/, '')
 
-  return `${pathToFileURL(resolveRendererIndex()).toString()}?win=quick#/`
+  return `${base}/?win=quick#/`
 }
 
 function spawnQuickEntryWindow() {
@@ -15439,7 +15453,7 @@ function createWindow() {
             errorDescription:
               'The desktop renderer crashed repeatedly (Windows STATUS_STACK_BUFFER_OVERRUN / 0xC0000409). GPU fallback could not recover the window.',
             repairHint: 'hermes desktop --force-build',
-            reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
+            reloadUrl: rendererBaseUrl()
           })
 
           return
@@ -15496,7 +15510,7 @@ function createWindow() {
           url: details?.url,
           errorDescription: 'The desktop renderer failed to load repeatedly after the update.',
           repairHint: 'hermes desktop --force-build',
-          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
+          reloadUrl: rendererBaseUrl()
         })
       },
       // #116472: the OS/Chromium can kill a renderer while the window is live (memory
@@ -15518,7 +15532,7 @@ function createWindow() {
           errorDescription:
             `The desktop UI process was terminated unexpectedly (reason: ${reason}${exit}). ` +
             'Your sessions and the background gateway are unaffected — reload to continue.',
-          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
+          reloadUrl: rendererBaseUrl()
         })
       }
     },
@@ -15557,12 +15571,12 @@ function createWindow() {
       errorDescription: `The desktop renderer bundle is incomplete after the last update (${tornAssets.length} missing file(s)).`,
       missingAssets: tornAssets,
       repairHint: 'hermes desktop --force-build',
-      reloadUrl: pathToFileURL(rendererIndex).toString()
+      reloadUrl: rendererBaseUrl()
     })
   } else {
     loadWindowUrl(
       mainWindow,
-      DEV_SERVER || pathToFileURL(rendererIndex || resolveRendererIndex()).toString(),
+      rendererBaseUrl(),
       'Renderer'
     )
   }
@@ -19320,7 +19334,14 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Serve the packaged renderer over loopback HTTP (real origin for embeds —
+  // see renderer-server.ts) before any window loads it. In dev the Vite dev
+  // server already provides the origin.
+  if (!DEV_SERVER) {
+    packagedRendererServer = await startRendererServer(path.dirname(resolveRendererIndex()))
+  }
+
   // Post-update relaunch detection (App Installer arm): when the previous
   // version wrote the one-shot pending-relaunch marker before quitting into
   // an OS package swap, consume it here — the renderer toasts "Hermes
@@ -19403,9 +19424,9 @@ app.whenReady().then(() => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
-  installCommandScreenshot({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
+  installCommandScreenshot({ rendererUrl: rendererBaseUrl() })
   installHudModifierTap({
-    rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
+    rendererUrl: rendererBaseUrl(),
     summon: () => {
       if (!isQuittingForHandoff && !backendShutdown.hasStarted()) {
         openHudWindow(null, null)
@@ -19721,6 +19742,8 @@ app.on('before-quit', event => {
   }
 
   hudWindow = null
+
+  void packagedRendererServer?.close()
 
   // Same for the Quick Entry composer — and release its global accelerator so a
   // quitting Hermes never keeps another app's chord hostage.

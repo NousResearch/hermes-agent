@@ -4849,6 +4849,24 @@ def _lmstudio_fetch_raw_models(
     return raw_models
 
 
+def _lmstudio_entry_is_embedding(entry: dict) -> bool:
+    """True when an LM Studio catalog entry declares itself an embedding model.
+
+    This is the single classification rule for LM Studio catalog entries: an
+    entry is chat-capable unless it explicitly declares the ``embedding`` type.
+    LM Studio omits ``type`` on some entries, so "not explicitly an embedding"
+    is deliberately the chat-capable side — requiring an explicit ``llm`` would
+    hide untyped models from discovery.
+
+    Discovery (``probe_lmstudio_models``) and loaded-instance cleanup
+    (``ensure_lmstudio_model_loaded``) must share this predicate. If they
+    diverged, an untyped competing model could be offered as a usable chat
+    model while never being unloaded, leaving LM Studio in a dirty multi-LLM
+    state.
+    """
+    return str(entry.get("type") or "").strip().lower() == "embedding"
+
+
 def probe_lmstudio_models(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -4872,7 +4890,7 @@ def probe_lmstudio_models(
     for raw in raw_models:
         if not isinstance(raw, dict):
             continue
-        if str(raw.get("type") or "").strip().lower() == "embedding":
+        if _lmstudio_entry_is_embedding(raw):
             continue
         key = str(raw.get("key") or raw.get("id") or "").strip()
         if key and key not in keys:
@@ -4926,7 +4944,10 @@ def ensure_lmstudio_model_loaded(
     with sufficient context. If LM Studio has a dirty LLM state, such as another
     LLM loaded at the same time or the target loaded below an explicitly
     requested context, unload the loaded LLM instances before loading the
-    requested target model. Non-LLM instances (embeddings) are never unloaded.
+    requested target model. "LLM" here means whatever
+    ``_lmstudio_entry_is_embedding`` leaves chat-capable, matching what
+    ``probe_lmstudio_models`` offers; instances of entries explicitly declared
+    as embeddings are never unloaded.
 
     This prevents LM Studio from keeping multiple large local LLMs resident when
     Hermes switches models, which can force RAM/CPU fallback and severe slowdown.
@@ -5000,18 +5021,20 @@ def ensure_lmstudio_model_loaded(
     target_aliases = {model} | _entry_aliases(target_entry)
 
     # Inventory the loaded LLM instances so competing models can be unloaded
-    # before the target is (re)loaded. Non-LLM entries (embeddings) are skipped;
-    # the target entry itself is always inspected because LM Studio does not
-    # always publish a ``type`` for it.
+    # before the target is (re)loaded. Chat-capability uses the same predicate
+    # as discovery (``_lmstudio_entry_is_embedding``), so any entry
+    # ``probe_lmstudio_models`` would offer as a chat model — including the
+    # untyped entries LM Studio publishes — is an unload candidate here.
+    # Entries explicitly declared as embeddings are never unloaded, except that
+    # the target entry itself is always inspected: its loaded context is
+    # authoritative whatever type LM Studio reports for it.
     loaded_llm_instances: list[dict[str, Any]] = []
     for raw in raw_models:
         if not isinstance(raw, dict):
             continue
 
         is_target_model = bool(_entry_aliases(raw) & target_aliases)
-        model_type = raw.get("type")
-        is_llm = isinstance(model_type, str) and model_type.strip().lower() == "llm"
-        if not is_llm and not is_target_model:
+        if _lmstudio_entry_is_embedding(raw) and not is_target_model:
             continue
 
         instances = raw.get("loaded_instances")

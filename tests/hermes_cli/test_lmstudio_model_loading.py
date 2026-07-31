@@ -43,23 +43,32 @@ class _JsonResponse:
         return self._body
 
 
+_NO_TYPE = object()
+"""Sentinel for a catalog entry that carries no ``type`` field at all.
+
+LM Studio publishes such entries, and they are the case where discovery and
+loaded-instance cleanup used to disagree.
+"""
+
+
 def _entry(
     model_id: str,
     *,
     loaded: tuple[tuple[str, int], ...] = (),
-    model_type: str = "llm",
+    model_type: object = "llm",
     maximum: int = 262_144,
     key: str | None = None,
 ) -> dict:
     entry: dict = {
         "id": model_id,
-        "type": model_type,
         "max_context_length": maximum,
         "loaded_instances": [
             {"id": instance_id, "config": {"context_length": context}}
             for instance_id, context in loaded
         ],
     }
+    if model_type is not _NO_TYPE:
+        entry["type"] = model_type
     if key is not None:
         entry["key"] = key
     return entry
@@ -305,6 +314,233 @@ def test_embedding_instances_are_never_unloaded(monkeypatch):
 
     unloaded = [call["body"]["instance_id"] for call in requests if call["url"] == UNLOAD_URL]
     assert unloaded == ["competing-instance"]
+
+
+# --------------------------------------------------------------------------
+# Cleanup classifies entries exactly the way discovery does
+# --------------------------------------------------------------------------
+
+
+def _unloaded_instance_ids(requests: list[dict]) -> list[str]:
+    return [call["body"]["instance_id"] for call in requests if call["url"] == UNLOAD_URL]
+
+
+def test_untyped_competitor_is_unloaded_before_the_target_loads(monkeypatch):
+    """LM Studio publishes catalog entries with no ``type`` at all.
+
+    Discovery offers those as usable chat models, so a resident one is a
+    competing LLM and must be evicted before the target loads — otherwise two
+    large local LLMs stay resident and LM Studio falls back to RAM/CPU.
+    """
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(
+                COMPETITOR,
+                loaded=(("competing-instance", 131_072),),
+                model_type=_NO_TYPE,
+            ),
+            _entry(TARGET),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 131_072}})
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=None,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 131_072
+    assert result.load_attempted is True
+    assert result.rejected is False
+    assert [(call["method"], call["url"], call["body"]) for call in requests] == [
+        ("POST", UNLOAD_URL, {"instance_id": "competing-instance"}),
+        ("POST", LOAD_URL, {"model": TARGET, "echo_load_config": True}),
+    ]
+
+
+def test_target_plus_untyped_competitor_cleans_both_then_reloads_target(monkeypatch):
+    """Both resident LLM instances go before the target is reloaded."""
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(TARGET, loaded=(("target-instance", 131_072),), key=TARGET),
+            _entry(
+                COMPETITOR,
+                loaded=(("competing-instance", 131_072),),
+                model_type=_NO_TYPE,
+            ),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 64_000}})
+
+    loaded = models.ensure_lmstudio_model_loaded(
+        TARGET, BASE_URL, api_key="lm-secret", target_context_length=64_000
+    )
+
+    assert loaded == 64_000
+    assert [(call["url"], call["body"]) for call in requests] == [
+        (UNLOAD_URL, {"instance_id": "target-instance"}),
+        (UNLOAD_URL, {"instance_id": "competing-instance"}),
+        (
+            LOAD_URL,
+            {"model": TARGET, "echo_load_config": True, "context_length": 64_000},
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "embedding_type",
+    ["embedding", "EMBEDDING", "  Embedding\t"],
+    ids=["lowercase", "uppercase", "padded-mixed-case"],
+)
+def test_explicit_embedding_stays_loaded_next_to_an_untyped_competitor(
+    monkeypatch, embedding_type
+):
+    """Only the chat-capable competitor is evicted; the embedder is untouched.
+
+    Case and surrounding whitespace are normalized the same way discovery
+    normalizes them, so an oddly-cased ``embedding`` is still an embedding.
+    """
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(
+                EMBEDDING,
+                loaded=(("embed-instance", 512),),
+                model_type=embedding_type,
+            ),
+            _entry(
+                COMPETITOR,
+                loaded=(("competing-instance", 131_072),),
+                model_type=_NO_TYPE,
+            ),
+            _entry(TARGET),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 131_072}})
+
+    models.ensure_lmstudio_model_loaded(
+        TARGET, BASE_URL, api_key="lm-secret", target_context_length=None
+    )
+
+    assert _unloaded_instance_ids(requests) == ["competing-instance"]
+
+
+# Every shape LM Studio has been seen to publish, plus the malformed ones the
+# normalization has to survive. The point is not the individual verdicts but
+# that cleanup and discovery agree on all of them.
+_TYPE_CASES = [
+    ("llm", "llm"),
+    ("LLM", "uppercase-llm"),
+    ("  llm  ", "padded-llm"),
+    ("vlm", "explicit-non-llm-type"),
+    (_NO_TYPE, "no-type-field"),
+    (None, "null-type"),
+    ("", "empty-type"),
+    ("   ", "blank-type"),
+    (42, "non-string-type"),
+    ("embedding", "embedding"),
+    ("EMBEDDING", "uppercase-embedding"),
+    ("  Embedding\t", "padded-mixed-case-embedding"),
+    ("embeddings", "embedding-lookalike"),
+]
+
+
+@pytest.mark.parametrize(
+    "model_type",
+    [case for case, _ in _TYPE_CASES],
+    ids=[name for _, name in _TYPE_CASES],
+)
+def test_cleanup_classification_agrees_with_discovery(monkeypatch, model_type):
+    """A resident entry is unloaded iff discovery would offer it as a chat model.
+
+    Both halves run against the same catalog, so neither side can drift into a
+    private heuristic: if ``probe_lmstudio_models`` advertises the competitor,
+    ``ensure_lmstudio_model_loaded`` has to evict it, and if discovery hides it
+    as an embedding, cleanup must leave it resident.
+    """
+    catalog = [
+        _entry(
+            COMPETITOR,
+            loaded=(("competing-instance", 131_072),),
+            model_type=model_type,
+        ),
+        _entry(TARGET),
+    ]
+    _catalogs(monkeypatch, catalog)
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 131_072}})
+
+    models.ensure_lmstudio_model_loaded(
+        TARGET, BASE_URL, api_key="lm-secret", target_context_length=None
+    )
+
+    discovered = models.probe_lmstudio_models(base_url=BASE_URL)
+    assert discovered is not None
+    assert (COMPETITOR in discovered) == (
+        "competing-instance" in _unloaded_instance_ids(requests)
+    )
+    # The target is always (re)loaded, whatever the competitor turned out to be.
+    assert [call["url"] for call in requests][-1] == LOAD_URL
+
+
+def test_single_untyped_target_with_acceptable_context_is_a_noop(monkeypatch):
+    """A lone resident target is clean state even with no ``type`` published."""
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(
+                TARGET,
+                loaded=(("target-instance", 131_072),),
+                model_type=_NO_TYPE,
+            )
+        ],
+    )
+    _forbid_requests(monkeypatch)
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=64_000,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 131_072
+    assert result.load_attempted is False
+    assert result.rejected is False
+
+
+def test_untyped_competitor_unload_failure_reports_no_load_attempt(monkeypatch):
+    """A failed eviction still aborts before any load is attempted."""
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(
+                COMPETITOR,
+                loaded=(("competing-instance", 131_072),),
+                model_type=_NO_TYPE,
+            ),
+            _entry(TARGET),
+        ],
+    )
+    requests = _record(monkeypatch, fail_unload=True)
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=64_000,
+        return_load_result=True,
+    )
+
+    assert result.context_length is None
+    assert result.load_attempted is False
+    assert result.rejected is False
+    assert [call["url"] for call in requests] == [UNLOAD_URL]
 
 
 # --------------------------------------------------------------------------

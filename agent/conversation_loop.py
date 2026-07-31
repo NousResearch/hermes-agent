@@ -93,6 +93,7 @@ from agent.trajectory import has_incomplete_scratchpad
 # finalizer at turn end.
 from agent.turn_finalizer import finalize_turn
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent import empty_response_guard as _empty_guard
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -7603,7 +7604,36 @@ def run_conversation(
                         _has_structured
                         and agent._thinking_prefill_retries >= 2
                     )
-                    if _truly_empty and (not _has_structured or _prefill_exhausted) and agent._empty_content_retries < 3:
+                    _empty_candidate = _truly_empty and (
+                        not _has_structured or _prefill_exhausted
+                    )
+                    if _empty_candidate:
+                        # NS-503: every empty attempt re-sends the full
+                        # conversation input at full price. Record the
+                        # attempt (usage/finish_reason signature) so
+                        # deterministic empties — e.g. unsignaled
+                        # provider refusals with zero output tokens —
+                        # stop burning paid retries reproducing the
+                        # same empty. Fails open: missing usage or
+                        # any generated tokens keep the full budget.
+                        _empty_guard.record_empty_attempt(
+                            agent,
+                            finish_reason=finish_reason,
+                            response=response,
+                        )
+                    _empty_retry_budget = (
+                        _empty_guard.empty_retry_budget(agent, response)
+                        if _empty_candidate
+                        else _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
+                    )
+                    _deterministic_empty = _empty_candidate and (
+                        _empty_guard.deterministic_empty(agent)
+                    )
+                    if (
+                        _empty_candidate
+                        and agent._empty_content_retries < _empty_retry_budget
+                        and not _deterministic_empty
+                    ):
                         agent._empty_content_retries += 1
                         wait_time = jittered_backoff(
                             agent._empty_content_retries,
@@ -7612,12 +7642,19 @@ def run_conversation(
                         )
                         logger.warning(
                             "Empty response (no content or reasoning) — "
-                            "retry %d/3 in %.1fs (model=%s)",
-                            agent._empty_content_retries, wait_time, agent.model,
+                            "retry %d/%d in %.1fs (model=%s)",
+                            agent._empty_content_retries,
+                            _empty_retry_budget, wait_time, agent.model,
+                        )
+                        _budget_note = (
+                            " — high-cost request, reduced retry budget"
+                            if _empty_retry_budget < _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
+                            else ""
                         )
                         agent._buffer_status(
                             f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3) in {wait_time:.0f}s"
+                            f"({agent._empty_content_retries}/{_empty_retry_budget}) "
+                            f"in {wait_time:.0f}s{_budget_note}"
                         )
                         # Sleep in small increments to stay responsive to interrupts
                         sleep_end = time.time() + wait_time
@@ -7627,7 +7664,7 @@ def run_conversation(
                                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during empty-response retry wait, aborting.", force=True)
                                 _interrupt_text = (
                                     f"Operation interrupted: retrying empty response from model "
-                                    f"(retry {agent._empty_content_retries}/3)."
+                                    f"(retry {agent._empty_content_retries}/{_empty_retry_budget})."
                                 )
                                 close_interrupted_tool_sequence(messages, _interrupt_text)
                                 agent._persist_session(messages, conversation_history)
@@ -7643,10 +7680,24 @@ def run_conversation(
                             _backoff_touch_counter += 1
                             if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
                                 agent._touch_activity(
-                                    f"empty response retry backoff ({agent._empty_content_retries}/3), "
+                                    f"empty response retry backoff ({agent._empty_content_retries}/{_empty_retry_budget}), "
                                     f"{int(sleep_end - time.time())}s remaining"
                                 )
                         continue
+
+                    if _truly_empty and _deterministic_empty:
+                        logger.warning(
+                            "Deterministic empty response detected "
+                            "(consecutive zero-output completions, "
+                            "model=%s provider=%s finish_reason=%s) — "
+                            "skipping remaining retries",
+                            agent.model, agent.provider, finish_reason,
+                        )
+                        agent._buffer_status(
+                            "⚠️ Model is deterministically returning empty "
+                            "(zero output tokens) — skipping further retries "
+                            "to avoid repeat charges"
+                        )
 
                     # ── Exhausted retries — try fallback provider ──
                     # Before giving up with "(empty)", attempt to
@@ -7694,6 +7745,17 @@ def run_conversation(
                     # "(empty)" terminal.
                     # Surface the buffered retry/fallback trace so the
                     # user can see what was attempted before "(empty)".
+                    # NS-503: if we know roughly what the empty streak
+                    # cost (each attempt re-billed the full input), say
+                    # so — an unexplained charge for "no answer" is the
+                    # core of the complaint.
+                    _streak_cost = _empty_guard.streak_cost_usd(agent)
+                    if _streak_cost is not None:
+                        agent._buffer_status(
+                            f"ℹ️ Estimated cost of these empty attempts: "
+                            f"~${_streak_cost:.2f} (input tokens are billed "
+                            f"per attempt even when no answer is produced)"
+                        )
                     agent._flush_status_buffer()
                     _turn_exit_reason = "empty_response_exhausted"
                     reasoning_text = agent._extract_reasoning(assistant_message)

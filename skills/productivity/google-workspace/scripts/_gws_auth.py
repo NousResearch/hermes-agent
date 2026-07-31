@@ -32,12 +32,26 @@ def gws_binary() -> str | None:
     return shutil.which("gws")
 
 
+def _native_env() -> dict[str, str]:
+    """Child environment for probing gws's *own* credential store.
+
+    Strips any inherited ``GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`` so a stale
+    override from the parent process (e.g. a Hermes token path exported by an
+    earlier hermes-mode invocation) can't redirect gws away from its native
+    credentials and mask or fake its login state.
+    """
+    env = os.environ.copy()
+    env.pop("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", None)
+    return env
+
+
 def _gws_auth_status() -> dict | None:
     """Return parsed ``gws auth status`` JSON using gws's *own* credentials.
 
-    Deliberately does **not** set ``GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`` —
-    we want gws's native login state, not whatever Hermes would point it at.
-    Returns ``None`` if gws is missing, errors, or emits non-JSON.
+    Runs with ``GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`` removed from the child
+    environment — we want gws's native login state, not whatever the parent
+    environment would point it at. Returns ``None`` if gws is missing, errors,
+    or emits non-JSON.
     """
     binary = gws_binary()
     if not binary:
@@ -48,6 +62,7 @@ def _gws_auth_status() -> dict | None:
             capture_output=True,
             text=True,
             timeout=10,
+            env=_native_env(),
         )
     except Exception:
         return None
@@ -72,7 +87,8 @@ def gws_live_check() -> tuple[bool, str]:
 
     Mirrors the cheap call ``google_api.gmail_labels`` makes. Returns
     ``(ok, detail)`` where ``detail`` carries the error on failure. Uses gws's
-    own credentials (no ``GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`` override).
+    own credentials (``GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`` is stripped
+    from the child environment, even when inherited from the parent).
     """
     binary = gws_binary()
     if not binary:
@@ -83,6 +99,7 @@ def gws_live_check() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=30,
+            env=_native_env(),
         )
     except Exception as e:  # noqa: BLE001 — surface any subprocess failure to caller
         return False, str(e)

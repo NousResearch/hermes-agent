@@ -329,6 +329,22 @@ class TestGwsNativeMode:
         env = raw_api_module._gws_env()
         assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in env
 
+    def test_gws_env_strips_inherited_override_in_native_mode(self, raw_api_module, monkeypatch):
+        """Regression: a stale parent-env override must not leak into gws children."""
+        assert not raw_api_module.TOKEN_PATH.exists()
+        monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "/stale/hermes/google_token.json")
+        monkeypatch.setenv("SOME_UNRELATED_VAR", "keep-me")
+        env = raw_api_module._gws_env()
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in env
+        assert env["SOME_UNRELATED_VAR"] == "keep-me"
+
+    def test_gws_env_inherited_override_replaced_in_hermes_mode(self, raw_api_module, monkeypatch):
+        """In hermes mode the pin always wins over whatever the parent exported."""
+        raw_api_module.TOKEN_PATH.write_text("{}")
+        monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "/stale/other/path.json")
+        env = raw_api_module._gws_env()
+        assert env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] == str(raw_api_module.TOKEN_PATH)
+
     def test_get_credentials_exits_in_gws_native_mode(self, raw_api_module, monkeypatch, capsys):
         """Python-only ops (drive upload/download) must fail clearly, not crash, in gws-native mode."""
         assert not raw_api_module.TOKEN_PATH.exists()

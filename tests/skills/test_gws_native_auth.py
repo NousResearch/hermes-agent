@@ -134,5 +134,53 @@ class TestGwsLiveCheck:
 
         monkeypatch.setattr(gws_auth.subprocess, "run", fake_run)
         gws_auth.gws_live_check()
-        # No explicit env passed → inherits the process env, never pins the Hermes token path.
-        assert captured["env"] is None
+        assert captured["env"] is not None
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in captured["env"]
+
+
+class TestNativeEnvSanitization:
+    """Regression tests: an inherited GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE
+    override from the parent environment must never reach gws-native child
+    processes — otherwise a stale Hermes token path masks gws's own login."""
+
+    def _capture_run(self, gws_auth, monkeypatch, stdout="{}"):
+        captured = {}
+
+        def fake_run(cmd, *a, **k):
+            captured["env"] = k.get("env")
+            return FakeResult(stdout=stdout)
+
+        monkeypatch.setattr(gws_auth.subprocess, "run", fake_run)
+        return captured
+
+    def test_auth_status_strips_inherited_override(self, gws_auth, monkeypatch):
+        monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "/stale/hermes/google_token.json")
+        monkeypatch.setattr(gws_auth, "gws_binary", lambda: "/usr/local/bin/gws")
+        captured = self._capture_run(
+            gws_auth, monkeypatch,
+            stdout=json.dumps({"token_valid": True, "has_refresh_token": True}),
+        )
+        assert gws_auth.gws_native_authed() is True
+        assert captured["env"] is not None
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in captured["env"]
+
+    def test_live_check_strips_inherited_override(self, gws_auth, monkeypatch):
+        monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "/stale/hermes/google_token.json")
+        monkeypatch.setattr(gws_auth, "gws_binary", lambda: "/usr/local/bin/gws")
+        captured = self._capture_run(gws_auth, monkeypatch)
+        ok, _ = gws_auth.gws_live_check()
+        assert ok is True
+        assert captured["env"] is not None
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in captured["env"]
+
+    def test_other_env_vars_are_preserved(self, gws_auth, monkeypatch):
+        monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "/stale/hermes/google_token.json")
+        monkeypatch.setenv("SOME_UNRELATED_VAR", "keep-me")
+        env = gws_auth._native_env()
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in env
+        assert env["SOME_UNRELATED_VAR"] == "keep-me"
+
+    def test_native_env_ok_when_override_absent(self, gws_auth, monkeypatch):
+        monkeypatch.delenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", raising=False)
+        env = gws_auth._native_env()
+        assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in env

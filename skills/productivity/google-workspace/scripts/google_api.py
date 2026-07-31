@@ -93,7 +93,11 @@ def _gws_env() -> dict[str, str]:
     if TOKEN_PATH.exists():
         # Hermes-managed token: pin gws to it so both backends share creds.
         env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
-    # gws-native mode (no Hermes token): leave gws to use its own credentials.
+    else:
+        # gws-native mode: strip any inherited override so gws uses its own
+        # credential store — a stale parent-env value pointing at a missing
+        # Hermes token would otherwise break every gws call.
+        env.pop("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", None)
     return env
 
 

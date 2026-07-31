@@ -125,6 +125,9 @@ gateway:
         require_mention: false        # per-agent override
 ```
 
+(The registry is also accepted as a top-level `agents:` block; the top-level
+key wins when both are present.)
+
 Rules:
 
 - `nsec_env` names an environment variable — the key value itself never appears in `config.yaml`. It is resolved from the process environment (or gateway secret scope) first, then from the agent's own `<home_dir>/.env`. There is **no fallback** to the shared `BUZZ_PRIVATE_KEY`: if the named variable is missing, that agent's connection stays down rather than impersonating another identity.

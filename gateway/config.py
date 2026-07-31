@@ -1434,8 +1434,15 @@ def load_gateway_config() -> GatewayConfig:
                     "filter_silence_narration"
                 ]
 
+            # Multi-agent registry: top-level wins; nested gateway.agents
+            # fallback (the shape documented in
+            # website/docs/user-guide/messaging/buzz.md, and what
+            # `hermes config set gateway.agents.*` writes) — matches the
+            # gateway.streaming precedence pattern.
             if "agents" in yaml_cfg:
                 gw_data["agents"] = yaml_cfg["agents"]
+            elif isinstance(gateway_section, dict) and "agents" in gateway_section:
+                gw_data["agents"] = gateway_section["agents"]
 
             if "routes" in yaml_cfg:
                 gw_data["routes"] = yaml_cfg["routes"]

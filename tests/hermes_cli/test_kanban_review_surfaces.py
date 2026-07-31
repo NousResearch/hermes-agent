@@ -163,7 +163,9 @@ def test_worker_guidance_distinguishes_same_card_and_downstream_review() -> None
     from agent.prompt_builder import KANBAN_GUIDANCE
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
-    assert "pre-created downstream review" in KANBAN_GUIDANCE
+    assert "lists child IDs" in KANBAN_GUIDANCE
+    assert "inspect those cards" in KANBAN_GUIDANCE
+    assert "pre-created review, QA, or release child" in KANBAN_GUIDANCE
     assert "call `kanban_complete`" in KANBAN_GUIDANCE
     assert "Never sticky-block that parent for `review-required`" in KANBAN_GUIDANCE
     assert "`kanban_request_changes`" in KANBAN_GUIDANCE

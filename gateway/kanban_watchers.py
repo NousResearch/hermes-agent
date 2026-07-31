@@ -215,6 +215,9 @@ class GatewayKanbanWatchersMixin:
             metadata = dict(metadata) if isinstance(metadata, dict) else {}
             if sub.get("thread_id") and not metadata.get("thread_id"):
                 metadata["thread_id"] = sub["thread_id"]
+            metadata["idempotency_key"] = (
+                f"workflow:{sub['workflow_id']}:event:{delivery['cursor']}"
+            )
 
             from gateway.wake import adapter_supports_push, deliver_wake
 
@@ -530,6 +533,8 @@ class GatewayKanbanWatchersMixin:
                                 workflow_rows = []
                             for workflow_row in workflow_rows:
                                 workflow_sub = dict(workflow_row)
+                                old_cursor = None
+                                cursor = None
                                 try:
                                     old_cursor, cursor, events = (
                                         _kb.claim_workflow_events_for_subscription(
@@ -556,6 +561,17 @@ class GatewayKanbanWatchersMixin:
                                     )
                                     if snapshot is None:
                                         raise RuntimeError("workflow disappeared after event claim")
+                                    event_payload = events[0].get("payload") or {}
+                                    event_generation = event_payload.get(
+                                        "generation", events[0].get("generation")
+                                    )
+                                    snapshot["workflow"] = {
+                                        **(snapshot.get("workflow") or {}),
+                                        "state": event_payload["resulting_state"],
+                                        "active_generation": event_generation,
+                                        "version": event_payload.get("resulting_version"),
+                                        "last_event_id": events[0]["id"],
+                                    }
                                     for member in snapshot.get("members") or []:
                                         task_row = _kb.get_task(conn, member["task_id"])
                                         member["task_status"] = (
@@ -571,6 +587,30 @@ class GatewayKanbanWatchersMixin:
                                         "board": slug,
                                     })
                                 except Exception as workflow_exc:
+                                    if (old_cursor is not None and cursor is not None
+                                            and int(cursor) != int(old_cursor)):
+                                        try:
+                                            retry_state = _kb.fail_workflow_delivery(
+                                                conn,
+                                                workflow_id=workflow_sub["workflow_id"],
+                                                role=workflow_sub.get("role") or "origin",
+                                                claimed_cursor=cursor,
+                                                old_cursor=old_cursor,
+                                                error_class=type(workflow_exc).__name__,
+                                            )
+                                            logger.warning(
+                                                "kanban workflow notifier: retained workflow=%s "
+                                                "event=%s after collection failure for retry %s",
+                                                workflow_sub.get("workflow_id"), cursor,
+                                                retry_state.get("retry_count"),
+                                            )
+                                        except Exception as retry_exc:
+                                            logger.error(
+                                                "kanban workflow notifier: failed to persist "
+                                                "collection retry for workflow=%s board=%s: %s",
+                                                workflow_sub.get("workflow_id"), slug,
+                                                retry_exc, exc_info=True,
+                                            )
                                     logger.warning(
                                         "kanban workflow notifier: subscription for %s "
                                         "on board %s failed during claim: %s",

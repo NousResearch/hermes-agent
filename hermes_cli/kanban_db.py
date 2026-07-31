@@ -11449,7 +11449,9 @@ def claim_workflow_events_for_subscription(
         except Exception as exc:
             raise WorkflowIntegrityError("workflow subscription target states are invalid") from exc
         events: list[dict[str, Any]] = []
+        new_cursor = old_cursor
         for row in rows:
+            new_cursor = int(row["id"])
             if row["kind"] != "aggregate_changed":
                 continue
             try:
@@ -11459,7 +11461,10 @@ def claim_workflow_events_for_subscription(
             if payload.get("resulting_state") not in targets:
                 continue
             events.append({**dict(row), "payload": payload})
-        new_cursor = int(rows[-1]["id"])
+            # A claim is one immutable target transition. Stopping here keeps
+            # later target transitions (and intervening non-target events)
+            # queued until this delivery is durably acknowledged.
+            break
         cur = conn.execute(
             "UPDATE kanban_workflow_subscriptions SET last_event_id=? "
             "WHERE workflow_id=? AND role=? AND last_event_id=?",
@@ -11493,10 +11498,12 @@ def fail_workflow_delivery(
     conn: sqlite3.Connection, *, workflow_id: str, role: str = "origin",
     claimed_cursor: int, old_cursor: int, error_class: str,
     max_retries: int = 5, retry_delay_seconds: int = 30,
+    max_retry_delay_seconds: int = 3600,
 ) -> dict[str, Any]:
     """Rewind a failed claim and persist retry/dead-letter state."""
-    if max_retries < 1 or retry_delay_seconds < 0:
-        raise ValueError("max_retries must be positive and retry delay nonnegative")
+    if (max_retries < 1 or retry_delay_seconds < 0
+            or max_retry_delay_seconds < 0):
+        raise ValueError("max_retries must be positive and retry delays nonnegative")
     now = int(time.time())
     with write_txn(conn):
         row = conn.execute(
@@ -11514,7 +11521,11 @@ def fail_workflow_delivery(
             return dict(current)
         retries = int(row["retry_count"]) + 1
         dead_lettered_at = now if retries >= int(max_retries) else None
-        next_attempt_at = None if dead_lettered_at is not None else now + int(retry_delay_seconds)
+        retry_delay = min(
+            int(max_retry_delay_seconds),
+            int(retry_delay_seconds) * (2 ** (retries - 1)),
+        )
+        next_attempt_at = None if dead_lettered_at is not None else now + retry_delay
         conn.execute(
             "UPDATE kanban_workflow_subscriptions SET last_event_id=?,retry_count=?,"
             "next_attempt_at=?,dead_lettered_at=?,last_error_class=? "

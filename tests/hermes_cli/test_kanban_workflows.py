@@ -138,6 +138,111 @@ def test_workflow_subscription_claim_retry_dead_letter_and_resume(workflow_db):
     assert completed["last_error_class"] is None
 
 
+def test_workflow_subscription_claim_stops_at_first_target_transition(workflow_db):
+    acceptance = kb.create_task(
+        workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"
+    )
+    kb.create_workflow(
+        workflow_db, workflow_id="wf_transition", name="notify", tenant="tenant-a",
+        designated_acceptance_task_id=acceptance, actor=_actor(),
+        mutation_id="create-transition",
+        subscription={
+            "platform": "telegram", "chat_id": "origin", "notifier_profile": "default",
+            "target_states": ["PASS"],
+        },
+    )
+    passed = kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_transition", task_id=acceptance, outcome="PASS",
+        actor=_actor(capabilities=("workflow.outcome",)),
+        mutation_id="transition-pass", expected_version=1,
+    )
+    pass_event = workflow_db.execute(
+        "SELECT * FROM kanban_workflow_events "
+        "WHERE workflow_id='wf_transition' AND mutation_id='transition-pass' "
+        "AND kind='aggregate_changed'"
+    ).fetchone()
+    assert pass_event is not None
+    next_acceptance = kb.create_task(
+        workflow_db, title="accept generation 2", assignee="orchestrator", tenant="tenant-a"
+    )
+    remediation = kb.create_task(
+        workflow_db, title="remediate generation 2", assignee="builder", tenant="tenant-a"
+    )
+    reverification = kb.create_task(
+        workflow_db, title="verify generation 2", assignee="x_qa", tenant="tenant-a"
+    )
+    reopened = kb.reopen_workflow(
+        workflow_db,
+        workflow_id="wf_transition",
+        designated_acceptance_task_id=next_acceptance,
+        members=[
+            {"task_id": next_acceptance, "stage_key": "acceptance-2",
+             "stage_role": "acceptance", "required": True},
+            {"task_id": remediation, "stage_key": "remediation-2",
+             "stage_role": "remediation", "required": True},
+            {"task_id": reverification, "stage_key": "reverification-2",
+             "stage_role": "reverification", "required": True},
+        ],
+        actor=_actor(capabilities=("workflow.admin",)),
+        mutation_id="transition-reopen", expected_version=2,
+        reason="remediation and re-verification cycle",
+    )
+
+    old, claimed, events = kb.claim_workflow_events_for_subscription(
+        workflow_db, workflow_id="wf_transition", role="origin"
+    )
+
+    assert old < pass_event["id"]
+    assert claimed == pass_event["id"]
+    assert [event["id"] for event in events] == [pass_event["id"]]
+    assert events[0]["payload"]["resulting_state"] == "PASS"
+    assert claimed < reopened["workflow"]["last_event_id"]
+
+
+def test_workflow_delivery_retry_uses_bounded_exponential_backoff(
+    workflow_db, monkeypatch,
+):
+    acceptance = kb.create_task(
+        workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"
+    )
+    kb.create_workflow(
+        workflow_db, workflow_id="wf_backoff", name="notify", tenant="tenant-a",
+        designated_acceptance_task_id=acceptance, actor=_actor(),
+        mutation_id="create-backoff",
+        subscription={
+            "platform": "telegram", "chat_id": "origin", "notifier_profile": "default",
+            "target_states": ["PASS"],
+        },
+    )
+    kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_backoff", task_id=acceptance, outcome="PASS",
+        actor=_actor(capabilities=("workflow.outcome",)),
+        mutation_id="backoff-pass", expected_version=1,
+    )
+    clock = [1_000]
+    monkeypatch.setattr(kb.time, "time", lambda: clock[0])
+    old, claimed, events = kb.claim_workflow_events_for_subscription(
+        workflow_db, workflow_id="wf_backoff"
+    )
+    assert events
+
+    observed_delays = []
+    for _ in (10, 20, 25, 25):
+        failed = kb.fail_workflow_delivery(
+            workflow_db, workflow_id="wf_backoff",
+            claimed_cursor=claimed, old_cursor=old, error_class="TemporaryError",
+            max_retries=6, retry_delay_seconds=10, max_retry_delay_seconds=25,
+        )
+        observed_delays.append(failed["next_attempt_at"] - clock[0])
+        clock[0] = failed["next_attempt_at"]
+        old, claimed, events = kb.claim_workflow_events_for_subscription(
+            workflow_db, workflow_id="wf_backoff"
+        )
+        assert events
+
+    assert observed_delays == [10, 20, 25, 25]
+
+
 def test_workflow_subscription_admin_can_skip_one_event_and_disable(workflow_db):
     acceptance = kb.create_task(
         workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"

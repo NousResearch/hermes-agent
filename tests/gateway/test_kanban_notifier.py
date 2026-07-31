@@ -123,6 +123,7 @@ def test_workflow_push_delivery_uses_only_subscription_route(monkeypatch):
 
     assert adapter.sent[0]["chat_id"] == "workflow-chat"
     assert adapter.sent[0]["metadata"]["thread_id"] == "topic-7"
+    assert adapter.sent[0]["metadata"]["idempotency_key"] == "workflow:wf_1:event:7"
     assert adapter.handled[0].source.chat_id == "workflow-chat"
     assert adapter.handled[0].source.thread_id == "topic-7"
     assert "attacker-controlled-session" not in repr(adapter.handled[0])
@@ -224,7 +225,16 @@ def test_notifier_polls_workflow_subscription_without_task_subscriptions(
     monkeypatch.setattr(
         kb, "claim_workflow_events_for_subscription",
         lambda conn, workflow_id, role="origin": (
-            0, 7, [{"id": 7, "kind": "aggregate_changed"}],
+            0, 7, [{
+                "id": 7,
+                "kind": "aggregate_changed",
+                "generation": 1,
+                "payload": {
+                    "generation": 1,
+                    "resulting_version": 2,
+                    "resulting_state": "PASS",
+                },
+            }],
         ),
         raising=False,
     )
@@ -234,8 +244,8 @@ def test_notifier_polls_workflow_subscription_without_task_subscriptions(
     monkeypatch.setattr(
         kb, "get_workflow", lambda conn, workflow_id, **kwargs: {
             "workflow": {
-                "id": workflow_id, "name": "release", "state": "PASS",
-                "active_generation": 1,
+                "id": workflow_id, "name": "release", "state": "ACTIVE",
+                "active_generation": 2, "version": 3,
             },
             "members": [], "outcomes": [],
         },
@@ -257,6 +267,80 @@ def test_notifier_polls_workflow_subscription_without_task_subscriptions(
     assert len(delivered) == 1
     assert delivered[0]["sub"]["workflow_id"] == "wf_only"
     assert delivered[0]["cursor"] == 7
+    assert delivered[0]["snapshot"]["workflow"]["state"] == "PASS"
+    assert delivered[0]["snapshot"]["workflow"]["active_generation"] == 1
+    assert delivered[0]["snapshot"]["workflow"]["version"] == 2
+
+
+def test_workflow_collection_failure_after_claim_rewinds_for_durable_retry(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "workflow-collection-failure.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    sub = {
+        "workflow_id": "wf_failed_collect", "role": "origin", "platform": "telegram",
+        "chat_id": "workflow-chat", "chat_type": "dm", "thread_id": "",
+        "user_id": None, "notifier_profile": "main", "tenant": "tenant-a",
+        "delivery_metadata": "{}", "disabled_at": None, "dead_lettered_at": None,
+    }
+    failed = []
+
+    class FakeCursor:
+        def fetchall(self):
+            return [sub]
+
+    class FakeConn:
+        def execute(self, sql):
+            assert "kanban_workflow_subscriptions" in sql
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(kb, "list_boards", lambda include_archived=False: [{
+        "slug": "default", "db_path": str(db_path),
+    }])
+    monkeypatch.setattr(kb, "count_notify_subs", lambda board=None: 0)
+    monkeypatch.setattr(
+        kb, "count_workflow_subscriptions_readonly", lambda board=None: 1,
+        raising=False,
+    )
+    monkeypatch.setattr(kb, "connect", lambda board=None: FakeConn())
+    monkeypatch.setattr(kb, "list_notify_subs", lambda conn: [])
+    monkeypatch.setattr(
+        kb, "claim_workflow_events_for_subscription",
+        lambda conn, workflow_id, role="origin": (
+            3, 7, [{
+                "id": 7, "kind": "aggregate_changed", "generation": 1,
+                "payload": {"generation": 1, "resulting_version": 2,
+                            "resulting_state": "PASS"},
+            }],
+        ),
+    )
+    monkeypatch.setattr(kb, "KanbanActorContext", lambda **kwargs: kwargs)
+    monkeypatch.setattr(
+        kb, "get_workflow",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("snapshot corrupt")),
+    )
+
+    def record_failure(conn, **kwargs):
+        failed.append(kwargs)
+        return {"retry_count": 1, "dead_lettered_at": None}
+
+    monkeypatch.setattr(kb, "fail_workflow_delivery", record_failure)
+    runner = _make_runner(RecordingAdapter())
+    runner._active_profile_name = lambda: "main"
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert failed == [{
+        "workflow_id": "wf_failed_collect",
+        "role": "origin",
+        "claimed_cursor": 7,
+        "old_cursor": 3,
+        "error_class": "RuntimeError",
+    }]
 
 
 class RecordingAdapter:

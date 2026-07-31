@@ -26238,11 +26238,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if pending_event or pending:
                 logger.debug("Processing pending message: '%s...'", pending[:40])
 
+                pending_source = pending_event.source if pending_event is not None else source
+                adapter = self._adapter_for_source(pending_source)
+                adapter_session_key = session_key
+                adapter_key_for_source = getattr(adapter, "session_key_for_source", None)
+                if callable(adapter_key_for_source):
+                    resolved_adapter_key = adapter_key_for_source(pending_source)
+                    if isinstance(resolved_adapter_key, str) and resolved_adapter_key:
+                        adapter_session_key = resolved_adapter_key
+
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent
                 # even makes its first API call (this was causing an infinite loop).
-                if adapter and hasattr(adapter, '_active_sessions') and session_key and session_key in adapter._active_sessions:
-                    adapter._active_sessions[session_key].clear()
+                adapter_active_sessions = getattr(adapter, "_active_sessions", None)
+                if (
+                    isinstance(adapter_active_sessions, dict)
+                    and adapter_session_key
+                    and adapter_session_key in adapter_active_sessions
+                ):
+                    adapter_active_sessions[adapter_session_key].clear()
 
                 # Cap recursion depth to prevent resource exhaustion when the
                 # user sends multiple messages while the agent keeps failing. (#816)
@@ -26252,11 +26266,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "queueing message instead of recursing.",
                         _interrupt_depth, session_key,
                     )
-                    adapter = self._adapter_for_source(source)
-                    if adapter and pending_event:
-                        merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
-                    elif adapter and hasattr(adapter, 'queue_message'):
-                        adapter.queue_message(session_key, pending)
+                    adapter_pending_messages = getattr(adapter, "_pending_messages", None)
+                    queue_message = getattr(adapter, "queue_message", None)
+                    if isinstance(adapter_pending_messages, dict) and pending_event:
+                        merge_pending_message_event(
+                            adapter_pending_messages,
+                            adapter_session_key,
+                            pending_event,
+                        )
+                    elif callable(queue_message):
+                        queue_message(adapter_session_key, pending)
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")

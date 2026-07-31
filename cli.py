@@ -9595,6 +9595,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+    def _should_handle_background_command_inline(
+        self, text: str, has_images: bool = False
+    ) -> bool:
+        """Return True when /background should be dispatched while the agent runs.
+
+        Same queue problem /steer had. ``/background`` (``/bg``, ``/btw``)
+        exists to start independent work *without* waiting for the current
+        turn, but a slash command typed while the agent is busy goes into
+        ``_pending_input``, and ``process_loop`` is blocked inside
+        ``self.chat()`` for the whole run. The background task therefore only
+        starts once the foreground turn has finished, which is the one moment
+        it was not needed.
+
+        The command's own ``CommandDef`` already declares
+        ``busy_policy="dispatch"``; the gateway honours that, the classic CLI
+        never consulted it. Dispatching inline on the UI thread starts the
+        background session immediately and leaves the foreground turn running
+        untouched: no interrupt, no steer.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "background")
+        except Exception:
+            return False
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -15199,6 +15230,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # app, so without this the submitted "/steer <text>" can
                     # linger in the input area (looking unsent) and invite an
                     # accidental re-submit. See issue #34569.
+                    event.app.invalidate()
+                    return
+
+                # Same treatment for /background (/bg, /btw) while the agent is
+                # running.  Queuing it defeats the entire point of the command:
+                # process_loop is blocked inside self.chat(), so the background
+                # task would only start once the foreground turn it was meant to
+                # run alongside has already finished (#75221).  The foreground
+                # turn is left alone: no interrupt, no steer.
+                if self._should_handle_background_command_inline(
+                    text, has_images=has_images
+                ):
+                    self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
+                    # Repaint for the same reason as the /steer branch above:
+                    # process_command() prints through patch_stdout and never
+                    # invalidates the app, so the submitted text can linger in
+                    # the input area looking unsent.
                     event.app.invalidate()
                     return
 

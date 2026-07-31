@@ -617,26 +617,60 @@ class SessionSchemaMixin:
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
 
-        # Deferred indexes that reference the reconciler-added ``active``
-        # column (idx_messages_session_active) — same ordering constraint.
-        cursor.executescript(DEFERRED_INDEX_SQL)
-
-        # Heal NULL ``active`` rows unconditionally on every startup.
+        # Heal NULL ``active`` rows BEFORE the v24 duplicate collapse below.
         # On real-world DBs the reconciler-added ``active`` column can lack
         # its NOT NULL DEFAULT 1 (older reconciler builds reconstructed the
-        # type without the default — see #51646: PRAGMA shows
-        # (17,'active','INTEGER',0,None,0) in the wild), so INSERTs that
-        # omitted the column wrote NULL and the ``WHERE active = 1``
-        # transcript loaders hid the whole history.  The INSERTs now set
-        # active=1 explicitly; this idempotent repair un-hides rows written
-        # before the fix.  It was previously gated at ``current_version <
-        # 12`` which never re-ran for already-v12+ databases.
+        # type without the default — see #51646), so legacy INSERTs that
+        # omitted the column wrote NULL.  If we leave them NULL, the
+        # duplicate-cleanup DELETE (active = 1) skips them, but the later
+        # unique-index creation + this UPDATE would turn them into active = 1
+        # rows that collide with the index.  Normalising NULL → 1 first
+        # ensures the cleanup sees and collapses any duplicates among the
+        # formerly-NULL rows too.
         try:
             cursor.execute(
                 "UPDATE messages SET active = 1 WHERE active IS NULL"
             )
         except sqlite3.OperationalError:
             pass
+
+        # Byte-identical ACTIVE duplicate collapse (v24 data repair): the
+        # idx_messages_active_dedupe partial UNIQUE index in DEFERRED_INDEX_SQL
+        # below cannot be created while a pre-upgrade DB still carries two
+        # live rows sharing (session_id, role, content, timestamp). Delete
+        # those residual double-writes (keeping the first row) whenever the
+        # index is still absent — first open after the upgrade, or a DB
+        # whose index creation previously failed. Once the index exists,
+        # every writer version is constrained, so this probe skips forever.
+        # Soft-archived rows (active=0) are untouched: the archive+live pair
+        # produced by in-place compaction is intentional and shares the same
+        # four-tuple legally. Row deletions flow through the messages_fts*
+        # delete triggers, so FTS stays consistent with the canonical table.
+        # NOTE: this runs AFTER the NULL-active healing above so that legacy
+        # NULL-active rows are normalised to active=1 before the cleanup,
+        # preventing them from surviving the DELETE and colliding with the
+        # index later.
+        try:
+            has_dedupe_index = cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'idx_messages_active_dedupe'"
+            ).fetchone() is not None
+        except sqlite3.OperationalError:
+            has_dedupe_index = False
+        if not has_dedupe_index:
+            try:
+                cursor.execute(
+                    "DELETE FROM messages WHERE active = 1 AND id NOT IN ("
+                    "SELECT MIN(id) FROM messages WHERE active = 1 "
+                    "GROUP BY session_id, role, content, timestamp)"
+                )
+            except sqlite3.OperationalError as exc:
+                logger.debug("active-duplicate collapse skipped: %s", exc)
+
+
+        # Deferred indexes that reference the reconciler-added ``active``
+        # column (idx_messages_session_active) — same ordering constraint.
+        cursor.executescript(DEFERRED_INDEX_SQL)
 
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True

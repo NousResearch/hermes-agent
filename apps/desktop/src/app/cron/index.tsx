@@ -789,7 +789,7 @@ function deliverTargetLabel(target: CronDeliveryTarget, c: Translations['cron'])
 // blueprint form. The scheduler accepts comma-separated targets, so users can
 // keep results local while also sending them to connected platforms. Preserve
 // selected targets missing from discovery so editing never drops a saved route.
-function DeliverCheckboxes({
+export function DeliverCheckboxes({
   c,
   id,
   onChange,
@@ -813,7 +813,12 @@ function DeliverCheckboxes({
   ]
 
   return (
-    <div className="grid gap-2 rounded-md border border-input px-3 py-2.5" id={id} role="group">
+    <div
+      aria-labelledby={`${id}-label`}
+      className="grid gap-2 rounded-md border border-input px-3 py-2.5"
+      id={id}
+      role="group"
+    >
       {options.map((target, index) => {
         const checked = selected.includes(target.id)
         const checkboxId = `${id}-${index}`

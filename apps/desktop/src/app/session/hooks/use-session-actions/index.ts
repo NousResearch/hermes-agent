@@ -1756,6 +1756,8 @@ export function useSessionActions({
 
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
+      const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      const runtimeIdsToClose = new Set([closingRuntimeId, tiledRuntimeId].filter((id): id is string => Boolean(id)))
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
       const previousArchived = $archivedSessions.get()
@@ -1783,9 +1785,11 @@ export function useSessionActions({
       }
 
       try {
-        if (closingRuntimeId) {
-          await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
-        }
+        await Promise.all(
+          [...runtimeIdsToClose].map(runtimeId =>
+            requestGateway('session.close', { session_id: runtimeId }).catch(() => undefined)
+          )
+        )
 
         await deleteSession(storedSessionId, removed?.profile)
         // A deleted session's cached tail must not resurrect on a recycled id.
@@ -1802,7 +1806,6 @@ export function useSessionActions({
         // A tiled copy of this session must not outlive it: collapse the pane
         // and evict its mirrored runtime state so nothing submits to (or renders)
         // a deleted session.
-        const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)
 
         if (tiledRuntimeId) {

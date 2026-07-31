@@ -17,8 +17,10 @@ Run: pytest tests/hermes_cli/test_dashboard_auth_native_flow.py
 
 from __future__ import annotations
 
-import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import base64
+import hashlib
+import threading
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -31,8 +33,9 @@ from hermes_cli.dashboard_auth import (
     register_provider,
 )
 from hermes_cli.dashboard_auth import native_flow
-from hermes_cli.dashboard_auth.base import Session
-from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from hermes_cli.dashboard_auth import routes as auth_routes
+from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError, Session
+from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider, _sign
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +88,7 @@ class _SecondStubProvider(StubAuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_broker():
     native_flow._reset_for_tests()
+    auth_routes._reset_native_refresh_replay_for_tests()
     # Snapshot the shared app.state auth fields + provider registry so a test
     # that flips auth_required / registers a stub provider can't leak into a
     # later test file (e.g. the MCP dashboard-oauth suite shares web_server.app).
@@ -93,6 +97,7 @@ def _reset_broker():
     prev_port = getattr(web_server.app.state, "bound_port", None)
     yield
     native_flow._reset_for_tests()
+    auth_routes._reset_native_refresh_replay_for_tests()
     clear_providers()
     web_server.app.state.auth_required = prev_required
     web_server.app.state.bound_host = prev_host
@@ -588,3 +593,330 @@ def test_native_refresh_dead_token_returns_401(gated_client):
     )
     assert r.status_code == 401
     assert r.json()["error"] == "session_expired"
+
+
+def test_native_refresh_reuses_rotated_result_for_same_old_token(gated_client):
+    """A stale retry must reuse the first rotated Session, not replay the RT."""
+
+    class CountingProvider(StubAuthProvider):
+        name = "counting"
+        display_name = "Counting IdP"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            return super().refresh_session(refresh_token=refresh_token)
+
+    provider = CountingProvider()
+    clear_providers()
+    register_provider(provider)
+
+    old_rt = _sign({
+        "sub": "stub-user-1",
+        "kind": "refresh",
+        "exp": int(time.time()) + 3600,
+    })
+
+    first = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": old_rt, "provider": provider.name},
+    )
+    second = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": old_rt, "provider": provider.name},
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert provider.refresh_calls == 1
+    assert second.json()["access_token"] == first.json()["access_token"]
+    assert second.json()["refresh_token"] == first.json()["refresh_token"]
+
+
+def test_native_refresh_spoofed_xff_prefix_cannot_split_replay_key(
+    gated_client,
+):
+    """Untrusted leading XFF hops must not bypass refresh coalescing."""
+
+    class CountingProvider(StubAuthProvider):
+        name = "xff-counting"
+        display_name = "XFF Counting IdP"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            return super().refresh_session(refresh_token=refresh_token)
+
+    provider = CountingProvider()
+    clear_providers()
+    register_provider(provider)
+
+    old_rt = _sign({
+        "sub": "stub-user-1",
+        "kind": "refresh",
+        "exp": int(time.time()) + 3600,
+    })
+    payload = {
+        "refresh_token": old_rt,
+        "provider": provider.name,
+    }
+
+    first = gated_client.post(
+        "/auth/native/refresh",
+        json=payload,
+        headers={
+            "x-forwarded-for": "198.51.100.10, 203.0.113.7",
+        },
+    )
+    second = gated_client.post(
+        "/auth/native/refresh",
+        json=payload,
+        headers={
+            "x-forwarded-for": "198.51.100.99, 203.0.113.7",
+        },
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert provider.refresh_calls == 1
+    assert second.json()["access_token"] == first.json()["access_token"]
+    assert second.json()["refresh_token"] == first.json()["refresh_token"]
+
+
+
+def test_native_refresh_single_flight_coalesces_concurrent_requests():
+    """Overlapping requests with one old rotating RT call the IdP once."""
+
+    class SlowProvider(StubAuthProvider):
+        name = "slow"
+        display_name = "Slow IdP"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+            self.calls_lock = threading.Lock()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            with self.calls_lock:
+                self.refresh_calls += 1
+
+            self.entered.set()
+            if not self.release.wait(timeout=2):
+                raise AssertionError("test did not release the simulated IdP")
+
+            now = int(time.time())
+            return Session(
+                user_id="native-user",
+                email="native@example.test",
+                display_name="Native User",
+                org_id="native-org",
+                provider=self.name,
+                expires_at=now + 900,
+                access_token="rotated-access-token",
+                refresh_token="rotated-refresh-token",
+            )
+
+    provider = SlowProvider()
+    clear_providers()
+    register_provider(provider)
+
+    args = ("old-rotating-refresh-token", provider.name, "127.0.0.1")
+    cache_key = auth_routes._native_refresh_cache_key(args[0], args[2])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(auth_routes._refresh_native_session_sync, *args)
+
+        try:
+            assert provider.entered.wait(timeout=1)
+            second = pool.submit(auth_routes._refresh_native_session_sync, *args)
+
+            # Wait deterministically until both workers reference the same
+            # per-token lock. The second worker must not enter the provider.
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                with auth_routes._native_refresh_replay_guard:
+                    lock_entry = auth_routes._native_refresh_token_locks.get(
+                        cache_key
+                    )
+
+                if lock_entry is not None and lock_entry[1] == 2:
+                    break
+
+                time.sleep(0.01)
+            else:
+                raise AssertionError(
+                    "second refresh request did not join the per-token lock"
+                )
+
+            assert provider.refresh_calls == 1
+        finally:
+            provider.release.set()
+
+        first_result = first.result(timeout=2)
+        second_result = second.result(timeout=2)
+
+    assert provider.refresh_calls == 1
+    assert first_result[1] is None
+    assert second_result[1] is None
+    assert first_result[0] is not None
+    assert second_result[0] is not None
+    assert first_result[0].refresh_token == second_result[0].refresh_token
+
+
+def test_native_refresh_keeps_registered_lock_while_waiter_exists():
+    """A waiter keeps the per-token lock registered after a transient error."""
+
+    class TransientProvider(StubAuthProvider):
+        name = "transient"
+        display_name = "Transient IdP"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+            self.calls_lock = threading.Lock()
+            self.first_entered = threading.Event()
+            self.release_first = threading.Event()
+            self.second_entered = threading.Event()
+            self.release_second = threading.Event()
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            with self.calls_lock:
+                self.refresh_calls += 1
+                call_number = self.refresh_calls
+
+            if call_number == 1:
+                self.first_entered.set()
+                if not self.release_first.wait(timeout=2):
+                    raise AssertionError("test did not release first refresh")
+                raise ProviderError("simulated transient outage")
+
+            if call_number == 2:
+                self.second_entered.set()
+                if not self.release_second.wait(timeout=2):
+                    raise AssertionError("test did not release second refresh")
+                raise ProviderError("simulated transient outage")
+
+            if call_number == 3:
+                now = int(time.time())
+                return Session(
+                    user_id="native-user",
+                    email="native@example.test",
+                    display_name="Native User",
+                    org_id="native-org",
+                    provider=self.name,
+                    expires_at=now + 900,
+                    access_token="recovered-access-token",
+                    refresh_token="recovered-refresh-token",
+                )
+
+            raise AssertionError("unexpected extra provider refresh")
+
+    provider = TransientProvider()
+    clear_providers()
+    register_provider(provider)
+
+    refresh_token = "old-transient-refresh-token"
+    client_ip = "127.0.0.1"
+    args = (refresh_token, provider.name, client_ip)
+    cache_key = auth_routes._native_refresh_cache_key(
+        refresh_token,
+        client_ip,
+    )
+
+    def wait_for_lock_users(expected: int) -> threading.Lock:
+        deadline = time.monotonic() + 1
+
+        while time.monotonic() < deadline:
+            with auth_routes._native_refresh_replay_guard:
+                entry = auth_routes._native_refresh_token_locks.get(cache_key)
+                if entry is not None and entry[1] == expected:
+                    return entry[0]
+
+            time.sleep(0.01)
+
+        raise AssertionError(
+            f"per-token lock did not reach {expected} referenced users"
+        )
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        first = pool.submit(auth_routes._refresh_native_session_sync, *args)
+
+        try:
+            assert provider.first_entered.wait(timeout=1)
+
+            second = pool.submit(auth_routes._refresh_native_session_sync, *args)
+            original_lock = wait_for_lock_users(2)
+
+            provider.release_first.set()
+            first_result = first.result(timeout=2)
+
+            assert provider.second_entered.wait(timeout=1)
+
+            with auth_routes._native_refresh_replay_guard:
+                entry = auth_routes._native_refresh_token_locks.get(cache_key)
+
+            assert entry is not None
+            assert entry[0] is original_lock
+            assert entry[1] == 1
+
+            third = pool.submit(auth_routes._refresh_native_session_sync, *args)
+            assert wait_for_lock_users(2) is original_lock
+
+            time.sleep(0.05)
+            assert provider.refresh_calls == 2
+        finally:
+            provider.release_first.set()
+            provider.release_second.set()
+
+        second_result = second.result(timeout=2)
+        third_result = third.result(timeout=2)
+
+    assert first_result == (None, provider.name)
+    assert second_result == (None, provider.name)
+    assert third_result[1] is None
+    assert third_result[0] is not None
+    assert third_result[0].refresh_token == "recovered-refresh-token"
+    assert provider.refresh_calls == 3
+
+
+
+def test_native_refresh_negative_cache_absorbs_retry_storm(gated_client):
+    """A definitively rejected RT is not resent repeatedly to the IdP."""
+
+    class RejectingProvider(StubAuthProvider):
+        name = "rejecting"
+        display_name = "Rejecting IdP"
+
+        def __init__(self):
+            super().__init__()
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            raise RefreshExpiredError("simulated dead rotating token")
+
+    provider = RejectingProvider()
+    clear_providers()
+    register_provider(provider)
+
+    payload = {
+        "refresh_token": "already-consumed-refresh-token",
+        "provider": provider.name,
+    }
+
+    first = gated_client.post("/auth/native/refresh", json=payload)
+    second = gated_client.post("/auth/native/refresh", json=payload)
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert first.json()["error"] == "session_expired"
+    assert second.json()["error"] == "session_expired"
+    assert provider.refresh_calls == 1

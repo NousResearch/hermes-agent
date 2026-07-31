@@ -82,6 +82,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.display_config import resolve_display_setting
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
@@ -2351,6 +2352,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        reasoning_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
@@ -2652,6 +2654,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
             "tool_progress_callback": tool_progress_callback,
+            "reasoning_callback": reasoning_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
             "session_db": self._ensure_session_db(),
@@ -3853,6 +3856,17 @@ class APIServerAdapter(BasePlatformAdapter):
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
 
+        try:
+            from gateway.run import _load_gateway_config
+
+            show_reasoning = bool(
+                resolve_display_setting(
+                    _load_gateway_config(), "api_server", "show_reasoning", False
+                )
+            )
+        except Exception:
+            show_reasoning = False
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -3867,6 +3881,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 # completion via agent_task.done() instead.
                 if delta is not None:
                     _stream_q.put(delta)
+
+            def _on_reasoning(delta):
+                if delta:
+                    _stream_q.put(("__reasoning__", delta))
 
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
@@ -3931,6 +3949,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning if show_reasoning else None,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
@@ -3985,6 +4004,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+        last_reasoning = result.get("last_reasoning") or ""
         is_partial = bool(result.get("partial"))
         is_failed = bool(result.get("failed"))
         completed = bool(result.get("completed", True))
@@ -4039,6 +4059,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "message": {
                         "role": "assistant",
                         "content": final_response,
+                        **({"reasoning_content": last_reasoning} if show_reasoning and last_reasoning else {}),
                     },
                     "finish_reason": finish_reason,
                 }
@@ -4118,7 +4139,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
+                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    if not item[1]:
+                        return time.monotonic()
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{"index": 0, "delta": {"reasoning_content": item[1]}, "finish_reason": None}],
+                    }
+                    await response.write(f"data: {json.dumps(reasoning_chunk)}\n\n".encode())
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
@@ -5762,6 +5792,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        reasoning_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
@@ -5821,6 +5852,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_id=session_id,
                         stream_delta_callback=stream_delta_callback,
                         tool_progress_callback=tool_progress_callback,
+                        reasoning_callback=reasoning_callback,
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,

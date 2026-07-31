@@ -3988,6 +3988,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 if safe_text:
                     _enqueue("assistant.delta", {"message_id": message_id, "delta": safe_text})
 
+        async def _flush_delta_media_resolver() -> None:
+            """Emit whatever the MEDIA-tag resolver is still holding back.
+
+            Idempotent -- ``flush()`` clears its own buffer, so a second call
+            on an already-flushed path is a no-op returning "".
+            """
+            try:
+                remainder = _delta_media_resolver.flush()
+            except Exception:
+                return
+            if remainder:
+                await queue.put(_event_payload("assistant.delta", {
+                    "message_id": message_id, "delta": remainder,
+                }))
+
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
                 _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
@@ -4040,11 +4055,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         else ""
                     ),
                 )
-                _delta_remainder = _delta_media_resolver.flush()
-                if _delta_remainder:
-                    await queue.put(_event_payload("assistant.delta", {
-                        "message_id": message_id, "delta": _delta_remainder,
-                    }))
+                await _flush_delta_media_resolver()
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
@@ -4089,9 +4100,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     error=_redact_api_error_text(exc),
                     last_event="run.failed",
                 )
+                # Release any MEDIA-tag holdback before the terminal error.
+                # feed() retains all text from the last "MEDIA:" onward, so
+                # failing without flushing silently swallows text this stream
+                # used to deliver (raw, but delivered).
+                await _flush_delta_media_resolver()
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
                 self._active_run_agents.pop(run_id, None)
+                # Safety net for any terminal path that reaches neither the
+                # success flush nor the except above -- notably cancellation,
+                # which is a BaseException and bypasses `except Exception`.
+                # Must precede the close sentinel. Idempotent, so this is a
+                # no-op on paths that already flushed.
+                await _flush_delta_media_resolver()
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 
@@ -6864,6 +6886,27 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        def _flush_run_delta_resolver() -> None:
+            """Emit whatever the MEDIA-tag resolver is still holding back.
+
+            Idempotent -- ``flush()`` clears its own buffer, so calling this on
+            a path that already flushed is a no-op returning "". That is what
+            lets it be called both on the normal post-run path and again from
+            the ``finally`` safety net without double-emitting.
+            """
+            try:
+                remainder = _run_delta_resolver.flush()
+            except Exception:
+                return
+            if not remainder:
+                return
+            _put_event_if_active({
+                "event": "message.delta",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "delta": remainder,
+            })
+
         self._set_run_status(
             run_id,
             "queued",
@@ -7004,6 +7047,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                # Release any MEDIA-tag holdback BEFORE the terminal event, on
+                # every outcome. feed() retains all text from the last "MEDIA:"
+                # onward, so a terminal path that skips the flush silently
+                # swallows text this endpoint used to deliver (raw, but
+                # delivered). Doing it here -- once, before the
+                # cancelled/failed/completed branching below -- covers all
+                # three uniformly; the finally block covers the raising paths.
+                _flush_run_delta_resolver()
                 if run_id in self._stopping_run_ids:
                     _put_event_if_active({
                         "event": "run.cancelled",
@@ -7033,14 +7084,6 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="run.failed",
                     )
                 else:
-                    _run_delta_remainder = _run_delta_resolver.flush()
-                    if _run_delta_remainder:
-                        _put_event_if_active({
-                            "event": "message.delta",
-                            "run_id": run_id,
-                            "timestamp": time.time(),
-                            "delta": _run_delta_remainder,
-                        })
                     final_response = _resolve_media_to_data_urls(
                         result.get("final_response", "") if isinstance(result, dict) else ""
                     )
@@ -7135,6 +7178,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     unregister_gateway_notify(approval_session_key)
                 except Exception:
                     pass
+                # Safety net for the paths that never reach the post-run flush
+                # above: a raising _run_sync (provider auth failure, generic
+                # exception) or cancellation. Must run BEFORE the close
+                # sentinel below or the delta would be enqueued after the
+                # consumer has already stopped reading. Idempotent, so the
+                # normal path's own flush makes this a no-op there.
+                _flush_run_delta_resolver()
                 # Sentinel: signal SSE stream to close
                 try:
                     _put_event_if_active(None)

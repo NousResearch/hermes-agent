@@ -30,20 +30,47 @@
  *
  * Nesting under `release/.rebuild-backup/` (a dot-directory) avoids both.
  *
- * RETRY-SAFE BACKUP PRESERVATION
- * ------------------------------
- * When a backup already exists AND appOutDir exists, we preserve the
- * existing backup and delete only the current (possibly partial) output.
- * This fixes the race where `cmd_gui` retries pack after failure.
+ * SESSION-AWARE RETRY SAFETY
+ * --------------------------
+ * The CLI sets `HERMES_DESKTOP_BUILD_SESSION` before spawning the pack.
+ * When a backup already exists, we compare its `.session` marker with the
+ * current env var:
+ *   - Same session  → retry of the same build; preserve the backup.
+ *   - Different session (or no marker) → stale backup from a prior build;
+ *     treat as if no backup exists so the current build can replace it.
+ * This prevents a weeks-old backup from being mistaken for a same-retry
+ * artifact and causing the current valid build to be discarded.
  *
  * 2. Re-stages node-pty's native files for the ACTUAL target platform/arch.
  */
-import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
 import { stageNodePty } from './stage-native-deps.mjs'
 
 export const REBUILD_BACKUP_DIRNAME = '.rebuild-backup'
+
+/** Name of the marker file written inside each backup directory. */
+const SESSION_MARKER = '.session'
+
+function _readBackupSession(backupDir) {
+  const markerPath = path.join(backupDir, SESSION_MARKER)
+  try {
+    return readFileSync(markerPath, 'utf8').trim()
+  } catch (_) {
+    return null
+  }
+}
+
+function _writeBackupSession(backupDir, sessionId) {
+  try {
+    writeFileSync(path.join(backupDir, SESSION_MARKER), `${sessionId}\n`, 'utf8')
+  } catch (_) { /* best-effort */ }
+}
+
+function _buildSessionId() {
+  return process.env.HERMES_DESKTOP_BUILD_SESSION || null
+}
 
 export function staleBackupPath(appOutDir) {
   return path.join(path.dirname(appOutDir), REBUILD_BACKUP_DIRNAME, path.basename(appOutDir))
@@ -58,19 +85,32 @@ export function cleanStaleAppOutDir(appOutDir) {
   }
 
   const backupDir = staleBackupPath(appOutDir)
+  const currentSession = _buildSessionId()
 
-  // RETRY-SAFE: preserve existing backup, only delete current partial output.
+  // SESSION-AWARE RETRY: only preserve the backup when it belongs to the
+  // current build session. A backup from a prior session is stale — the
+  // code may have changed — so replace it with a fresh rename.
   if (existsSync(backupDir)) {
-    try {
-      rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
-      return { removed: true, backedUp: true }
-    } catch (rmErr) {
-      console.warn(
-        `[before-pack] could not clean partial output ${appOutDir} (${rmErr.message}); ` +
-          `continuing — existing backup preserved`
-      )
-      return { removed: false, backedUp: true }
+    const backupSession = _readBackupSession(backupDir)
+    const sameSession = currentSession && backupSession && currentSession === backupSession
+    if (sameSession) {
+      // Same build session — this is a retry. Delete only the current
+      // (possibly partial) output, keep the known-good backup.
+      try {
+        rmSync(appOutDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+        return { removed: true, backedUp: true }
+      } catch (rmErr) {
+        console.warn(
+          `[before-pack] could not clean partial output ${appOutDir} (${rmErr.message}); ` +
+            `continuing — existing backup preserved`
+        )
+        return { removed: false, backedUp: true }
+      }
     }
+    // Stale backup — remove it so rename can replace it below.
+    try {
+      rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    } catch (_) { /* best-effort; rename may still fail if locked */ }
   }
 
   // Ensure parent .rebuild-backup/ exists.
@@ -79,6 +119,9 @@ export function cleanStaleAppOutDir(appOutDir) {
   // Try rename first (non-destructive).
   try {
     renameSync(appOutDir, backupDir)
+    if (currentSession) {
+      _writeBackupSession(backupDir, currentSession)
+    }
     return { removed: true, backedUp: true }
   } catch (renameErr) {
     console.warn(

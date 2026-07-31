@@ -7027,6 +7027,9 @@ def cmd_gui(args: argparse.Namespace):
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
+            # Session marker so before-pack.mjs can distinguish retries
+            # within the same build from a stale backup left by a prior run.
+            env["HERMES_DESKTOP_BUILD_SESSION"] = str(_time.time())
             if _force_adhoc_macos_signing(env, source_mode=source_mode):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")

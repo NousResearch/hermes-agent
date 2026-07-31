@@ -2340,6 +2340,32 @@ def _get_ollama_request_headers() -> dict[str, str]:
     return result
 
 
+def _get_ollama_native_headers(
+    base_url: Optional[str],
+    *,
+    api_key: Optional[str] = None,
+) -> dict[str, str]:
+    """Resolve Ollama credentials and headers for one endpoint origin."""
+    entry = _get_provider_config_dict("ollama")
+    configured_base = str(
+        entry.get("base_url") or entry.get("api") or entry.get("url") or ""
+    ).strip()
+    explicit_key = str(api_key or "").strip()
+    configured_matches = bool(
+        configured_base
+        and base_url
+        and _same_ollama_native_root(base_url, configured_base)
+    )
+    if not configured_matches and not explicit_key:
+        return {}
+    headers = _get_ollama_request_headers() if configured_matches else {}
+    if explicit_key and not any(
+        key.lower() == "authorization" for key in headers
+    ):
+        headers["Authorization"] = f"Bearer {explicit_key}"
+    return headers
+
+
 _OLLAMA_LOCAL_MODELS_CACHE_TTL: int = 300  # seconds (5 minutes)
 _OLLAMA_LOCAL_MODELS_CACHE: dict[str, tuple[tuple[str, ...], float]] = {}
 _OLLAMA_LOCAL_PROBE_FAILURE_CACHE: dict[str, float] = {}
@@ -3177,7 +3203,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
             _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
         base_url = _get_ollama_base_url()
-        headers = _get_ollama_request_headers()
+        headers = _get_ollama_native_headers(base_url)
         use_native = should_use_ollama_native_catalog(
             "ollama", base_url, headers=headers
         )
@@ -3202,7 +3228,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             key_env = str(config.get("key_env") or "").strip()
             fallback_key = os.getenv(key_env, "").strip() if key_env else ""
         fallback_base = str(config.get("base_url") or base_url).strip()
-        fallback_headers = _get_ollama_request_headers()
+        fallback_headers = _get_ollama_native_headers(
+            fallback_base, api_key=fallback_key
+        )
         fallback_models = fetch_api_models(
             fallback_key,
             fallback_base,

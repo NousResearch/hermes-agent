@@ -3,7 +3,7 @@
 File Operations Module
 
 Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, docker, ssh, singularity, modal, daytona).
+across all terminal backends (local, docker, ssh, singularity, modal, daytona, vercel_sandbox).
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -1022,6 +1022,9 @@ class ShellFileOperations(FileOperations):
             'if [ -e "$t" ]; then '
             'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
+            # new file: apply umask-computed default instead of mktemp's 0600
+            'else '
+            'u="$(umask)"; chmod $(printf '"'"'%04o'"'"' $((0666 & ~0$u))) "$tmp" 2>/dev/null || true; '
             "fi; "
             'cat > "$tmp"; '
             'mv -f "$tmp" "$t"; '

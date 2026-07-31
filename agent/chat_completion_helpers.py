@@ -227,6 +227,53 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _estimate_chunk_bytes(chunk: Any) -> int:
+    """Cheap per-chunk size estimate for the stream diagnostic counters.
+
+    The previous implementation used ``len(repr(chunk))`` — a full recursive
+    repr of a pydantic model on EVERY streaming chunk (5.5-8.8 µs each,
+    ~20-30 ms of pure CPU on a 3,000-chunk response, in the hottest loop in
+    the agent). The counter only feeds a retry-diagnostic log line, so an
+    estimate based on the delta payload lengths is plenty (2.1-2.4 µs, ~3x
+    cheaper, and independent of model/pydantic field count). Chat Completions
+    chunks are sized from their delta content/reasoning/tool-argument strings
+    plus a small framing constant; anything shape-unknown (Anthropic events,
+    stub providers) falls back to a flat constant so `bytes` stays monotonic
+    and roughly proportional to traffic.
+    """
+    size = 40  # SSE/JSON framing floor per chunk
+    try:
+        choices = getattr(chunk, "choices", None)
+        if choices:
+            delta = getattr(choices[0], "delta", None)
+            if delta is not None:
+                for attr in ("content", "reasoning_content", "reasoning"):
+                    v = getattr(delta, attr, None)
+                    if isinstance(v, str):
+                        size += len(v)
+                tool_calls = getattr(delta, "tool_calls", None)
+                if tool_calls:
+                    for tc in tool_calls:
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            args = getattr(fn, "arguments", None)
+                            if isinstance(args, str):
+                                size += len(args)
+                            name = getattr(fn, "name", None)
+                            if isinstance(name, str):
+                                size += len(name)
+        else:
+            # Non-chat-completions shapes (Anthropic events etc.): try the
+            # common text fields, else keep the framing floor.
+            for attr in ("text", "partial_json"):
+                v = getattr(getattr(chunk, "delta", None), attr, None)
+                if isinstance(v, str):
+                    size += len(v)
+    except Exception:
+        pass
+    return size
+
+
 def _codex_wait_notice_recovery(
     *,
     stale_timeout: float,
@@ -3108,12 +3155,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
                 if _diag.get("first_chunk_at") is None:
                     _diag["first_chunk_at"] = last_chunk_time["t"]
-                # Approximate byte size from the chunk's repr — exact wire
-                # bytes aren't exposed by the SDK, but len(repr(chunk)) is
-                # a stable proxy for "how much content arrived" that
-                # survives stub provider differences.
+                # Approximate byte size from the chunk's delta payload —
+                # exact wire bytes aren't exposed by the SDK. A full
+                # repr() per chunk was 5.5-8.8 µs of pure CPU on the
+                # hottest loop in the agent; the delta-length estimate
+                # is ~3x cheaper and stays proportional to traffic.
                 try:
-                    _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(chunk))
+                    _diag["bytes"] = int(_diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
                 except Exception:
                     pass
             except Exception:
@@ -3554,7 +3602,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
                     if _diag.get("first_chunk_at") is None:
                         _diag["first_chunk_at"] = last_chunk_time["t"]
-                    _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
+                    _diag["bytes"] = int(_diag.get("bytes", 0)) + _estimate_chunk_bytes(event)
                 except Exception:
                     pass
                 if agent._interrupt_requested:
@@ -3980,9 +4028,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # env var ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch.
         _local_default = 900.0
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
 
-            _cfg = load_config()
+            _cfg = load_config_readonly()  # read-only consumer — no deepcopy
             _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
             if isinstance(_agent_cfg, dict):
                 _v = _agent_cfg.get("local_stream_stale_timeout")

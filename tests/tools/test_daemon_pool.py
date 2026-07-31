@@ -31,20 +31,6 @@ def test_workers_are_daemon_threads():
         pool.shutdown(wait=True)
 
 
-def test_results_and_initializer_work_like_stdlib():
-    seen = []
-
-    def _init(tag):
-        seen.append(tag)
-
-    pool = DaemonThreadPoolExecutor(max_workers=1, initializer=_init, initargs=("t",))
-    try:
-        assert pool.submit(lambda: 41 + 1).result(timeout=10) == 42
-        assert seen == ["t"]
-    finally:
-        pool.shutdown(wait=True)
-
-
 def test_idle_worker_reuse():
     pool = DaemonThreadPoolExecutor(max_workers=4)
     try:

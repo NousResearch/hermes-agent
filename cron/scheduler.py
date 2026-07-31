@@ -2284,7 +2284,7 @@ def _run_job_script(
         argv = [python_exe, str(path)]
 
     try:
-        from tools.environments.local import _sanitize_subprocess_env
+        from tools.environments.local import build_subprocess_env
 
         popen_kwargs = {}
         if sys.platform == "win32":
@@ -2293,7 +2293,7 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace",
             }
-        env = _sanitize_subprocess_env(os.environ.copy())
+        env = build_subprocess_env()
         env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
@@ -3001,7 +3001,6 @@ def run_job(
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
-    origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
@@ -3169,11 +3168,10 @@ def run_job(
         _cfg = {}
         _model_cfg = {}
         try:
-            import yaml
+            from hermes_cli.config import read_user_config_raw
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
-                with open(_cfg_path, encoding="utf-8") as _f:
-                    _cfg = yaml.safe_load(_f) or {}
+                _cfg = read_user_config_raw(Path(_cfg_path))
                 # Managed scope: a scheduled job must honor administrator-pinned
                 # model / reasoning / toolsets / provider_routing too. This loader
                 # builds its own dict, so overlay managed values via the shared
@@ -3993,6 +3991,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            unresolved_origin = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
             # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
@@ -4004,6 +4003,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 should_deliver = False
 
             if should_deliver:
+                unresolved_origin = (
+                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
+                    and not _resolve_delivery_targets(job)
+                )
                 try:
                     delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                 except Exception as de:
@@ -4025,14 +4028,53 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
         if not _consume_interrupted_flag(job["id"]):
             mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        finish_execution(execution_id, success=success, error=error)
+        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        if delivery_error:
+            delivery_outcome = "failed"
+        elif should_deliver and unresolved_origin:
+            delivery_outcome = "not_configured"
+        elif should_deliver and normalized_deliver != "local":
+            delivery_outcome = "delivered"
+        else:
+            delivery_outcome = "suppressed"
+        finish_execution(
+            execution_id,
+            success=success,
+            error=error,
+            delivery_outcome=delivery_outcome,
+        )
         return True
 
-    except Exception as e:
-        logger.error("Error processing job %s: %s", job['id'], e)
-        if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], False, str(e))
-        finish_execution(execution_id, success=False, error=str(e))
+    except BaseException as e:  # noqa: BLE001 — deliberate: see below
+        # BaseException, not Exception (#73973): the inner run_job handler
+        # re-raises CancelledError / KeyboardInterrupt / SystemExit after agent
+        # teardown, and none of those are Exception subclasses. If they escape
+        # without mark_job_run(False), a finite one-shot is left wedged —
+        # claim_dispatch() already consumed repeat.completed, but last_run_at
+        # is never written, so the job sits in state "scheduled" until the
+        # run-claim TTL expires and the dispatch-limit guard removes it with
+        # no output and no error. Record the failure first, then re-raise
+        # anything that isn't a plain Exception.
+        _err_text = str(e) or type(e).__name__
+        logger.error("Error processing job %s: %s", job['id'], _err_text)
+        try:
+            if not _consume_interrupted_flag(job["id"]):
+                mark_job_run(job["id"], False, _err_text)
+        except Exception as record_err:
+            # Never let bookkeeping mask the original interruption.
+            logger.error(
+                "Failed to record interrupted run for job %s: %s",
+                job["id"], record_err,
+            )
+        try:
+            finish_execution(execution_id, success=False, error=_err_text)
+        except Exception as record_err:
+            logger.error(
+                "Failed to finish execution record for job %s: %s",
+                job["id"], record_err,
+            )
+        if not isinstance(e, Exception):
+            raise
         return False
 
 

@@ -83,7 +83,9 @@ delegation:
   api_key: ${DELEGATION_KEY}
 ```
 
-Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is). Only the `${VAR}` syntax is supported — bare `$VAR` is not expanded.
+Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a referenced variable is not set, the placeholder is kept verbatim (`${UNDEFINED_VAR}` stays as-is) and a warning is logged. Bare `$VAR` is not expanded.
+
+Cursor-style SecretRef syntax is also accepted: `${env:VAR_NAME}` resolves exactly like `${VAR_NAME}` (the `env:` prefix is stripped), so MCP or provider snippets copied from Cursor / Claude configs work unchanged in both `config.yaml` and the `mcp_servers` block. Other SecretRef sources (`${file:...}`, `${vault:...}`, `${bitwarden:...}`) are **not** resolved inline — external secret backends inject their values into the environment at startup via the `secrets:` block, so reference them as `${env:NAME}` instead; unknown prefixes warn once and stay verbatim.
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
@@ -114,11 +116,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
@@ -128,7 +130,7 @@ terminal:
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
 
-For cloud sandboxes such as Modal and Daytona, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
+For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persistent: true` means Hermes will try to preserve filesystem state across sandbox recreation. It does not promise that the same live sandbox, PID space, or background processes will still be running later.
 
 ### Backend Overview
 
@@ -139,6 +141,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
+| **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 
 ### Local Backend
@@ -376,6 +379,49 @@ terminal:
 
 **Disk limit:** Daytona enforces a 10 GiB maximum. Requests above this are capped with a warning.
 
+### Vercel Sandbox Backend
+
+Runs commands in a [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) cloud microVM. Hermes uses the normal terminal and file tool surfaces; there are no Vercel-specific model-facing tools.
+
+```yaml
+terminal:
+  backend: vercel_sandbox
+  vercel_runtime: node24          # node24 | node22 | python3.13
+  cwd: /vercel/sandbox            # default workspace root
+  container_persistent: true      # Snapshot/restore filesystem
+  container_disk: 51200           # Shared default only; custom disk is unsupported
+```
+
+**Required install:** Install the optional SDK extra:
+
+```bash
+pip install 'hermes-agent[vercel]'
+```
+
+**Required authentication:** Configure access-token auth with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This is the supported setup for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts.
+
+For one-off local development, Hermes also accepts short-lived Vercel OIDC tokens:
+
+```bash
+VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" hermes chat
+```
+
+From a linked Vercel project directory, you can omit the project name:
+
+```bash
+VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
+```
+
+OIDC tokens are short-lived and should not be used as the documented deployment path.
+
+**Runtime:** `terminal.vercel_runtime` supports `node24`, `node22`, and `python3.13`. If unset, Hermes defaults to `node24`.
+
+**Persistence:** When `container_persistent: true`, Hermes snapshots the sandbox filesystem during cleanup and restores a later sandbox for the same task from that snapshot. Snapshot contents can include Hermes-synced credentials, skills, and cache files that were copied into the sandbox. This preserves filesystem state only; it does not preserve live sandbox identity, PID space, shell state, or running background processes.
+
+**Background commands:** `terminal(background=true)` uses Hermes' generic non-local background process flow. You can spawn, poll, wait, view logs, and kill processes through the normal process tool while the sandbox is alive. Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
+
+**Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
+
 ### Singularity/Apptainer Backend
 
 Runs commands in a [Singularity/Apptainer](https://apptainer.org) container. Designed for HPC clusters and shared machines where Docker isn't available.
@@ -410,22 +456,13 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
-### Remote-to-Host File Sync on Teardown
+### Remote-to-Host State Sync on Teardown
 
-For the **SSH**, **Modal**, and **Daytona** backends (anywhere the agent's working tree lives on a different machine than the host running Hermes), Hermes tracks files the agent touched inside the remote sandbox and, on session teardown / sandbox cleanup, **syncs the modified files back to the host** under `~/.hermes/cache/remote-syncs/<session-id>/`.
+For the **SSH**, **Modal**, and **Daytona** backends, Hermes pushes your `~/.hermes/` state (credential files, skills, cache) into the remote sandbox during the session, and on teardown **syncs changed state files back** to their original host locations. Files that differ from what was originally pushed (compared by content hash) are applied back in place; new remote files under a synced directory (e.g. a skill the agent created remotely) are mapped back to the corresponding host path. Upload-only credential files are never overwritten on the host.
 
-- Triggers on: session close, `/new`, `/reset`, gateway message timeout, `delegate_task` subagent completion when the child used a remote backend.
-- Covers the whole tree the agent modified, not just files it explicitly opened. Additions, edits, and deletions are all captured.
-- The remote sandbox may have been torn down by the time you go looking; the local `~/.hermes/cache/remote-syncs/…` copy is the authoritative record of what the agent changed.
-- Large binary outputs (model checkpoints, raw datasets) are capped by size — the sync skips files over `file_sync_max_mb` (default `100`). Bump that if you expect bigger artifacts to come back.
-
-```yaml
-terminal:
-  file_sync_max_mb: 100     # default — sync files up to 100 MB each
-  file_sync_enabled: true   # default — set false to skip the sync entirely
-```
-
-This is how you recover results from ephemeral cloud sandboxes that get destroyed after the session ends, without having to tell the agent to explicitly `scp` or `modal volume put` every artifact.
+- The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB.
+- Docker and Singularity use bind mounts (live host filesystem view) and don't need this.
+- This covers Hermes state (`~/.hermes/`), **not** arbitrary working-tree files inside the sandbox — have the agent copy important artifacts out explicitly (e.g. `scp`, `modal volume put`) before the sandbox is destroyed.
 
 ### Docker Volume Mounts
 
@@ -627,10 +664,10 @@ With `memory.write_approval: true`, memory writes need your approval before they
 Controls how much content Hermes loads from each automatic context file before applying head/tail truncation. This applies to files injected into the system prompt such as `SOUL.md`, `.hermes.md`, `AGENTS.md`, `CLAUDE.md`, and `.cursorrules`. It does **not** affect the `read_file` tool.
 
 ```yaml
-context_file_max_chars: 20000  # default
+context_file_max_chars: null  # default — dynamic cap scaled to the model's context window (floor 20K, ceiling 500K chars)
 ```
 
-Raise it when you intentionally keep larger identity or project-context files and run models with enough context window to carry them:
+Set a positive integer to pin a fixed cap instead of the dynamic behavior:
 
 ```yaml
 context_file_max_chars: 25000
@@ -749,6 +786,7 @@ compression:
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
+  in_place: true                                    # Compact on the same session id (no rotation) — see below
   idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
   hygiene_hard_message_limit: 5000                  # Gateway safety valve — see below
   hygiene_timeout_seconds: 30                       # Max seconds of NO summary-model output before hygiene compression is cut off
@@ -781,6 +819,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 `hygiene_failure_cooldown_seconds` controls that per-session cooldown after a hygiene compression timeout or abort. During the cooldown, the gateway skips repeated hygiene attempts for the same oversized session so every incoming message does not block on the same broken auxiliary backend. `/compress`, `/reset`, or a healthy later turn can still recover the session.
 
 `protect_first_n` controls how many **non-system** head messages are pinned across every compaction. Default `3` — the opening user/assistant exchange survives every summarizer pass so the original goal stays visible. On long-running rolling-compaction sessions where the opening turn is no longer relevant, set `protect_first_n: 0` to pin nothing but the system prompt + summary + tail. The system prompt itself is always preserved regardless of this setting.
+
+`in_place` (default `true`) controls what happens to the session identity when compaction fires. When `true`, compaction rewrites the message list and rebuilds the system prompt **without rotating the session id** — the conversation keeps one durable id for its whole life (no `parent_session_id` chain, no `name #2` / `#3` renumbering in session lists). Compaction is non-destructive: the live context is compacted, but the pre-compaction turns are soft-archived under the same id (marked inactive/compacted) — still searchable via `session_search` and recoverable, not deleted. Hooks see the mode via the `in_place` field on the `session:compress` event. Set `in_place: false` to restore the legacy behavior where each compaction rotates to a new session id linked to the old one.
 
 `threshold_tokens` sets an optional **absolute token cap** for the compression trigger. When set, compression fires at the lower of the ratio-based `threshold` and this absolute count — so compression never fires later than the user's preferred token number regardless of which model is active. This solves the problem where switching between models with different context windows (e.g. 1M → 400K) shifts the absolute trigger point. The cap is clamped to the model's context length, so setting it higher than the model supports is safe — the ratio-based threshold is used instead. Default `null` (disabled — ratio-based threshold only). The cap survives model switches and fallback activations.
 
@@ -864,9 +904,25 @@ agent:
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
 ```
 
-When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`.
+When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (500/500) — response may be incomplete`.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+
+## Verify-on-Stop (coding verification)
+
+When enabled, Hermes refuses to accept a final answer on a turn where the agent edited code in a workspace but produced no fresh verification evidence (a passing test run, build, lint, etc.) — it injects a synthetic follow-up asking the agent to verify or explain why it can't. Doc/markdown/skill-only edits never trigger it, and the loop is bounded so it can never trap the agent.
+
+```yaml
+agent:
+  verify_on_stop: false        # true | false | "auto" (surface-aware: on for CLI/TUI/desktop, off for messaging)
+  verify_guidance: true        # Append creative-UI / clean-diff guidance to the missing-evidence nudge
+  max_verify_nudges: 3         # Cap on consecutive continue nudges per turn (built-in + pre_verify hooks)
+  coding_instructions: ""      # Standing project-wide coding rules appended to the coding brief
+```
+
+`verify_on_stop` accepts `true` (on everywhere), `false` (off), or `"auto"` (on for interactive coding surfaces — CLI, TUI, desktop — and programmatic callers; off for messaging surfaces like Telegram/Discord where the verification narrative reads as chat noise). The config migration turns it **off** on existing installs, so treat off as the effective default and opt in explicitly. The `HERMES_VERIFY_ON_STOP` env var overrides the config value when set.
+
+For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](/user-guide/features/hooks#pre_verify).
 
 ## Standing Goals (`/goal`)
 
@@ -886,13 +942,13 @@ Hermes has separate timeout layers for streaming, plus a stale detector for non-
 | Timeout | Default | Local providers | Config / env |
 |---------|---------|----------------|--------------|
 | Socket read timeout | 120s | Auto-raised to 1800s | `HERMES_STREAM_READ_TIMEOUT` |
-| Stale stream detection | 180s | Auto-disabled | `HERMES_STREAM_STALE_TIMEOUT` |
-| Stale non-stream detection | 300s | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds` or `HERMES_API_CALL_STALE_TIMEOUT` |
+| Stale stream detection | 180s | Raised to a 900s ceiling (`agent.local_stream_stale_timeout`) | `HERMES_STREAM_STALE_TIMEOUT` |
+| Stale non-stream detection | 90s | Auto-disabled when left implicit | `providers.<id>.stale_timeout_seconds` or `HERMES_API_CALL_STALE_TIMEOUT` |
 | API call (non-streaming) | 1800s | Unchanged | `providers.<id>.request_timeout_seconds` / `timeout_seconds` or `HERMES_API_TIMEOUT` |
 
 The **socket read timeout** controls how long httpx waits for the next chunk of data from the provider. Local LLMs can take minutes for prefill on large contexts before producing the first token, so Hermes raises this to 30 minutes when it detects a local endpoint. If you explicitly set `HERMES_STREAM_READ_TIMEOUT`, that value is always used regardless of endpoint detection.
 
-The **stale stream detection** kills connections that receive SSE keep-alive pings but no actual content. This is disabled entirely for local providers since they don't send keep-alive pings during prefill.
+The **stale stream detection** kills connections that receive SSE keep-alive pings but no actual content. For local providers (which don't send keep-alive pings during prefill) the default is raised to a finite 900-second ceiling instead of the 180s base — configurable via `agent.local_stream_stale_timeout` or the `HERMES_LOCAL_STREAM_STALE_TIMEOUT` env var.
 
 The **stale non-stream detection** kills non-streaming calls that produce no response for too long. By default Hermes disables this on local endpoints to avoid false positives during long prefills. If you explicitly set `providers.<id>.stale_timeout_seconds`, `providers.<id>.models.<model>.stale_timeout_seconds`, or `HERMES_API_CALL_STALE_TIMEOUT`, that explicit value is honored even on local endpoints.
 
@@ -1039,7 +1095,7 @@ auxiliary:
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
+Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `providers:` dict (e.g. `provider: "beans"`).
 
 :::tip MiniMax OAuth
 `minimax-oauth` logs in via browser OAuth (no API key needed). Run `hermes model` and select **MiniMax (OAuth)** to authenticate. Auxiliary tasks use `MiniMax-M2.7-highspeed` automatically. See the [MiniMax OAuth guide](../guides/minimax-oauth.md).
@@ -1411,7 +1467,7 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`. Disabled for all others (Claude, DeepSeek, Qwen, etc.). |
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`. Disabled for all others (e.g. Claude). |
 | `true` | Always enabled, regardless of model. Useful if you notice your current model describing actions instead of performing them. |
 | `false` | Always disabled, regardless of model. |
 | `["gpt", "codex", "qwen", "llama"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
@@ -1422,7 +1478,7 @@ When enabled, three layers of guidance may be added to the system prompt:
 
 1. **General tool-use enforcement** (all matched models) — instructs the model to make tool calls immediately instead of describing intentions, keep working until the task is complete, and never end a turn with a promise of future action.
 
-2. **OpenAI execution discipline** (GPT and Codex models only) — additional guidance addressing GPT-specific failure modes: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
+2. **OpenAI execution discipline** (GPT, Codex, and Grok models) — additional guidance addressing GPT-specific failure modes: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
 
 3. **Google operational guidance** (Gemini and Gemma models only) — conciseness, absolute paths, parallel tool calls, and verify-before-edit patterns.
 
@@ -1474,7 +1530,7 @@ This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), w
 
 ```yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "deepinfra"
   speed: 1.0                    # Global speed multiplier (fallback for all providers)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -1523,18 +1579,18 @@ display:
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
-  tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
   show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
-  personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
+  personality: ""         # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
-  show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
+  show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
-  timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
+  timestamps: false       # When true, prefixes user and assistant labels with timestamps in the CLI / TUI transcript
+  timestamp_format: "%H:%M"  # strftime format for those timestamps (e.g. "%b-%d %H:%M" for month-day)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   turn_summary: true      # CLI only: print a one-line post-turn accounting footer after each interactive turn
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
@@ -1712,16 +1768,20 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
-  provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
   language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
   local:
     model: "base"              # tiny, base, small, medium, large-v3
     language: ""               # per-provider override of stt.language
     initial_prompt: ""         # optional whisper prompt to bias vocabulary/script (e.g. Simplified Chinese)
+    vad: true                  # Silero VAD filter (default on) — silence never reaches whisper; false = raw behavior (music/ambient)
+    vad_min_silence_ms: 500    # min silence (ms) that splits speech chunks when vad is on
+    no_speech_prob_threshold: 0.6  # drop a segment only when no_speech_prob > this...
+    logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
   groq:
     language: ""               # per-provider override of stt.language
   openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
     language: ""               # per-provider override of stt.language
   # model: "whisper-1"         # Legacy fallback key still respected
 ```
@@ -1732,7 +1792,7 @@ Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes
 
 Provider behavior:
 
-- `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`.
+- `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior.
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Pass `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip auto-detection and reduce latency.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
@@ -1780,10 +1840,10 @@ When enabled, responses appear token-by-token inside a streaming box. Tool calls
 
 ```yaml
 streaming:
-  enabled: true           # Enable progressive message editing
-  transport: edit         # "edit" (progressive message editing) or "off"
-  edit_interval: 0.3      # Seconds between message edits
-  buffer_threshold: 40    # Characters before forcing an edit flush
+  enabled: true           # Enable progressive message editing (default: false)
+  transport: auto         # "auto" (default) | "edit" (progressive message editing) | "off"
+  edit_interval: 0.8      # Seconds between message edits (default: 0.8)
+  buffer_threshold: 24    # Characters before forcing an edit flush (default: 24)
   cursor: " ▉"            # Cursor shown during streaming
   fresh_final_after_seconds: 0    # Opt in to fresh final (Telegram) when preview is this old
 ```
@@ -2154,11 +2214,11 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 
 ## Clarify
 
-Configure the clarification prompt behavior:
+Configure how long the gateway waits for a response to a clarifying question. The canonical key is `agent.clarify_timeout` (default `3600` seconds); a legacy top-level `clarify.timeout` is still honored if explicitly set:
 
 ```yaml
-clarify:
-  timeout: 120                 # Seconds to wait for user clarification response
+agent:
+  clarify_timeout: 3600        # Seconds to wait for user clarification response (0 or less = unlimited)
 ```
 
 ## Context Files (SOUL.md, AGENTS.md)

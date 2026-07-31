@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 from hermes_cli import web_server
+from hermes_cli.web_routers import sessions as web_sessions
 
 
 TARGET_HANDLERS = {
@@ -29,15 +30,18 @@ def _call_name(call: ast.Call) -> str | None:
 
 
 def test_sessiondb_handlers_open_connections_inside_executor_helpers():
-    tree = ast.parse(Path(web_server.__file__).read_text(encoding="utf-8"))
-    handlers = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name in TARGET_HANDLERS
-    }
-    top_level_helpers = {
-        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
-    }
+    # The session route handlers were extracted to web_routers/sessions.py
+    # (wave 2); the analytics handlers and the executor helpers still live in
+    # web_server.py — scan both modules' top-level bodies.
+    handlers: dict[str, ast.AsyncFunctionDef] = {}
+    top_level_helpers: dict[str, ast.FunctionDef] = {}
+    for mod in (web_server, web_sessions):
+        tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.AsyncFunctionDef) and node.name in TARGET_HANDLERS:
+                handlers[node.name] = node
+            elif isinstance(node, ast.FunctionDef):
+                top_level_helpers[node.name] = node
     assert handlers.keys() == TARGET_HANDLERS
 
     for name, handler in handlers.items():

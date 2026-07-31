@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
-import { TYPING_IDLE_MS } from '../config/timing.js'
+import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
 import type {
   ApprovalRespondResponse,
@@ -320,8 +320,32 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
   }
 
+  // Double-Esc discards the draft, matching Claude Code / Gemini CLI. It
+  // sits above the isBlocked early-return on purpose: Ctrl+C interrupts a
+  // running turn rather than clearing, so while the agent streams there is
+  // otherwise no way to throw away a half-typed prompt. The draft is pushed
+  // to history first so Up recalls it.
+  const lastEscRef = useRef(0)
+
   useInput((ch, key) => {
     const live = getUiState()
+
+    if (key.escape) {
+      const now = Date.now()
+      const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
+
+      lastEscRef.current = isDouble ? 0 : now
+
+      if (isDouble && (cState.input || cState.inputBuf.length)) {
+        if (cState.input.trim()) {
+          cActions.pushHistory(cState.input)
+        }
+
+        cActions.clearIn()
+
+        return
+      }
+    }
 
     if (isBlocked) {
       // When approval/clarify/confirm overlays are active, their own useInput
@@ -559,6 +583,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 'x')) {
       return patchOverlayState({ sessions: true })
+    }
+
+    // Ctrl+O opens the model picker without disturbing a typed draft — the
+    // same overlay `/model` opens, but reachable without clearing what you've
+    // typed to run the command. Works mid-stream: picking a model writes the
+    // session model (config.set), which the next turn reads while the in-flight
+    // turn keeps streaming.
+    if (isCtrl(key, ch, 'o')) {
+      return patchOverlayState({ modelPicker: true })
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

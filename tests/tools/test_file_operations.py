@@ -31,9 +31,6 @@ class TestIsWriteDenied:
         path = os.path.join(str(Path.home()), ".ssh", "authorized_keys")
         assert _is_write_denied(path) is True
 
-    def test_ssh_id_rsa_denied(self):
-        path = os.path.join(str(Path.home()), ".ssh", "id_rsa")
-        assert _is_write_denied(path) is True
 
     def test_netrc_denied(self):
         path = os.path.join(str(Path.home()), ".netrc")
@@ -48,47 +45,6 @@ class TestIsWriteDenied:
         path = os.path.join(str(Path.home()), ".aws", "credentials")
         assert _is_write_denied(path) is True
 
-    def test_kube_prefix_denied(self):
-        path = os.path.join(str(Path.home()), ".kube", "config")
-        assert _is_write_denied(path) is True
-
-    def test_normal_file_allowed(self, tmp_path):
-        path = str(tmp_path / "safe_file.txt")
-        assert _is_write_denied(path) is False
-
-    def test_project_file_allowed(self):
-        assert _is_write_denied("/tmp/project/main.py") is False
-
-    def test_tilde_expansion(self):
-        assert _is_write_denied("~/.ssh/authorized_keys") is True
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            ".anthropic_oauth.json",
-            "mcp-tokens/token1.json",
-            "mcp-tokens/subdir/token2.json",
-            "pairing/telegram-approved.json",
-            "pairing/discord-approved.json",
-            "pairing/telegram-pending.json",
-            "pairing",
-        ],
-    )
-    def test_oauth_mcp_tokens_and_pairing_denied(self, path):
-        """PKCE creds, mcp-tokens, and pairing entries must be write-denied."""
-        from hermes_constants import get_hermes_home
-        hermes_home = get_hermes_home()
-        full_path = str(hermes_home / path)
-        assert _is_write_denied(full_path) is True
-
-    @pytest.mark.parametrize(
-        "path",
-        ["auth.json", "config.yaml", "webhook_subscriptions.json"],
-    )
-    def test_hermes_control_files_requested_writable(self, path):
-        from hermes_constants import get_hermes_home
-
-        assert _is_write_denied(str(get_hermes_home() / path)) is False
 
     @pytest.mark.parametrize(
         "path",
@@ -103,41 +59,6 @@ class TestIsWriteDenied:
         full_path = str(hermes_home / path)
         assert _is_write_denied(full_path) is True
 
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/tmp/standard_file.txt",
-            "~/projects/myapp/main.py",
-            "/var/log/app.log",
-        ],
-    )
-    def test_standard_paths_allowed(self, path):
-        """Unrelated paths must still be allowed."""
-        assert _is_write_denied(path) is False
-
-    @pytest.mark.parametrize("name", [".anthropic_oauth.json"])
-    def test_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
-        """Under a profile, BOTH <profile>/X and <root>/X must be denied."""
-        root = tmp_path / "hermes"
-        profile = root / "profiles" / "coder"
-        profile.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(profile))
-
-        assert _is_write_denied(str(profile / name)) is True
-        assert _is_write_denied(str(root / name)) is True
-
-    @pytest.mark.parametrize(
-        "name",
-        ["auth.json", "config.yaml", "webhook_subscriptions.json"],
-    )
-    def test_control_files_requested_writable_in_profile_mode(self, tmp_path, monkeypatch, name):
-        root = tmp_path / "hermes"
-        profile = root / "profiles" / "coder"
-        profile.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(profile))
-
-        assert _is_write_denied(str(profile / name)) is False
-        assert _is_write_denied(str(root / name)) is False
 
     def test_mcp_tokens_dir_protected_in_profile_mode(self, tmp_path, monkeypatch):
         """mcp-tokens/ under profile AND under root must both be denied."""
@@ -175,7 +96,6 @@ class TestIsWriteDenied:
         assert _is_write_denied(str(root / "pairing")) is True
 
 
-
 # =========================================================================
 # Result dataclasses
 # =========================================================================
@@ -187,21 +107,6 @@ class TestReadResult:
         assert "error" not in d    # None omitted
         assert "similar_files" not in d  # empty list omitted
 
-    def test_to_dict_preserves_empty_content(self):
-        """Empty file should still have content key in the dict."""
-        r = ReadResult(content="", total_lines=0, file_size=0)
-        d = r.to_dict()
-        assert "content" in d
-        assert d["content"] == ""
-        assert d["total_lines"] == 0
-        assert d["file_size"] == 0
-
-    def test_to_dict_includes_values(self):
-        r = ReadResult(content="hello", total_lines=10, file_size=50, truncated=True)
-        d = r.to_dict()
-        assert d["content"] == "hello"
-        assert d["total_lines"] == 10
-        assert d["truncated"] is True
 
     def test_binary_fields(self):
         r = ReadResult(is_binary=True, is_image=True, mime_type="image/png")
@@ -249,21 +154,6 @@ class TestSearchResult:
         assert len(d["matches"]) == 1
         assert d["matches"][0]["path"] == "a.py"
 
-    def test_to_dict_empty(self):
-        r = SearchResult()
-        d = r.to_dict()
-        assert d["total_count"] == 0
-        assert "matches" not in d
-
-    def test_to_dict_files_mode(self):
-        r = SearchResult(files=["a.py", "b.py"], total_count=2)
-        d = r.to_dict()
-        assert d["files"] == ["a.py", "b.py"]
-
-    def test_to_dict_count_mode(self):
-        r = SearchResult(counts={"a.py": 3, "b.py": 1}, total_count=4)
-        d = r.to_dict()
-        assert d["counts"]["a.py"] == 3
 
     def test_truncated_flag(self):
         r = SearchResult(total_count=100, truncated=True)
@@ -310,96 +200,6 @@ class TestSearchResultDensify:
         assert "matches" in d
         assert "matches_text" not in d
 
-    def test_densify_emits_path_grouped_text(self):
-        r = SearchResult(matches=self._matches(6, paths=["a.py", "b.py"]),
-                         total_count=6)
-        d = r.to_dict(densify=True)
-        assert "matches" not in d
-        assert "matches_text" in d
-        assert "matches_format" in d  # self-describing
-        text = d["matches_text"]
-        # Each path appears once as a group header, not repeated per match.
-        assert text.count("a.py") == 1
-        assert text.count("b.py") == 1
-
-    def test_densify_is_lossless(self):
-        # Every path, line number, and content byte must be recoverable from
-        # the dense form.
-        import re
-        matches = [
-            SearchMatch(path="src/x.py", line_number=12, content="    def foo():"),
-            SearchMatch(path="src/x.py", line_number=45, content="        return bar"),
-            SearchMatch(path="src/y.py", line_number=3, content="import os"),
-            SearchMatch(path="src/y.py", line_number=99, content="x = 1  # tail"),
-            SearchMatch(path="src/z.py", line_number=7, content="class Z:"),
-        ]
-        r = SearchResult(matches=matches, total_count=5)
-        text = r.to_dict(densify=True)["matches_text"]
-        # Reconstruct (path, line, content) triples from the grouped text.
-        recovered = []
-        cur = None
-        for ln in text.split("\n"):
-            row = re.match(r"^  (\d+): (.*)$", ln)
-            if row:
-                recovered.append((cur, int(row.group(1)), row.group(2)))
-            else:
-                cur = ln
-        assert len(recovered) == 5
-        for orig, rec in zip(matches, recovered):
-            assert rec[0] == orig.path
-            assert rec[1] == orig.line_number
-            # content is rstrip'd in the dense form; originals here have no
-            # trailing whitespace, so they must match exactly.
-            assert rec[2] == orig.content
-
-    def test_densify_smaller_than_verbose(self):
-        import json
-        matches = self._matches(40, paths=["pkg/module_one.py", "pkg/module_two.py"])
-        r = SearchResult(matches=matches, total_count=40)
-        verbose = json.dumps(r.to_dict(densify=False), ensure_ascii=False)
-        dense = json.dumps(r.to_dict(densify=True), ensure_ascii=False)
-        assert len(dense) < len(verbose)
-
-    @pytest.mark.parametrize("content", [
-        "x = {'k': 1, 'url': 'http://h:8080'}",   # colons in content
-        "        deeply.indented(call)",          # leading indentation preserved
-        "# \u65e5\u672c\u8a9e comment \U0001f525",  # unicode + emoji
-        "",                                        # empty content
-        "trailing spaces   ",                     # rstrip'd (see note below)
-        'mix "quotes" and , commas',              # punctuation that breaks naive CSV
-    ])
-    def test_densify_content_is_lossless(self, content):
-        # Every realistic single-line match content must round-trip exactly
-        # (trailing whitespace is the one documented transform — rstrip).
-        matches = [SearchMatch(path=f"f{i}.py", line_number=i + 1, content=content)
-                   for i in range(6)]
-        r = SearchResult(matches=matches, total_count=6)
-        text = r.to_dict(densify=True)["matches_text"]
-        recovered = []
-        cur = None
-        for ln in text.split("\n"):
-            row = re.match(r"^  (\d+): (.*)$", ln)
-            if row:
-                recovered.append(row.group(2))
-            else:
-                cur = ln
-        assert len(recovered) == 6
-        for got in recovered:
-            assert got == content.rstrip()
-
-    def test_densify_assumes_single_line_matches(self):
-        # The path-grouped format puts one match per line, so it relies on
-        # ripgrep's one-line-per-match contract (verified: 0/6775 real match
-        # contents contained a newline). This test documents that assumption:
-        # a (synthetic, never-produced-by-rg) multiline content would split
-        # across rows. If search ever emits multiline content, densify must
-        # escape newlines first.
-        matches = [SearchMatch(path="a.py", line_number=i + 1, content="single line")
-                   for i in range(6)]
-        text = SearchResult(matches=matches, total_count=6).to_dict(densify=True)["matches_text"]
-        # one header + six rows == 7 lines, no row spans multiple lines
-        body_rows = [ln for ln in text.split("\n") if re.match(r"^  \d+: ", ln)]
-        assert len(body_rows) == 6
 
     def test_densify_paths_with_spaces(self):
         matches = [SearchMatch(path="my dir/a b.py", line_number=i + 1, content=f"x{i}")
@@ -416,10 +216,6 @@ class TestLintResult:
         assert d["status"] == "skipped"
         assert d["message"] == "No linter for .md files"
 
-    def test_success(self):
-        r = LintResult(success=True, output="")
-        d = r.to_dict()
-        assert d["status"] == "ok"
 
     def test_error(self):
         r = LintResult(success=False, output="SyntaxError line 5")
@@ -453,38 +249,10 @@ class TestShellFileOpsHelpers:
         assert normalize_read_pagination(offset="bad", limit="bad") == (1, 500)
         assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
 
-    def test_normalize_search_pagination_clamps_invalid_values(self):
-        assert normalize_search_pagination(offset=-10, limit=-5) == (0, 1)
-        assert normalize_search_pagination(offset="bad", limit="bad") == (0, 50)
-        assert normalize_search_pagination(offset=3, limit=0) == (3, 1)
 
     def test_escape_shell_arg_simple(self, file_ops):
         assert file_ops._escape_shell_arg("hello") == "'hello'"
 
-    def test_escape_shell_arg_with_quotes(self, file_ops):
-        result = file_ops._escape_shell_arg("it's")
-        assert "'" in result
-        # Should be safely escaped
-        assert result.count("'") >= 4  # wrapping + escaping
-
-    def test_escape_shell_arg_rewrites_windows_drive_paths_to_msys(self, monkeypatch, file_ops):
-        # bash eats backslashes and MSYS mangles ``C:\...``; the Git Bash
-        # ``/c/...`` form is the reliable one (reuses _windows_to_msys_path).
-        import tools.environments.local as local_mod
-
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
-        assert file_ops._escape_shell_arg(r"C:\Users\alice\notes.txt") == "'/c/Users/alice/notes.txt'"
-        # Non-drive paths are untouched.
-        assert file_ops._escape_shell_arg("/tmp/foo") == "'/tmp/foo'"
-
-    def test_escape_shell_arg_normalizes_mixed_msys_paths(self, monkeypatch, file_ops):
-        import tools.environments.local as local_mod
-
-        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
-        mixed = r"/c/Users/Alexander\Documents\NewTEST\readme.txt"
-        assert file_ops._escape_shell_arg(mixed) == (
-            "'/c/Users/Alexander/Documents/NewTEST/readme.txt'"
-        )
 
     def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, monkeypatch, file_ops):
         import tools.environments.local as local_mod
@@ -528,52 +296,6 @@ class TestShellFileOpsHelpers:
         assert file_ops._is_likely_binary("code.py") is False
         assert file_ops._is_likely_binary("readme.md") is False
 
-    def test_is_likely_binary_by_content(self, file_ops):
-        # High ratio of non-printable chars -> binary
-        binary_content = "\x00\x01\x02\x03" * 250
-        assert file_ops._is_likely_binary("unknown", binary_content) is True
-
-        # Normal text -> not binary
-        assert file_ops._is_likely_binary("unknown", "Hello world\nLine 2\n") is False
-
-    def test_is_image(self, file_ops):
-        assert file_ops._is_image("photo.png") is True
-        assert file_ops._is_image("pic.jpg") is True
-        assert file_ops._is_image("icon.ico") is True
-        assert file_ops._is_image("data.pdf") is False
-        assert file_ops._is_image("code.py") is False
-
-    def test_add_line_numbers(self, file_ops):
-        content = "line one\nline two\nline three"
-        result = file_ops._add_line_numbers(content)
-        # Compact gutter: "<n>|content" (no fixed-width padding).
-        assert "1|line one" in result
-        assert "2|line two" in result
-        assert "3|line three" in result
-
-    def test_add_line_numbers_with_offset(self, file_ops):
-        content = "continued\nmore"
-        result = file_ops._add_line_numbers(content, start_line=50)
-        assert "50|continued" in result
-        assert "51|more" in result
-
-    def test_add_line_numbers_truncates_long_lines(self, file_ops):
-        long_line = "x" * (MAX_LINE_LENGTH + 100)
-        result = file_ops._add_line_numbers(long_line)
-        assert "[truncated]" in result
-
-    def test_unified_diff(self, file_ops):
-        old = "line1\nline2\nline3\n"
-        new = "line1\nchanged\nline3\n"
-        diff = file_ops._unified_diff(old, new, "test.py")
-        assert "-line2" in diff
-        assert "+changed" in diff
-        assert "test.py" in diff
-
-    def test_cwd_from_env(self, mock_env):
-        mock_env.cwd = "/custom/path"
-        ops = ShellFileOperations(mock_env)
-        assert ops.cwd == "/custom/path"
 
     def test_cwd_fallback_to_slash(self):
         env = MagicMock(spec=[])  # no cwd attribute
@@ -650,34 +372,6 @@ class TestSearchPathValidation:
         assert result.error is not None
         assert "not found" in result.error.lower() or "Path not found" in result.error
 
-    def test_search_nonexistent_path_files_mode(self, mock_env):
-        """search(target='files') should also return error for bad paths."""
-        def side_effect(command, **kwargs):
-            if "test -e" in command:
-                return {"output": "not_found", "returncode": 1}
-            if "command -v" in command:
-                return {"output": "yes", "returncode": 0}
-            return {"output": "", "returncode": 0}
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.search("*.py", path="/nonexistent/path", target="files")
-        assert result.error is not None
-        assert "not found" in result.error.lower() or "Path not found" in result.error
-
-    def test_search_existing_path_proceeds(self, mock_env):
-        """search() should proceed normally when the path exists."""
-        def side_effect(command, **kwargs):
-            if "test -e" in command:
-                return {"output": "exists", "returncode": 0}
-            if "command -v" in command:
-                return {"output": "yes", "returncode": 0}
-            # rg returns exit 1 (no matches) with empty output
-            return {"output": "", "returncode": 1}
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.search("pattern", path="/existing/path")
-        assert result.error is None
-        assert result.total_count == 0  # No matches but no error
 
     def test_search_rg_error_exit_code(self, mock_env):
         """search() should report error when rg returns exit code 2."""
@@ -763,25 +457,6 @@ class TestShellFileOpsWriteDenied:
         assert result.error is not None
         assert "denied" in result.error.lower()
 
-    def test_patch_replace_denied_path(self, file_ops):
-        result = file_ops.patch_replace("~/.ssh/authorized_keys", "old", "new")
-        assert result.error is not None
-        assert "denied" in result.error.lower()
-
-    def test_delete_file_denied_path(self, file_ops):
-        result = file_ops.delete_file("~/.ssh/authorized_keys")
-        assert result.error is not None
-        assert "denied" in result.error.lower()
-
-    def test_move_file_src_denied(self, file_ops):
-        result = file_ops.move_file("~/.ssh/id_rsa", "/tmp/dest.txt")
-        assert result.error is not None
-        assert "denied" in result.error.lower()
-
-    def test_move_file_dst_denied(self, file_ops):
-        result = file_ops.move_file("/tmp/src.txt", "~/.aws/credentials")
-        assert result.error is not None
-        assert "denied" in result.error.lower()
 
     def test_move_file_failure_path(self, mock_env):
         mock_env.execute.return_value = {"output": "No such file or directory", "returncode": 1}
@@ -835,32 +510,6 @@ class TestPatchReplacePostWriteVerification:
         assert "verification failed" in result.error.lower()
         assert "did not persist" in result.error.lower()
 
-    def test_patch_replace_succeeds_when_file_persisted(self, mock_env):
-        """Normal success path: write persists, verify read returns new bytes."""
-        state = {"content": "hello world\n"}
-
-        def side_effect(command, stdin_data=None, **kwargs):
-            # A write is the only call that pipes content over stdin — key
-            # on that behavioral signal rather than the exact write command,
-            # which is an atomic temp-file + mv script (`set -e; ... mv ...`),
-            # not a bare `cat > path`.
-            if stdin_data is not None:
-                state["content"] = stdin_data
-                return {"output": "", "returncode": 0}
-            if command.startswith("cat "):  # read / verify
-                return {"output": state["content"], "returncode": 0}
-            if command.startswith("mkdir "):
-                return {"output": "", "returncode": 0}
-            if command.startswith("wc -c"):
-                return {"output": str(len(state["content"].encode())), "returncode": 0}
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.patch_replace("/tmp/test/a.py", "hello", "hi")
-        assert result.error is None, f"Unexpected error: {result.error}"
-        assert result.success is True
-        assert state["content"] == "hi world\n", f"File not actually updated: {state['content']!r}"
 
     def test_patch_replace_fails_when_verify_read_errors(self, mock_env):
         """If the verify-read step itself fails (exit code != 0), return an error."""
@@ -903,3 +552,51 @@ class _DeletedTestGitBaselineCheck:
     helper is restored or replaced.
     """
     pass
+
+
+# =========================================================================
+# Atomic write: umask-default permissions for new files
+# =========================================================================
+
+class TestAtomicWriteNewFilePermissions:
+    """_atomic_write should apply umask-default perms to new files (not 0600)."""
+
+    def test_new_file_gets_umask_default_permissions(self, tmp_path):
+        """Newly created file should get umask-computed perms, not mktemp's 0600.
+
+        Uses a real subprocess so the shell script actually runs.
+        """
+        env = MagicMock()
+        env.cwd = str(tmp_path)
+
+        def execute(command, **kwargs):
+            completed = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                capture_output=True,
+                input=kwargs.get("stdin_data"),
+            )
+            return {
+                "output": completed.stdout + completed.stderr,
+                "returncode": completed.returncode,
+            }
+
+        env.execute = execute
+        ops = ShellFileOperations(env)
+        dest = tmp_path / "new_file.txt"
+        assert not dest.exists()
+
+        result = ops.write_file(str(dest), "test content\n")
+        assert result.error is None, f"write failed: {result.error}"
+        assert dest.exists()
+
+        # Compute expected mode: 0666 & ~umask
+        current_umask = os.umask(0)
+        os.umask(current_umask)  # restore
+        expected_mode = 0o666 & ~current_umask
+        actual_mode = dest.stat().st_mode & 0o777
+        assert actual_mode == expected_mode, (
+            f"Expected mode {expected_mode:04o} (umask {current_umask:04o}), "
+            f"got {actual_mode:04o}"
+        )

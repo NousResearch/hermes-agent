@@ -742,6 +742,23 @@ mcp_servers:
       enabled: false
 ```
 
+## MCP Elicitation Support
+
+MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Hermes routes **form-mode** elicitations through its existing approval surface — an interactive prompt in the CLI/TUI, or approval buttons on gateway platforms like Telegram and Slack — so the request reaches you wherever the session lives. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
+
+Elicitation is **enabled by default** per server. Configure it under the `elicitation` key:
+
+```yaml
+mcp_servers:
+  my_server:
+    command: "my-mcp-server"
+    elicitation:
+      enabled: true    # default: true
+      timeout: 300     # seconds to wait for your answer (default: 300)
+```
+
+The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
+
 ## Running Hermes as an MCP server
 
 In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.
@@ -830,7 +847,7 @@ hermes mcp serve --verbose    # Debug logging on stderr
 
 ### How it works
 
-The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `hermes send` CLI.
+The MCP server reads conversation data directly from Hermes's session store — `~/.hermes/state.db` is the primary source, with `sessions.json` kept only as a legacy fallback. A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `hermes send` CLI.
 
 The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
 

@@ -27,7 +27,6 @@ import os
 import threading
 import time
 from concurrent.futures import (
-    ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
 from typing import Any, Dict, List, Optional
@@ -2828,16 +2827,12 @@ def delegate_task(
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
     if depth >= max_spawn:
-        return json.dumps(
-            {
-                "error": (
-                    f"Delegation depth limit reached (depth={depth}, "
-                    f"max_spawn_depth={max_spawn}). Raise "
-                    f"delegation.max_spawn_depth in config.yaml if deeper "
-                    f"nesting is required (no hard ceiling, but each level "
-                    f"multiplies API cost)."
-                )
-            }
+        return tool_error(
+            f"Delegation depth limit reached (depth={depth}, "
+            f"max_spawn_depth={max_spawn}). Raise "
+            f"delegation.max_spawn_depth in config.yaml if deeper "
+            f"nesting is required (no hard ceiling, but each level "
+            f"multiplies API cost)."
         )
 
     # Load config

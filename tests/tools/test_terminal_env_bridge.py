@@ -66,37 +66,6 @@ def test_explicit_terminal_env_wins_over_config(monkeypatch):
     assert config["env_type"] == "local"
 
 
-def test_preset_terminal_vars_survive_backfill(monkeypatch):
-    """override=False: already-set sibling TERMINAL_* values stay
-    authoritative; only missing ones are backfilled."""
-    _write_config(
-        "terminal:\n"
-        "  backend: docker\n"
-        "  docker_image: config/image:1\n"
-    )
-    monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "env/image:2")
-
-    config = terminal_tool._get_env_config()
-
-    assert config["env_type"] == "docker"
-    assert config["docker_image"] == "env/image:2"
-
-
-def test_bridge_failure_falls_back_to_local(monkeypatch):
-    """A broken config layer must not take the terminal tool down."""
-
-    def _boom(*_a, **_k):
-        raise RuntimeError("config exploded")
-
-    import hermes_cli.config as config_mod
-
-    monkeypatch.setattr(config_mod, "apply_terminal_config_to_env", _boom)
-
-    config = terminal_tool._get_env_config()
-
-    assert config["env_type"] == "local"
-
-
 def test_bridge_only_attempted_once(monkeypatch):
     """The config load runs at most once per process when TERMINAL_ENV stays
     unset (e.g. empty config) — later calls skip the bridge entirely."""

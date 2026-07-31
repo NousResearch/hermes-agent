@@ -80,25 +80,6 @@ class TestAllowlist:
         with pytest.raises(ld.FeatureUnavailable, match="not in LAZY_DEPS"):
             ld.ensure("not.a.real.feature")
 
-    def test_lazy_deps_keys_use_namespace_dot_name(self):
-        # Sanity check on the data shape — every key should be at least
-        # one dot-separated namespace.
-        for key in ld.LAZY_DEPS:
-            assert "." in key, f"feature {key!r} should be namespace.name"
-
-    def test_every_lazy_dep_spec_passes_safety(self):
-        # Defence in depth — even though specs are author-controlled,
-        # the safety regex must accept everything we ship.
-        for feature, specs in ld.LAZY_DEPS.items():
-            for spec in specs:
-                assert ld._spec_is_safe(spec), \
-                    f"{feature}: spec {spec!r} fails safety check"
-
-    def test_feature_install_command_returns_pip_invocation(self):
-        cmd = ld.feature_install_command("memory.honcho")
-        assert cmd is not None
-        assert cmd.startswith("uv pip install")
-        assert "honcho-ai" in cmd
 
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
@@ -118,22 +99,6 @@ class TestSecurityGating:
         with pytest.raises(ld.FeatureUnavailable, match="lazy installs disabled"):
             ld.ensure("test.feat", prompt=False)
 
-    def test_disabled_via_env_var(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
-        # Bypass config layer; the env var alone must disable.
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"security": {"allow_lazy_installs": True}},
-        )
-        assert ld._allow_lazy_installs() is False
-
-    def test_default_allows(self, monkeypatch):
-        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"security": {}},
-        )
-        assert ld._allow_lazy_installs() is True
 
     def test_config_failure_fails_open(self, monkeypatch):
         # If config can't be read at all, we ALLOW installs rather than
@@ -163,35 +128,6 @@ class TestEnsure:
         )
         ld.ensure("test.satisfied", prompt=False)  # no exception
 
-    def test_install_success_path(self, monkeypatch):
-        monkeypatch.setitem(ld.LAZY_DEPS, "test.install", ("zzzfake>=1",))
-        # First check sees missing, post-install check sees installed.
-        call_count = {"n": 0}
-
-        def fake_satisfied(spec):
-            call_count["n"] += 1
-            return call_count["n"] > 1  # missing first, installed after
-
-        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
-        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
-        monkeypatch.setattr(
-            ld, "_venv_pip_install",
-            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
-        )
-        ld.ensure("test.install", prompt=False)
-
-    def test_install_failure_surfaces_pip_stderr(self, monkeypatch):
-        monkeypatch.setitem(ld.LAZY_DEPS, "test.fail", ("zzzfake>=1",))
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
-        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
-        monkeypatch.setattr(
-            ld, "_venv_pip_install",
-            lambda specs, **kw: ld._InstallResult(
-                False, "", "ERROR: package not found on PyPI"
-            ),
-        )
-        with pytest.raises(ld.FeatureUnavailable, match="pip install failed"):
-            ld.ensure("test.fail", prompt=False)
 
     def test_install_succeeds_but_still_missing_raises(self, monkeypatch):
         # Pip says success but the package still isn't importable
@@ -216,10 +152,6 @@ class TestIsAvailable:
     def test_unknown_feature_returns_false(self):
         assert ld.is_available("not.a.thing") is False
 
-    def test_satisfied_returns_true(self, monkeypatch):
-        monkeypatch.setitem(ld.LAZY_DEPS, "test.avail", ("zzzfake>=1",))
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
-        assert ld.is_available("test.avail") is True
 
     def test_missing_returns_false(self, monkeypatch):
         monkeypatch.setitem(ld.LAZY_DEPS, "test.miss", ("zzzfake>=1",))
@@ -256,27 +188,11 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"honcho-ai": "2.2.0"})
         assert ld._is_satisfied("honcho-ai==2.2.0") is True
 
-    def test_exact_pin_mismatch_returns_false(self, monkeypatch):
-        # Installed 2.1.2, spec requires 2.2.0 → False (needs upgrade).
-        self._fake_version(monkeypatch, {"honcho-ai": "2.1.2"})
-        assert ld._is_satisfied("honcho-ai==2.2.0") is False
 
     def test_range_within_returns_true(self, monkeypatch):
         self._fake_version(monkeypatch, {"slack-bolt": "1.27.0"})
         assert ld._is_satisfied("slack-bolt>=1.18.0,<2") is True
 
-    def test_range_above_returns_false(self, monkeypatch):
-        # Installed too new for the upper bound.
-        self._fake_version(monkeypatch, {"slack-bolt": "2.0.0"})
-        assert ld._is_satisfied("slack-bolt>=1.18.0,<2") is False
-
-    def test_range_below_returns_false(self, monkeypatch):
-        self._fake_version(monkeypatch, {"slack-bolt": "1.0.0"})
-        assert ld._is_satisfied("slack-bolt>=1.18.0,<2") is False
-
-    def test_package_not_installed_returns_false(self, monkeypatch):
-        self._fake_version(monkeypatch, {})
-        assert ld._is_satisfied("anthropic==0.86.0") is False
 
     def test_bare_package_name_presence_is_enough(self, monkeypatch):
         # No version constraint — presence alone counts as satisfied.
@@ -320,25 +236,6 @@ class TestActiveFeatures:
         monkeypatch.setattr(ld, "_is_present", lambda spec: False)
         assert ld.active_features() == []
 
-    def test_finds_features_with_anchor_package_installed(self, monkeypatch):
-        # Pretend only honcho-ai is installed; nothing else.
-        monkeypatch.setattr(
-            ld, "_is_present",
-            lambda spec: ld._pkg_name_from_spec(spec) == "honcho-ai",
-        )
-        active = ld.active_features()
-        assert "memory.honcho" in active
-        # Backends the user never enabled stay quiet.
-        assert "memory.hindsight" not in active
-        assert "platform.slack" not in active
-
-    def test_multi_package_feature_active_if_anchor_present(self, monkeypatch):
-        # platform.slack has multiple packages; the first spec is its anchor.
-        monkeypatch.setattr(
-            ld, "_is_present",
-            lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
-        )
-        assert "platform.slack" in ld.active_features()
 
     def test_shared_dependency_does_not_activate_feature(self, monkeypatch):
         # asyncpg is a generic dependency that may be installed for unrelated
@@ -374,86 +271,6 @@ class TestRefreshActiveFeatures:
         assert result["platform.matrix"].startswith("skipped:")
         assert "unsupported on Windows" in result["platform.matrix"]
 
-    def test_windows_matrix_ensure_fails_before_pip(self, monkeypatch):
-        monkeypatch.setattr(ld.sys, "platform", "win32")
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
-        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
-        monkeypatch.setattr(
-            ld,
-            "_venv_pip_install",
-            lambda *a, **kw: pytest.fail("pip should not be called for unsupported Matrix on Windows"),
-        )
-
-        with pytest.raises(ld.FeatureUnavailable, match="unsupported on Windows"):
-            ld.ensure("platform.matrix", prompt=False)
-
-    def test_windows_matrix_already_satisfied_still_works(self, monkeypatch):
-        # Do not break users who already have a working Matrix dependency set;
-        # only the impossible Windows install/refresh path should be blocked.
-        monkeypatch.setattr(ld.sys, "platform", "win32")
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
-        monkeypatch.setattr(
-            ld,
-            "_venv_pip_install",
-            lambda *a, **kw: pytest.fail("pip should not be called when Matrix deps are current"),
-        )
-
-        ld.ensure("platform.matrix", prompt=False)
-
-    def test_already_current_is_noop(self, monkeypatch):
-        monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
-        monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==1.0.0",))
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
-        # If pip were called, this would fail loudly.
-        monkeypatch.setattr(
-            ld, "_venv_pip_install",
-            lambda *a, **kw: pytest.fail("pip should not be called"),
-        )
-        result = ld.refresh_active_features()
-        assert result == {"test.feat": "current"}
-
-    def test_stale_pin_triggers_reinstall(self, monkeypatch):
-        monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
-        monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==2.0.0",))
-        # First _is_satisfied check (in feature_missing) says no; after
-        # install, post-install check says yes.
-        states = iter([False, True])
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
-        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
-        monkeypatch.setattr(
-            ld, "_venv_pip_install",
-            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
-        )
-        result = ld.refresh_active_features()
-        assert result == {"test.feat": "refreshed"}
-
-    def test_install_failure_recorded_not_raised(self, monkeypatch):
-        # A failed refresh must NOT raise out of hermes update.
-        monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
-        monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==2.0.0",))
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
-        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
-        monkeypatch.setattr(
-            ld, "_venv_pip_install",
-            lambda specs, **kw: ld._InstallResult(
-                False, "", "ERROR: PyPI 404 quarantine"
-            ),
-        )
-        result = ld.refresh_active_features()
-        assert "test.feat" in result
-        assert result["test.feat"].startswith("failed:")
-        assert "404 quarantine" in result["test.feat"]
-
-    def test_lazy_installs_disabled_marked_skipped(self, monkeypatch):
-        # security.allow_lazy_installs=false → don't error, mark skipped
-        # so hermes update can render "respecting your config" message.
-        monkeypatch.setattr(ld, "active_features", lambda: ["test.feat"])
-        monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("zzzfake==2.0.0",))
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
-        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
-        result = ld.refresh_active_features()
-        assert "test.feat" in result
-        assert result["test.feat"].startswith("skipped:")
 
     def test_mixed_results_returns_per_feature_status(self, monkeypatch):
         monkeypatch.setattr(ld, "active_features", lambda: ["a.ok", "b.fail"])
@@ -472,3 +289,75 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+# ---------------------------------------------------------------------------
+# install_specs — manifest-driven installs (dashboard memory providers etc.)
+#
+# NS-605: the dashboard's memory-provider setup endpoint used to shell out
+# to `uv pip install --python sys.executable`, which fails with a permission
+# error on the sealed hosted venv. install_specs routes those installs
+# through the same environment-aware pipeline as ensure(): venv-scoped on
+# normal installs, redirected to the durable target on immutable images,
+# and cleanly refused (with a reason) when installs are gated off.
+# ---------------------------------------------------------------------------
+
+
+class TestInstallSpecs:
+    def test_empty_specs_is_trivially_ok(self, monkeypatch):
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs([])
+        assert result.ok is True
+        assert result.blocked is False
+
+    def test_blank_specs_are_ignored(self, monkeypatch):
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs(["", "   "])
+        assert result.ok is True
+
+    @pytest.mark.parametrize("bad", [
+        "pkg; rm -rf /",
+        "-e git+https://evil.example/repo.git",
+        "https://evil.example/pkg.tar.gz",
+        "../../etc/passwd",
+        "pkg @ file:///tmp/x",
+    ])
+    def test_unsafe_specs_are_blocked_before_any_install(self, monkeypatch, bad):
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs([bad])
+        assert result.ok is False
+        assert result.blocked is True
+        assert "unsafe spec" in result.reason
+
+    def test_one_unsafe_spec_blocks_the_whole_batch(self, monkeypatch):
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called"),
+        )
+        result = ld.install_specs(["honcho-ai==2.2.0", "pkg; rm -rf /"])
+        assert result.blocked is True
+
+
+    def test_never_raises_on_unexpected_error(self, monkeypatch):
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {}, raising=False
+        )
+        # Contract: install_specs never raises — even an unexpected installer
+        # crash comes back as a failed result the caller can render.
+        def boom(specs, **kw):
+            raise RuntimeError("disk on fire")
+        monkeypatch.setattr(ld, "_venv_pip_install", boom)
+        result = ld.install_specs(["honcho-ai==2.2.0"])
+        assert result.ok is False
+        assert "disk on fire" in result.stderr

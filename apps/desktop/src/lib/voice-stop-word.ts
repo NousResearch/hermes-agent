@@ -92,3 +92,14 @@ export function isVoiceStopCommand(transcript: string): boolean {
 
   return false
 }
+
+/**
+ * Typed-stop interception decision for the composer: a bare stop command
+ * typed while the voice conversation is live ends the conversation instead of
+ * being sent as a turn. Attachments mean the message is a real payload —
+ * never intercepted. Outside a voice conversation typed text always passes
+ * through unchanged.
+ */
+export function interceptsTypedVoiceStop(conversationActive: boolean, text: string, attachmentCount = 0): boolean {
+  return conversationActive && attachmentCount === 0 && isVoiceStopCommand(text)
+}

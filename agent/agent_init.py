@@ -118,7 +118,7 @@ def _provider_default_routes(provider: str) -> set[str]:
         from hermes_cli.providers import HERMES_OVERLAYS, get_provider
 
         overlay = HERMES_OVERLAYS.get(provider)
-        provider_def = get_provider(provider)
+        provider_def = get_provider(provider, allow_network=False)
         for value in (
             getattr(overlay, "base_url_override", ""),
             getattr(provider_def, "base_url", ""),
@@ -455,8 +455,7 @@ def init_agent(
     command: str = None,
     args: list[str] | None = None,
     model: str = "",
-    max_iterations: int = 500,  # Default tool-calling iterations (shared with subagents)
-    tool_delay: float = 1.0,
+    max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     save_trajectories: bool = False,
@@ -529,8 +528,7 @@ def init_agent(
         requested_provider (str): Original provider identity before runtime canonicalization
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-        max_iterations (int): Maximum number of tool calling iterations (default: 500)
-        tool_delay (float): Delay between tool calls in seconds (default: 1.0)
+        max_iterations (int): Maximum number of tool calling iterations (default: 90)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
         disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
         save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
@@ -576,7 +574,6 @@ def init_agent(
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
-    agent.tool_delay = tool_delay
     agent.save_trajectories = save_trajectories
     agent.verbose_logging = verbose_logging
     agent.quiet_mode = quiet_mode
@@ -843,7 +840,7 @@ def init_agent(
     # sessions with >5-minute pauses between turns (#14971).
     agent._cache_ttl = "5m"
     try:
-        from hermes_cli.config import load_config as _load_pc_cfg
+        from hermes_cli.config import load_config_readonly as _load_pc_cfg
 
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
@@ -1093,7 +1090,7 @@ def init_agent(
         # Guardrail config — read from config.yaml at init time.
         agent._bedrock_guardrail_config = None
         try:
-            from hermes_cli.config import load_config as _load_br_cfg
+            from hermes_cli.config import load_config_readonly as _load_br_cfg
             _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
             if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
                 agent._bedrock_guardrail_config = {
@@ -1164,8 +1161,8 @@ def init_agent(
                 client_kwargs["default_headers"] = hermes_xai_default_headers()
             elif "default_headers" not in client_kwargs:
                 # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
-                # endpoints).
+                # declare custom headers (e.g. Vercel AI Gateway attribution,
+                # Kimi User-Agent on non-kimi.com endpoints).
                 try:
                     from providers import get_provider_profile as _gpf
                     _ph = _gpf(agent.provider)
@@ -1480,7 +1477,7 @@ def init_agent(
     # reads the JSON files directly.  See run_agent._save_session_log.
     agent._session_json_enabled = False
     try:
-        from hermes_cli.config import load_config as _load_sess_cfg
+        from hermes_cli.config import load_config_readonly as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
     except Exception:
@@ -1551,7 +1548,7 @@ def init_agent(
     
     # Load config once for memory, skills, and compression sections
     try:
-        from hermes_cli.config import load_config as _load_agent_config
+        from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}

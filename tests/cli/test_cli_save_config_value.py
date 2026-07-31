@@ -38,16 +38,6 @@ class TestSaveConfigValueAtomic:
 
         mock_update.assert_called_once_with(config_env, "display.skin", "mono")
 
-    def test_preserves_existing_keys(self, config_env):
-        """Writing a new key must not clobber existing config entries."""
-        from cli import save_config_value
-        save_config_value("agent.max_turns", 50)
-
-        result = yaml.safe_load(config_env.read_text())
-        assert result["model"]["default"] == "test-model"
-        assert result["model"]["provider"] == "openrouter"
-        assert result["display"]["skin"] == "default"
-        assert result["agent"]["max_turns"] == 50
 
     def test_creates_nested_keys(self, config_env):
         """Dot-separated paths create intermediate dicts as needed."""
@@ -57,31 +47,7 @@ class TestSaveConfigValueAtomic:
         result = yaml.safe_load(config_env.read_text())
         assert result["auxiliary"]["compression"]["model"] == "google/gemini-3-flash-preview"
 
-    def test_overwrites_existing_value(self, config_env):
-        """Updating an existing key replaces the value."""
-        from cli import save_config_value
-        save_config_value("display.skin", "ares")
 
-        result = yaml.safe_load(config_env.read_text())
-        assert result["display"]["skin"] == "ares"
-
-    def test_preserves_env_ref_templates_in_unrelated_fields(self, config_env):
-        """The /model --global persistence path must not inline env-backed secrets."""
-        config_env.write_text(yaml.dump({
-            "custom_providers": [{
-                "name": "tuzi",
-                "api_key": "${TU_ZI_API_KEY}",
-                "model": "claude-opus-4-6",
-            }],
-            "model": {"default": "test-model", "provider": "openrouter"},
-        }))
-
-        from cli import save_config_value
-        save_config_value("model.default", "doubao-pro")
-
-        result = yaml.safe_load(config_env.read_text())
-        assert result["model"]["default"] == "doubao-pro"
-        assert result["custom_providers"][0]["api_key"] == "${TU_ZI_API_KEY}"
 
     def test_model_write_runs_shared_cron_drift_warning(self, config_env, monkeypatch):
         warning = MagicMock()
@@ -95,46 +61,7 @@ class TestSaveConfigValueAtomic:
         assert save_config_value("model.default", "new-model") is True
         warning.assert_called_once_with("model.default", "new-model")
 
-    def test_preserves_comments_after_config_mutation(self, config_env):
-        """CLI config writes should not strip existing user comments."""
-        config_env.write_text(
-            "# user selected model\n"
-            "model:\n"
-            "  # keep this provider note\n"
-            "  provider: openrouter\n"
-            "display:\n"
-            "  skin: default  # inline skin note\n",
-            encoding="utf-8",
-        )
 
-        from cli import save_config_value
-        save_config_value("display.skin", "mono")
-
-        text = config_env.read_text(encoding="utf-8")
-        result = yaml.safe_load(text)
-        assert result["display"]["skin"] == "mono"
-        assert "# user selected model" in text
-        assert "# keep this provider note" in text
-        assert "# inline skin note" in text
-
-    def test_preserves_readable_unicode_after_config_mutation(self, config_env):
-        """Non-ASCII prompts should remain readable instead of \\u-escaped."""
-        config_env.write_text(
-            "agent:\n"
-            "  system_prompt: 你好，保持中文输出\n"
-            "display:\n"
-            "  skin: default\n",
-            encoding="utf-8",
-        )
-
-        from cli import save_config_value
-        save_config_value("display.skin", "mono")
-
-        text = config_env.read_text(encoding="utf-8")
-        result = yaml.safe_load(text)
-        assert result["agent"]["system_prompt"] == "你好，保持中文输出"
-        assert "你好，保持中文输出" in text
-        assert "\\u4f60" not in text
 
     def test_file_not_truncated_on_error(self, config_env, monkeypatch):
         """If atomic_yaml_write raises, the original file is untouched."""

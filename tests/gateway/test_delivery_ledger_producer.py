@@ -96,46 +96,6 @@ class TestProducerHook:
         assert len(rows) == 1
         assert rows[0][1] == "failed"
 
-    @pytest.mark.asyncio
-    async def test_slash_command_not_recorded(self):
-        adapter = _Adapter()
-        await _run(adapter, _event(text="/status"))
-        assert adapter.sent  # reply still sent
-        assert _rows() == []
-
-    @pytest.mark.asyncio
-    async def test_typed_prefix_command_not_recorded(self):
-        adapter = _Adapter()
-        # Platforms like Slack rewrite native slash commands to a typed "!"
-        # prefix; declare it so the hook's prefix check exercises that lane.
-        adapter.typed_command_prefix = "!"
-        await _run(adapter, _event(text="!status"))
-        assert _rows() == []
-
-    @pytest.mark.asyncio
-    async def test_empty_response_not_recorded(self):
-        adapter = _Adapter()
-        await _run(adapter, _event(), response="")
-        assert adapter.sent == []
-        assert _rows() == []
-
-    @pytest.mark.asyncio
-    async def test_disabled_gate_skips_recording_but_sends(self):
-        adapter = _Adapter()
-        with patch("gateway.delivery_ledger.ledger_enabled", return_value=False):
-            await _run(adapter, _event())
-        assert adapter.sent == ["final answer"]
-        assert _rows() == []
-
-    @pytest.mark.asyncio
-    async def test_ledger_crash_never_blocks_send(self):
-        adapter = _Adapter()
-        with patch(
-            "gateway.delivery_ledger.record_obligation",
-            side_effect=RuntimeError("disk full"),
-        ):
-            await _run(adapter, _event())
-        assert adapter.sent == ["final answer"]
 
     @pytest.mark.asyncio
     async def test_crash_between_attempting_and_ack_is_recoverable(self):

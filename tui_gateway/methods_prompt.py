@@ -111,8 +111,19 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        return _err(rid, 4090, limit_message)
+    if (
+        limit_message := globals()["_ensure_active_session_slot"](sid, session)
+    ) is not None:
+        return globals()["_err"](rid, 4090, limit_message)
+    display_kind = None
+    display_metadata = None
+    if params.get("display_kind") == "goal_resume" and isinstance(text, str):
+        with session["history_lock"]:
+            expected = session.get("_pending_goal_resume_projection")
+            if isinstance(expected, str) and text == expected:
+                session.pop("_pending_goal_resume_projection", None)
+                display_kind = "goal_resume"
+                display_metadata = {"display_text": "/goal resume"}
     if truncate_user_ordinal is not None and isinstance(text, str):
         # A rewind/regenerate replays a turn from what the transcript shows. A
         # skill turn shows its invocation, so re-expand it here — otherwise
@@ -142,6 +153,8 @@ def _(rid, params: dict) -> dict:
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport,
             queued=bool(params.get("queued")),
+            display_kind=display_kind,
+            display_metadata=display_metadata,
         )
         if busy_response is not None:
             return busy_response
@@ -278,7 +291,18 @@ def _(rid, params: dict) -> dict:
         _start_inflight_turn(session, text)
 
     if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+        submit_to_compute_host = globals()["_submit_prompt_to_compute_host"]
+        if display_kind:
+            isolated_response = submit_to_compute_host(
+                rid,
+                sid,
+                session,
+                text,
+                display_kind=display_kind,
+                display_metadata=display_metadata,
+            )
+        else:
+            isolated_response = submit_to_compute_host(rid, sid, session, text)
         if not isolated_response.get("error"):
             return isolated_response
         logger.warning(
@@ -357,7 +381,18 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        run_prompt_submit = globals()["_run_prompt_submit"]
+        if display_kind:
+            run_prompt_submit(
+                rid,
+                sid,
+                session,
+                text,
+                display_kind=display_kind,
+                display_metadata=display_metadata,
+            )
+        else:
+            run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck

@@ -165,7 +165,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       if (
         !hasSendable ||
-        (!options?.fromQueue && isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
+        (!options?.fromQueue &&
+          options?.displayKind !== 'goal_resume' &&
+          isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
       ) {
         return false
       }
@@ -618,6 +620,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          ...(options?.displayKind ? { display_kind: options.displayKind } : {}),
           ...(interrupted && { interrupted }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for

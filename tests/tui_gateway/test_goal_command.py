@@ -132,6 +132,8 @@ def test_goal_resume_after_budget_exhaustion_dispatches_next_turn(server, sessio
     assert response["result"]["type"] == "send"
     assert "Goal resumed: finish the release" in response["result"]["notice"]
     assert response["result"]["display"] == "/goal resume"
+    assert response["result"]["display_kind"] == "goal_resume"
+    assert server._sessions[sid]["_pending_goal_resume_projection"] == response["result"]["message"]
     assert (
         response["result"]["message"]
         == goals.GoalManager(session_key).next_continuation_prompt()
@@ -140,6 +142,22 @@ def test_goal_resume_after_budget_exhaustion_dispatches_next_turn(server, sessio
     assert resumed is not None
     assert resumed.status == "active"
     assert resumed.turns_used == 0
+
+    server._sessions[sid]["running"] = True
+    queued = _call(
+        server,
+        "prompt.submit",
+        session_id=sid,
+        text=response["result"]["message"],
+        display_kind="goal_resume",
+    )
+    assert queued["result"]["status"] == "queued"
+    assert server._sessions[sid]["queued_prompt"]["display_kind"] == "goal_resume"
+    assert "_pending_goal_resume_projection" not in server._sessions[sid]
+
+    pause = _call(server, "command.dispatch", name="goal", arg="pause", session_id=sid)
+    assert pause["result"]["type"] == "exec"
+    assert server._sessions[sid]["queued_prompt"] is None
 
 
 # ── slash.exec /goal routing ──────────────────────────────────────────

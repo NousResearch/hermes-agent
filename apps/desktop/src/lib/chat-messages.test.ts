@@ -312,6 +312,22 @@ describe('toChatMessages', () => {
     ])
   })
 
+  it('rehydrates goal continuations without exposing canonical model prompts', () => {
+    const canonical = '[Continuing toward your standing goal]\nGoal: finish safely'
+
+    const messages = toChatMessages([
+      { role: 'user', content: canonical, display_kind: 'goal_resume', timestamp: 1 },
+      { role: 'assistant', content: 'first step', timestamp: 2 },
+      { role: 'user', content: canonical, display_kind: 'goal_continue', timestamp: 3 }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system'])
+    expect(messages.map(chatMessageText)).toEqual(['/goal resume', 'first step', 'continuing standing goal'])
+    expect(messages.some(message => chatMessageText(message).includes('Continuing toward your standing goal'))).toBe(
+      false
+    )
+  })
+
   // A backend older than this app serves display_metadata as unparsed JSON
   // text. Indexing into that string used to throw and fail the whole resume.
   it.each([

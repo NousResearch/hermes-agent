@@ -71,7 +71,7 @@ export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
   | { display?: string; message?: string; name: string; type: 'skill' }
-  | { display?: string; message: string; notice?: string; type: 'send' }
+  | { display?: string; display_kind?: string; message: string; notice?: string; type: 'send' }
   | { message: string; notice?: string; type: 'prefill' }
 
 // ── Config ───────────────────────────────────────────────────────────

@@ -319,12 +319,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // when the backend is older than this app.
           const projected = 'display' in dispatch ? dispatch.display?.trim() : ''
           const displayText = projected || skillInvocationText(message) || undefined
+          const serverQueuedGoalResume = dispatch.type === 'send' && dispatch.display_kind === 'goal_resume'
 
           // Gate on the TARGET session's own busy state, not the foreground
           // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
           // is on screen, while this command runs against the session
           // resolveTargetSessionId picked, routinely a different one.
-          if (isTargetSessionBusy($sessionStates.get(), sessionId, busyRef.current)) {
+          if (!serverQueuedGoalResume && isTargetSessionBusy($sessionStates.get(), sessionId, busyRef.current)) {
             // The backend already executed the command — for `/goal <text>`
             // the goal is set and `message` is its kickoff prompt. Dropping
             // it here loses the kickoff silently (the goal exists but the
@@ -338,7 +339,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // whichever chat is now in front.
             const queueKey = resolveComposerSessionKey(storedSessionId, $sessions.get()) || storedSessionId || sessionId
 
-            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message, displayText })) {
+            if (
+              enqueueQueuedPrompt(queueKey, {
+                attachments: [],
+                text: message,
+                displayText,
+                displayKind: dispatch.type === 'send' ? dispatch.display_kind : undefined
+              })
+            ) {
               renderSlashOutput('session busy — message queued to send when the current turn finishes')
             } else {
               renderSlashOutput('session busy — /interrupt the current turn before sending this command')
@@ -355,7 +363,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId, displayText })
+          await submitPromptText(message, {
+            sessionId,
+            storedSessionId,
+            displayText,
+            displayKind: dispatch.type === 'send' ? dispatch.display_kind : undefined
+          })
         }
 
         try {

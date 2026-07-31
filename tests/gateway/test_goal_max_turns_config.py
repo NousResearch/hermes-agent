@@ -230,6 +230,90 @@ async def test_gateway_goal_resume_drains_on_multiplexed_profile(tmp_path, monke
         goals._DB_CACHE.clear()
 
 
+@pytest.mark.asyncio
+async def test_gateway_replacing_goal_removes_only_old_multiplexed_continuations(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    platform_config = PlatformConfig(enabled=True, token="token")
+    adapter = _DrainAdapter(platform_config, Platform.DISCORD)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={Platform.DISCORD: platform_config},
+    )
+    runner.__dict__["session_store"] = _MultiplexSessionStore()
+    runner.__dict__["adapters"] = {}
+    runner._profile_adapters = {"coder": {Platform.DISCORD: adapter}}
+    runner._active_profile_name = lambda: "default"
+    runner._queued_events = {}
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="chat-goal-replace",
+        chat_type="channel",
+        user_id="user-goal-replace",
+        profile="coder",
+    )
+    event = MessageEvent(
+        text="/goal replacement goal",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-goal-replace",
+    )
+    mgr = goals.GoalManager("sid-gateway-goal-replace")
+    mgr.set("old goal")
+
+    async def _get_goal_manager(_event):
+        return mgr, _FakeSessionEntry()
+
+    runner.__dict__["_get_goal_manager_for_event"] = _get_goal_manager
+    adapter_key = adapter.session_key_for_source(source)
+    state_key = runner._session_key_for_source(source)
+    old_prompt = mgr.next_continuation_prompt()
+    assert old_prompt is not None
+    old_continuation = MessageEvent(
+        text=old_prompt,
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    real_user = MessageEvent(
+        text="older real user input",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    adapter._pending_messages[adapter_key] = old_continuation
+    runner._session_state(state_key).conversation.queued_events.extend(
+        [real_user, old_continuation]
+    )
+
+    try:
+        await GatewayRunner._handle_goal_command(runner, event)
+
+        assert adapter._pending_messages == {}
+        first = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
+        second = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
+        assert first is real_user
+        assert second is not None
+        assert second.text == "replacement goal"
+        assert runner._dequeue_and_promote_queued_event(state_key, adapter, source) is None
+        assert mgr.state is not None
+        assert mgr.state.goal == "replacement goal"
+        assert runner._goal_still_active_for_session(mgr.session_id, old_prompt) is False
+        assert (
+            runner._goal_still_active_for_session(
+                mgr.session_id, mgr.next_continuation_prompt()
+            )
+            is True
+        )
+    finally:
+        goals._DB_CACHE.clear()
+
+
 def test_gateway_goal_resume_fifo_separates_multiplexed_slot_and_state_keys():
     """A racing user turn must not strand or cross-route the continuation."""
     adapter = _DrainAdapter(
@@ -277,8 +361,13 @@ def test_gateway_goal_resume_fifo_separates_multiplexed_slot_and_state_keys():
         adapter_session_key=adapter_key,
     )
 
-    assert adapter._pending_messages.pop(adapter_key) is user_event
-    assert runner._promote_queued_event(state_key, adapter, None) is continuation_event
+    first = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
+    assert first is user_event
+    assert adapter._pending_messages[adapter_key] is continuation_event
+
+    second = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
+    assert second is continuation_event
+    assert runner._dequeue_and_promote_queued_event(state_key, adapter, source) is None
     assert runner._promote_queued_event(default_state_key, adapter, None) is None
     assert adapter._pending_messages == {}
 

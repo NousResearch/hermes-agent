@@ -55,6 +55,23 @@ describe('composer queue store', () => {
     expect(getQueuedPrompts(SESSION_KEY)[0]?.attachments[0]).not.toBe(source[0])
   })
 
+  it('preserves and invalidates durable display projections with queued intent', () => {
+    const queued = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: '[Continuing toward your standing goal]\nGoal: finish safely',
+      displayText: '/goal resume',
+      displayKind: 'goal_resume'
+    })
+
+    expect(queued).toMatchObject({
+      displayText: '/goal resume',
+      displayKind: 'goal_resume'
+    })
+    expect(updateQueuedPromptText(SESSION_KEY, queued!.id, 'edited by user')).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY)[0]).not.toHaveProperty('displayText')
+    expect(getQueuedPrompts(SESSION_KEY)[0]).not.toHaveProperty('displayKind')
+  })
+
   it('updates and removes queued entries by id', () => {
     const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'draft one' })
     const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'draft two' })

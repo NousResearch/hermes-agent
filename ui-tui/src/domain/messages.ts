@@ -61,6 +61,20 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
+    if (display_kind === 'goal_resume') {
+      out.push({ role: 'user', text: '/goal resume' })
+      pending = []
+
+      continue
+    }
+
+    if (display_kind === 'goal_continue') {
+      out.push({ kind: 'event', role: 'system', text: 'continuing standing goal' })
+      pending = []
+
+      continue
+    }
+
     if (display_kind === 'async_delegation_complete') {
       const meta = (row as TranscriptRow).display_metadata
       const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined

@@ -7813,10 +7813,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if pending_slot is None:
             return
         slot_key = adapter_session_key or session_key
-        if slot_key in pending_slot:
-            self._session_state(session_key).conversation.queued_events.append(
-                queued_event
-            )
+        overflow = self._session_state(session_key).conversation.queued_events
+        if slot_key in pending_slot or overflow:
+            overflow.append(queued_event)
         else:
             pending_slot[slot_key] = queued_event
 
@@ -7825,6 +7824,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str,
         adapter: Any,
         pending_event: Optional["MessageEvent"],
+        *,
+        adapter_session_key: Optional[str] = None,
     ) -> Optional["MessageEvent"]:
         """Promote the next overflow item after the slot was drained.
 
@@ -7845,11 +7846,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if pending_event is None:
             return next_queued
         if adapter is not None and hasattr(adapter, "_pending_messages"):
-            adapter._pending_messages[session_key] = next_queued
+            adapter._pending_messages[adapter_session_key or session_key] = next_queued
         else:
             # No adapter — push back so we don't silently drop the item.
             overflow.insert(0, next_queued)
         return pending_event
+
+    def _dequeue_and_promote_queued_event(
+        self,
+        session_key: str,
+        adapter: Any,
+        source: Optional["SessionSource"],
+    ) -> Optional["MessageEvent"]:
+        """Drain adapter-local pending work before profile-local overflow."""
+        adapter_session_key = session_key
+        adapter_key_for_source = getattr(adapter, "session_key_for_source", None)
+        if source is not None and callable(adapter_key_for_source):
+            resolved_adapter_key = adapter_key_for_source(source)
+            if isinstance(resolved_adapter_key, str) and resolved_adapter_key:
+                adapter_session_key = resolved_adapter_key
+        pending_event = _dequeue_pending_event(adapter, adapter_session_key)
+        return self._promote_queued_event(
+            session_key,
+            adapter,
+            pending_event,
+            adapter_session_key=adapter_session_key,
+        )
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
@@ -7904,13 +7926,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _q_state.conversation.queued_events = kept
         return removed
 
-    def _goal_still_active_for_session(self, session_id: str) -> bool:
+    def _goal_still_active_for_session(
+        self, session_id: str, prompt: Any = None
+    ) -> bool:
         """Best-effort fresh DB check before running a queued continuation."""
         if not session_id:
             return False
         try:
             from hermes_cli.goals import GoalManager
-            return GoalManager(session_id=session_id).is_active()
+            mgr = GoalManager(session_id=session_id)
+            return mgr.is_active() and (
+                prompt is None or mgr.next_continuation_prompt() == prompt
+            )
         except Exception as exc:
             logger.debug("goal continuation: active-state recheck failed: %s", exc)
             return False
@@ -26013,19 +26040,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if callable(_mark_turn):
                         _mark_turn(session_key, run_generation)
             
-            # Get pending message from adapter.
-            # Use session_key (not source.chat_id) to match adapter's storage keys.
+            # Get pending message from the adapter-local namespace before
+            # promoting overflow from the profile-qualified runner namespace.
             pending_event = None
             pending = None
             if result and adapter and session_key:
-                pending_event = _dequeue_pending_event(adapter, session_key)
                 # /queue overflow: after consuming the adapter's "next-up"
                 # slot, promote the next queued event into it so the
                 # recursive run's drain will see it.  This keeps the slot
                 # occupied for the full FIFO chain, which (a) preserves
                 # order, and (b) causes any mid-chain /queue to correctly
                 # route to overflow rather than jumping the queue.
-                pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+                pending_event = self._dequeue_and_promote_queued_event(
+                    session_key, adapter, source
+                )
                 if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                     interrupt_message = result.get("interrupt_message")
                     if _is_control_interrupt_message(interrupt_message):
@@ -26230,7 +26258,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message_type = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
+                    if self._is_goal_continuation_event(
+                        pending_event
+                    ) and not self._goal_still_active_for_session(
+                        session_id, getattr(pending_event, "text", None)
+                    ):
                         logger.info(
                             "Discarding stale goal continuation for session %s — goal is no longer active",
                             session_key or "?",

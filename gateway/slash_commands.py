@@ -2806,6 +2806,11 @@ class GatewaySlashCommandsMixin:
         adapter, state_key, adapter_key = _queue_context()
         if adapter and state_key and adapter_key:
             try:
+                getattr(self, "_clear_goal_pending_continuations")(
+                    state_key,
+                    adapter,
+                    adapter_session_key=adapter_key,
+                )
                 kickoff_event = MessageEvent(
                     text=state.goal,
                     message_type=MessageType.TEXT,

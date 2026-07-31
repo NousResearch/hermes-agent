@@ -33,7 +33,8 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
       type: 'send',
       message: o.message,
       notice: str(o.notice),
-      display: str(o.display)
+      display: str(o.display),
+      display_kind: str(o.display_kind)
     }
   }
 

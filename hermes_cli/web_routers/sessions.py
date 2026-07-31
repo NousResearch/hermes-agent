@@ -17,7 +17,7 @@ import logging
 import time  # noqa: F401
 from typing import Any, Dict, List, Optional  # noqa: F401
 
-from fastapi import APIRouter, HTTPException, Request  # noqa: F401
+from fastapi import APIRouter, HTTPException, Query, Request  # noqa: F401
 
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
@@ -49,8 +49,8 @@ _strip_session_list_rows = late("_strip_session_list_rows")
 
 @list_router.get("/api/sessions")
 def get_sessions(
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(20, ge=0),
+    offset: int = Query(0, ge=0),
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "created",
@@ -588,8 +588,8 @@ async def get_session_latest_descendant(
 async def get_session_messages(
     session_id: str,
     profile: Optional[str] = None,
-    limit: Optional[int] = None,
-    offset: int = 0,
+    limit: Optional[int] = Query(None, ge=0),
+    offset: int = Query(0, ge=0),
 ):
     def _read():
         db = _open_session_db_for_profile(profile)

@@ -109,16 +109,21 @@ def _is_pausable_gateway(cmdline: str) -> bool:
     venv (an operator's REPL, a stray script, a ``serve`` backend that
     survived the desktop's own teardown) has no pause machinery downstream
     and must keep blocking the handoff.
+
+    Delegates to ``gateway.status.looks_like_gateway_command_line`` — the
+    canonical ``gateway run`` matcher (profile-selector aware, shlex
+    tokenization, ``run``-only) — so this exemption, the pause discovery,
+    and the updater's guard fallback all share one parser. A hand-rolled
+    token scan here regressed ``--profile gateway gateway run``: the profile
+    *value* shadowed the subcommand token. An import failure counts as
+    not-pausable — the scan then reports the process as a blocker, which is
+    exactly the pre-exemption behavior.
     """
-    lowered = cmdline.lower()
-    if "hermes_cli.main" not in lowered:
-        return False
     try:
-        tokens = [t for t in lowered.split() if t]
-        idx = tokens.index("gateway")
-    except ValueError:
+        from gateway.status import looks_like_gateway_command_line  # noqa: PLC0415
+    except Exception:
         return False
-    return len(tokens) > idx + 1 and tokens[idx + 1] == "run"
+    return looks_like_gateway_command_line(cmdline)
 
 
 def main() -> None:

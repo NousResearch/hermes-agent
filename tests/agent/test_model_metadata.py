@@ -79,6 +79,43 @@ class TestEstimateMessagesTokensRough:
         # string representation.
         assert 1500 <= result < 2000
 
+    def test_api_content_substitutes_for_content_not_added_to_it(self):
+        """``api_content`` replaces ``content`` on the wire, so count one.
+
+        ``turn_context.substitute_api_content()`` pops the sidecar and
+        overwrites ``content`` at every API-bound build site. Counting both
+        doubled the estimate for any message carrying a sidecar.
+        """
+        body = "cached prompt bytes " * 2000
+        wire_shape = {"role": "user", "content": body}
+        persisted_shape = {"role": "user", "content": body, "api_content": body}
+
+        assert estimate_messages_tokens_rough([persisted_shape]) == \
+            estimate_messages_tokens_rough([wire_shape])
+
+    def test_api_content_is_counted_when_it_differs_from_content(self):
+        """The sidecar is what's sent, so its size is the one that matters."""
+        big_sidecar = "cached prompt bytes " * 2000
+        msg = {"role": "user", "content": "short", "api_content": big_sidecar}
+
+        result = estimate_messages_tokens_rough([msg])
+
+        # Lower bound: fails if the sidecar were dropped rather than
+        # substituted (which would undercount the real request).
+        assert result >= (len(big_sidecar) // 4) * 0.9
+
+    def test_api_content_does_not_defeat_image_stripping(self):
+        """A sidecar must not smuggle raw base64 past the flat image rate."""
+        import base64
+        import os
+
+        payload = "data:image/png;base64," + base64.b64encode(os.urandom(300_000)).decode()
+        msg = {"role": "user",
+               "content": [{"type": "image_url", "image_url": {"url": payload}}]}
+
+        # Raw base64 would be ~100K tokens; the flat per-image model is ~1.5K.
+        assert estimate_messages_tokens_rough([msg]) < 5_000
+
 
 
 class TestEstimateRequestTokensRough:

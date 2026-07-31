@@ -4036,10 +4036,11 @@ def _mirror_resolved_model_switch(sid: str, session: dict, slash_meta: dict) -> 
         deliberately removed from the mirror decision); doing so would
         read the parent's *own* alias cache and pin the session to a
         provider/model from a different profile.
-      * The parent re-resolves credentials by re-entering the session's
-        ``profile_home`` scope via ``HERMES_HOME`` for the duration of
-        the mirror — ``resolve_runtime_provider`` picks up the right
-        custom providers from that profile's config.yaml.
+      * The parent re-resolves credentials using context-local overrides
+        (``set_hermes_home_override`` / ``set_secret_scope``) for the
+        session's ``profile_home`` — ``resolve_runtime_provider`` picks
+        up the right custom providers from that profile's config.yaml
+        WITHOUT mutating global ``os.environ["HERMES_HOME"]``.
 
     Returns a warning string (or empty) for the ``slash.exec`` payload.
     Raises ``ValueError`` if the metadata is malformed or the worker's
@@ -4061,47 +4062,62 @@ def _mirror_resolved_model_switch(sid: str, session: dict, slash_meta: dict) -> 
     base_url = slash_meta.get("base_url") or ""
     api_mode = slash_meta.get("api_mode") or ""
 
-    # Re-enter the session's profile_home scope for credential resolution.
+    # Re-enter the session's profile_home scope via context-local overrides.
     # The worker already chose the provider; the parent only needs to look
     # up ``api_key`` / ``base_url`` against THIS profile's providers.
+    # NEVER mutate ``os.environ["HERMES_HOME"]`` which is process-global.
     profile_home = session.get("profile_home")
-    prev_home = os.environ.get("HERMES_HOME")
+    home_token = None
+    secret_token = None
+    if profile_home:
+        try:
+            from hermes_constants import set_hermes_home_override
+            home_token = set_hermes_home_override(Path(profile_home))
+        except Exception:
+            pass
+        try:
+            from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+            secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        except Exception:
+            pass
     try:
         if profile_home:
-            os.environ["HERMES_HOME"] = str(profile_home)
             try:
-                from hermes_cli.config import load_config as _tui_load_config
                 from hermes_cli.runtime_provider import resolve_runtime_provider
-            except ImportError:
-                _tui_load_config = None
-                resolve_runtime_provider = None
-            if resolve_runtime_provider is not None:
-                try:
-                    runtime = resolve_runtime_provider(
-                        requested=resolved_provider,
-                        target_model=resolved_model,
-                        explicit_base_url=str(base_url or "") or None,
-                    )
-                    api_key = str(runtime.get("api_key") or "")
-                    base_url = str(runtime.get("base_url") or base_url or "")
-                    api_mode = str(runtime.get("api_mode") or api_mode or "")
-                except Exception:
-                    # Profile-scoped resolve failed — fall back to the
-                    # values the worker reported (no api_key, but base_url
-                    # may still be usable for endpoint-only switches).
-                    api_key = ""
+                runtime = resolve_runtime_provider(
+                    requested=resolved_provider,
+                    target_model=resolved_model,
+                    explicit_base_url=str(base_url or "") or None,
+                )
+                api_key = str(runtime.get("api_key") or "")
+                base_url = str(runtime.get("base_url") or base_url or "")
+                api_mode = str(runtime.get("api_mode") or api_mode or "")
+            except Exception:
+                # Profile-scoped resolve failed — fall back to the
+                # values the worker reported (no api_key, but base_url
+                # may still be usable for endpoint-only switches).
+                api_key = ""
         else:
             api_key = ""
     finally:
-        # Restore the parent's HERMES_HOME so the rest of the gateway
-        # continues using the parent's profile, not the session's.
-        if prev_home is None:
-            os.environ.pop("HERMES_HOME", None)
-        else:
-            os.environ["HERMES_HOME"] = prev_home
+        if secret_token is not None:
+            try:
+                from agent.secret_scope import reset_secret_scope
+                reset_secret_scope(secret_token)
+            except Exception:
+                pass
+        if home_token is not None:
+            try:
+                from hermes_constants import reset_hermes_home_override
+                reset_hermes_home_override(home_token)
+            except Exception:
+                pass
 
+    restore_snapshot = None
     agent = session.get("agent")
     if agent is not None:
+        if scope_value == "once":
+            restore_snapshot = _snapshot_agent_model_runtime(agent)
         try:
             agent.switch_model(
                 new_model=resolved_model,
@@ -4117,32 +4133,29 @@ def _mirror_resolved_model_switch(sid: str, session: dict, slash_meta: dict) -> 
     # Persist scope-aware state on the session dict so a /model restore,
     # /status, and downstream turns pick up the resolved model.
     if scope_value == "global":
-        # Persist to THIS profile's config.yaml (worker wrote its own
-        # profile too, but the parent's mirror must converge the live
-        # TUI's persistence state — the worker is sandboxed).
+        # Persist to THIS profile's config.yaml using context-local override.
+        h_token = None
+        if profile_home:
+            try:
+                from hermes_constants import set_hermes_home_override
+                h_token = set_hermes_home_override(Path(profile_home))
+            except Exception:
+                pass
         try:
             from cli import save_config_value as _tui_save
-
-            if profile_home:
-                prev_home = os.environ.get("HERMES_HOME")
-                os.environ["HERMES_HOME"] = str(profile_home)
-                try:
-                    _tui_save("model.default", resolved_model)
-                    _tui_save("model.provider", resolved_provider)
-                    _tui_save("model.base_url", base_url or None)
-                    _tui_save("model.api_mode", api_mode or None)
-                finally:
-                    if prev_home is None:
-                        os.environ.pop("HERMES_HOME", None)
-                    else:
-                        os.environ["HERMES_HOME"] = prev_home
-            else:
-                _tui_save("model.default", resolved_model)
-                _tui_save("model.provider", resolved_provider)
-                _tui_save("model.base_url", base_url or None)
-                _tui_save("model.api_mode", api_mode or None)
+            _tui_save("model.default", resolved_model)
+            _tui_save("model.provider", resolved_provider)
+            _tui_save("model.base_url", base_url or None)
+            _tui_save("model.api_mode", api_mode or None)
         except Exception as exc:
             return f"model persistence failed: {exc}"
+        finally:
+            if h_token is not None:
+                try:
+                    from hermes_constants import reset_hermes_home_override
+                    reset_hermes_home_override(h_token)
+                except Exception:
+                    pass
 
     session["model_override"] = {
         "provider": resolved_provider,
@@ -4151,7 +4164,10 @@ def _mirror_resolved_model_switch(sid: str, session: dict, slash_meta: dict) -> 
         "api_key": api_key,
         "api_mode": api_mode,
         "scope": scope_value,
+        "restore_snapshot": restore_snapshot,
     }
+    if scope_value == "once" and restore_snapshot is not None:
+        session["one_turn_model_restore"] = restore_snapshot
     return ""
 
 

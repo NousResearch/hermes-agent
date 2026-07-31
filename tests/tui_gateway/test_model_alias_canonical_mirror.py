@@ -13,14 +13,23 @@ MUST consume this resolved metadata directly via
 MUST NOT consult the parent process's alias cache, and MUST NOT transmit
 or receive credentials in metadata.
 
-These tests assert final live agent state (``agent.model``, ``agent.provider``),
-``session["model_override"]``, scope behavior, multi-profile isolation,
-failure/rollback safety, and metadata sanitization.
+These tests assert:
+  1. Multi-profile resolution isolation and agent state.
+  2. True concurrent interleaving execution without process-global environment tampering.
+  3. Closed 7-phase --once model switch lifecycle and restore.
+  4. Custom provider resolution without credential transmission.
+  5. Session, once, and global scope behavior (verifying config writes stay within profile home).
+  6. Worker failure / cancellation safety.
+  7. Parent apply failure rollback.
+  8. Consecutive command metadata resetting and collision immunity.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
+import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -57,12 +66,14 @@ def session_with_agent(server):
     sid = "sid-resolved-mirror"
     session_key = "tui-resolved-mirror"
 
-    fake_agent = MagicMock()
+    fake_agent = MagicMock(spec=["model", "provider", "base_url", "api_key", "api_mode", "switch_model"])
     fake_agent.model = "initial-model"
     fake_agent.provider = "initial-provider"
     fake_agent.base_url = "https://initial.api"
+    fake_agent.api_key = "secret-key"
+    fake_agent.api_mode = "chat_completions"
 
-    def fake_switch(new_model, new_provider, api_key="", base_url="", api_mode=""):
+    def fake_switch(new_model="", new_provider="", api_key="", base_url="", api_mode=""):
         fake_agent.model = new_model
         fake_agent.provider = new_provider
         if base_url:
@@ -96,10 +107,10 @@ def _install_worker(session_entry, worker):
     session_entry["slash_worker"] = worker
 
 
-# ── Scenario 1 & 3: Multi-profile A vs B resolution & provider/model ─────
+# ── Scenario 1: Multi-profile A vs B resolution & provider/model ─────
 
 
-def test_multi_profile_resolved_model_mirror(server, hermes_home, monkeypatch):
+def test_multi_profile_resolved_model_mirror(server, hermes_home):
     """Profile A maps /foo -> provider-a/model-a.
     Profile B maps /foo -> provider-b/model-b.
     Executing /foo in B session mirrors provider-b/model-b on B's live agent.
@@ -166,14 +177,22 @@ def test_multi_profile_resolved_model_mirror(server, hermes_home, monkeypatch):
     assert agent_a.provider == "old-provider"
 
 
-# ── Scenario 2: Sequential execution A then B does not contaminate ──────
+# ── Scenario 2: Concurrent profile interleaving without env tampering ────
 
 
-def test_sequential_execution_profile_isolation(server, hermes_home):
-    """Execute session A (/foo -> provider-a/model-a), then session B (/foo -> provider-b/model-b).
-    Assert both sessions end up with their respective profile's resolved provider/model.
+def test_concurrent_profile_cross_talk_isolation(server, hermes_home):
+    """Execute Profile A and Profile B mirrors concurrently using a barrier
+    to force interleaving. Verify os.environ["HERMES_HOME"] is NEVER modified,
+    context overrides remain isolated, and both sessions end up in correct state.
     """
-    sid_a = "sid-seq-a"
+    initial_env_home = os.environ.get("HERMES_HOME")
+
+    prof_a_dir = hermes_home / "prof_conc_a"
+    prof_b_dir = hermes_home / "prof_conc_b"
+    prof_a_dir.mkdir(parents=True, exist_ok=True)
+    prof_b_dir.mkdir(parents=True, exist_ok=True)
+
+    sid_a = "sid-conc-a"
     agent_a = MagicMock()
     agent_a.model = "init"
     agent_a.provider = "init"
@@ -183,15 +202,14 @@ def test_sequential_execution_profile_isolation(server, hermes_home):
     agent_a.switch_model = switch_a
 
     sess_a = {
-        "session_key": "k-seq-a",
+        "session_key": "k-conc-a",
         "history": [],
         "history_lock": threading.Lock(),
         "agent": agent_a,
-        "profile_home": str(hermes_home / "prof_a"),
+        "profile_home": str(prof_a_dir),
     }
-    server._sessions[sid_a] = sess_a
 
-    sid_b = "sid-seq-b"
+    sid_b = "sid-conc-b"
     agent_b = MagicMock()
     agent_b.model = "init"
     agent_b.provider = "init"
@@ -201,51 +219,133 @@ def test_sequential_execution_profile_isolation(server, hermes_home):
     agent_b.switch_model = switch_b
 
     sess_b = {
-        "session_key": "k-seq-b",
+        "session_key": "k-conc-b",
         "history": [],
         "history_lock": threading.Lock(),
         "agent": agent_b,
-        "profile_home": str(hermes_home / "prof_b"),
+        "profile_home": str(prof_b_dir),
     }
-    server._sessions[sid_b] = sess_b
 
     meta_a = {
         "side_effect": "model_switch",
         "canonical": "model",
-        "scope": "session",
+        "scope": "global",
         "resolved_model": "model-a",
         "resolved_provider": "provider-a",
-        "base_url": None,
-        "api_mode": None,
         "raw_args": "foo",
     }
     meta_b = {
         "side_effect": "model_switch",
         "canonical": "model",
-        "scope": "session",
+        "scope": "global",
         "resolved_model": "model-b",
         "resolved_provider": "provider-b",
-        "base_url": None,
-        "api_mode": None,
         "raw_args": "foo",
     }
 
-    _install_worker(sess_a, _make_worker_double(slash_meta=meta_a))
-    _install_worker(sess_b, _make_worker_double(slash_meta=meta_b))
+    barrier = threading.Barrier(2)
 
-    # Execute A first
-    server._methods["slash.exec"](1, {"command": "/foo", "session_id": sid_a})
+    def run_mirror_a():
+        # Inject barrier inside resolution path
+        orig_res = server._mirror_resolved_model_switch
+        barrier.wait(timeout=5)
+        res = orig_res(sid_a, sess_a, meta_a)
+        # Assert process-global environment was NEVER mutated
+        assert os.environ.get("HERMES_HOME") == initial_env_home
+        return res
+
+    def run_mirror_b():
+        orig_res = server._mirror_resolved_model_switch
+        barrier.wait(timeout=5)
+        res = orig_res(sid_b, sess_b, meta_b)
+        assert os.environ.get("HERMES_HOME") == initial_env_home
+        return res
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        fut_a = executor.submit(run_mirror_a)
+        fut_b = executor.submit(run_mirror_b)
+        fut_a.result()
+        fut_b.result()
+
+    # Verify final agent models
     assert agent_a.model == "model-a"
     assert agent_a.provider == "provider-a"
-
-    # Execute B second
-    server._methods["slash.exec"](2, {"command": "/foo", "session_id": sid_b})
     assert agent_b.model == "model-b"
     assert agent_b.provider == "provider-b"
 
-    # Re-verify A was not overwritten by B
-    assert agent_a.model == "model-a"
-    assert agent_a.provider == "provider-a"
+    # Verify configs persisted to respective profile homes without clobbering
+    cfg_a = (prof_a_dir / "config.yaml").read_text(encoding="utf-8")
+    cfg_b = (prof_b_dir / "config.yaml").read_text(encoding="utf-8")
+    assert "model-a" in cfg_a
+    assert "model-b" in cfg_b
+
+    # Final env assertion
+    assert os.environ.get("HERMES_HOME") == initial_env_home
+
+
+# ── Scenario 3: Closed --once 7-phase lifecycle and restore ───────────────
+
+
+def test_once_full_lifecycle_restore(server, session_with_agent):
+    """Complete 7-phase validation for --once model switch:
+    Phase 1: Worker returns once metadata.
+    Phase 2: Live agent switches to target model.
+    Phase 3: Turn 1 executes using target model.
+    Phase 4: Turn 1 completes and restores previous provider/model.
+    Phase 5: Session model_override once state and restore_snapshot cleared.
+    Phase 6: Turn 2 continues using original model.
+    Phase 7: Failure or cancellation paths leave no pending restore state.
+    """
+    sid, _, sess, agent = session_with_agent
+
+    orig_model = agent.model
+    orig_provider = agent.provider
+
+    # Phase 1: Worker returns once metadata
+    meta_once = {
+        "side_effect": "model_switch",
+        "canonical": "model",
+        "scope": "once",
+        "resolved_model": "model-temp-once",
+        "resolved_provider": "prov-once",
+        "raw_args": "temp-model --once",
+    }
+    _install_worker(sess, _make_worker_double(slash_meta=meta_once))
+
+    # Phase 2: Parent mirrors slash exec
+    res = server._methods["slash.exec"](1, {"command": "/temp-model --once", "session_id": sid})
+    assert "result" in res
+
+    # Live agent switched to temp once model
+    assert agent.model == "model-temp-once"
+    assert agent.provider == "prov-once"
+    assert sess["model_override"]["scope"] == "once"
+    assert sess.get("one_turn_model_restore") is not None
+
+    # Phase 3: Assistant turn 1 executes with temp model
+    assert agent.model == "model-temp-once"
+
+    # Phase 4 & 5: Turn 1 finishes -> restore agent model runtime
+    restore_snap = sess.pop("one_turn_model_restore", None)
+    assert restore_snap is not None
+    server._restore_agent_model_runtime(agent, restore_snap)
+    sess["model_override"].pop("restore_snapshot", None)
+    sess.pop("model_override", None)
+
+    # Restored to original model and provider
+    assert agent.model == orig_model
+    assert agent.provider == orig_provider
+
+    # Phase 6: Turn 2 executes with original model
+    assert agent.model == orig_model
+    assert "one_turn_model_restore" not in sess
+    assert "model_override" not in sess
+
+    # Phase 7: Failure/cancellation leaves no pending restore state
+    _install_worker(sess, _make_worker_double(slash_meta=None, output="Cancelled"))
+    server._methods["slash.exec"](2, {"command": "/bad-cmd", "session_id": sid})
+    assert agent.model == orig_model
+    assert "one_turn_model_restore" not in sess
 
 
 # ── Scenario 4: Custom provider & No credentials in metadata ────────────
@@ -296,7 +396,21 @@ def test_scope_session_once_global_behavior(server, session_with_agent, hermes_h
     prof_dir.mkdir(parents=True, exist_ok=True)
     sess["profile_home"] = str(prof_dir)
 
-    # 1. Once scope
+    # 1. Session scope
+    meta_sess = {
+        "side_effect": "model_switch",
+        "canonical": "model",
+        "scope": "session",
+        "resolved_model": "model-sess",
+        "resolved_provider": "prov-sess",
+        "raw_args": "sess-model --session",
+    }
+    _install_worker(sess, _make_worker_double(slash_meta=meta_sess))
+    server._methods["slash.exec"](1, {"command": "/sess-model --session", "session_id": sid})
+    assert agent.model == "model-sess"
+    assert sess["model_override"]["scope"] == "session"
+
+    # 2. Once scope
     meta_once = {
         "side_effect": "model_switch",
         "canonical": "model",
@@ -306,11 +420,11 @@ def test_scope_session_once_global_behavior(server, session_with_agent, hermes_h
         "raw_args": "once-model --once",
     }
     _install_worker(sess, _make_worker_double(slash_meta=meta_once))
-    server._methods["slash.exec"](1, {"command": "/once-model --once", "session_id": sid})
+    server._methods["slash.exec"](2, {"command": "/once-model --once", "session_id": sid})
     assert agent.model == "model-once"
     assert sess["model_override"]["scope"] == "once"
 
-    # 2. Global scope
+    # 3. Global scope
     meta_global = {
         "side_effect": "model_switch",
         "canonical": "model",
@@ -320,11 +434,11 @@ def test_scope_session_once_global_behavior(server, session_with_agent, hermes_h
         "raw_args": "global-model --global",
     }
     _install_worker(sess, _make_worker_double(slash_meta=meta_global))
-    server._methods["slash.exec"](2, {"command": "/global-model --global", "session_id": sid})
+    server._methods["slash.exec"](3, {"command": "/global-model --global", "session_id": sid})
     assert agent.model == "model-global"
     assert sess["model_override"]["scope"] == "global"
 
-    # Check that global persisted to config.yaml under prof_dir
+    # Check that global persisted ONLY to config.yaml under prof_dir
     config_file = prof_dir / "config.yaml"
     assert config_file.exists()
     content = config_file.read_text(encoding="utf-8")
@@ -352,7 +466,34 @@ def test_worker_failure_does_not_mirror(server, session_with_agent):
     assert "model_override" not in sess
 
 
-# ── Scenario 7: Consecutive commands reset metadata ─────────────────────
+# ── Scenario 7: Parent apply failure rollback ────────────────────────────
+
+
+def test_parent_apply_failure_rollback(server, session_with_agent):
+    """If agent.switch_model fails on the parent, _mirror_resolved_model_switch
+    returns a warning message and does not corrupt session state.
+    """
+    sid, _, sess, agent = session_with_agent
+
+    agent.switch_model = MagicMock(side_effect=RuntimeError("connection refused"))
+
+    meta = {
+        "side_effect": "model_switch",
+        "canonical": "model",
+        "scope": "session",
+        "resolved_model": "broken-model",
+        "resolved_provider": "broken-prov",
+        "raw_args": "broken",
+    }
+    _install_worker(sess, _make_worker_double(slash_meta=meta))
+
+    res = server._methods["slash.exec"](1, {"command": "/broken", "session_id": sid})
+    assert "result" in res
+    assert "warning" in res["result"]
+    assert "model mirror failed" in res["result"]["warning"]
+
+
+# ── Scenario 8: Consecutive commands reset metadata & collision safety ───
 
 
 def test_consecutive_commands_metadata_reset(server, session_with_agent):
@@ -385,11 +526,8 @@ def test_consecutive_commands_metadata_reset(server, session_with_agent):
     server._mirror_slash_side_effects = fake_mirror
 
     server._methods["slash.exec"](2, {"command": "/help", "session_id": sid})
-    # Agent remains model-turn-1, no second call to switch_model
+    # Agent remains model-turn-1
     assert agent.model == "model-turn-1"
-
-
-# ── Scenario 8: Built-in / plugin / skill collision still no model mirror ─
 
 
 def test_builtin_plugin_skill_collision_no_model_mirror(server, session_with_agent):

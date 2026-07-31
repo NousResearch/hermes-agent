@@ -41,6 +41,31 @@ def test_shutdown_memory_provider_is_idempotent():
 
     manager.on_session_end.assert_called_once()
     manager.shutdown_all.assert_called_once()
+def test_builtin_memory_provider_aliases_do_not_load_plugin():
+    """memory.provider builtin/built-in/none must not call load_memory_provider (#75647)."""
+    for alias in ("builtin", "built-in", "none", "BUILTIN", " None "):
+        cfg = {"memory": {"provider": alias}, "agent": {}}
+        with (
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+            patch("plugins.memory.load_memory_provider") as load_memory_provider,
+            patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+            )
+
+        assert agent._memory_manager is None, alias
+        load_memory_provider.assert_not_called()
 
 
 def test_blank_memory_provider_does_not_auto_enable_honcho():

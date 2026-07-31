@@ -733,32 +733,32 @@ def _update_via_zip(args):
     from urllib.request import urlretrieve
 
     # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
-    # static archive from GitHub, which is fine for the default "main"
-    # channel but would silently ignore --branch and update from main even
-    # if the user asked for something else — exactly the silent-divergence
-    # bug --branch was added to prevent. Refuse to proceed in that case
-    # rather than lie.
-    branch = _m()._resolve_update_branch(args)
-    if branch != "main":
+    # static archive from GitHub. Branch ZIPs remain limited to the default
+    # "main" channel so --branch cannot silently diverge on the fallback path;
+    # release tags are static archives too, so --version can be honored here.
+    target_kind, target = _m()._resolve_update_target(args)
+    if target_kind == "branch" and target != "main":
         print(
-            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
+            f"✗ --branch={target} is not supported on the Windows ZIP-fallback "
             "update path."
         )
         print(
             "  This path runs when git file I/O is broken on the system. "
             "Either resolve the git-side breakage (typically an antivirus "
             "or NTFS filter holding files open) and rerun `hermes update "
-            f"--branch {branch}`, or update against main with `hermes update`."
+            f"--branch {target}`, or update against main with `hermes update`."
         )
         _m().sys.exit(1)
+    archive_kind = "tags" if target_kind == "tag" else "heads"
     zip_url = (
-        f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
+        "https://github.com/NousResearch/hermes-agent/archive/"
+        f"refs/{archive_kind}/{target}.zip"
     )
 
     print("→ Downloading latest version...")
     tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
-        zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
+        zip_path = os.path.join(tmp_dir, f"hermes-agent-{target}.zip")
         urlretrieve(zip_url, zip_path)
 
         print("→ Extracting...")
@@ -788,8 +788,9 @@ def _update_via_zip(args):
                     )
             zf.extractall(tmp_dir)
 
-        # GitHub ZIPs extract to hermes-agent-<branch>/
-        extracted = os.path.join(tmp_dir, f"hermes-agent-{branch}")
+        # GitHub ZIPs usually extract to hermes-agent-<ref>/; fall back to
+        # directory discovery below because tag archive names can vary.
+        extracted = os.path.join(tmp_dir, f"hermes-agent-{target}")
         if not os.path.isdir(extracted):
             # Try to find it
             for d in os.listdir(tmp_dir):
@@ -2189,7 +2190,29 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     _log_only_write(result.stdout or "")
     return result
 
-def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
+
+def _update_tag_ref(tag: str) -> str:
+    """Local ref name for a release tag target."""
+    return f"refs/tags/{tag}"
+
+
+def _update_tag_refspec(tag: str) -> str:
+    """Scoped fetch refspec for one release tag."""
+    ref = _update_tag_ref(tag)
+    return f"{ref}:{ref}"
+
+
+def _update_peeled_tag_ref(tag: str) -> str:
+    """Commit object behind a possibly-annotated release tag."""
+    return f"{_update_tag_ref(tag)}^{{}}"
+
+
+def _cmd_update_check(
+    branch: str = "main",
+    *,
+    branch_explicit: bool = False,
+    version: str | None = None,
+):
     """Implement ``hermes update --check``: fetch and report without installing.
 
     ``branch`` selects which branch the check compares against. Default is
@@ -2197,8 +2220,9 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     on origin/<branch>?" without performing the update.
 
     ``branch_explicit`` is True iff the caller passed --branch on the CLI.
-    Installs that can't honor non-default branches (e.g. Docker) surface a
-    one-line notice instead of silently dropping the flag.
+    ``version`` selects a git tag to compare against instead of a branch.
+    Installs that can't honor non-default branches/tags (e.g. Docker) surface
+    guidance instead of silently dropping the flag.
     """
     from hermes_cli.config import detect_install_method, recommended_update_command_for_method
     method = detect_install_method(_m().PROJECT_ROOT)
@@ -2224,6 +2248,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
+    version = (version or "").strip() or None
+
     # Fetch only the branch we compare against; prefer upstream as the canonical
     # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
     # thousands of auto-generated branches, so scope the fetch to <branch>.
@@ -2245,6 +2271,58 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         == "true"
     )
     depth_args = ["--depth", "1"] if is_shallow else []
+
+    if version is not None:
+        print("→ Fetching version tag from origin...")
+        tag_ref = _update_tag_ref(version)
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch"] + depth_args + ["origin", _update_tag_refspec(version)],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if fetch_result.returncode != 0:
+            stderr = fetch_result.stderr.strip()
+            if "Could not resolve host" in stderr or "unable to access" in stderr:
+                print("✗ Network error — cannot reach the remote repository.")
+            elif "Authentication failed" in stderr or "could not read Username" in stderr:
+                print("✗ Authentication failed — check your git credentials or SSH key.")
+            else:
+                print(f"✗ Failed to fetch version tag '{version}' from origin.")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+            sys.exit(1)
+
+        verify_result = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", "--quiet", tag_ref],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if verify_result.returncode != 0:
+            print(f"✗ Version tag '{version}' not found on origin.")
+            sys.exit(1)
+
+        head_sha = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        ).stdout.strip()
+        target_sha = subprocess.run(
+            git_cmd + ["rev-parse", _update_peeled_tag_ref(version)],
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        ).stdout.strip()
+        if head_sha and target_sha and head_sha == target_sha:
+            print(f"✓ Already at version {version}.")
+        else:
+            print(
+                f"⚕ Update available: target version {version} differs from current checkout."
+            )
+            print(f"  Run 'hermes update --version {version}' to install.")
+        return
 
     if branch == "main":
         # Probe locally (~6 ms) whether an 'upstream' remote exists at all
@@ -3737,16 +3815,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Fetch and pull
     try:
 
-        # Resolve the target branch up front so the fetch can be scoped to it.
-        # A bare `git fetch origin` pulls every ref, and this repo carries
-        # thousands of auto-generated branches — an unscoped fetch can stall for
-        # minutes on a non-single-branch checkout. Fetch only what we update
-        # against.
-        branch = _m()._resolve_update_branch(args)
+        # Resolve the target up front so the fetch can be scoped. A bare
+        # `git fetch origin` pulls every ref, and this repo carries thousands
+        # of auto-generated branches — an unscoped fetch can stall for minutes.
+        # Branch updates track origin/<branch>; version updates fetch one tag
+        # and intentionally leave the checkout detached at that tag.
+        target_kind, target = _m()._resolve_update_target(args)
+        branch = target if target_kind == "branch" else "main"
 
         print("→ Fetching updates...")
+        fetch_ref = target if target_kind == "branch" else _update_tag_refspec(target)
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
+            git_cmd + ["fetch", "origin", fetch_ref],
             cwd=_m().PROJECT_ROOT,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
@@ -3762,6 +3842,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(
                     "✗ Authentication failed — check your git credentials or SSH key."
                 )
+            elif target_kind == "tag":
+                print(f"✗ Failed to fetch version tag '{target}' from origin.")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
             else:
                 print("✗ Failed to fetch updates from origin.")
                 if stderr:
@@ -3782,8 +3866,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # to the target. When the target is "main" this is the historical
         # "always update against main" behavior; for any other target it's
         # the same thing — get HEAD onto the requested branch first, then
-        # fast-forward.
-        if current_branch != branch:
+        # fast-forward. Version-tag updates skip this branch setup entirely:
+        # they stash in place and checkout a detached tag below.
+        if target_kind == "branch" and current_branch != branch:
             label = (
                 "detached HEAD"
                 if current_branch == "HEAD"
@@ -3833,21 +3918,53 @@ def _cmd_update_impl(args, gateway_mode: bool):
             and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            check=True,
-        )
-        commit_count = int(result.stdout.strip())
+        # Check if there are updates. Branch targets count commits behind the
+        # fetched remote branch. Version targets compare HEAD to the peeled tag
+        # commit so annotated tags work correctly, and so downgrades/rollbacks
+        # to older release tags are treated as real updates.
+        if target_kind == "tag":
+            tag_ref = _update_tag_ref(target)
+            verify_result = subprocess.run(
+                git_cmd + ["rev-parse", "--verify", "--quiet", tag_ref],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            if verify_result.returncode != 0:
+                print(f"✗ Version tag '{target}' not found on origin.")
+                sys.exit(1)
+            head_result = subprocess.run(
+                git_cmd + ["rev-parse", "HEAD"],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                check=True,
+            )
+            target_result = subprocess.run(
+                git_cmd + ["rev-parse", _update_peeled_tag_ref(target)],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                check=True,
+            )
+            commit_count = (
+                0 if head_result.stdout.strip() == target_result.stdout.strip() else 1
+            )
+        else:
+            result = subprocess.run(
+                git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+                cwd=_m().PROJECT_ROOT,
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                check=True,
+            )
+            commit_count = int(result.stdout.strip())
 
         if commit_count == 0:
             _invalidate_update_cache()
 
             # Even if origin is up to date, the fork may be behind upstream
-            if is_fork and branch == "main":
+            if target_kind == "branch" and is_fork and branch == "main":
                 _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
 
             # Restore stash and switch back to original branch if we moved
@@ -3859,7 +3976,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in {branch, "HEAD"}:
+            if target_kind == "branch" and current_branch not in {branch, "HEAD"}:
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=_m().PROJECT_ROOT,
@@ -3945,7 +4062,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
-        print(f"→ Found {commit_count} new commit(s)")
+        if target_kind == "tag":
+            print(f"→ Updating to version tag {target}")
+        else:
+            print(f"→ Found {commit_count} new commit(s)")
 
         print("→ Pulling updates...")
         update_succeeded = False
@@ -3956,39 +4076,60 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         try:
-            # Merge the ref we already fetched above (→ Fetching updates...)
-            # instead of `git pull`, which performs a SECOND network fetch of
-            # the same branch (~0.5-1.5 s of redundant round-trip per update).
-            # `merge --ff-only origin/<branch>` is byte-identical in effect to
-            # `pull --ff-only origin <branch>` given the fresh tracking ref;
-            # the divergence fallback below is unchanged.
-            pull_result = subprocess.run(
-                git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+            if target_kind == "tag":
+                # Version-pinning must support both upgrades and downgrades, so
+                # do not attempt a fast-forward merge. Checkout the fetched tag
+                # directly and leave HEAD detached at that immutable release.
+                pull_result = subprocess.run(
+                    git_cmd + ["checkout", "--detach", _update_tag_ref(target)],
                     cwd=_m().PROJECT_ROOT,
                     capture_output=True,
                     text=True, encoding="utf-8", errors="replace",
                 )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                if pull_result.returncode != 0:
+                    print(f"✗ Failed to checkout version tag '{target}'.")
+                    if pull_result.stderr.strip():
+                        print(f"  {pull_result.stderr.strip().splitlines()[0]}")
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        "  Try manually: git fetch origin "
+                        f"{_update_tag_refspec(target)} && git checkout --detach "
+                        f"{_update_tag_ref(target)}"
                     )
                     sys.exit(1)
+            else:
+                # Merge the ref we already fetched above (→ Fetching updates...)
+                # instead of `git pull`, which performs a SECOND network fetch of
+                # the same branch (~0.5-1.5 s of redundant round-trip per update).
+                # `merge --ff-only origin/<branch>` is byte-identical in effect to
+                # `pull --ff-only origin <branch>` given the fresh tracking ref;
+                # the divergence fallback below is unchanged.
+                pull_result = subprocess.run(
+                    git_cmd + ["merge", "--ff-only", f"origin/{branch}"],
+                    cwd=_m().PROJECT_ROOT,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                )
+                if pull_result.returncode != 0:
+                    # ff-only failed — local and remote have diverged (e.g. upstream
+                    # force-pushed or rebase).  Since local changes are already
+                    # stashed, reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=_m().PROJECT_ROOT,
+                        capture_output=True,
+                        text=True, encoding="utf-8", errors="replace",
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
@@ -4072,7 +4213,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._record_bytecode_fingerprint()
 
         # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
+        if target_kind == "branch" and is_fork and branch == "main":
             _m()._sync_with_upstream_if_needed(git_cmd, _m().PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra

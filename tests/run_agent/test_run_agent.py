@@ -5652,6 +5652,91 @@ class TestStreamingApiCall:
         assert "Rate limit exceeded" in str(exc)
         agent.stream_delta_callback.assert_not_called()
 
+    def test_named_non_json_sse_error_preserves_provider_message(self, agent):
+        """SDK-level plain-text SSE errors retain their actionable message."""
+        import httpx
+        from openai import OpenAI, Stream
+        from openai.types.chat import ChatCompletionChunk
+        from agent.chat_completion_helpers import ProviderStreamError
+        from agent.error_classifier import PROVIDER_STREAM_NON_JSON_ERROR_CODE
+
+        provider_message = (
+            "request validation failed: unsupported reasoning_effort"
+        )
+        request = httpx.Request(
+            "POST",
+            "https://provider.example/v1/chat/completions",
+        )
+        response = httpx.Response(
+            200,
+            request=request,
+            headers={"x-request-id": "req-plain-text"},
+            content=(
+                f"event: error\ndata: {provider_message}\n\n"
+            ).encode("utf-8"),
+        )
+        agent.stream_delta_callback = MagicMock()
+
+        with OpenAI(api_key="test-key", max_retries=0) as sdk_client:
+            stream = Stream(
+                cast_to=ChatCompletionChunk,
+                response=response,
+                client=sdk_client,
+            )
+            agent.client.chat.completions.create.return_value = stream
+
+            with pytest.raises(ProviderStreamError) as exc_info:
+                agent._interruptible_streaming_api_call({"messages": []})
+
+        exc = exc_info.value
+        assert exc.status_code is None
+        assert exc.body["error"]["code"] == PROVIDER_STREAM_NON_JSON_ERROR_CODE
+        assert exc.body["error"]["message"] == provider_message
+        assert exc.raw_text == provider_message
+        assert exc.response.headers["x-request-id"] == "req-plain-text"
+        assert isinstance(exc.__cause__, json.JSONDecodeError)
+        agent.stream_delta_callback.assert_not_called()
+
+    def test_named_non_json_sse_error_force_redacts_secrets(self, agent):
+        """SDK-level SSE errors cannot expose credentials in exceptions."""
+        import httpx
+        from openai import OpenAI, Stream
+        from openai.types.chat import ChatCompletionChunk
+        from agent.chat_completion_helpers import ProviderStreamError
+
+        secret = "sk-" + ("a" * 48)
+        request = httpx.Request(
+            "POST",
+            "https://provider.example/v1/chat/completions",
+        )
+        response = httpx.Response(
+            200,
+            request=request,
+            content=(
+                "event: error\n"
+                f"data: request validation failed: token={secret}\n\n"
+            ).encode("utf-8"),
+        )
+        agent.stream_delta_callback = MagicMock()
+
+        with patch("agent.redact._REDACT_ENABLED", False):
+            with OpenAI(api_key="test-key", max_retries=0) as sdk_client:
+                stream = Stream(
+                    cast_to=ChatCompletionChunk,
+                    response=response,
+                    client=sdk_client,
+                )
+                agent.client.chat.completions.create.return_value = stream
+
+                with pytest.raises(ProviderStreamError) as exc_info:
+                    agent._interruptible_streaming_api_call({"messages": []})
+
+        assert secret not in str(exc_info.value)
+        assert secret not in exc_info.value.raw_text
+        assert secret not in exc_info.value.body["error"]["message"]
+        assert "sk-" in exc_info.value.body["error"]["message"]
+        agent.stream_delta_callback.assert_not_called()
+
     def test_provider_error_prefix_like_normal_text_flushes_to_callback(self, agent):
         chunks = [
             _make_chunk(content="id: product-42\n"),

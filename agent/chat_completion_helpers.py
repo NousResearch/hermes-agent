@@ -29,7 +29,10 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import (
+    FailoverReason,
+    PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+)
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
@@ -48,6 +51,7 @@ logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 _PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
+_PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 
 # When the fallback chain is fully exhausted on a non-rate-limit failure
 # (e.g. every provider returns a non-retryable client error like HTTP 400),
@@ -256,6 +260,54 @@ def _provider_error_body(payload: dict, status_code: Optional[int]) -> dict:
         if payload.get(key):
             normalized_error[key] = payload[key]
     return {"error": normalized_error}
+
+
+def _provider_stream_error_from_json_decode_error(
+    error: json.JSONDecodeError,
+    *,
+    response: Any = None,
+) -> ProviderStreamError:
+    """Preserve plain-text SSE data rejected inside the OpenAI SDK.
+
+    OpenAI-compatible providers occasionally send ``event: error`` with a
+    non-JSON ``data:`` field.  The SDK raises from ``sse.json()`` before it can
+    yield a completion chunk, but ``JSONDecodeError.doc`` still contains the
+    provider's original message.
+    """
+    from agent.redact import redact_sensitive_text
+
+    raw_text = str(getattr(error, "doc", "") or "").strip()
+    safe_text = redact_sensitive_text(
+        _sanitize_surrogates(raw_text),
+        force=True,
+    )
+    safe_text = safe_text[:_PROVIDER_STREAM_ERROR_TEXT_LIMIT]
+    message = safe_text or "Provider stream returned non-JSON SSE data."
+    headers = getattr(response, "headers", None) if response is not None else None
+
+    return ProviderStreamError(
+        status_code=None,
+        body=_provider_error_body(
+            {
+                "code": PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+                "message": message,
+            },
+            None,
+        ),
+        raw_text=safe_text,
+        headers=headers,
+    )
+
+
+def _iter_provider_stream_chunks(stream):
+    """Yield SDK chunks while translating SDK-level SSE decode failures."""
+    try:
+        yield from stream
+    except json.JSONDecodeError as error:
+        raise _provider_stream_error_from_json_decode_error(
+            error,
+            response=getattr(stream, "response", None),
+        ) from error
 
 
 def _payload_has_error_shape(payload: Any) -> bool:

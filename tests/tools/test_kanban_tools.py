@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -1131,7 +1132,12 @@ def test_workflow_tool_schemas_do_not_accept_authority_fields():
         assert "tenant" not in properties
         assert "capabilities" not in properties
         assert "profile_name" not in properties
-        assert "notifier_profile" not in properties
+    assert "notifier_profile" not in (
+        kt.KANBAN_WORKFLOW_SHOW_SCHEMA["parameters"]["properties"]
+    )
+    assert "notifier_profile" not in (
+        kt.KANBAN_WORKFLOW_OUTCOME_SCHEMA["parameters"]["properties"]
+    )
     outcome_properties = kt.KANBAN_WORKFLOW_OUTCOME_SCHEMA["parameters"]["properties"]
     assert "task_id" not in outcome_properties
     manage_properties = kt.KANBAN_WORKFLOW_MANAGE_SCHEMA["parameters"]["properties"]
@@ -1141,6 +1147,81 @@ def test_workflow_tool_schemas_do_not_accept_authority_fields():
         "stage_role": {"type": "string"},
         "required": {"type": "boolean"},
     }
+
+
+def test_workflow_manage_set_subscription_schema_and_handler_use_durable_authority(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from tools import kanban_tools as kt
+
+    properties = kt.KANBAN_WORKFLOW_MANAGE_SCHEMA["parameters"]["properties"]
+    assert "set_subscription" in properties["action"]["enum"]
+    for field in (
+        "platform", "chat_id", "chat_type", "thread_id", "user_id",
+        "notifier_profile", "delivery_metadata", "target_states",
+    ):
+        assert field in properties
+
+    captured = {}
+
+    class FakeConn:
+        def execute(self, sql, params):
+            assert "kanban_workflows" in sql
+            assert params == ("wf_1",)
+            return SimpleNamespace(fetchone=lambda: {"tenant": "durable-tenant"})
+
+        def close(self):
+            return None
+
+    class FakeKB:
+        KanbanActorContext = SimpleNamespace
+
+        @staticmethod
+        def kanban_db_path(board=None):
+            return Path("/trusted/board.db")
+
+        @staticmethod
+        def set_workflow_subscription(conn, **kwargs):
+            captured.update(kwargs)
+            return {"workflow": {"id": kwargs["workflow_id"], "version": 4}}
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "trusted-orchestrator")
+    monkeypatch.setenv("HERMES_TENANT", "request-minted-tenant")
+    monkeypatch.setattr(kt, "_connect", lambda board=None: (FakeKB, FakeConn()))
+
+    result = json.loads(kt._handle_workflow_manage({
+        "action": "set_subscription",
+        "workflow_id": "wf_1",
+        "expected_version": 3,
+        "mutation_id": "route-origin",
+        "platform": "telegram",
+        "chat_id": "origin-chat",
+        "chat_type": "dm",
+        "thread_id": "topic-7",
+        "user_id": "user-1",
+        "notifier_profile": "delivery-profile",
+        "delivery_metadata": {"thread_id": "topic-7"},
+        "target_states": ["PASS", "NEEDS_INPUT"],
+        "tenant": "request-minted-tenant",
+        "capabilities": ["workflow.admin"],
+    }))
+
+    assert result == {"workflow": {"id": "wf_1", "version": 4}}
+    assert captured["actor"].tenant == "durable-tenant"
+    assert captured["actor"].profile_name == "trusted-orchestrator"
+    assert captured["actor"].capabilities == kt._WORKFLOW_MANAGE_CAPABILITIES
+    assert captured["platform"] == "telegram"
+    assert captured["chat_id"] == "origin-chat"
+    assert captured["chat_type"] == "dm"
+    assert captured["thread_id"] == "topic-7"
+    assert captured["user_id"] == "user-1"
+    assert captured["notifier_profile"] == "delivery-profile"
+    assert captured["delivery_metadata"] == {"thread_id": "topic-7"}
+    assert captured["target_states"] == ["PASS", "NEEDS_INPUT"]
+    assert captured["expected_version"] == 3
+    assert captured["mutation_id"] == "route-origin"
 
 
 def test_workflow_resume_does_not_require_a_version_or_body_authority(

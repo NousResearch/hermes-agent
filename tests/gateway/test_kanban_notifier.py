@@ -53,6 +53,156 @@ def test_format_workflow_notification_is_one_current_aggregate_view():
     assert "Final acceptance remains pending" in message
 
 
+def test_workflow_notifier_real_db_pins_each_claimed_generation(tmp_path, monkeypatch):
+    """The real DB→claim→snapshot→format→send path emits one generation at a time."""
+    db_path = tmp_path / "workflow-generation-delivery.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    conn = kb.connect(db_path)
+    board_identity = str(db_path.resolve())
+    actor = kb.KanbanActorContext(
+        principal_id="svc:orchestrator",
+        profile_name="main",
+        board_identity=board_identity,
+        tenant="tenant-a",
+        capabilities=frozenset({
+            "workflow.read", "workflow.manage", "workflow.admin", "workflow.outcome",
+        }),
+        source_kind="orchestrator",
+    )
+    try:
+        acceptance_1 = kb.create_task(
+            conn, title="accept generation 1", assignee="orchestrator",
+            tenant="tenant-a", session_id="member-provenance-generation-1",
+        )
+        kb.create_workflow(
+            conn,
+            workflow_id="wf_real_delivery",
+            name="release",
+            tenant="tenant-a",
+            designated_acceptance_task_id=acceptance_1,
+            actor=actor,
+            mutation_id="create-real-delivery",
+            subscription={
+                "platform": "telegram",
+                "chat_id": "workflow-origin-chat",
+                "chat_type": "dm",
+                "notifier_profile": "main",
+                "target_states": ["PASS"],
+            },
+        )
+        passed_1 = kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_real_delivery",
+            task_id=acceptance_1,
+            outcome="PASS",
+            summary="generation one accepted",
+            actor=actor,
+            mutation_id="pass-generation-1",
+            expected_version=1,
+        )
+        acceptance_2 = kb.create_task(
+            conn, title="accept generation 2", assignee="orchestrator",
+            tenant="tenant-a", session_id="member-provenance-generation-2",
+        )
+        remediation_2 = kb.create_task(
+            conn, title="remediate generation 2", assignee="builder",
+            tenant="tenant-a",
+        )
+        reverification_2 = kb.create_task(
+            conn, title="reverify generation 2", assignee="x_qa",
+            tenant="tenant-a",
+        )
+        reopened = kb.reopen_workflow(
+            conn,
+            workflow_id="wf_real_delivery",
+            designated_acceptance_task_id=acceptance_2,
+            members=[
+                {
+                    "task_id": acceptance_2,
+                    "stage_key": "acceptance-2",
+                    "stage_role": "acceptance",
+                    "required": True,
+                },
+                {
+                    "task_id": remediation_2,
+                    "stage_key": "remediation-2",
+                    "stage_role": "remediation",
+                    "required": True,
+                },
+                {
+                    "task_id": reverification_2,
+                    "stage_key": "reverification-2",
+                    "stage_role": "reverification",
+                    "required": True,
+                },
+            ],
+            actor=actor,
+            mutation_id="reopen-generation-2",
+            expected_version=passed_1["workflow"]["version"],
+            reason="second release generation",
+        )
+        remediated = kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_real_delivery",
+            task_id=remediation_2,
+            outcome="PASS",
+            summary="generation two remediation complete",
+            actor=actor,
+            mutation_id="remediate-generation-2",
+            expected_version=reopened["workflow"]["version"],
+        )
+        reverified = kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_real_delivery",
+            task_id=reverification_2,
+            outcome="PASS",
+            summary="generation two independently verified",
+            actor=actor,
+            mutation_id="reverify-generation-2",
+            expected_version=remediated["workflow"]["version"],
+        )
+        kb.record_workflow_outcome(
+            conn,
+            workflow_id="wf_real_delivery",
+            task_id=acceptance_2,
+            outcome="PASS",
+            summary="generation two accepted",
+            actor=actor,
+            mutation_id="pass-generation-2",
+            expected_version=reverified["workflow"]["version"],
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "main"
+    runner._authorization_adapter = lambda platform, profile=None: adapter
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert [item["chat_id"] for item in adapter.sent] == [
+        "workflow-origin-chat", "workflow-origin-chat",
+    ]
+    first, second = [item["text"] for item in adapter.sent]
+    assert "generation 1" in first
+    assert f"acceptance: {acceptance_1}" in first
+    assert "PASS: generation one accepted" in first
+    assert acceptance_2 not in first
+    assert "generation two accepted" not in first
+    assert "member-provenance-generation-1" not in repr(adapter.sent)
+
+    assert "generation 2" in second
+    assert f"acceptance-2: {acceptance_2}" in second
+    assert "PASS: generation two accepted" in second
+    assert acceptance_1 not in second
+    assert "generation one accepted" not in second
+    assert "member-provenance-generation-2" not in repr(adapter.sent)
+
+
 def _workflow_delivery(sub, *, snapshot=None):
     return {
         "workflow_delivery": True,

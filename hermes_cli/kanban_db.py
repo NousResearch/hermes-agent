@@ -9909,30 +9909,38 @@ def _insert_workflow_event(
 
 
 def _workflow_response(
-    conn: sqlite3.Connection, workflow_id: str, *, include_events: bool = False
+    conn: sqlite3.Connection, workflow_id: str, *, include_events: bool = False,
+    generation: Optional[int] = None, include_outcomes: bool = False,
 ) -> dict[str, Any]:
     workflow = conn.execute(
         "SELECT * FROM kanban_workflows WHERE id = ?", (workflow_id,)
     ).fetchone()
     if workflow is None:
         raise KeyError(f"unknown workflow: {workflow_id}")
-    generation = conn.execute(
+    selected_generation = (
+        int(workflow["active_generation"]) if generation is None else int(generation)
+    )
+    generation_row = conn.execute(
         "SELECT * FROM kanban_workflow_generations WHERE workflow_id = ? AND generation = ?",
-        (workflow_id, workflow["active_generation"]),
+        (workflow_id, selected_generation),
     ).fetchone()
-    if generation is None:
-        raise WorkflowIntegrityError("active workflow generation is missing")
+    if generation_row is None:
+        raise WorkflowIntegrityError("requested workflow generation is missing")
     members = conn.execute(
         "SELECT task_id, stage_key, stage_role, required FROM kanban_workflow_members "
         "WHERE workflow_id = ? AND generation = ? AND removed_event_id IS NULL "
         "ORDER BY joined_event_id, task_id",
-        (workflow_id, workflow["active_generation"]),
+        (workflow_id, selected_generation),
     ).fetchall()
+    member_generation = (
+        {"generation": selected_generation} if generation is not None else {}
+    )
     result: dict[str, Any] = {
         "workflow": dict(workflow),
-        "generation": dict(generation),
-        "members": [{"task_id": row["task_id"], "stage_key": row["stage_key"],
-                     "stage_role": row["stage_role"], "required": bool(row["required"])}
+        "generation": dict(generation_row),
+        "members": [{**member_generation, "task_id": row["task_id"],
+                     "stage_key": row["stage_key"], "stage_role": row["stage_role"],
+                     "required": bool(row["required"])}
                     for row in members],
     }
     if include_events:
@@ -9941,24 +9949,30 @@ def _workflow_response(
             (workflow_id,),
         ).fetchall()
         result["events"] = [{**dict(row), "payload": json.loads(row["payload"])} for row in events]
-        outcomes = conn.execute(
-            "SELECT * FROM kanban_workflow_outcomes WHERE workflow_id = ? ORDER BY id",
-            (workflow_id,),
-        ).fetchall()
-        result["outcomes"] = [
-            {**dict(row), "metadata": json.loads(row["metadata"]) if row["metadata"] else None}
-            for row in outcomes
-        ]
         sub = conn.execute(
             "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id = ?", (workflow_id,)
         ).fetchone()
         result["subscription"] = dict(sub) if sub is not None else None
+    if include_events or include_outcomes:
+        outcome_query = (
+            "SELECT * FROM kanban_workflow_outcomes WHERE workflow_id = ?"
+        )
+        outcome_params: tuple[Any, ...] = (workflow_id,)
+        if not include_events:
+            outcome_query += " AND generation = ?"
+            outcome_params = (workflow_id, selected_generation)
+        outcomes = conn.execute(outcome_query + " ORDER BY id", outcome_params).fetchall()
+        result["outcomes"] = [
+            {**dict(row), "metadata": json.loads(row["metadata"]) if row["metadata"] else None}
+            for row in outcomes
+        ]
     return result
 
 
 def get_workflow(
     conn: sqlite3.Connection, workflow_id: str, *,
     actor: Optional[KanbanActorContext], include_events: bool = True,
+    generation: Optional[int] = None, include_outcomes: bool = False,
 ) -> Optional[dict[str, Any]]:
     row = conn.execute(
         "SELECT tenant,board_identity FROM kanban_workflows WHERE id = ?", (workflow_id,)
@@ -9969,7 +9983,10 @@ def get_workflow(
         actor, "workflow.read", tenant=row["tenant"],
         board_identity=row["board_identity"],
     )
-    return _workflow_response(conn, workflow_id, include_events=include_events)
+    return _workflow_response(
+        conn, workflow_id, include_events=include_events,
+        generation=generation, include_outcomes=include_outcomes,
+    )
 
 
 def list_workflows(

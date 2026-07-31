@@ -553,18 +553,20 @@ class GatewayKanbanWatchersMixin:
                                         capabilities=frozenset({"workflow.read"}),
                                         source_kind="gateway_publisher",
                                     )
+                                    event_payload = events[0].get("payload") or {}
+                                    event_generation = event_payload.get(
+                                        "generation", events[0].get("generation")
+                                    )
                                     snapshot = _kb.get_workflow(
                                         conn,
                                         workflow_sub["workflow_id"],
                                         actor=actor,
                                         include_events=False,
+                                        generation=event_generation,
+                                        include_outcomes=True,
                                     )
                                     if snapshot is None:
                                         raise RuntimeError("workflow disappeared after event claim")
-                                    event_payload = events[0].get("payload") or {}
-                                    event_generation = event_payload.get(
-                                        "generation", events[0].get("generation")
-                                    )
                                     snapshot["workflow"] = {
                                         **(snapshot.get("workflow") or {}),
                                         "state": event_payload["resulting_state"],

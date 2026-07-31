@@ -1652,7 +1652,7 @@ def _handle_workflow_manage(args: dict, **kw) -> str:
                     int(args["expected_version"])
                     if action in {
                         "add_member", "remove_member", "cancel", "reopen",
-                        "skip_subscription_event",
+                        "set_subscription", "skip_subscription_event",
                     }
                     else None
                 )
@@ -1687,6 +1687,22 @@ def _handle_workflow_manage(args: dict, **kw) -> str:
                         ),
                         members=args.get("members") or [],
                         reason=str(args.get("reason") or ""),
+                    )
+                elif action == "set_subscription":
+                    result = kb.set_workflow_subscription(
+                        conn,
+                        workflow_id=workflow_id,
+                        platform=str(args.get("platform") or ""),
+                        chat_id=str(args.get("chat_id") or ""),
+                        chat_type=args.get("chat_type"),
+                        thread_id=args.get("thread_id"),
+                        user_id=args.get("user_id"),
+                        notifier_profile=str(args.get("notifier_profile") or ""),
+                        delivery_metadata=args.get("delivery_metadata"),
+                        target_states=args.get("target_states"),
+                        actor=actor,
+                        mutation_id=mutation_id,
+                        expected_version=expected_version,
                     )
                 elif action == "resume_subscription":
                     result = kb.resume_workflow_subscription(
@@ -2379,7 +2395,7 @@ KANBAN_WORKFLOW_MANAGE_SCHEMA = {
                 "type": "string",
                 "enum": [
                     "create", "add_member", "remove_member", "cancel", "reopen",
-                    "resume_subscription", "disable_subscription",
+                    "set_subscription", "resume_subscription", "disable_subscription",
                     "skip_subscription_event",
                 ],
             },
@@ -2406,6 +2422,23 @@ KANBAN_WORKFLOW_MANAGE_SCHEMA = {
             },
             "reason": {"type": "string"},
             "event_id": {"type": "integer"},
+            "platform": {"type": "string"},
+            "chat_id": {"type": "string"},
+            "chat_type": {"type": ["string", "null"]},
+            "thread_id": {"type": ["string", "null"]},
+            "user_id": {"type": ["string", "null"]},
+            "notifier_profile": {"type": "string"},
+            "delivery_metadata": {"type": ["object", "null"]},
+            "target_states": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "ACTIVE", "PASS", "REMEDIATION_REQUIRED", "NEEDS_INPUT",
+                        "SUPERSEDED", "CANCELLED",
+                    ],
+                },
+            },
             "expected_version": {"type": "integer"},
             "mutation_id": {"type": "string"},
             "board": _board_schema_prop(),

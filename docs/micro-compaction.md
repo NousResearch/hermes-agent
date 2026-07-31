@@ -51,10 +51,14 @@ compressor to absorb **one** exchange:
 One exchange per turn. The per-turn cost stays bounded no matter how long the
 conversation gets.
 
-An **exchange** is an assistant message together with any tool results that
-followed it. In tool-heavy work that's where the bulk of the tokens live — a
+An **exchange** is one full agent turn: an assistant message together with its
+tool results and any follow-up assistant iterations, up to the next user
+message. In tool-heavy work that's where the bulk of the tokens live — a
 file read or a command's output dwarfs the surrounding prose — which is why
-absorbing one exchange at a time is worth doing at all.
+absorbing one exchange at a time is worth doing at all. Taking the whole turn
+(rather than a single assistant+tools group) also keeps the transcript's role
+alternation strictly valid: the summary marker is an assistant-role message,
+and a full turn is always bounded by user messages on both sides.
 
 ## Your messages are never compacted
 
@@ -123,12 +127,14 @@ transcript grows on every turn instead of shrinking.
 
 Merge into a summary often enough and it gets baggy — repetitive, and larger
 than the material justifies. When the running summary crosses a token threshold
-(2000 by default), the next pass **defrags**: it re-summarizes the summary and
-whatever middle remains in one shot, replacing it with a fresh compact version
-and advancing the cursor to the tail.
+(2000 by default), the next pass **defrags**: one auxiliary call re-summarizes
+the running summary *itself* into a fresh compact version, and the summary
+marker in the transcript is rewritten in place.
 
-This is still much cheaper than full batch compaction. It only ever processes the
-summary plus the un-absorbed middle, never the whole transcript.
+Defrag never touches the transcript's structure — no messages are absorbed or
+spliced, the cursor doesn't move, and user turns are untouched. It processes
+only the accumulated summary text, never conversation messages, so the
+"your messages are never compacted" guarantee holds through it.
 
 ### Staying in step with the session database
 
@@ -152,7 +158,7 @@ untouched and the failure is counted.
 If the *same* exchange fails three times in a row, the cursor is advanced past it
 anyway. Without that, one bad exchange would be retried on every single turn
 forever. Those skipped messages stay in the transcript and get picked up by the
-next defrag or batch compaction.
+next batch compaction.
 
 ## Interaction with batch compaction
 

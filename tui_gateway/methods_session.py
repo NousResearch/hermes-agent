@@ -2713,16 +2713,56 @@ def _(rid, params: dict) -> dict:
         return err
     if _session_uses_compute_host(session):
         sid = str(params.get("session_id") or "")
+        # A host that is gone (broken pipe, respawn exhausted) can never deliver
+        # the turn.end that clears `running`, so returning an error here left the
+        # session permanently busy: every later prompt.submit fell into
+        # _handle_busy_submit and queued forever, with no way back short of a
+        # backend restart. Recover instead — the same safety net the in-process
+        # branch below applies when the run thread is already gone.
+        host_unreachable = False
+        inflight_at_interrupt = None
         if session.get("running"):
+            with session["history_lock"]:
+                inflight_at_interrupt = session.get("inflight_turn")
             try:
                 _get_compute_host_supervisor().interrupt(sid, request_id=f"interrupt-{rid}")
             except Exception as exc:
-                return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
+                host_unreachable = True
+                logger.warning("session.interrupt: compute-host interrupt failed for %s: %s", sid, exc)
+        # Probe BEFORE taking history_lock: the surrounding code holds the
+        # invariant that a compute-host call is never made under that lock, since
+        # an interrupt can wait behind the very operation it is cancelling.
+        pending_for_sid = True
+        if host_unreachable:
+            try:
+                pending_for_sid = _get_compute_host_supervisor().has_pending_turn(sid)
+            except Exception as exc:
+                # Fail closed. An unreadable supervisor is not evidence the turn
+                # is over, and force-clearing on a guess would drop a live turn's
+                # own teardown on the floor.
+                logger.warning(
+                    "session.interrupt: compute-host pending-turn probe failed for %s: %s", sid, exc
+                )
+                pending_for_sid = True
         with session["history_lock"]:
             session["_turn_cancel_requested"] = True
             session["queued_prompt"] = None
             session.pop("queued_prompts", None)
             session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+            # Re-checked under the lock: a completion callback may have landed
+            # since the probe, and a successor submit/drain may already own
+            # `running` with a fresh inflight dict. Only clear the turn this Stop
+            # actually observed.
+            inflight_now = session.get("inflight_turn")
+            if (
+                host_unreachable
+                and not pending_for_sid
+                and session.get("running")
+                and inflight_now is not None
+                and inflight_now is inflight_at_interrupt
+            ):
+                session["running"] = False
+                _clear_inflight_turn(session)
         _clear_pending(sid)
         try:
             from tools.approval import resolve_gateway_approval

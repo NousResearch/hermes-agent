@@ -347,6 +347,183 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     assert session.get("_compute_host_active") is not True
 
 
+class _DeadComputeHost:
+    """Supervisor whose interrupt() raises and which owes no completion.
+
+    Models a compute host that is gone (broken pipe, respawn exhausted): no
+    ``turn.end`` can ever arrive to clear ``running``.
+    """
+
+    def __init__(self, pending_sids=()):
+        self._lock = threading.Lock()
+        self._pending_sids = set(pending_sids)
+
+    def interrupt(self, sid, *, request_id=None):
+        raise RuntimeError("compute host is not running")
+
+    def has_pending_turn(self, sid):
+        with self._lock:
+            return sid in self._pending_sids
+
+
+def test_compute_host_interrupt_failure_clears_stuck_running(monkeypatch):
+    """A dead compute host must not leave `running` stuck after Stop.
+
+    Nothing will deliver `turn.end`, so bailing out with 5019 left the session
+    busy forever: every later prompt.submit fell into the busy path and queued.
+    """
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        queued_prompt={"text": "stale next", "transport": None},
+        inflight_turn={"user": "hi", "assistant": "", "streaming": True},
+    )
+    server._sessions["iso-int-dead"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _DeadComputeHost())
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-dead",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-dead"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is False
+        assert session.get("_turn_cancel_requested") is True
+        assert session.get("queued_prompt") is None
+        assert session.get("inflight_turn") is None
+    finally:
+        server._sessions.pop("iso-int-dead", None)
+
+
+def test_compute_host_interrupt_failure_leaves_running_when_turn_pending(monkeypatch):
+    """A still-registered host completion owns teardown — don't pre-empt it."""
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        inflight_turn={"user": "hi", "assistant": "", "streaming": True},
+    )
+    server._sessions["iso-int-pending"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(
+        server,
+        "_get_compute_host_supervisor",
+        lambda _cfg=None: _DeadComputeHost(pending_sids=("iso-int-pending",)),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-pending",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-pending"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("_turn_cancel_requested") is True
+        assert session.get("inflight_turn") is not None
+    finally:
+        server._sessions.pop("iso-int-pending", None)
+
+
+def test_compute_host_interrupt_failure_leaves_running_after_teardown(monkeypatch):
+    """Once the turn is torn down, `running` belongs to the drain, not to Stop."""
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        # The crash waiter already cleared inflight; a successor drain may have
+        # claimed `running` for the queued prompt it is about to send.
+        inflight_turn=None,
+    )
+    server._sessions["iso-int-post"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _DeadComputeHost())
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-post",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-post"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("_turn_cancel_requested") is True
+    finally:
+        server._sessions.pop("iso-int-post", None)
+
+
+def test_compute_host_interrupt_failure_does_not_clobber_replaced_inflight(monkeypatch):
+    """A successor turn can replace inflight before its pending entry lands."""
+    old_inflight = {"user": "old", "assistant": "", "streaming": True}
+    new_inflight = {"user": "new", "assistant": "", "streaming": True}
+    session = _session(
+        agent=None,
+        agent_ready=threading.Event(),
+        running=True,
+        _compute_host_active=True,
+        inflight_turn=old_inflight,
+    )
+    server._sessions["iso-int-race"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+
+    host = _DeadComputeHost()
+
+    def _interrupt_and_swap(sid, *, request_id=None):
+        # prompt.submit replaces inflight after history_lock is released and
+        # before submit_turn registers the pending entry.
+        with session["history_lock"]:
+            session["inflight_turn"] = new_inflight
+            session["_turn_cancel_requested"] = False
+        raise RuntimeError("compute host is not running")
+
+    host.interrupt = _interrupt_and_swap
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: host)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "int-race",
+                "method": "session.interrupt",
+                "params": {"session_id": "iso-int-race"},
+            }
+        )
+        assert resp.get("result") == {"status": "interrupted", "turn_isolation": True}
+        assert session["running"] is True
+        assert session.get("inflight_turn") is new_inflight
+        assert session.get("_turn_cancel_requested") is True
+    finally:
+        server._sessions.pop("iso-int-race", None)
+
+
+def test_compute_host_supervisor_reports_pending_turn_per_session():
+    """The liveness probe the recovery reads: registered ⇒ True, popped ⇒ False."""
+    from tui_gateway.host_supervisor import HostSupervisor
+
+    # Bypass __init__: constructing a real supervisor would spawn a child.
+    supervisor = HostSupervisor.__new__(HostSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._pending_turns = {"req-a": ("sid-a", None), "req-b": ("sid-b", None)}
+
+    assert supervisor.has_pending_turn("sid-a") is True
+    assert supervisor.has_pending_turn("sid-b") is True
+    assert supervisor.has_pending_turn("sid-c") is False
+
+    supervisor._pending_turns.pop("req-a")
+    assert supervisor.has_pending_turn("sid-a") is False
+
+
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
     session = _session(
         agent=None,

@@ -4236,6 +4236,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         end: int,
     ) -> list[tuple[int, str]]:
         """Find handoff summaries inside a compression window."""
+        n = len(messages)
+        # Defensive: clamp bounds so a caller passing an out-of-range end
+        # (e.g. tail-cut returning len(messages)+1 when head_end >= n)
+        # cannot trigger IndexError.  (#75588)
+        start = max(0, min(start, n))
+        end = max(start, min(end, n))
         summaries: list[tuple[int, str]] = []
         for idx in range(start, end):
             content = messages[idx].get("content")
@@ -5005,7 +5011,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # exists to prevent.  Re-align FORWARD (never backward, which would give
         # the floor's message back) so a raised cut skips to the end of the
         # group and the whole call/result pair is summarised together.
-        return self._align_boundary_forward(messages, max(cut_idx, head_end + 1))
+        return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))
 
     # ------------------------------------------------------------------
     # ContextEngine: manual /compress preflight

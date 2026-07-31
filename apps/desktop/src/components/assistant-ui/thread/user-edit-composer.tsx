@@ -35,6 +35,7 @@ import {
 } from '@/app/chat/composer/inline-refs'
 import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import {
+  COMPOSER_PLACEHOLDER_CLASS,
   composerPlainText,
   insertComposerContentsAtCaret,
   placeCaretEnd,
@@ -772,7 +773,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               autoCorrect="off"
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
-                'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
+                COMPOSER_PLACEHOLDER_CLASS,
                 '**:data-ref-text:cursor-default',
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}

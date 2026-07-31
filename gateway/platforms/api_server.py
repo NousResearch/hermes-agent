@@ -5913,25 +5913,148 @@ class APIServerAdapter(BasePlatformAdapter):
         full_history.append({"role": "assistant", "content": final_response})
         return full_history
 
+    # Semantic message fields used when matching the prior-history prefix.
+    # Everything else (sidecar stamps such as ``api_content``, provider
+    # bookkeeping, cache markers) is ignored so that in-place reshaping of the
+    # history does not defeat turn-start detection.
+    _TURN_SEMANTIC_KEYS = (
+        "role",
+        "content",
+        "tool_calls",
+        "tool_call_id",
+        "name",
+        "function_call",
+    )
+
+    @staticmethod
+    def _semantic_message(msg: Any) -> Any:
+        """Project a message down to its semantically meaningful fields.
+
+        The agent core mutates history messages in place during a turn —
+        alternation repair, ``api_content`` sidecar stamping (conversation_loop),
+        provider cache markers — none of which change the message's meaning but
+        all of which break a byte-for-byte ``==`` comparison against the input
+        ``conversation_history``.  Comparing only the semantic projection lets
+        the prior-history prefix still be recognised.
+        """
+        if not isinstance(msg, dict):
+            return msg
+        return {k: msg[k] for k in APIServerAdapter._TURN_SEMANTIC_KEYS if k in msg}
+
+    @staticmethod
+    def _semantic_prefix_matches(
+        messages: List[Dict[str, Any]], expected: List[Dict[str, Any]]
+    ) -> bool:
+        """True if ``messages`` begins with ``expected`` (semantic comparison)."""
+        if len(messages) < len(expected):
+            return False
+        for actual, want in zip(messages, expected):
+            if (
+                APIServerAdapter._semantic_message(actual)
+                != APIServerAdapter._semantic_message(want)
+            ):
+                return False
+        return True
+
     @staticmethod
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]],
         user_message: Any,
         result: Dict[str, Any],
     ) -> int:
-        """Detect transcript-shaped result["messages"] and return turn start."""
+        """Detect transcript-shaped ``result["messages"]`` and return turn start.
+
+        ``result["messages"]`` may be either the full running transcript
+        (``prior_history + current_turn``) or, on older/mocked paths, just the
+        current-turn suffix.  This returns the index at which *this turn's*
+        messages begin, so callers emit only the current turn's output items and
+        store the transcript without duplicating history.
+
+        Robustness matters because the agent core routinely reshapes the history
+        prefix in place, which defeats a naive byte-equality check.  A wrong
+        ``return 0`` here is the root cause of two reported symptoms:
+          * output side — the whole transcript is walked from index 0, replaying
+            *previous* turns' ``tool_calls`` as phantom ``function_call`` /
+            ``function_call_output`` items on a turn that called no tools;
+          * storage side — history is concatenated on front of itself and grows
+            (doubles) every chained request (#68257).
+
+        Detection intentionally does **not** strip a leading ``system`` message.
+        The agent core never prepends its own system prompt into the stored
+        ``result["messages"]`` — the prompt is prepended only to the wire copy
+        (``api_messages`` in conversation_loop), so the stored transcript begins
+        with ``prior`` (or, on the suffix-only path, this turn's messages). A
+        ``system`` message that *does* appear at index 0 is therefore
+        client-supplied history (the Responses input parser accepts any role),
+        which lives inside ``prior`` and must be matched — not skipped — so it
+        round-trips faithfully on the next chained request.
+
+        Detection order:
+          1. Semantic prefix match against ``prior + current_user`` then
+             ``prior`` — tolerant of in-place reshaping / sidecar stamps. With
+             no prior history this still recognises a full transcript that opens
+             with this turn's user message, and falls through to ``0`` for the
+             older suffix-only shape.
+          2. Prefix unrecoverable (compression replaced it with a summary, or
+             reshaping changed content/shape) → reverse-anchor on the last
+             ``user`` message equal to this turn's input.
+          3. No ``user`` message at all → preserve the legacy/current-turn
+             suffix shape by returning ``0`` so genuine tool items are emitted
+             and storage prepends ``prior + current_user``.
+          4. Last resort for an unattributable transcript that *does* contain
+             user/history rows → trust only the final assistant message; never
+             replay history tool calls that cannot be positively attributed to
+             this turn.
+        """
         agent_messages = result.get("messages") if isinstance(result, dict) else None
         if not isinstance(agent_messages, list) or not agent_messages:
             return 0
 
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
-        expected_prefix = prior + [current_user]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
-            return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
+
+        # 1. Tolerant (semantic) prefix match, resilient to in-place reshaping.
+        #    ``prior + current_user`` first (full transcript incl. this turn's
+        #    user message), then bare ``prior``. When ``prior`` is empty the
+        #    first branch still matches a full transcript opening with the
+        #    current user message; the second branch is a no-op match that
+        #    yields ``0`` for the older suffix-only shape (emit everything).
+        expected_with_user = prior + [current_user]
+        if APIServerAdapter._semantic_prefix_matches(agent_messages, expected_with_user):
+            return len(expected_with_user)
+        if prior and APIServerAdapter._semantic_prefix_matches(agent_messages, prior):
             return len(prior)
-        return 0
+
+        # 2. Prefix unrecoverable (compression summary replaced the history, or
+        #    reshaping changed content/shape). Reverse-anchor on the last user
+        #    message matching this turn's input; the current turn starts after it.
+        for i in range(len(agent_messages) - 1, -1, -1):
+            msg = agent_messages[i]
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "user"
+                and msg.get("content") == user_message
+            ):
+                return i + 1
+
+        # 3. No user row means this is the explicitly supported suffix-only
+        #    shape (assistant/tool messages for the current turn). Returning 0
+        #    preserves genuine current-turn tool items; the storage path then
+        #    prepends prior + current_user exactly once.
+        if not any(
+            isinstance(msg, dict) and msg.get("role") == "user"
+            for msg in agent_messages
+        ):
+            return 0
+
+        # 4. User/history rows exist but none can be positively anchored to this
+        #    turn. Trust only the final assistant so we never replay
+        #    unattributable historical tool calls (the phantom-replay bug).
+        for i in range(len(agent_messages) - 1, -1, -1):
+            msg = agent_messages[i]
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                return i
+        return len(agent_messages)
 
     @classmethod
     def _turn_transcript_messages(

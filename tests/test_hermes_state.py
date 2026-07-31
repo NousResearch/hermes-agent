@@ -2395,6 +2395,8 @@ class TestCompressionChainProjection:
         assert tip_row["preview"].startswith("latest message")
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
+        # Same-source chain: projected source stays the tip's (here equal to root).
+        assert tip_row["source"] == "cli"
 
     def test_list_projects_multiple_independent_chains_in_one_call(self, db):
         """Two unrelated compression chains in the same page must each
@@ -2478,8 +2480,61 @@ class TestCompressionChainProjection:
         assert set(batch_calls[0]) == {"tip1", "tip2"}
         assert single_calls == []
 
+    def test_list_surfaces_tip_source_for_cross_source_chain(self, db):
+        """Cross-source compression must project the tip's source (#75625).
 
+        WebUI loads list_sessions_rich without a source filter and tabs client-
+        side on the row's ``source``. If projection keeps the root source, a
+        telegram-rooted chain continued in webui vanishes from the webui tab
+        (root source still telegram; tip excluded as a compression child).
+        """
+        import time as _time
 
+        t0 = _time.time() - 3600
+        db.create_session("xroot", "telegram")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0, "xroot")
+        )
+        db.append_message("xroot", "user", "gateway start")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 100, "compression", "xroot"),
+        )
+        db.create_session("xtip", "webui", parent_session_id="xroot")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t0 + 101, "xtip"),
+        )
+        db.append_message("xtip", "user", "continued in webui")
+        db._conn.commit()
+
+        # Unfiltered list (WebUI dashboard path): projected tip must carry
+        # source=webui so client-side webui tab shows the conversation.
+        all_sessions = db.list_sessions_rich(limit=20)
+        by_id = {s["id"]: s for s in all_sessions}
+        assert "xtip" in by_id
+        assert "xroot" not in by_id
+        projected = by_id["xtip"]
+        assert projected["source"] == "webui"
+        assert projected["_lineage_root_id"] == "xroot"
+        assert projected["preview"].startswith("continued in webui")
+        assert projected["ended_at"] is None
+
+        # SQL source=webui still only admits roots with that source — the
+        # telegram root is filtered pre-projection (same as before). This
+        # documents that client-side filtering after unfiltered load is the
+        # path that needs projected source; it is not a regression.
+        webui_only = db.list_sessions_rich(source="webui", limit=20)
+        assert "xtip" not in {s["id"] for s in webui_only}
+
+        # Same-source filter still surfaces the chain when root matches.
+        telegram_only = db.list_sessions_rich(source="telegram", limit=20)
+        t_ids = {s["id"] for s in telegram_only}
+        assert "xtip" in t_ids
+        # After projection the row reports the tip source even when admitted
+        # via the root's telegram source filter.
+        t_row = next(s for s in telegram_only if s["id"] == "xtip")
+        assert t_row["source"] == "webui"
 
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial

@@ -8681,10 +8681,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         With ``project_compression_tips=True`` (default), sessions that are
         roots of compression chains are projected forward to their latest
         continuation — one logical conversation = one list entry, showing the
-        live continuation's id/message_count/title/last_active. This prevents
-        compressed continuations from being invisible to users while keeping
-        delegate subagents and branches hidden. Pass ``False`` to return the
-        raw root rows (useful for admin/debug UIs).
+        live continuation's id/message_count/title/last_active/source. This
+        prevents compressed continuations from being invisible to users while
+        keeping delegate subagents and branches hidden. Pass ``False`` to
+        return the raw root rows (useful for admin/debug UIs).
 
         Pass ``order_by_last_active=True`` to sort by most-recent activity
         instead of original conversation start time. For compression chains,
@@ -8999,12 +8999,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     projected.append(s)
                     continue
                 # Preserve the root's started_at for stable sort order, but
-                # surface the tip's identity and activity data.
+                # surface the tip's identity, activity data, and source.
+                # Source must come from the tip: cross-source compression
+                # (e.g. telegram root → webui tip) otherwise keeps the root
+                # source and disappears from the tip's tab filter (#75625).
                 merged = dict(s)
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
                     "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    "source",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]

@@ -303,16 +303,13 @@ class TestScanSkillCommands:
 
     # -- inter-skill slug collision dedup (#50304 / #63305) ------------------
 
-    def test_slug_collision_keeps_first_skill(self, tmp_path):
-        """Two skills whose names normalize to the same slug do not clobber.
+    def test_underscore_and_hyphen_names_are_distinct_commands(self, tmp_path):
+        """Underscores are preserved so ``git_helper`` ≠ ``git-helper`` (#75620).
 
-        ``git_helper`` and ``git-helper`` are distinct frontmatter names but
-        both reduce to the ``/git-helper`` command. The first one scanned must
-        keep the command rather than being silently overwritten by the second.
+        Collapsing ``_`` → ``-`` used to register both as ``/git-helper`` and
+        silently drop the second skill (first-wins). They must stay distinct.
         """
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            # ``a-first`` sorts before ``z-second`` so the index walk visits the
-            # underscore-named skill first; that one must win the slash command.
             first = tmp_path / "a-first"
             first.mkdir()
             (first / "SKILL.md").write_text(
@@ -324,25 +321,61 @@ class TestScanSkillCommands:
                 "---\nname: git-helper\ndescription: Second skill.\n---\n\nBody.\n"
             )
             result = scan_skill_commands()
+        assert "/git_helper" in result
         assert "/git-helper" in result
-        # First-wins: the entry resolves to the first skill, not the shadowing one.
-        assert result["/git-helper"]["name"] == "git_helper"
-        assert result["/git-helper"]["skill_dir"] == str(first)
+        assert result["/git_helper"]["name"] == "git_helper"
+        assert result["/git-helper"]["name"] == "git-helper"
+
+    def test_leading_underscores_preserved_in_slash_command(self, tmp_path):
+        """``__spec-driven`` must register as ``/__spec-driven``, not ``/spec-driven``."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill = tmp_path / "__spec-driven"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "---\nname: __spec-driven\ndescription: Spec workflow.\n---\n\nBody.\n"
+            )
+            # Collision risk: a plain name that the old normalizer would alias to.
+            other = tmp_path / "spec-driven"
+            other.mkdir()
+            (other / "SKILL.md").write_text(
+                "---\nname: spec-driven\ndescription: Other.\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/__spec-driven" in result
+        assert "/spec-driven" in result
+        assert result["/__spec-driven"]["name"] == "__spec-driven"
+        assert result["/spec-driven"]["name"] == "spec-driven"
+
+    def test_slug_collision_from_space_normalization_keeps_first(self, tmp_path):
+        """Space→hyphen can still collide; first-wins remains."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            first = tmp_path / "a-first"
+            first.mkdir()
+            (first / "SKILL.md").write_text(
+                "---\nname: my skill\ndescription: First.\n---\n\nBody.\n"
+            )
+            second = tmp_path / "z-second"
+            second.mkdir()
+            (second / "SKILL.md").write_text(
+                "---\nname: my-skill\ndescription: Second.\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/my-skill" in result
+        assert result["/my-skill"]["name"] == "my skill"
 
     def test_slug_collision_warns(self, tmp_path, caplog):
-        """A slug collision emits a warning so the user can diagnose the
-        shadowed skill."""
+        """A remaining slug collision emits a warning for diagnosis."""
         import logging as _logging
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             first = tmp_path / "a-first"
             first.mkdir()
             (first / "SKILL.md").write_text(
-                "---\nname: my-skill\ndescription: First.\n---\n\nBody.\n"
+                "---\nname: my skill\ndescription: First.\n---\n\nBody.\n"
             )
             second = tmp_path / "z-second"
             second.mkdir()
             (second / "SKILL.md").write_text(
-                "---\nname: my_skill\ndescription: Second.\n---\n\nBody.\n"
+                "---\nname: my-skill\ndescription: Second.\n---\n\nBody.\n"
             )
             with caplog.at_level(_logging.WARNING, logger="agent.skill_commands"):
                 scan_skill_commands()
@@ -484,10 +517,7 @@ class TestScanSkillCommands:
 
 
 class TestResolveSkillCommandKey:
-    """Telegram bot-command names disallow hyphens, so the menu registers
-    skills with hyphens swapped for underscores. When Telegram autocomplete
-    sends the underscored form back, we need to find the hyphenated key.
-    """
+    """Resolve typed slash tokens to the canonical skill-command key."""
 
     def test_hyphenated_form_matches_directly(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -495,7 +525,24 @@ class TestResolveSkillCommandKey:
             scan_skill_commands()
             assert resolve_skill_command_key("claude-code") == "/claude-code"
 
+    def test_telegram_underscore_form_maps_to_hyphenated_skill(self, tmp_path):
+        """Telegram forbids hyphens in bot commands; underscore form still hits hyphen key."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code")
+            scan_skill_commands()
+            assert resolve_skill_command_key("claude_code") == "/claude-code"
 
+    def test_exact_underscore_skill_key_preferred(self, tmp_path):
+        """Intentional underscore skill keys must not be rewritten away (#75620)."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill = tmp_path / "git_helper"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "---\nname: git_helper\ndescription: Helper.\n---\n\nBody.\n"
+            )
+            scan_skill_commands()
+            assert resolve_skill_command_key("git_helper") == "/git_helper"
+            assert resolve_skill_command_key("__missing") is None
 
     def test_unknown_command_returns_none(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

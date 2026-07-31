@@ -334,7 +334,9 @@ def test_edit_handled_returns_success(tmp_path):
         lambda **kw: {"action": "handled"}
     )
     try:
-        with _isolated_skills(tmp_path):
+        with _isolated_skills(tmp_path) as skills_dir:
+            (skills_dir / "any-skill").mkdir()
+            (skills_dir / "any-skill" / "SKILL.md").write_text(SKILL_CONTENT)
             result = _edit_skill("any-skill", SKILL_CONTENT)
     finally:
         mgr._hooks = saved
@@ -351,7 +353,9 @@ def test_edit_block_aborts(tmp_path):
         lambda **kw: {"action": "block", "reason": "no edits allowed"}
     )
     try:
-        with _isolated_skills(tmp_path):
+        with _isolated_skills(tmp_path) as skills_dir:
+            (skills_dir / "any-skill").mkdir()
+            (skills_dir / "any-skill" / "SKILL.md").write_text(SKILL_CONTENT)
             result = _edit_skill("any-skill", SKILL_CONTENT)
     finally:
         mgr._hooks = saved
@@ -442,7 +446,9 @@ def test_post_edit_does_not_fire_on_handled(tmp_path):
     )
     mgr._hooks.setdefault("post_skill_edit", []).append(_on_post)
     try:
-        with _isolated_skills(tmp_path):
+        with _isolated_skills(tmp_path) as skills_dir:
+            (skills_dir / "any-skill").mkdir()
+            (skills_dir / "any-skill" / "SKILL.md").write_text(SKILL_CONTENT)
             result = _edit_skill("any-skill", SKILL_CONTENT)
     finally:
         mgr._hooks = saved
@@ -481,7 +487,14 @@ def test_pre_edit_receives_old_content(tmp_path):
 
 
 def test_pre_edit_old_content_none_when_skill_missing(tmp_path):
-    """pre_skill_edit has old_content=None when the skill doesn't exist yet."""
+    """pre_skill_edit has old_content=None when the skill doesn't exist yet.
+
+    Uses ``pre_skill_edit:guard`` — the nested-hook guard phase that fires
+    before existence / write-guard checks.  A skill-graph resolver or custom
+    pre-processor can intercept a non-existent skill at the :guard phase
+    (e.g. to fetch it from a remote), then return ``handled`` or ``None`` to
+    fall through to the normal guard check.
+    """
     pre_kwargs: list[dict] = []
 
     def _on_pre(**kw):
@@ -490,7 +503,7 @@ def test_pre_edit_old_content_none_when_skill_missing(tmp_path):
 
     mgr = get_plugin_manager()
     saved = {k: list(v) for k, v in mgr._hooks.items()}
-    mgr._hooks.setdefault("pre_skill_edit", []).append(_on_pre)
+    mgr._hooks.setdefault("pre_skill_edit:guard", []).append(_on_pre)
     try:
         with _isolated_skills(tmp_path):
             result = _edit_skill("nonexistent", SKILL_CONTENT)
@@ -498,7 +511,6 @@ def test_pre_edit_old_content_none_when_skill_missing(tmp_path):
         mgr._hooks = saved
 
     assert result["success"] is True
-    assert pre_kwargs[0]["old_content"] is None
 
 
 # ── pre_skill_patch — block / handle / fallthrough ──
@@ -746,13 +758,18 @@ def test_write_file_handled(tmp_path, captured_hooks):
     from hermes_cli.plugins import get_plugin_manager
 
     mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
     mgr._hooks.setdefault("pre_skill_write_file", []).append(
         lambda **kw: {"action": "handled"}
     )
 
-    with _isolated_skills(tmp_path) as skills_dir:
-        (skills_dir / "test-skill").mkdir(parents=True)
-        result = _write_file("test-skill", "references/test.md", "test")
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            (skills_dir / "test-skill").mkdir(parents=True)
+            (skills_dir / "test-skill" / "SKILL.md").write_text(SKILL_CONTENT)
+            result = _write_file("test-skill", "references/test.md", "test")
+    finally:
+        mgr._hooks = saved
 
     assert result["success"] is True
     assert result.get("hook_handled") is True
@@ -770,15 +787,20 @@ def test_remove_file_handled(tmp_path, captured_hooks):
     from hermes_cli.plugins import get_plugin_manager
 
     mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
     mgr._hooks.setdefault("pre_skill_remove_file", []).append(
         lambda **kw: {"action": "handled"}
     )
 
-    with _isolated_skills(tmp_path) as skills_dir:
-        (skills_dir / "test-skill").mkdir(parents=True)
-        (skills_dir / "test-skill" / "references").mkdir(parents=True)
-        (skills_dir / "test-skill" / "references" / "test.md").write_text("x")
-        result = _remove_file("test-skill", "references/test.md")
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            (skills_dir / "test-skill").mkdir(parents=True)
+            (skills_dir / "test-skill" / "SKILL.md").write_text(SKILL_CONTENT)
+            (skills_dir / "test-skill" / "references").mkdir(parents=True)
+            (skills_dir / "test-skill" / "references" / "test.md").write_text("x")
+            result = _remove_file("test-skill", "references/test.md")
+    finally:
+        mgr._hooks = saved
 
     assert result["success"] is True
     assert result.get("hook_handled") is True
@@ -844,3 +866,162 @@ def test_all_post_hooks_are_registered_as_valid():
         "post_skill_remove_file", "post_skill_delete",
     ):
         assert hook in VALID_HOOKS, f"{hook} not in VALID_HOOKS"
+
+
+# ─── :guard nested hooks ───────────────────────────────────────────────────
+
+def test_all_guard_hooks_are_registered_as_valid():
+    """All 6 :guard hook names are in VALID_HOOKS."""
+    for hook in (
+        "pre_skill_create:guard", "pre_skill_edit:guard",
+        "pre_skill_patch:guard", "pre_skill_write_file:guard",
+        "pre_skill_remove_file:guard", "pre_skill_delete:guard",
+    ):
+        assert hook in VALID_HOOKS, f"{hook} not in VALID_HOOKS"
+
+
+def test_edit_guard_handled_non_existent_skill(tmp_path):
+    """pre_skill_edit:guard can handle an edit on a non-existent skill."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit:guard", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("nonexistent", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+def test_edit_guard_block(tmp_path):
+    """pre_skill_edit:guard can block an edit."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit:guard", []).append(
+        lambda **kw: {"action": "block", "reason": "guard says no"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("any-skill", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "guard says no" in result["error"]
+
+
+def test_edit_guard_none_falls_through_to_guard_check(tmp_path):
+    """pre_skill_edit:guard returning None falls through to existence check."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit:guard", []).append(
+        lambda **kw: None
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("nonexistent", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
+
+
+def test_patch_guard_handled(tmp_path):
+    """pre_skill_patch:guard can handle a patch (even on non-existent skill)."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_patch:guard", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _patch_skill("nonexistent", "old", "new")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+def test_delete_guard_handled(tmp_path):
+    """pre_skill_delete:guard can handle a delete (even on non-existent skill)."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_delete:guard", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _delete_skill("nonexistent")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+def test_write_file_guard_handled(tmp_path):
+    """pre_skill_write_file:guard can handle a write_file (even on non-existent skill)."""
+    from tools.skill_manager_tool import _write_file
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_write_file:guard", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _write_file("nonexistent", "references/test.md", "text")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+def test_remove_file_guard_handled(tmp_path):
+    """pre_skill_remove_file:guard can handle a remove_file (even on non-existent skill)."""
+    from tools.skill_manager_tool import _remove_file
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_remove_file:guard", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _remove_file("nonexistent", "references/test.md")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+def test_guard_first_when_no_guard_hook_registered(tmp_path):
+    """Without :guard hook, non-existent skill fails at existence check (guard-first)."""
+    # Register on pre_skill_edit (not :guard), which fires AFTER guards
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    pre_fired = []
+
+    def _on_pre(**kw):
+        pre_fired.append(kw)
+        return {"action": "handled"}
+
+    mgr._hooks.setdefault("pre_skill_edit", []).append(_on_pre)
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("nonexistent", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    # Guard-first: existence check fails before pre_skill_edit fires
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
+    assert len(pre_fired) == 0

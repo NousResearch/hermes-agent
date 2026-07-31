@@ -5560,6 +5560,25 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    def session_key_for_source(self, source: SessionSource) -> str:
+        """Return the key used by this adapter's active and pending maps.
+
+        Profile isolation is already provided by separate adapter instances in
+        multiplex mode, so transport-local queues intentionally use the physical
+        chat/session key rather than the runner's profile-qualified state key.
+        Producers that enqueue directly into ``_pending_messages`` must use this
+        same helper as the drain path.
+        """
+        return build_session_key(
+            source,
+            group_sessions_per_user=self.config.extra.get(
+                "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=self.config.extra.get(
+                "thread_sessions_per_user", False
+            ),
+        )
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -5584,11 +5603,7 @@ class BasePlatformAdapter(ABC):
         if needs_topic_recovery:
             await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        session_key = self.session_key_for_source(event.source)
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or

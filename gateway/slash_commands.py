@@ -2661,10 +2661,17 @@ class GatewaySlashCommandsMixin:
                 if event.source
                 else None
             )
+            _adapter_key_for_source = getattr(
+                adapter, "session_key_for_source", None
+            )
             _quick_key = (
-                getattr(self, "_session_key_for_source")(event.source)
-                if event.source
-                else None
+                _adapter_key_for_source(event.source)
+                if event.source and callable(_adapter_key_for_source)
+                else (
+                    getattr(self, "_session_key_for_source")(event.source)
+                    if event.source
+                    else None
+                )
             )
             if prompt and adapter and _quick_key:
                 try:

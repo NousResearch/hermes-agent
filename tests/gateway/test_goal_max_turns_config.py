@@ -1,9 +1,16 @@
+import asyncio
+
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+)
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 from hermes_cli import goals
 
 
@@ -25,6 +32,36 @@ class _FakeSessionStore:
 class _PendingAdapter:
     def __init__(self):
         self._pending_messages = {}
+
+
+class _DrainAdapter(BasePlatformAdapter):
+    async def connect(self, *, is_reconnect: bool = False):
+        return True
+
+    async def disconnect(self):
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True, message_id="goal-resume-notice")
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id, "type": "channel"}
+
+
+class _MultiplexSessionStore:
+    def __init__(self):
+        self.entry = _FakeSessionEntry()
+
+    def get_or_create_session(self, source):
+        return self.entry
+
+    def _generate_session_key(self, source):
+        return build_session_key(
+            source,
+            group_sessions_per_user=True,
+            thread_sessions_per_user=False,
+            profile=source.profile,
+        )
 
 
 @pytest.mark.asyncio
@@ -119,4 +156,75 @@ async def test_gateway_goal_resume_enqueues_canonical_continuation(
         assert resumed.status == "active"
         assert resumed.turns_used == 0
     finally:
+        goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_resume_drains_on_multiplexed_profile(tmp_path, monkeypatch):
+    """The transport adapter must consume a secondary-profile continuation."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    platform_config = PlatformConfig(enabled=True, token="token")
+    adapter = _DrainAdapter(platform_config, Platform.DISCORD)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={Platform.DISCORD: platform_config},
+    )
+    runner.__dict__["session_store"] = _MultiplexSessionStore()
+    runner.__dict__["adapters"] = {}
+    runner._profile_adapters = {"coder": {Platform.DISCORD: adapter}}
+    runner._active_profile_name = lambda: "default"
+    runner._queued_events = {}
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="chat-goal-multiplex",
+        chat_type="channel",
+        user_id="user-goal-multiplex",
+        profile="coder",
+    )
+    event = MessageEvent(
+        text="/goal resume",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-goal-multiplex-resume",
+    )
+    mgr = goals.GoalManager("sid-gateway-goal-config", default_max_turns=1)
+    mgr.set("ship the multiplexed benchmark")
+    mgr.pause(reason="turn budget exhausted (1/1)")
+
+    async def _get_goal_manager(_event):
+        return mgr, _FakeSessionEntry()
+
+    runner.__dict__["_get_goal_manager_for_event"] = _get_goal_manager
+    handled: list[str] = []
+    continuation_handled = asyncio.Event()
+
+    async def _handle(incoming):
+        handled.append(incoming.text)
+        if incoming.get_command() == "goal":
+            return await GatewayRunner._handle_goal_command(runner, incoming)
+        continuation_handled.set()
+        return ""
+
+    adapter.set_message_handler(_handle)
+
+    try:
+        await adapter.handle_message(event)
+        await asyncio.wait_for(continuation_handled.wait(), timeout=1.0)
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks))
+
+        assert handled == [
+            "/goal resume",
+            mgr.next_continuation_prompt(),
+        ]
+        assert adapter._pending_messages == {}
+    finally:
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks), return_exceptions=True)
         goals._DB_CACHE.clear()

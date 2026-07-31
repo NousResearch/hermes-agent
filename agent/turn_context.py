@@ -25,6 +25,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
+from hermes_time import current_date_line
 
 logger = logging.getLogger(__name__)
 
@@ -965,6 +966,16 @@ def build_turn_context(
     )
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
+    )
+
+    # Current-date volatile tail: date-only, delivered on the current turn's
+    # user message (API copy only) via the api_content sidecar channel, so
+    # the system prompt stays byte-stable. Always last in the composed text.
+    _date_tail = current_date_line()
+    plugin_user_context = (
+        plugin_user_context + "\n\n" + _date_tail
+        if plugin_user_context
+        else _date_tail
     )
 
     _bind_interrupt_scope(agent, ra)

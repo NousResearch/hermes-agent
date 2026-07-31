@@ -4921,6 +4921,15 @@ def ensure_lmstudio_model_loaded(
     Existing loaded-instance context is authoritative. Cold loads omit
     ``context_length`` unless the caller supplied an explicit override; the
     returned context must come from LM Studio's echoed or refreshed state.
+
+    No-op when exactly one LLM instance is loaded and it is the requested model
+    with sufficient context. If LM Studio has a dirty LLM state, such as another
+    LLM loaded at the same time or the target loaded below an explicitly
+    requested context, unload the loaded LLM instances before loading the
+    requested target model. Non-LLM instances (embeddings) are never unloaded.
+
+    This prevents LM Studio from keeping multiple large local LLMs resident when
+    Hermes switches models, which can force RAM/CPU fallback and severe slowdown.
     """
 
     def _result(
@@ -4955,6 +4964,14 @@ def ensure_lmstudio_model_loaded(
                 return raw
         return None
 
+    def _entry_aliases(entry: dict) -> set[str]:
+        aliases: set[str] = set()
+        for field in ("key", "id"):
+            value = entry.get(field)
+            if isinstance(value, str) and value:
+                aliases.add(value)
+        return aliases
+
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
         return _result(None)
@@ -4980,13 +4997,82 @@ def ensure_lmstudio_model_loaded(
     if explicit_context is not None and max_ctx is not None and explicit_context > max_ctx:
         return _result(None, rejected=True)
 
-    current_context = _loaded_context(target_entry)
-    if current_context is not None:
-        return _result(current_context)
+    target_aliases = {model} | _entry_aliases(target_entry)
 
-    loaded_instances = target_entry.get("loaded_instances")
-    if not isinstance(loaded_instances, list) or loaded_instances:
-        return _result(None)
+    # Inventory the loaded LLM instances so competing models can be unloaded
+    # before the target is (re)loaded. Non-LLM entries (embeddings) are skipped;
+    # the target entry itself is always inspected because LM Studio does not
+    # always publish a ``type`` for it.
+    loaded_llm_instances: list[dict[str, Any]] = []
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+
+        is_target_model = bool(_entry_aliases(raw) & target_aliases)
+        model_type = raw.get("type")
+        is_llm = isinstance(model_type, str) and model_type.strip().lower() == "llm"
+        if not is_llm and not is_target_model:
+            continue
+
+        instances = raw.get("loaded_instances")
+        if not isinstance(instances, list):
+            continue
+        for inst in instances:
+            if not isinstance(inst, dict):
+                continue
+            instance_id = inst.get("id") or inst.get("instance_id")
+            if not isinstance(instance_id, str) or not instance_id:
+                continue
+            inst_cfg = inst.get("config")
+            cfg = inst_cfg if isinstance(inst_cfg, dict) else {}
+            loaded_llm_instances.append({
+                "instance_id": instance_id,
+                "is_target": is_target_model or instance_id in target_aliases,
+                "loaded_ctx": _positive_int(cfg.get("context_length")),
+            })
+
+    if len(loaded_llm_instances) == 1 and loaded_llm_instances[0]["is_target"]:
+        # Clean state: the requested target is the only LLM resident. Its
+        # loaded context is authoritative unless the caller explicitly asked
+        # for a larger window than the instance actually has.
+        loaded_ctx = loaded_llm_instances[0]["loaded_ctx"]
+        if explicit_context is None or (
+            loaded_ctx is not None and loaded_ctx >= explicit_context
+        ):
+            return _result(loaded_ctx)
+
+    if loaded_llm_instances:
+        # Dirty state — competing LLMs, several instances, or the target loaded
+        # below the explicitly requested context. Reload the target too: it may
+        # have been loaded while resources were already contended, so cleaning
+        # up the other LLMs after the fact is not always enough to recover the
+        # intended GPU/RAM allocation.
+        unload_headers = dict(headers)
+        unload_headers["Content-Type"] = "application/json"
+        for item in loaded_llm_instances:
+            unload_body = json.dumps({"instance_id": item["instance_id"]}).encode()
+            try:
+                unload_request = urllib.request.Request(
+                    server_root + "/api/v1/models/unload",
+                    data=unload_body,
+                    headers=unload_headers,
+                    method="POST",
+                )
+                with _urlopen_model_catalog_request(
+                    unload_request,
+                    timeout=timeout,
+                ) as resp:
+                    resp.read()
+            except Exception:
+                return _result(None)
+    else:
+        current_context = _loaded_context(target_entry)
+        if current_context is not None:
+            return _result(current_context)
+
+        loaded_instances = target_entry.get("loaded_instances")
+        if not isinstance(loaded_instances, list) or loaded_instances:
+            return _result(None)
 
     load_payload: dict[str, Any] = {"model": model, "echo_load_config": True}
     if explicit_context is not None:

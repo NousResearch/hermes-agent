@@ -139,5 +139,11 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
         )
 
     adapter.play_tts.assert_not_awaited()
-    # Text reply still goes out.
-    assert adapter.sent and adapter.sent[0]["content"] == "reply text"
+    # Text reply still goes out, with a user-visible explanation rather than
+    # silently dropping the requested audio. Internal provider details stay in
+    # logs instead of being exposed in the chat response.
+    assert adapter.sent and adapter.sent[0]["content"] == (
+        "Audio was not sent because TTS failed with the configured provider."
+        "\n\nreply text"
+    )
+    assert "backend exploded" not in adapter.sent[0]["content"]

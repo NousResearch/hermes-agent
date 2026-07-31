@@ -72,6 +72,9 @@ tts:
   gemini:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+    max_attempts: 3             # Retry transient request/read failures
+    timeout: 60                 # Per-attempt timeout in seconds
+    retry_delay_seconds: 1.0    # Delay between attempts
     audio_tags: false           # Enable hidden Gemini 3.1 TTS audio-tag insertion
     persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:

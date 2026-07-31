@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 
 @pytest.fixture(autouse=True)
@@ -165,6 +166,81 @@ class TestGenerateGeminiTts:
         )
         assert voice == "Puck"
 
+    def test_retries_request_exceptions_then_succeeds(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        output_path = str(tmp_path / "test.wav")
+
+        with patch(
+            "requests.post",
+            side_effect=[requests.exceptions.ReadTimeout("slow"), mock_gemini_response],
+        ) as mock_post, patch("time.sleep") as mock_sleep:
+            _generate_gemini_tts(
+                "Hi",
+                output_path,
+                {"gemini": {"max_attempts": 3, "retry_delay_seconds": 0}},
+            )
+
+        assert mock_post.call_count == 2
+        mock_sleep.assert_not_called()
+        assert (tmp_path / "test.wav").exists()
+
+    def test_retries_stream_read_timeout_then_succeeds(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        class TimeoutResponse:
+            status_code = 200
+
+            def iter_content(self, chunk_size):
+                raise requests.exceptions.ReadTimeout("stream stalled")
+                yield  # pragma: no cover - makes this a generator
+
+            def close(self):
+                pass
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        output_path = str(tmp_path / "test.wav")
+
+        with patch(
+            "requests.post",
+            side_effect=[TimeoutResponse(), mock_gemini_response],
+        ) as mock_post, patch("time.sleep") as mock_sleep:
+            _generate_gemini_tts(
+                "Hi",
+                output_path,
+                {"gemini": {"max_attempts": 3, "retry_delay_seconds": 0}},
+            )
+
+        assert mock_post.call_count == 2
+        mock_sleep.assert_not_called()
+        assert (tmp_path / "test.wav").exists()
+
+    def test_raises_after_configured_attempts(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+        with patch(
+            "requests.post",
+            side_effect=requests.exceptions.ReadTimeout("slow"),
+        ) as mock_post, patch("time.sleep") as mock_sleep:
+            with pytest.raises(RuntimeError, match="Gemini TTS failed after 3 attempts"):
+                _generate_gemini_tts(
+                    "Hi",
+                    str(tmp_path / "test.wav"),
+                    {"gemini": {"max_attempts": 3, "retry_delay_seconds": 0}},
+                )
+
+        assert mock_post.call_count == 3
+        mock_sleep.assert_not_called()
+        assert "slow" not in caplog.text
 
     def test_audio_tag_rewrite_failure_falls_back_to_original_text(
         self, tmp_path, monkeypatch, mock_gemini_response, caplog

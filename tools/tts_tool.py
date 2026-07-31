@@ -2325,33 +2325,83 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
 
     endpoint = f"{base_url}/models/{model}:generateContent"
-    response = requests.post(
-        endpoint,
-        params={"key": api_key},
-        headers=headers,
-        json=payload,
-        timeout=60,
-        stream=True,
-    )
-    if response.status_code != 200:
-        # Surface the API error message when present
-        raw_body = _read_tts_response_bytes(response, label="Gemini TTS")
+    try:
+        max_attempts = int(gemini_config.get("max_attempts", 3))
+    except (TypeError, ValueError):
+        max_attempts = 3
+    max_attempts = max(1, max_attempts)
+    try:
+        timeout_seconds = float(gemini_config.get("timeout", 60))
+    except (TypeError, ValueError):
+        timeout_seconds = 60.0
+    timeout_seconds = max(1.0, timeout_seconds)
+    try:
+        retry_delay = float(gemini_config.get("retry_delay_seconds", 1.0))
+    except (TypeError, ValueError):
+        retry_delay = 1.0
+    retry_delay = max(0.0, retry_delay)
+
+    data: Optional[Dict[str, Any]] = None
+    for attempt in range(1, max_attempts + 1):
+        response = None
         try:
-            if raw_body:
-                err = json.loads(raw_body.decode("utf-8")).get("error", {})
-            elif not _response_has_explicit_stream(response) and callable(getattr(response, "json", None)):
-                err = response.json().get("error", {})
-            else:
-                err = {}
-            detail = err.get("message") or raw_body.decode("utf-8", errors="replace")[:300]
-        except Exception:
-            detail = raw_body.decode("utf-8", errors="replace")[:300]
+            response = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers=headers,
+                json=payload,
+                timeout=timeout_seconds,
+                stream=True,
+            )
+
+            if response.status_code != 200:
+                # Surface the API error message when present. HTTP responses
+                # are deterministic application failures, so they are not
+                # retried; transport failures while reading the streamed body
+                # are caught below and retried.
+                raw_body = _read_tts_response_bytes(response, label="Gemini TTS")
+                try:
+                    if raw_body:
+                        err = json.loads(raw_body.decode("utf-8")).get("error", {})
+                    elif (
+                        not _response_has_explicit_stream(response)
+                        and callable(getattr(response, "json", None))
+                    ):
+                        err = response.json().get("error", {})
+                    else:
+                        err = {}
+                    detail = (
+                        err.get("message")
+                        or raw_body.decode("utf-8", errors="replace")[:300]
+                    )
+                except Exception:
+                    detail = raw_body.decode("utf-8", errors="replace")[:300]
+                raise RuntimeError(
+                    f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
+                )
+
+            # Consume the streamed response inside the retry boundary. With
+            # stream=True, read timeouts happen here rather than in post().
+            data = _read_tts_response_json(response, label="Gemini TTS")
+            break
+        except requests.RequestException as exc:
+            if response is not None:
+                _close_response(response)
+            logger.warning(
+                "Gemini TTS request attempt %d/%d failed (%s)",
+                attempt,
+                max_attempts,
+                type(exc).__name__,
+            )
+            if attempt < max_attempts and retry_delay:
+                time.sleep(retry_delay)
+
+    if data is None:
         raise RuntimeError(
-            f"Gemini TTS API error (HTTP {response.status_code}): {detail}"
+            f"Gemini TTS failed after {max_attempts} attempts due to transport errors"
         )
 
     try:
-        data = _read_tts_response_json(response, label="Gemini TTS")
         parts = data["candidates"][0]["content"]["parts"]
         audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
         if audio_part is None:

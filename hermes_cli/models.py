@@ -5006,6 +5006,12 @@ def ensure_lmstudio_model_loaded(
     verbatim — both when matching and in the load payload — so Hermes never
     asks LM Studio to load a name the caller did not supply.
 
+    Target identity is a property of the catalog *entry*, never of a loaded
+    instance: an entry is the target when its normalized identifiers include
+    the requested one, and its loaded instances inherit that verdict. Runtime
+    instance identifiers are a separate namespace and are only ever used to
+    address an unload request.
+
     This prevents LM Studio from keeping multiple large local LLMs resident when
     Hermes switches models, which can force RAM/CPU fallback and severe slowdown.
     """
@@ -5077,6 +5083,16 @@ def ensure_lmstudio_model_loaded(
     # Entries explicitly declared as embeddings are never unloaded, except that
     # the target entry itself is always inspected: its loaded context is
     # authoritative whatever type LM Studio reports for it.
+    #
+    # Whether an instance belongs to the target is decided once per catalog
+    # entry, from that entry's normalized ``key``/``id`` aliases, and every
+    # instance nested under the entry inherits the verdict. A runtime
+    # ``instance_id`` lives in a different namespace — it is a handle for the
+    # unload payload, freely chosen when the model was loaded, and LM Studio
+    # lets it be any string, including the name of another model. Reading it as
+    # an alias would let a competing entry whose instance happens to be called
+    # ``model`` pass as the target, making a dirty state look clean and leaving
+    # the wrong LLM resident.
     loaded_llm_instances: list[dict[str, Any]] = []
     for raw in raw_models:
         if not isinstance(raw, dict):
@@ -5099,7 +5115,7 @@ def ensure_lmstudio_model_loaded(
             cfg = inst_cfg if isinstance(inst_cfg, dict) else {}
             loaded_llm_instances.append({
                 "instance_id": instance_id,
-                "is_target": is_target_model or instance_id in target_aliases,
+                "is_target": is_target_model,
                 "loaded_ctx": _positive_int(cfg.get("context_length")),
             })
 

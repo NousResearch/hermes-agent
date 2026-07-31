@@ -1183,3 +1183,203 @@ def test_an_entry_without_a_usable_identifier_is_omitted(monkeypatch, fields):
     )
 
     assert models.probe_lmstudio_models(base_url=BASE_URL) == [TARGET]
+
+
+# --------------------------------------------------------------------------
+# Namespaces — catalog identity decides the target, runtime handles address
+# the unload
+#
+# A catalog entry's ``key``/``id`` name a *model*; a loaded instance's ``id``
+# is a runtime handle, chosen when the model was loaded and free to be any
+# string — including the name of a different model. Only the first namespace
+# may answer "is this the target"; the second exists so an unload request can
+# address the right instance. Mixing them lets a competing entry inherit the
+# target's identity from a colliding handle, which makes a dirty LM Studio
+# state look clean: the competitor stays resident, the target is never loaded,
+# and the competitor's context window is reported back as if it were verified
+# target runtime.
+# --------------------------------------------------------------------------
+
+
+def test_competitor_whose_instance_is_named_after_the_target_is_a_competitor(monkeypatch):
+    """The only resident LLM belongs to a competing entry — dirty, not clean."""
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(COMPETITOR, loaded=((TARGET, 131_072),)),
+            _entry(TARGET),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 64_000}})
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=None,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 64_000
+    assert result.load_attempted is True
+    assert result.rejected is False
+    assert [(call["method"], call["url"], call["body"]) for call in requests] == [
+        ("POST", UNLOAD_URL, {"instance_id": TARGET}),
+        ("POST", LOAD_URL, {"model": TARGET, "echo_load_config": True}),
+    ]
+
+
+def test_competitor_instance_colliding_with_the_other_target_alias_is_a_competitor(monkeypatch):
+    """The collision is with the target's ``id`` alias, not the requested name.
+
+    Both aliases resolve the target *entry*, so both are equally wrong as a
+    source of identity for an instance hanging off some other entry.
+    """
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(COMPETITOR, loaded=((f"{TARGET}@q4", 131_072),)),
+            _entry(f"{TARGET}@q4", key=TARGET),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 64_000}})
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=None,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 64_000
+    assert result.load_attempted is True
+    assert result.rejected is False
+    assert [(call["url"], call["body"]) for call in requests] == [
+        (UNLOAD_URL, {"instance_id": f"{TARGET}@q4"}),
+        (LOAD_URL, {"model": TARGET, "echo_load_config": True}),
+    ]
+
+
+def test_colliding_competitor_context_is_never_reported_as_verified_runtime(monkeypatch):
+    """The returned context comes from the load LM Studio actually performed.
+
+    A resident competitor's window says nothing about the target, however its
+    instance happens to be named.
+    """
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(COMPETITOR, loaded=((TARGET, 131_072),)),
+            _entry(TARGET),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 64_000}})
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=64_000,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 64_000
+    assert result.load_attempted is True
+    assert result.rejected is False
+    assert _unloaded_instance_ids(requests) == [TARGET]
+    assert requests[-1]["body"] == {
+        "model": TARGET,
+        "echo_load_config": True,
+        "context_length": 64_000,
+    }
+
+
+def test_target_plus_colliding_competitor_cleans_both_then_reloads_target(monkeypatch):
+    """Both instances go, each addressed by its own exact runtime handle."""
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(TARGET, loaded=(("target-instance", 131_072),), key=TARGET),
+            _entry(COMPETITOR, loaded=((TARGET, 131_072),)),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 64_000}})
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=64_000,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 64_000
+    assert result.load_attempted is True
+    assert result.rejected is False
+    assert [(call["url"], call["body"]) for call in requests] == [
+        (UNLOAD_URL, {"instance_id": "target-instance"}),
+        (UNLOAD_URL, {"instance_id": TARGET}),
+        (
+            LOAD_URL,
+            {"model": TARGET, "echo_load_config": True, "context_length": 64_000},
+        ),
+    ]
+
+
+def test_target_entry_instance_with_an_unrelated_runtime_id_is_still_the_target(monkeypatch):
+    """Nesting decides ownership: the handle need not resemble the model name.
+
+    LM Studio lets the instance identifier be anything, so a lone resident
+    target with an opaque handle is still clean state and must not be evicted.
+    """
+    _catalogs(
+        monkeypatch,
+        [_entry(TARGET, loaded=(("7f3a9c21-2b40-4e6d-8a11-runtime-handle", 131_072),))],
+    )
+    _forbid_requests(monkeypatch)
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=64_000,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 131_072
+    assert result.load_attempted is False
+    assert result.rejected is False
+
+
+def test_several_instances_of_the_target_entry_are_dirty_state(monkeypatch):
+    """Two instances of the target are not the single acceptable instance.
+
+    Both belong to the target entry — inheriting its verdict — and both are
+    unloaded by their own runtime handles before the target is reloaded once.
+    """
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(
+                TARGET,
+                loaded=(("target-instance", 131_072), ("target-instance-2", 131_072)),
+                key=TARGET,
+            )
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 131_072}})
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=None,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 131_072
+    assert result.load_attempted is True
+    assert result.rejected is False
+    assert _unloaded_instance_ids(requests) == ["target-instance", "target-instance-2"]
+    assert requests[-1]["url"] == LOAD_URL

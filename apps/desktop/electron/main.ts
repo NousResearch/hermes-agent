@@ -9329,6 +9329,7 @@ function createWindow() {
   const createdMainWindow = mainWindow
   mainWindow.on('closed', () => {
     closePetOverlay()
+    wakeIndicatorController.close()
 
     if (mainWindow === createdMainWindow) {
       mainWindow = null

@@ -54,7 +54,9 @@ class TestGeminiLiveModelDiscovery:
         GeminiProfile.fetch_models's super() call invokes for the actual
         HTTP request), so GeminiProfile's own override logic -- the
         endpoint URL adjustment and the "models/" prefix stripping under
-        test -- genuinely executes rather than being bypassed."""
+        test -- genuinely executes rather than being bypassed. Returns
+        the mock itself so callers can assert on its call_args (e.g. the
+        rewritten base_url), not just the return value flowing through."""
         return patch.object(ProviderProfile, "fetch_models", return_value=raw_ids)
 
     def test_live_fetch_strips_models_prefix(self, monkeypatch):
@@ -65,13 +67,27 @@ class TestGeminiLiveModelDiscovery:
         strip it before the picker ever sees the result."""
         self._mock_credentials(monkeypatch)
 
-        with self._patch_base_fetch(["models/gemini-2.5-pro", "models/gemini-2.5-flash"]):
+        with self._patch_base_fetch(
+            ["models/gemini-2.5-pro", "models/gemini-2.5-flash"]
+        ) as mock_fetch:
             result = provider_model_ids("gemini")
 
         assert "gemini-2.5-pro" in result
         assert "gemini-2.5-flash" in result
         assert not any(m.startswith("models/") for m in result), (
             f"Live-fetched IDs must have the 'models/' prefix stripped: {result}"
+        )
+        # Verify the endpoint rewrite independently of the return value:
+        # GeminiProfile.fetch_models() must have called the base
+        # implementation with the OpenAI-compat subpath (the surface
+        # whose {"data": [{"id": ...}]} response shape the base
+        # implementation's own parsing expects), not the native
+        # /v1beta root the profile's base_url otherwise resolves to.
+        assert mock_fetch.called, "GeminiProfile.fetch_models must call super().fetch_models()"
+        called_base_url = mock_fetch.call_args.kwargs.get("base_url")
+        assert called_base_url == "https://generativelanguage.googleapis.com/v1beta/openai", (
+            f"GeminiProfile.fetch_models must rewrite base_url to the "
+            f"OpenAI-compat subpath before calling super(): {called_base_url!r}"
         )
 
     def test_partial_live_catalog_preserves_curated_entries(self, monkeypatch):

@@ -112,8 +112,10 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert rework.assignee == "builder"
     assert rework.current_run_id is None
     changes = _event(kb.list_events(conn, task_id), "changes_requested")
+    assert changes.payload is not None
     assert changes.payload["reason"] == "Add a regression for the fallback branch."
     assert changes.payload["implementer"] == "builder"
+    assert changes.payload["reviewer"] == "reviewer"
     _run(kb.list_runs(conn, task_id), "changes_requested")
 
     implementation_2 = kb.claim_task(conn, task_id, claimer="builder:2")
@@ -121,12 +123,19 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert kb.request_review(
         conn,
         task_id,
-        reviewer="reviewer",
         summary="Fallback regression added.",
         expected_run_id=implementation_2.current_run_id,
     )
+    awaiting_rereview = kb.get_task(conn, task_id)
+    assert awaiting_rereview is not None
+    assert awaiting_rereview.status == "review"
+    assert awaiting_rereview.assignee == "reviewer"
     review_2 = kb.claim_review_task(conn, task_id, claimer="reviewer:2")
     assert review_2 is not None
+    assert review_2.assignee == "reviewer"
+    review_run = kb.latest_run(conn, task_id)
+    assert review_run is not None
+    assert review_run.profile == "reviewer"
     assert kb.complete_task(
         conn,
         task_id,
@@ -138,6 +147,53 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed is not None
     assert completed.status == "done"
     assert completed.block_recurrences == 0
+
+
+@pytest.mark.parametrize("bad_payload", ["{not-json", "{}"])
+def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
+    conn,
+    bad_payload: str,
+) -> None:
+    task_id, review = _claimed_review(conn, "Malformed reviewer provenance")
+    assert kb.request_changes(
+        conn,
+        task_id,
+        reason="Correct the implementation.",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_events SET payload = ? "
+            "WHERE id = (SELECT id FROM task_events "
+            "WHERE task_id = ? AND kind = 'changes_requested' "
+            "ORDER BY id DESC LIMIT 1)",
+            (bad_payload, task_id),
+        )
+
+    implementation = kb.claim_task(conn, task_id, claimer="builder:retry")
+    assert implementation is not None
+    assert not kb.request_review(
+        conn,
+        task_id,
+        summary="Corrected implementation.",
+        expected_run_id=implementation.current_run_id,
+    )
+    unchanged = kb.get_task(conn, task_id)
+    assert unchanged is not None
+    assert unchanged.status == "running"
+    assert unchanged.assignee == "builder"
+
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        summary="Corrected implementation.",
+        expected_run_id=implementation.current_run_id,
+    )
+    restored = kb.get_task(conn, task_id)
+    assert restored is not None
+    assert restored.status == "review"
+    assert restored.assignee == "reviewer"
 
 
 def test_review_changes_reapply_parent_gate(conn):

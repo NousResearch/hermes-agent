@@ -6116,10 +6116,11 @@ def request_review(
     """Transition implementation work into the first-class review phase.
 
     Unlike :func:`block_task`, this transition never touches block recurrence
-    accounting.  The current implementer and optional reviewer are recorded on
+    accounting.  The current implementer and resolved reviewer are recorded on
     the event so an autonomous reviewer can route requested changes back to the
-    right profile.  Supplying ``reviewer`` also reassigns the task before it is
-    exposed to the review dispatcher.
+    right profile.  Supplying ``reviewer`` reassigns the task before it is
+    exposed to the review dispatcher.  On re-review, omitting it reuses the
+    reviewer provenance persisted by the latest ``changes_requested`` event.
     """
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
@@ -6132,6 +6133,30 @@ def request_review(
         if trow is None:
             return False
         implementer = trow["assignee"]
+        if reviewer is None:
+            changes_event = conn.execute(
+                "SELECT payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'changes_requested' "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            try:
+                changes_payload = (
+                    json.loads(changes_event["payload"])
+                    if changes_event and changes_event["payload"]
+                    else {}
+                )
+            except (json.JSONDecodeError, TypeError):
+                changes_payload = {}
+            prior_reviewer = (
+                changes_payload.get("reviewer")
+                if isinstance(changes_payload, dict)
+                else None
+            )
+            if changes_event is not None:
+                if not isinstance(prior_reviewer, str) or not prior_reviewer.strip():
+                    return False
+                reviewer = prior_reviewer
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
@@ -6264,6 +6289,11 @@ def request_changes(
         implementer = requested_payload.get("implementer")
         if not isinstance(implementer, str) or not implementer.strip():
             return False, "review handoff has no valid implementer provenance"
+        reviewer = task_row["assignee"]
+        if isinstance(reviewer, str) and reviewer.strip():
+            reviewer = _canonical_assignee(reviewer)
+        else:
+            reviewer = None
 
         new_status = _landing_status_after_parents(conn, task_id)
         cur = conn.execute(
@@ -6296,6 +6326,7 @@ def request_changes(
             {
                 "reason": reason,
                 "implementer": implementer,
+                "reviewer": reviewer,
                 "status": new_status,
             },
             run_id=run_id,

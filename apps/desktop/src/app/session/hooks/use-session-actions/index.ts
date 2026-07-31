@@ -69,6 +69,7 @@ import {
   type TileDock
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { forgetSessionUnread } from '@/store/session-unread'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
@@ -1592,6 +1593,9 @@ export function useSessionActions({
         }
 
         await deleteSession(storedSessionId, removed?.profile)
+        // Only after the RPC lands — the optimistic eviction above can roll
+        // back, and a rolled-back row must keep its watermark/marker.
+        forgetSessionUnread(removedIds, removed?.profile)
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
@@ -1682,6 +1686,9 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
+        // Archived rows never reach the sidebar, so their persisted unread can
+        // only rot. Dropped after the RPC so a failed archive keeps it.
+        forgetSessionUnread(archivedIds, archived?.profile)
         // An archived session is hidden from the sidebar; its tile must go too.
         const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
         closeSessionTile(storedSessionId)

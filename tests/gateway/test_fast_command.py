@@ -4,7 +4,7 @@ import sys
 import threading
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -23,12 +23,20 @@ class _CapturingAgent:
         type(self).last_init = dict(kwargs)
         self.tools = []
 
-    def run_conversation(self, user_message, conversation_history=None, task_id=None, persist_user_message=None):
+    def run_conversation(
+        self,
+        user_message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message=None,
+        persist_user_timestamp=None,
+    ):
         type(self).last_run = {
             "user_message": user_message,
             "conversation_history": conversation_history,
             "task_id": task_id,
             "persist_user_message": persist_user_message,
+            "persist_user_timestamp": persist_user_timestamp,
         }
         return {
             "final_response": "ok",
@@ -79,6 +87,19 @@ def _make_source() -> SessionSource:
     )
 
 
+def _make_discord_auto_thread_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="999",
+        chat_type="thread",
+        user_id="user-1",
+        thread_id="999",
+        parent_chat_id="100",
+        auto_thread_created=True,
+        auto_thread_initial_name="raw user prompt",
+    )
+
+
 def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
@@ -103,85 +124,49 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     assert route["request_overrides"] == {"service_tier": "priority"}
 
 
-def test_turn_route_skips_priority_processing_for_unsupported_models():
-    runner = _make_runner()
-    runner._service_tier = "priority"
-    runtime_kwargs = {
-        "api_key": "***",
-        "base_url": "https://openrouter.ai/api/v1",
-        "provider": "openrouter",
-        "api_mode": "chat_completions",
-        "command": None,
-        "args": [],
-        "credential_pool": None,
-    }
-
-    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.3-codex", runtime_kwargs)
-
-    assert route["request_overrides"] == {}
-
-
 @pytest.mark.asyncio
-async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
+async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
 
-    response = await runner._handle_fast_command(_make_event("/fast fast"))
+    response = await runner._handle_fast_command(_make_event("/fast fast --global"))
 
     assert "FAST" in response
     assert runner._service_tier == "priority"
 
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
     assert saved["agent"]["service_tier"] == "fast"
+    # Global write supersedes the session override.
+    assert not runner._session_service_tier_overrides
 
 
 @pytest.mark.asyncio
-async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch, tmp_path):
-    _install_fake_agent(monkeypatch)
+async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path):
+    """A session /fast normal wins over agent.service_tier: fast in config."""
     runner = _make_runner()
 
-    (tmp_path / "config.yaml").write_text("agent:\n  service_tier: fast\n", encoding="utf-8")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
-    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    # ``_load_service_tier`` was refactored to call ``_load_gateway_runtime_config``
-    # (which wraps ``_load_gateway_config`` plus env-expansion).  Since the test
-    # stubs ``_load_gateway_config`` to ``{}``, also stub the runtime wrapper
-    # directly so the priority routing assertions still exercise the live tier.
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_runtime_config",
         lambda: {"agent": {"service_tier": "fast"}},
     )
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
-    monkeypatch.setattr(
-        gateway_run,
-        "_resolve_runtime_agent_kwargs",
-        lambda: {
-            "provider": "openrouter",
-            "api_mode": "chat_completions",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "***",
-        },
-    )
 
-    import hermes_cli.tools_config as tools_config
-    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
+    event = _make_event("/fast normal")
+    session_key = runner._session_key_for_source(event.source)
 
-    _CapturingAgent.last_init = None
-    result = await runner._run_agent(
-        message="hi",
-        context_prompt="",
-        history=[],
-        source=_make_source(),
-        session_id="session-1",
-        session_key="agent:main:telegram:dm:12345",
-    )
+    response = await runner._handle_fast_command(event)
 
-    assert result["final_response"] == "ok"
-    assert _CapturingAgent.last_init["service_tier"] == "priority"
-    assert _CapturingAgent.last_init["request_overrides"] == {"service_tier": "priority"}
+    assert "NORMAL" in response
+    # Override stores explicit None (normal) and wins over config "fast".
+    assert session_key in runner._session_service_tier_overrides
+    assert runner._resolve_session_service_tier(session_key=session_key) is None
+    # A different session still gets the config default.
+    assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
+
+

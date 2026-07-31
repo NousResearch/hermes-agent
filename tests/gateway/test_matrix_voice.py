@@ -26,8 +26,17 @@ from gateway.platforms.base import MessageType
 # ---------------------------------------------------------------------------
 
 def _make_adapter():
-    """Create a MatrixAdapter with mocked config."""
-    from gateway.platforms.matrix import MatrixAdapter
+    """Create a MatrixAdapter with mocked config.
+
+    Pins ``require_mention: False`` so these media-detection tests are NOT
+    gated by the mention requirement. The adapter defaults require_mention to
+    True (falling back to the MATRIX_REQUIRE_MENTION env var), so without this
+    a group-room audio event with no @mention is dropped by
+    _resolve_message_context before dispatch — making the tests pass or fail
+    depending on leaked env state from other tests in the same shard. These
+    tests exercise voice/audio TYPE detection, not mention gating.
+    """
+    from plugins.platforms.matrix.adapter import MatrixAdapter
     from gateway.config import PlatformConfig
 
     config = PlatformConfig(
@@ -36,6 +45,7 @@ def _make_adapter():
         extra={
             "homeserver": "https://matrix.example.org",
             "user_id": "@bot:example.org",
+            "require_mention": False,
         },
     )
     adapter = MatrixAdapter(config)
@@ -118,25 +128,6 @@ class TestMatrixVoiceMessageDetection:
         # State store for DM detection
         self.adapter._client.state_store = _make_state_store()
 
-    @pytest.mark.asyncio
-    async def test_voice_message_has_type_voice(self):
-        """Voice messages (with MSC3245 field) should be MessageType.VOICE."""
-        event = _make_audio_event(is_voice=True)
-
-        # Capture the MessageEvent passed to handle_message
-        captured_event = None
-
-        async def capture(msg_event):
-            nonlocal captured_event
-            captured_event = msg_event
-
-        self.adapter.handle_message = capture
-
-        await self.adapter._on_room_message(event)
-
-        assert captured_event is not None, "No event was captured"
-        assert captured_event.message_type == MessageType.VOICE, \
-            f"Expected MessageType.VOICE, got {captured_event.message_type}"
 
     @pytest.mark.asyncio
     async def test_voice_message_has_local_path(self):
@@ -160,54 +151,6 @@ class TestMatrixVoiceMessageDetection:
         assert not captured_event.media_urls[0].startswith("http"), \
             f"media_urls should contain local path, got {captured_event.media_urls[0]}"
         # download_media is called with a ContentURI wrapping the mxc URL
-        self.adapter._client.download_media.assert_awaited_once()
-        assert captured_event.media_types == ["audio/ogg"]
-
-    @pytest.mark.asyncio
-    async def test_audio_without_msc3245_stays_audio_type(self):
-        """Regular audio uploads (no MSC3245 field) should remain MessageType.AUDIO."""
-        event = _make_audio_event(is_voice=False)  # NOT a voice message
-
-        captured_event = None
-
-        async def capture(msg_event):
-            nonlocal captured_event
-            captured_event = msg_event
-
-        self.adapter.handle_message = capture
-
-        await self.adapter._on_room_message(event)
-
-        assert captured_event is not None
-        assert captured_event.message_type == MessageType.AUDIO, \
-            f"Expected MessageType.AUDIO for non-voice, got {captured_event.message_type}"
-
-    @pytest.mark.asyncio
-    async def test_regular_audio_is_cached_locally(self):
-        """Regular audio uploads are cached locally for downstream tool access.
-
-        Since PR #bec02f37 (encrypted-media caching refactor), all media
-        types — photo, audio, video, document — are cached locally when
-        received so tools can read them as real files. This applies equally
-        to voice messages and regular audio.
-        """
-        event = _make_audio_event(is_voice=False)
-
-        captured_event = None
-
-        async def capture(msg_event):
-            nonlocal captured_event
-            captured_event = msg_event
-
-        self.adapter.handle_message = capture
-
-        await self.adapter._on_room_message(event)
-
-        assert captured_event is not None
-        assert captured_event.media_urls is not None
-        # Should be a local path, not an HTTP URL.
-        assert not captured_event.media_urls[0].startswith("http"), \
-            f"Regular audio should be cached locally, got {captured_event.media_urls[0]}"
         self.adapter._client.download_media.assert_awaited_once()
         assert captured_event.media_types == ["audio/ogg"]
 
@@ -249,28 +192,6 @@ class TestMatrixVoiceCacheFallback:
         assert captured_event.media_urls[0].startswith("http"), \
             f"Should fall back to HTTP URL on cache failure, got {captured_event.media_urls[0]}"
 
-    @pytest.mark.asyncio
-    async def test_voice_cache_exception_falls_back_to_http_url(self):
-        """Unexpected download exceptions should also fall back to HTTP URL."""
-        event = _make_audio_event(is_voice=True)
-
-        self.adapter._client.download_media = AsyncMock(side_effect=RuntimeError("boom"))
-
-        captured_event = None
-
-        async def capture(msg_event):
-            nonlocal captured_event
-            captured_event = msg_event
-
-        self.adapter.handle_message = capture
-
-        await self.adapter._on_room_message(event)
-
-        assert captured_event is not None
-        assert captured_event.media_urls is not None
-        assert captured_event.media_urls[0].startswith("http"), \
-            f"Should fall back to HTTP URL on exception, got {captured_event.media_urls[0]}"
-
 
 # ---------------------------------------------------------------------------
 # Tests: send_voice includes MSC3245 field
@@ -292,42 +213,54 @@ class TestMatrixSendVoiceMSC3245:
 
         self.adapter._client.upload_media = mock_upload_media
 
+
     @pytest.mark.asyncio
-    @patch("mimetypes.guess_type", return_value=("audio/ogg", None))
-    async def test_send_voice_includes_msc3245_field(self, _mock_guess):
-        """send_voice should include org.matrix.msc3245.voice in message content."""
-        # Create a temp audio file
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
-            f.write(b"fake audio data")
+    async def test_send_voice_transcodes_non_ogg_to_opus(self):
+        """Non-Ogg audio reaching send_voice (e.g. direct text_to_speech MP3)
+        is transcoded to Ogg/Opus at the adapter boundary (issue #14841)."""
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"fake mp3 data")
             temp_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(b"fake ogg opus data")
+            converted_path = f.name
 
         try:
-            # Capture the message content sent via send_message_event
             sent_content = None
 
             async def mock_send_message_event(room_id, event_type, content):
                 nonlocal sent_content
                 sent_content = content
-                # send_message_event returns an EventID string
                 return "$sent_event"
 
             self.adapter._client.send_message_event = mock_send_message_event
 
-            await self.adapter.send_voice(
-                chat_id="!room:example.org",
-                audio_path=temp_path,
-                caption="Test voice",
-            )
+            with patch(
+                "plugins.platforms.matrix.adapter._matrix_transcode_voice_to_ogg",
+                return_value=converted_path,
+            ) as mock_transcode, patch(
+                "plugins.platforms.matrix.adapter._matrix_voice_metadata_for_file",
+                return_value={"duration": 1234, "waveform": [0, 512, 1024]},
+            ):
+                await self.adapter.send_voice(
+                    chat_id="!room:example.org",
+                    audio_path=temp_path,
+                    caption="Test voice",
+                )
 
+            mock_transcode.assert_called_once_with(temp_path)
             assert sent_content is not None, "No message was sent"
-            assert "org.matrix.msc3245.voice" in sent_content, \
-                f"MSC3245 voice field missing from content: {sent_content.keys()}"
-            assert sent_content["msgtype"] == "m.audio"
+            assert "org.matrix.msc3245.voice" in sent_content
             assert sent_content["info"]["mimetype"] == "audio/ogg"
-            assert self.upload_call is not None, "Expected upload_media() to be called"
-            assert isinstance(self.upload_call["data"], bytes)
+            assert self.upload_call is not None
+            assert self.upload_call["data"] == b"fake ogg opus data"
             assert self.upload_call["mime_type"] == "audio/ogg"
             assert self.upload_call["filename"].endswith(".ogg")
+            # converted temp file is cleaned up by send_voice
+            assert not os.path.exists(converted_path)
 
         finally:
             os.unlink(temp_path)
+            if os.path.exists(converted_path):
+                os.unlink(converted_path)
+

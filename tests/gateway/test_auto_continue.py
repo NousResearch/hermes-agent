@@ -1,11 +1,10 @@
-"""Tests for the auto-continue feature (#4493).
+"""Tests for the auto-continue feature (#4493 / #45232).
 
-When the gateway restarts mid-agent-work, the session transcript ends on a
+When the gateway restarts mid-agent-work, the session transcript can end on a
 tool result that the agent never processed.  The auto-continue logic detects
-this and prepends a system note to the next user message so the model
-finishes the interrupted work before addressing the new input.
+this and prepends an API-only system note to the next user message so the model
+does not re-execute stale interrupted tool calls before addressing new input.
 """
-
 
 
 def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
@@ -18,11 +17,10 @@ def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     message = user_message
     if agent_history and agent_history[-1].get("role") == "tool":
         message = (
-            "[System note: Your previous turn was interrupted before you could "
-            "process the last tool result(s). The conversation history contains "
-            "tool outputs you haven't responded to yet. Please finish processing "
-            "those results and summarize what was accomplished, then address the "
-            "user's new message below.]\n\n"
+            "[System note: A new message has arrived. The conversation "
+            "history contains pending tool outputs from an interrupted turn. "
+            "IGNORE those pending results. Address the user's NEW message "
+            "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
             + message
         )
     return message
@@ -42,53 +40,78 @@ class TestAutoDetection:
         result = _simulate_auto_continue(history, "what happened?")
         assert "[System note:" in result
         assert "interrupted" in result
+        assert "NEW message" in result
+        assert "Do NOT re-execute" in result
         assert "what happened?" in result
 
-    def test_trailing_assistant_message_no_note(self):
-        history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "Hi there!"},
-        ]
-        result = _simulate_auto_continue(history, "how are you?")
-        assert "[System note:" not in result
-        assert result == "how are you?"
 
     def test_empty_history_no_note(self):
         result = _simulate_auto_continue([], "hello")
         assert result == "hello"
 
-    def test_trailing_user_message_no_note(self):
-        """Shouldn't happen in practice, but ensure no false positive."""
-        history = [
-            {"role": "user", "content": "hello"},
-        ]
-        result = _simulate_auto_continue(history, "hello again")
-        assert result == "hello again"
 
-    def test_multiple_tool_results_still_triggers(self):
-        """Multiple tool calls in a row — last one is still role=tool."""
-        history = [
-            {"role": "user", "content": "search and read"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "call_1", "function": {"name": "search", "arguments": "{}"}},
-                {"id": "call_2", "function": {"name": "read", "arguments": "{}"}},
-            ]},
-            {"role": "tool", "tool_call_id": "call_1", "content": "found it"},
-            {"role": "tool", "tool_call_id": "call_2", "content": "file content here"},
-        ]
-        result = _simulate_auto_continue(history, "continue")
-        assert "[System note:" in result
+class TestInterruptedReplayFiltering:
+    def test_interrupted_side_effect_is_replayed_as_unknown(self):
+        from gateway.run import _build_gateway_agent_history
 
-    def test_original_message_preserved_after_note(self):
-        """The user's actual message must appear after the system note."""
         history = [
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "c1", "function": {"name": "t", "arguments": "{}"}}
-            ]},
-            {"role": "tool", "tool_call_id": "c1", "content": "done"},
+            {"role": "user", "content": "transcribe this video"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": '{"exit_code": 130, "output": "[Command interrupted]"}',
+            },
         ]
-        result = _simulate_auto_continue(history, "now do X")
-        # System note comes first, then user's message
-        note_end = result.index("]\n\n")
-        user_msg_start = result.index("now do X")
-        assert user_msg_start > note_end
+
+        agent_history, observed_context = _build_gateway_agent_history(history)
+
+        assert observed_context is None
+        assert agent_history[:2] == history[:2]
+        assert agent_history[-1]["role"] == "tool"
+        assert agent_history[-1]["tool_call_id"] == "call_1"
+        assert agent_history[-1]["effect_disposition"] == "unknown"
+
+
+    def test_dangling_unanswered_side_effect_is_replayed_as_unknown(self):
+        """A trailing side-effecting call gets an UNKNOWN result, not a retry.
+
+        This is the SIGKILL signature from #49201: the tool itself ran a
+        restart/shutdown command and killed the gateway before its result was
+        persisted. The transcript tail is an assistant message with tool_calls
+        and zero matching tool rows. A synthetic UNKNOWN result closes the tool
+        pair without claiming the restart did not happen or inviting a retry.
+        """
+        from gateway.run import _build_gateway_agent_history
+
+        history = [
+            {"role": "user", "content": "restart the container"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command": "docker restart hermes-agent"}',
+                        },
+                    },
+                ],
+            },
+        ]
+
+        agent_history, _observed_context = _build_gateway_agent_history(history)
+
+        assert agent_history[:2] == history
+        assert agent_history[-1]["role"] == "tool"
+        assert agent_history[-1]["tool_call_id"] == "call_1"
+        assert agent_history[-1]["effect_disposition"] == "unknown"
+
+

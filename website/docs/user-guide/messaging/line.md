@@ -106,7 +106,7 @@ hermes gateway
 The agent log shows:
 
 ```
-LINE: webhook listening on 0.0.0.0:8646/line/webhook (public: https://my-tunnel.example.com)
+LINE: webhook listening on * (all interfaces, IPv4+IPv6):8646/line/webhook (public: https://my-tunnel.example.com)
 ```
 
 Add the bot as a friend from the LINE app (scan the QR in the channel's **Messaging API** tab) and send it a message.
@@ -162,7 +162,7 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 |---|---|---|---|
 | `LINE_CHANNEL_ACCESS_TOKEN` | yes | — | Long-lived channel access token |
 | `LINE_CHANNEL_SECRET` | yes | — | Channel secret (HMAC-SHA256 webhook verification) |
-| `LINE_HOST` | no | `0.0.0.0` | Webhook bind host |
+| `LINE_HOST` | no | unset (dual-stack: all interfaces, IPv4+IPv6) | Webhook bind host |
 | `LINE_PORT` | no | `8646` | Webhook bind port |
 | `LINE_PUBLIC_URL` | for media | — | Public HTTPS base URL; required for image/voice/video sends |
 | `LINE_ALLOWED_USERS` | one of | — | Comma-separated user IDs (U-prefixed) |
@@ -194,7 +194,7 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 
 ## Limitations
 
-* **Single bubble per chunk.** Each LINE text bubble is capped at 5000 characters, and at most 5 bubbles are sent per Reply/Push call. Longer responses are truncated with an ellipsis.
+* **Bubble and length caps.** Each LINE text bubble is capped at 5000 characters. Longer responses are smart-chunked at ~4500 characters across up to 5 bubbles per Reply/Push call, splitting on natural boundaries where possible.
 * **No native message editing.** LINE has no edit-message API — streaming responses always send fresh bubbles, never edit prior ones.
 * **No Markdown rendering.** Bold (`**`), italics (`*`), code fences, and headings render as literal characters. The adapter strips them before sending; URLs are preserved (`[label](url)` becomes `label (url)`).
 * **Loading indicator is DM-only.** LINE rejects the chat/loading API for groups and rooms, so the typing indicator only shows in 1:1 chats.

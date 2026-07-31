@@ -46,6 +46,13 @@ import logging
 import threading
 from typing import TYPE_CHECKING, List, Optional
 
+import discord
+
+try:
+    from .ffmpeg_utils import resolve_ffmpeg_executable
+except ImportError:
+    from ffmpeg_utils import resolve_ffmpeg_executable
+
 if TYPE_CHECKING:  # numpy is an optional ("voice" extra) dep — never import at runtime top-level
     import numpy as np
 
@@ -71,6 +78,7 @@ SAMPLE_WIDTH = 2                       # bytes per sample (s16)
 FRAME_LENGTH_MS = 20
 SAMPLES_PER_FRAME = SAMPLE_RATE * FRAME_LENGTH_MS // 1000   # 960
 FRAME_SIZE = SAMPLES_PER_FRAME * CHANNELS * SAMPLE_WIDTH    # 3840 bytes
+BYTES_PER_MS = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH // 1000  # 192
 SILENCE_FRAME = b"\x00" * FRAME_SIZE
 
 
@@ -145,7 +153,7 @@ class MixerChild:
         return samples
 
 
-class VoiceMixer:
+class VoiceMixer(discord.AudioSource):
     """A continuous ``discord.AudioSource`` that mixes N child streams.
 
     Use :meth:`set_ambient` to install/replace the looping idle bed and
@@ -311,7 +319,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
     try:
         proc = subprocess.run(
             [
-                "ffmpeg", "-y", "-loglevel", "error",
+                resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
                 "-i", path,
                 "-f", "s16le",
                 "-ar", str(SAMPLE_RATE),
@@ -320,6 +328,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
             ],
             capture_output=True,
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("decode_to_pcm failed for %s: %s", path, e)

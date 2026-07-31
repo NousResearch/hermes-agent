@@ -12,9 +12,11 @@ Different LLM providers expect model identifiers in different formats:
   model IDs, but Claude still uses hyphenated native names like
   ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
-- **DeepSeek** accepts ``deepseek-chat`` (V3), ``deepseek-reasoner``
-  (R1-family), and the first-class V-series IDs (``deepseek-v4-pro``,
-  ``deepseek-v4-flash``, and any future ``deepseek-v<N>-*``).  Older
+- **DeepSeek** accepts only the first-class V-series IDs
+  (``deepseek-v4-pro``, ``deepseek-v4-flash``, and any future
+  ``deepseek-v<N>-*``).  The legacy aliases ``deepseek-chat`` and
+  ``deepseek-reasoner`` were retired on 2026-07-24 and are remapped to
+  ``deepseek-v4-flash`` (official non-thinking / thinking shims).  Older
   Hermes revisions folded every non-reasoner input into
   ``deepseek-chat``, which on aggregators routes to V3 — so a user
   picking V4 Pro was silently downgraded.
@@ -67,6 +69,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
     "nous",
+    "ai-gateway",
     "kilocode",
 })
 
@@ -84,7 +87,6 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
 
 # Providers whose native naming is authoritative -- pass through unchanged.
 _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
-    "gemini",
     "huggingface",
 })
 
@@ -103,6 +105,8 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "arcee",
     "ollama-cloud",
     "custom",
+    "gemini",
+    "xai",
 })
 
 # Providers whose APIs require lowercase model IDs.  Xiaomi's
@@ -117,8 +121,9 @@ _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
 # ---------------------------------------------------------------------------
-# DeepSeek's API only recognises exactly two model identifiers.  We map
-# common aliases and patterns to the canonical names.
+# DeepSeek's direct API only accepts first-class V-series IDs after the
+# 2026-07-24 cut-off.  Legacy aliases and fuzzy names are remapped here so
+# saved configs / picker leftovers cannot keep sending retired IDs.
 
 _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "reasoner",
@@ -128,9 +133,15 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "cot",
 })
 
+# Retired on 2026-07-24 15:59 UTC. Official docs: both aliases mapped to
+# deepseek-v4-flash (chat = non-thinking, reasoner = thinking). Thinking
+# mode itself is controlled by extra_body.thinking on the DeepSeek profile.
+_DEEPSEEK_RETIRED_ALIASES: frozenset[str] = frozenset({
+    "deepseek-chat",
+    "deepseek-reasoner",
+})
+
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",       # V3 on DeepSeek direct and most aggregators
-    "deepseek-reasoner",   # R1-family reasoning model
     "deepseek-v4-pro",     # V4 Pro — first-class model ID
     "deepseek-v4-flash",   # V4 Flash — first-class model ID
 })
@@ -148,13 +159,15 @@ def _normalize_for_deepseek(model_name: str) -> str:
     """Map a model input to a DeepSeek-accepted identifier.
 
     Rules:
-    - Already a known canonical (``deepseek-chat``/``deepseek-reasoner``/
-      ``deepseek-v4-pro``/``deepseek-v4-flash``) -> pass through.
+    - Retired aliases ``deepseek-chat`` / ``deepseek-reasoner`` (cut off
+      2026-07-24) -> ``deepseek-v4-flash``.
+    - Already a known canonical (``deepseek-v4-pro``/``deepseek-v4-flash``)
+      -> pass through.
     - Matches the V-series pattern ``deepseek-v<digit>...`` -> pass through
       (covers future ``deepseek-v5-*`` and dated variants without a release).
     - Contains a reasoner keyword (r1, think, reasoning, cot, reasoner)
-      -> ``deepseek-reasoner``.
-    - Everything else -> ``deepseek-chat``.
+      -> ``deepseek-v4-flash``.
+    - Everything else -> ``deepseek-v4-flash``.
 
     Args:
         model_name: The bare model name (vendor prefix already stripped).
@@ -163,6 +176,11 @@ def _normalize_for_deepseek(model_name: str) -> str:
         A DeepSeek-accepted model identifier.
     """
     bare = _strip_vendor_prefix(model_name).lower()
+
+    # Retired aliases must rewrite — DeepSeek returns HTTP 400 after the
+    # 2026-07-24 cut-off if these IDs are sent on the wire.
+    if bare in _DEEPSEEK_RETIRED_ALIASES:
+        return "deepseek-v4-flash"
 
     if bare in _DEEPSEEK_CANONICAL_MODELS:
         return bare
@@ -174,9 +192,9 @@ def _normalize_for_deepseek(model_name: str) -> str:
     # Check for reasoner-like keywords anywhere in the name
     for keyword in _DEEPSEEK_REASONER_KEYWORDS:
         if keyword in bare:
-            return "deepseek-reasoner"
+            return "deepseek-v4-flash"
 
-    return "deepseek-chat"
+    return "deepseek-v4-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +246,14 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     This prevents arbitrary slash-bearing model IDs from being mangled on
     native providers while still repairing manual config values like
     ``zai/glm-5.1`` for the ``zai`` provider.
+
+    ``custom`` is a generic bucket for arbitrary user-defined endpoints, not
+    a vendor identity like ``zai``/``gemini``/``xai``. An alias that merely
+    *resolves to* ``custom`` (e.g. ``ollama``, via ``_PROVIDER_ALIASES``)
+    does not mean a ``ollama/`` prefix is redundant -- it may be the actual
+    routing prefix a proxy in front of the custom endpoint (e.g. LiteLLM)
+    requires, as in ``ollama/glm-5.2``. Only a literal ``custom/`` prefix --
+    the bucket's own name -- is treated as redundant here.
     """
     if "/" not in model_name:
         return model_name
@@ -236,8 +262,13 @@ def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> st
     if not prefix.strip() or not remainder.strip():
         return model_name
 
-    normalized_prefix = _normalize_provider_alias(prefix)
     normalized_target = _normalize_provider_alias(target_provider)
+    if normalized_target == "custom":
+        if prefix.strip().lower() == "custom":
+            return remainder.strip()
+        return model_name
+
+    normalized_prefix = _normalize_provider_alias(prefix)
     if normalized_prefix and normalized_prefix == normalized_target:
         return remainder.strip()
     return model_name
@@ -368,10 +399,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         'minimax-m2.5-free'
 
         >>> normalize_model_for_provider("deepseek-v3", "deepseek")
-        'deepseek-chat'
+        'deepseek-v4-flash'
 
         >>> normalize_model_for_provider("deepseek-r1", "deepseek")
-        'deepseek-reasoner'
+        'deepseek-v4-flash'
+
+        >>> normalize_model_for_provider("deepseek-reasoner", "deepseek")
+        'deepseek-v4-flash'
 
         >>> normalize_model_for_provider("my-model", "custom")
         'my-model'

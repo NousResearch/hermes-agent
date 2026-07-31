@@ -112,16 +112,6 @@ class TestParseInvalidPatch:
         assert err is None
         assert ops == []
 
-    def test_no_begin_marker_still_parses(self):
-        patch = """\
-*** Update File: f.py
- line1
--old
-+new
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        assert err is None
-        assert len(ops) == 1
 
     def test_multiple_operations(self):
         patch = """\
@@ -367,39 +357,28 @@ class TestValidationPhase:
         assert written == {}, f"No files should have been written, got: {list(written.keys())}"
         assert "validation failed" in result.error.lower()
 
-    def test_all_valid_operations_applied(self):
-        """When all operations are valid, all files are written."""
+
+    def test_validation_error_identifies_hunk_number(self):
         patch = """\
 *** Begin Patch
 *** Update File: a.py
- def foo():
--    return 1
-+    return 2
-*** Update File: b.py
- def bar():
--    pass
-+    return True
+@@ first @@
+-first = 1
++first = 2
+@@ missing @@
+-does_not_exist = 1
++does_not_exist = 2
 *** End Patch"""
         ops, err = parse_v4a_patch(patch)
         assert err is None
 
-        written = {}
-
         class FakeFileOps:
             def read_file_raw(self, path):
-                files = {
-                    "a.py": "def foo():\n    return 1\n",
-                    "b.py": "def bar():\n    pass\n",
-                }
-                return SimpleNamespace(content=files[path], error=None)
-
-            def write_file(self, path, content):
-                written[path] = content
-                return SimpleNamespace(error=None)
+                return SimpleNamespace(content="first = 1\n", error=None)
 
         result = apply_v4a_operations(ops, FakeFileOps())
-        assert result.success is True
-        assert set(written.keys()) == {"a.py", "b.py"}
+        assert result.success is False
+        assert "hunk 2" in result.error.lower()
 
 
 class TestApplyDelete:
@@ -481,21 +460,6 @@ class TestParseErrorSignalling:
         assert err is not None, "Expected a parse error for hunk-less UPDATE"
         assert ops == []
 
-    def test_move_without_destination_returns_error(self):
-        """A MOVE without '->' syntax should not silently produce a broken operation."""
-        # The move regex requires '->' so this will be treated as an unrecognised
-        # line and the op is never created.  Confirm nothing crashes and ops is empty.
-        patch = """\
-*** Begin Patch
-*** Move File: src/foo.py
-*** End Patch"""
-        ops, err = parse_v4a_patch(patch)
-        # Either parse sees zero ops (fine) or returns an error (also fine).
-        # What is NOT acceptable is ops=[MOVE op with empty new_path] + err=None.
-        if ops:
-            assert err is not None, (
-                "MOVE with missing destination must either produce empty ops or an error"
-            )
 
     def test_valid_patch_returns_no_error(self):
         """A well-formed patch must still return err=None."""

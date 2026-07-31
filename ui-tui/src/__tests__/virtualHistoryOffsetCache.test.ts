@@ -42,7 +42,11 @@ const mountedSpan = (items: readonly Item[], virtualHistory: ReturnType<typeof u
   return { bottom: virtualHistory.topSpacer + height, top: virtualHistory.topSpacer }
 }
 
-const viewportIsMounted = (items: readonly Item[], virtualHistory: ReturnType<typeof useVirtualHistory>, scroll: ScrollBoxHandle) => {
+const viewportIsMounted = (
+  items: readonly Item[],
+  virtualHistory: ReturnType<typeof useVirtualHistory>,
+  scroll: ScrollBoxHandle
+) => {
   const span = mountedSpan(items, virtualHistory)
   const top = scroll.getScrollTop()
   const bottom = top + scroll.getViewportHeight()
@@ -86,19 +90,17 @@ function Harness({
       Box,
       { flexDirection: 'column', width: '100%' },
       virtualHistory.topSpacer > 0 ? React.createElement(Box, { height: virtualHistory.topSpacer }) : null,
-      ...items
-        .slice(virtualHistory.start, virtualHistory.end)
-        .map(item =>
-          React.createElement(
-            Box,
-            {
-              height: itemHeightForColumns(item, columns),
-              key: item.key,
-              ref: virtualHistory.measureRef(item.key)
-            },
-            React.createElement(Text, null, item.key)
-          )
-        ),
+      ...items.slice(virtualHistory.start, virtualHistory.end).map(item =>
+        React.createElement(
+          Box,
+          {
+            height: itemHeightForColumns(item, columns),
+            key: item.key,
+            ref: virtualHistory.measureRef(item.key)
+          },
+          React.createElement(Text, null, item.key)
+        )
+      ),
       virtualHistory.bottomSpacer > 0 ? React.createElement(Box, { height: virtualHistory.bottomSpacer }) : null
     )
   )

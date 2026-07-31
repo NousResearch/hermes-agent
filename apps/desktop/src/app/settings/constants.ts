@@ -1,4 +1,5 @@
 import {
+  Box,
   Brain,
   type IconComponent,
   Lock,
@@ -7,14 +8,14 @@ import {
   Monitor,
   Moon,
   Palette,
-  Sparkles,
   Sun,
   Wrench
 } from '@/lib/icons'
+import { REASONING_EFFORTS } from '@/lib/reasoning-effort'
 import type { ThemeMode } from '@/themes/context'
 
-import type { DesktopConfigSection } from './types'
 import { defineFieldCopy } from './field-copy'
+import type { DesktopConfigSection } from './types'
 
 // Provider group definitions used to fold raw env-var names like
 // ``XAI_API_KEY`` into a single "xAI" card with a friendly label, short
@@ -46,6 +47,15 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 0
   },
   {
+    prefix: 'FIREWORKS_',
+    name: 'Fireworks AI',
+    description: 'OpenAI-compatible direct model API',
+    docsUrl: 'https://app.fireworks.ai/settings/users/api-keys',
+    // Slot #2 — mirrors CANONICAL_PROVIDERS (after Nous, ahead of OpenRouter).
+    // Same numeric priority as OpenRouter; name sort puts Fireworks first.
+    priority: 1
+  },
+  {
     prefix: 'OPENROUTER_',
     name: 'OpenRouter',
     description: 'Aggregator for hundreds of frontier models',
@@ -74,7 +84,6 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 4
   },
   { prefix: 'GEMINI_', name: 'Gemini', priority: 4 },
-  { prefix: 'HERMES_GEMINI_', name: 'Gemini', priority: 4 },
   {
     prefix: 'DEEPSEEK_',
     name: 'DeepSeek',
@@ -238,13 +247,143 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
-  'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-  'memory.provider': ['', 'builtin', 'honcho'],
+  // '' = inherit the agent's own effort; the rest is the shared scale.
+  'delegation.reasoning_effort': ['', ...REASONING_EFFORTS],
+  // NOTE: memory.provider is intentionally NOT listed here. Its options are
+  // discovery-driven and served by the backend config schema (merged
+  // per-request in web_server._schema_with_dynamic_provider_options), so
+  // config-field consumes schema.options directly — a static list here would
+  // shadow that and hide user-installed/pip providers (#49513).
+  // Terminal execution backends — kept in sync with the dispatch ladder in
+  // tools/terminal_tool.py::_create_environment (local/docker/singularity/
+  // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
+  'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
-  'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+  // Speech-to-text backends — kept in sync with the stt block in
+  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  // OpenAI TTS voices — the union across models (per the OpenAI TTS API
+  // docs). Model-specific narrowing happens in enumOptionsFor():
+  // tts-1 / tts-1-hd support 9 voices; gpt-4o-mini-tts supports all 13.
+  // Free-input field — the list is suggestions, not a gate (FREE_INPUT_KEYS).
+  'tts.openai.voice': [
+    'alloy',
+    'ash',
+    'ballad',
+    'cedar',
+    'coral',
+    'echo',
+    'fable',
+    'marin',
+    'nova',
+    'onyx',
+    'sage',
+    'shimmer',
+    'verse'
+  ],
+  // Popular Edge neural voices (the full catalog is 400+ — free input).
+  'tts.edge.voice': [
+    'en-US-AriaNeural',
+    'en-US-JennyNeural',
+    'en-US-AndrewNeural',
+    'en-US-BrianNeural',
+    'en-US-GuyNeural',
+    'en-GB-SoniaNeural'
+  ],
+  'tts.gemini.model': ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'],
+  // Gemini TTS prebuilt voice set.
+  'tts.gemini.voice': [
+    'Zephyr',
+    'Puck',
+    'Charon',
+    'Kore',
+    'Fenrir',
+    'Leda',
+    'Orus',
+    'Aoede',
+    'Callirrhoe',
+    'Autonoe',
+    'Enceladus',
+    'Iapetus',
+    'Umbriel',
+    'Algieba',
+    'Despina',
+    'Erinome',
+    'Algenib',
+    'Rasalgethi',
+    'Laomedeia',
+    'Achernar',
+    'Alnilam',
+    'Schedar',
+    'Gacrux',
+    'Pulcherrima',
+    'Achird',
+    'Zubenelgenubi',
+    'Vindemiatrix',
+    'Sadachbia',
+    'Sadaltager',
+    'Sulafat'
+  ],
+  'tts.xai.voice_id': ['eve'],
+  'tts.minimax.model': ['speech-02-hd', 'speech-02-turbo'],
+  'tts.mistral.model': ['voxtral-mini-tts-2603'],
+  'tts.kittentts.model': [
+    'KittenML/kitten-tts-nano-0.8-int8',
+    'KittenML/kitten-tts-micro-0.8-int8',
+    'KittenML/kitten-tts-mini-0.8-int8'
+  ],
+  'tts.kittentts.voice': ['Jasper'],
+  'tts.piper.voice': ['en_US-lessac-medium', 'en_US-amy-medium', 'en_US-ryan-high', 'en_GB-alan-medium'],
+  'tts.neutts.model': ['neuphonic/neutts-air-q4-gguf', 'neuphonic/neutts-air-q8-gguf', 'neuphonic/neutts-air'],
+  // Text-to-speech backends — kept in sync with the built-in source of truth
+  // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
+  // BUILTIN_TTS_PROVIDERS). 'xai' is Grok TTS.
+  'tts.provider': [
+    'edge',
+    'elevenlabs',
+    'openai',
+    'xai',
+    'minimax',
+    'mistral',
+    'gemini',
+    'neutts',
+    'kittentts',
+    'piper'
+  ],
+  'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
+  'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
+  'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
+  'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
+  // NeuTTS local inference device.
+  'tts.neutts.device': ['cpu', 'cuda', 'mps'],
   'updates.non_interactive_local_changes': ['stash', 'discard']
 }
+
+// Voice/model name fields render as a free-input combobox (Input + datalist)
+// instead of a closed Select: providers accept custom voice IDs (ElevenLabs
+// cloned voices, xAI custom voices, Edge's 400+ catalog) and ship new model
+// names faster than this list updates. The ENUM_OPTIONS above become
+// suggestions rather than a gate for these keys.
+export const FREE_INPUT_KEYS = new Set([
+  'tts.edge.voice',
+  'tts.openai.model',
+  'tts.openai.voice',
+  'tts.elevenlabs.voice_id',
+  'tts.gemini.model',
+  'tts.gemini.voice',
+  'tts.xai.voice_id',
+  'tts.minimax.model',
+  'tts.minimax.voice_id',
+  'tts.mistral.model',
+  'tts.mistral.voice_id',
+  'tts.neutts.model',
+  'tts.kittentts.model',
+  'tts.kittentts.voice',
+  'tts.piper.voice',
+  'tts.deepinfra.model',
+  'tts.deepinfra.voice'
+])
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
@@ -255,6 +394,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   display: {
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
+  },
+  desktop: {
+    repoScanEnabled: 'Automatic Repository Discovery',
+    repoScanRoots: 'Repository Discovery Roots',
+    repoScanExcludePaths: 'Excluded Repository Paths'
   },
   agent: {
     maxTurns: 'Max Agent Steps',
@@ -268,7 +412,11 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     backend: 'Execution Backend',
     timeout: 'Command Timeout',
     persistentShell: 'Persistent Shell',
-    envPassthrough: 'Environment Passthrough'
+    envPassthrough: 'Environment Passthrough',
+    dockerImage: 'Docker Image',
+    singularityImage: 'Singularity Image',
+    modalImage: 'Modal Image',
+    daytonaImage: 'Daytona Image'
   },
   fileReadMaxChars: 'File Read Limit',
   toolOutput: {
@@ -304,10 +452,20 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   stt: {
     enabled: 'Speech To Text',
+    echoTranscripts: 'Echo Transcripts',
     provider: 'Speech-To-Text Provider',
     local: {
       model: 'Local Transcription Model',
       language: 'Transcription Language'
+    },
+    openai: {
+      model: 'OpenAI STT Model'
+    },
+    groq: {
+      model: 'Groq STT Model'
+    },
+    mistral: {
+      model: 'Mistral STT Model'
     },
     elevenlabs: {
       modelId: 'ElevenLabs STT Model',
@@ -328,6 +486,42 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     elevenlabs: {
       voiceId: 'ElevenLabs Voice',
       modelId: 'ElevenLabs Model'
+    },
+    xai: {
+      voiceId: 'xAI (Grok) Voice',
+      language: 'xAI Language',
+      speed: 'xAI Playback Speed',
+      autoSpeechTags: 'xAI Auto Speech Tags',
+      optimizeStreamingLatency: 'xAI Streaming Latency Optimization',
+      sampleRate: 'xAI Sample Rate',
+      bitRate: 'xAI Bit Rate'
+    },
+    minimax: {
+      model: 'MiniMax TTS Model',
+      voiceId: 'MiniMax Voice'
+    },
+    mistral: {
+      model: 'Mistral TTS Model',
+      voiceId: 'Mistral Voice'
+    },
+    gemini: {
+      model: 'Gemini TTS Model',
+      voice: 'Gemini Voice'
+    },
+    neutts: {
+      model: 'NeuTTS Model',
+      device: 'NeuTTS Device'
+    },
+    kittentts: {
+      model: 'KittenTTS Model',
+      voice: 'KittenTTS Voice'
+    },
+    piper: {
+      voice: 'Piper Voice'
+    },
+    deepinfra: {
+      model: 'DeepInfra TTS Model',
+      voice: 'DeepInfra Voice'
     }
   },
   memory: {
@@ -367,7 +561,12 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
-  timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
+  desktop: {
+    repoScanEnabled: 'Scan local folders for Git repositories to show in Projects.',
+    repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
+    repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
+  },
+  timezone: 'IANA timezone identifier. Blank uses the system timezone.',
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
     maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
@@ -375,7 +574,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',
     persistentShell: 'Keep shell state between commands when the backend supports it.',
-    envPassthrough: 'Environment variables to pass into tool execution.'
+    envPassthrough: 'Environment variables to pass into tool execution.',
+    dockerImage: 'Container image used when the execution backend is Docker.',
+    singularityImage: 'Image used when the execution backend is Singularity.',
+    modalImage: 'Image used when the execution backend is Modal.',
+    daytonaImage: 'Image used when the execution backend is Daytona.'
   },
   codeExecution: {
     mode: 'How strictly code execution is scoped to the current project.'
@@ -404,8 +607,23 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   voice: {
     autoTts: 'Automatically speak assistant responses.'
   },
+  tts: {
+    xai: {
+      voiceId: 'xAI voice ID (e.g. eve) or a custom voice ID.',
+      language: 'Spoken language code (e.g. en, pt-BR) or "auto" for auto-detection.',
+      speed: 'Playback speed. 0.7 = slower, 1.0 = normal, 1.5 = faster.',
+      autoSpeechTags: 'Let an LLM insert expressive audio tags ([laughing], [sighs]) into the script before synthesis.',
+      optimizeStreamingLatency: 'Latency vs. quality trade-off. 0 = best quality, 2 = lowest latency.',
+      sampleRate: 'Audio sample rate in Hz. Higher = better quality, larger files.',
+      bitRate: 'MP3 bitrate in bps. Only applies when codec is mp3.'
+    },
+    neutts: {
+      device: 'Local inference device for NeuTTS.'
+    }
+  },
   stt: {
     enabled: 'Enable local or provider-backed speech transcription.',
+    echoTranscripts: 'Post the raw 🎙️ transcript of voice messages back to the chat.',
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
@@ -421,7 +639,7 @@ export const SECTIONS: DesktopConfigSection[] = [
   {
     id: 'model',
     label: 'Model',
-    icon: Sparkles,
+    icon: Box,
     keys: ['model_context_length', 'fallback_providers']
   },
   {
@@ -442,6 +660,9 @@ export const SECTIONS: DesktopConfigSection[] = [
     icon: Monitor,
     keys: [
       'terminal.cwd',
+      'desktop.repo_scan_enabled',
+      'desktop.repo_scan_roots',
+      'desktop.repo_scan_exclude_paths',
       'code_execution.mode',
       'terminal.persistent_shell',
       'terminal.env_passthrough',
@@ -488,6 +709,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     keys: [
       'tts.provider',
       'stt.enabled',
+      'stt.echo_transcripts',
       'stt.provider',
       'voice.auto_tts',
       'tts.edge.voice',
@@ -495,8 +717,31 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.openai.voice',
       'tts.elevenlabs.voice_id',
       'tts.elevenlabs.model_id',
+      'tts.xai.voice_id',
+      'tts.xai.language',
+      'tts.xai.speed',
+      'tts.xai.auto_speech_tags',
+      'tts.xai.optimize_streaming_latency',
+      'tts.xai.sample_rate',
+      'tts.xai.bit_rate',
+      'tts.minimax.model',
+      'tts.minimax.voice_id',
+      'tts.mistral.model',
+      'tts.mistral.voice_id',
+      'tts.gemini.model',
+      'tts.gemini.voice',
+      'tts.neutts.model',
+      'tts.neutts.device',
+      'tts.kittentts.model',
+      'tts.kittentts.voice',
+      'tts.piper.voice',
+      'tts.deepinfra.model',
+      'tts.deepinfra.voice',
       'stt.local.model',
       'stt.local.language',
+      'stt.openai.model',
+      'stt.groq.model',
+      'stt.mistral.model',
       'stt.elevenlabs.model_id',
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
@@ -513,6 +758,10 @@ export const SECTIONS: DesktopConfigSection[] = [
       'toolsets',
       'terminal.backend',
       'terminal.timeout',
+      'terminal.docker_image',
+      'terminal.singularity_image',
+      'terminal.modal_image',
+      'terminal.daytona_image',
       'tool_output.max_bytes',
       'tool_output.max_lines',
       'tool_output.max_line_length',

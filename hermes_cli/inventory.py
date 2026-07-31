@@ -52,6 +52,7 @@ class ConfigContext:
     current_base_url: str
     user_providers: dict
     custom_providers: list
+    excluded_providers: list = None
 
     def with_overrides(
         self,
@@ -96,12 +97,14 @@ def load_picker_context() -> ConfigContext:
         current_provider = ""
         current_base_url = ""
     raw = cfg.get("providers")
+    excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
+        excluded_providers=excluded if isinstance(excluded, list) else [],
     )
 
 
@@ -111,17 +114,28 @@ def load_picker_context() -> ConfigContext:
 def build_models_payload(
     ctx: ConfigContext,
     *,
+    explicit_only: bool = False,
     include_unconfigured: bool = False,
     picker_hints: bool = False,
     canonical_order: bool = False,
     pricing: bool = False,
     capabilities: bool = False,
-    max_models: int = 50,
+    featured: bool = False,
+    force_fresh_nous_tier: bool = False,
+    refresh: bool = False,
+    probe_custom_providers: bool = True,
+    probe_current_custom_provider: bool = False,
+    for_picker: bool = False,
+    max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
 
     Flags:
+    - ``explicit_only``: keep only providers the user explicitly configured
+      (current provider, providers from config, or providers backed by
+      provider-specific env vars). This hides ambient / auto-seeded
+      credentials from desktop chat pickers.
     - ``include_unconfigured``: append ``CANONICAL_PROVIDERS`` rows that
       ``list_authenticated_providers`` didn't emit (TUI uses this to show
       the full provider universe in the picker).
@@ -139,6 +153,35 @@ def build_models_payload(
       ``{model: {fast, reasoning}}`` so pickers can gate the model-options
       controls (fast toggle / reasoning) to what each model actually
       supports, instead of offering knobs the backend would reject.
+    - ``featured``: add a per-row ``featured_models`` list — the newest few
+      models per lab (by models.dev release_date, ranked within the row's own
+      models; see ``_FEATURED_PER_LAB``) for aggregator providers that serve
+      dozens of models across many labs. Pickers default their visible set to
+      these; the rest of ``models`` stays reachable via search / show-all. Empty
+      for single-lab providers (callers fall back to top-N). Derived live from
+      models.dev — no allowlist.
+    - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
+      selecting Portal-recommended Nous models and applying tier gating. Keep
+      this false for UI picker opens; explicit auth/model flows can opt in
+      when they need freshly-purchased credits to show up immediately.
+    - ``refresh``: bust the per-provider model-id disk cache so every row
+      re-fetches its live catalog. Set only for an explicit user-triggered
+      "refresh models" action; normal picker opens leave it false to stay
+      snappy on the 1h cache.
+    - ``probe_custom_providers``: allow saved custom/provider endpoints to
+      run live ``/models`` discovery while building the payload. GUI picker
+      opens should leave this false unless the user explicitly refreshes; the
+      row can still render its configured model immediately, and slow/offline
+      local endpoints no longer block the dialog.
+    - ``probe_current_custom_provider``: when ``probe_custom_providers`` is
+      false, still live-probe the current custom endpoint. This keeps normal
+      GUI/TUI picker opens fast while making the active custom provider's model
+      list match the classic CLI picker.
+    - ``for_picker``: interactive-picker visibility. Keeps providers whose
+      credential pool exists but is entirely rate-limited (exhausted) in the
+      list. Rate limits are per-model, so a different model under the same
+      provider may still work; hiding the provider strands the user. Set for
+      any surface a human is choosing from, not for programmatic resolution.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -148,25 +191,214 @@ def build_models_payload(
         current_model=ctx.current_model,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
+        force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
+        refresh=refresh,
+        probe_custom_providers=probe_custom_providers,
+        probe_current_custom_provider=probe_current_custom_provider,
+        for_picker=for_picker,
+        excluded_providers=ctx.excluded_providers or [],
     )
 
+    moa_row = _moa_provider_row(ctx.current_provider)
+    if moa_row is not None:
+        rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
+
+    if explicit_only:
+        rows = _filter_explicit_provider_rows(rows, ctx)
+        # Desktop chat pickers request the explicit subset without the full
+        # unconfigured provider universe. If the configured current provider
+        # has lost its credential, list_authenticated_providers() omits it;
+        # keep that one row visible so the UI can show the saved selection and
+        # a re-auth affordance instead of appearing to jump to another provider.
+        rows = list(rows) + _append_unconfigured_rows(
+            rows, ctx, current_only=True
+        )
+
+    # --- Deduplicate: remove models from aggregators that overlap with
+    # user-defined providers.  When a local proxy (e.g. litellm-proxy)
+    # serves a model whose name also appears in an aggregator's curated
+    # catalog, the picker would show the model under both providers.
+    # Selecting it from the aggregator row sets model.provider to the
+    # aggregator (e.g. openrouter) instead of the user's proxy — silently
+    # breaking the call.  Filtering at the payload level keeps the
+    # aggregator rows honest: they only show models the user can't get
+    # from a more-specific provider.  (#45954)
+    try:
+        from hermes_cli.providers import is_routing_aggregator as _is_routing_aggregator
+    except Exception:
+        _is_routing_aggregator = None  # type: ignore[assignment]
+
+    if _is_routing_aggregator is not None:
+        user_models: set[str] = set()
+        for row in rows:
+            if row.get("is_user_defined"):
+                user_models.update(m.lower() for m in (row.get("models") or []))
+        if user_models:
+            for row in rows:
+                # A user's own configured provider is never an "aggregator
+                # duplicate" of itself: user_models is built from these very
+                # rows, and is_routing_aggregator() reports True for every
+                # custom:* slug.  Without this guard the dedup strips a
+                # user-defined custom provider's entire model list (all of it
+                # lives in user_models), emptying its picker row.
+                if row.get("is_user_defined"):
+                    continue
+                slug = row.get("slug", "")
+                # Only strip overlaps from TRUE routing aggregators (OpenRouter,
+                # custom:* proxies). Flat-namespace resellers (opencode-go /
+                # opencode-zen) serve every listed model as a first-party model,
+                # so their rows must keep models that a user's proxy happens to
+                # share a name with — otherwise a subscription provider's own
+                # catalog (minimax-m3, glm-5, deepseek-v4-flash, ...) is silently
+                # gutted in the picker. (#47077)
+                if not _is_routing_aggregator(slug):
+                    continue
+                original = row.get("models") or []
+                filtered = [m for m in original if m.lower() not in user_models]
+                if len(filtered) < len(original):
+                    row["models"] = filtered
+                    row["total_models"] = len(filtered)
+
     if include_unconfigured:
-        rows = list(rows) + _append_unconfigured_rows(rows, ctx)
+        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows)
+        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
     if capabilities:
         _apply_capabilities(rows)
+    if featured:
+        _apply_featured(rows)
 
     return {
         "providers": rows,
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+def build_model_options_payload(
+    ctx: ConfigContext,
+    *,
+    explicit_only: bool = False,
+    include_unconfigured: bool = False,
+    refresh: bool = False,
+) -> dict:
+    """Build the shared API-server/dashboard/TUI model-options payload.
+
+    This wraps ``build_models_payload`` with the stable picker shape and the
+    safe custom-provider probe policy used for normal GUI/TUI opens:
+
+    - normal open: probe only the current custom provider so offline saved
+      endpoints do not block the picker
+    - explicit refresh: probe every custom provider while busting the model
+      cache so live catalogs repopulate fully
+    """
+    refresh = bool(refresh)
+    return build_models_payload(
+        ctx,
+        explicit_only=bool(explicit_only),
+        include_unconfigured=bool(include_unconfigured),
+        picker_hints=True,
+        canonical_order=True,
+        pricing=True,
+        capabilities=True,
+        featured=True,
+        refresh=refresh,
+        probe_custom_providers=refresh,
+        probe_current_custom_provider=not refresh,
+    )
+
+
+# ─── Public: auxiliary-task pickers ─────────────────────────────────────
+
+
+def build_aux_picker_rows(
+    *,
+    current_provider: str = "",
+    current_model: str = "",
+    current_base_url: str = "",
+    max_models: int | None = None,
+) -> list[dict]:
+    """Provider rows for any auxiliary-task picker (vision, compression, …).
+
+    THE entry point for every aux picker — present and future. Call this
+    instead of ``list_authenticated_providers()`` directly.
+
+    Aux pickers kept re-deriving their own kwargs and each one silently
+    dropped a different slice of the user's configuration. Two independent
+    contributor PRs landed against the same two call sites for exactly this:
+    #52642 (user ``providers:`` / ``custom_providers:`` entries never
+    appeared) and #66624 (providers with an exhausted credential pool were
+    hidden). Both were per-site kwarg patches, so the next aux picker would
+    have reintroduced the same gap. Routing through one function makes the
+    correct behaviour the default that a new caller cannot forget:
+
+    - user-defined ``providers:`` and saved ``custom_providers:`` entries
+    - ``model_catalog.excluded_providers`` honoured, matching ``/model``
+    - exhausted-credential-pool providers stay visible (``for_picker``)
+    - the active custom endpoint is probed, offline saved ones are not, so
+      the picker never blocks on a dead local server
+
+    The virtual ``moa`` row is excluded: auxiliary tasks must not run the
+    MoA reference fan-out, and ``auxiliary_client`` unwraps a ``moa``
+    provider to its aggregator slot anyway (see ``_resolve_auto``), so
+    offering it here would be a choice silently rewritten behind the user's
+    back. Mirrors the same filter in ``hermes_cli/moa_cmd.py``.
+
+    Rows are the standard ``list_authenticated_providers`` shape. Pair with
+    :func:`format_aux_picker_entries` to render them.
+    """
+    ctx = load_picker_context().with_overrides(
+        current_provider=current_provider,
+        current_model=current_model,
+        current_base_url=current_base_url,
+    )
+    rows = build_models_payload(
+        ctx,
+        for_picker=True,
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+        max_models=max_models,
+    )["providers"]
+    return [r for r in rows if str(r.get("slug") or "").strip().lower() != "moa"]
+
+
+def format_aux_picker_entries(
+    rows: list[dict],
+    *,
+    current_provider: str = "",
+    current_base_url: str = "",
+) -> list[tuple[str, str, list[str]]]:
+    """Render aux-picker rows as ``(slug, label, models)`` menu entries.
+
+    Owns the label text and the ``← current`` marker so every aux picker
+    presents providers identically. Callers add their own leading/trailing
+    entries (``auto``, ``Custom endpoint``, ``Back``) around this list.
+
+    A custom endpoint set via a raw ``base_url`` is "current" only through
+    that URL — never through a provider slug — so when ``current_base_url``
+    is set no provider row is marked, matching the pre-existing behaviour of
+    both call sites.
+    """
+    entries: list[tuple[str, str, list[str]]] = []
+    current_slug = str(current_provider or "").strip().lower()
+    has_base_url = bool(str(current_base_url or "").strip())
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        name = row.get("name") or slug
+        total = row.get("total_models") or len(row.get("models") or [])
+        model_hint = f" — {total} models" if total else ""
+        marker = (
+            "  ← current"
+            if slug.lower() == current_slug and current_slug and not has_base_url
+            else ""
+        )
+        entries.append((slug, f"{name}{model_hint}{marker}", list(row.get("models") or [])))
+    return entries
 
 
 def _apply_capabilities(rows: list[dict]) -> None:
@@ -207,18 +439,130 @@ def _apply_capabilities(rows: list[dict]) -> None:
         row["capabilities"] = caps
 
 
+# How many models per lab the picker features by default. Aggregator rows keep
+# the newest N of each lab (by models.dev release_date) and hide the older tail
+# behind search / show-all. 5 keeps a lab's current headliners without letting a
+# prolific vendor (OpenAI's gpt-5.6-* family) flood the default view.
+_FEATURED_PER_LAB = 5
+
+
+def _apply_featured(rows: list[dict]) -> None:
+    """Attach a ``featured_models`` shortlist to each aggregator provider row.
+
+    Aggregator providers (nous, openrouter) serve dozens of models across many
+    labs, so a flat "top-N" default would drop whole labs from the picker.
+    Instead we surface the ``_FEATURED_PER_LAB`` newest models per lab (the
+    vendor segment of a ``vendor/model`` id), ranked by models.dev
+    ``release_date`` among that row's OWN models — never against the current
+    date, so the choice is stable as models age. Same-date ties (and labs whose
+    models lack a date) fall back to the row's curated order, which is already
+    flagship-first, so a lab keeps its headliners rather than an arbitrary slice.
+
+    Derived live from the models.dev catalog already loaded on this path (same
+    source as pricing/capabilities) — there is no hand-maintained allowlist to
+    keep in sync. Non-aggregator providers (a single lab, local endpoints,
+    custom proxies) get an empty list and callers fall back to their existing
+    top-N behaviour; splitting one lab into a shortlist would just hide models.
+    """
+    try:
+        from agent.models_dev import get_model_info
+    except Exception:
+        get_model_info = None  # type: ignore[assignment]
+
+    for row in rows:
+        slug = str(row.get("slug") or "").strip().lower()
+        models = row.get("models") or []
+
+        # Group models by lab; only multi-lab aggregators get a shortlist.
+        by_lab: dict[str, list[tuple[int, str, str]]] = {}
+        for pos, model in enumerate(models):
+            lab = model.split("/", 1)[0] if "/" in model else ""
+            if not lab:
+                # No vendor prefix → single-namespace provider, not an
+                # aggregator. Bail on the whole row (see below).
+                by_lab = {}
+                break
+            date = ""
+            if get_model_info is not None:
+                info = get_model_info(slug, model) or get_model_info("openrouter", model)
+                date = getattr(info, "release_date", "") if info else ""
+            by_lab.setdefault(lab, []).append((pos, date, model))
+
+        # A shortlist only makes sense when the row spans several labs.
+        if len(by_lab) < 2:
+            row["featured_models"] = []
+            continue
+
+        featured: list[str] = []
+        for entries in by_lab.values():
+            # Newest release_date first; earlier list position breaks ties and
+            # is the sole key when a lab has no dated models (all ""). Keep the
+            # newest _FEATURED_PER_LAB of each lab.
+            ranked = sorted(entries, key=lambda e: (e[1], -e[0]), reverse=True)
+            featured.extend(model for _pos, _date, model in ranked[:_FEATURED_PER_LAB])
+        # Preserve the row's model order for stable rendering.
+        order = {m: i for i, m in enumerate(models)}
+        row["featured_models"] = sorted(featured, key=lambda m: order[m])
+
+
 # ─── Internal: row post-processing ──────────────────────────────────────
 
 
-def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
-    """Build skeleton rows for canonical providers missing from ``rows``."""
+def _append_unconfigured_rows(
+    rows: list[dict],
+    ctx: ConfigContext,
+    *,
+    current_only: bool = False,
+) -> list[dict]:
+    """Build fallback rows for canonical providers missing from ``rows``.
+
+    Most missing canonical providers become empty setup skeletons. The one
+    exception is the *current* configured provider: if config.yaml still points
+    at it but credentials are presently unavailable, keep a visible row carrying
+    the saved model so GUI pickers don't silently snap to some other provider.
+    """
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
+    cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
         if entry.slug.lower() in seen:
+            continue
+        if current_only and entry.slug.lower() != cur:
+            continue
+        if entry.slug.lower() == cur:
+            cfg = PROVIDER_REGISTRY.get(entry.slug)
+            auth_type = cfg.auth_type if cfg else "api_key"
+            key_env = (
+                cfg.api_key_env_vars[0]
+                if (cfg and cfg.api_key_env_vars)
+                else ""
+            )
+            warning = (
+                f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
+                "Showing the saved model only."
+                if auth_type == "api_key" and key_env
+                else "Configured provider is not authenticated; run `hermes model` to reactivate. "
+                "Showing the saved model only."
+            )
+            extras.append(
+                {
+                    "slug": entry.slug,
+                    "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
+                    "is_current": True,
+                    "is_user_defined": False,
+                    "models": [cur_model] if cur_model else [],
+                    "total_models": 1 if cur_model else 0,
+                    "source": "configured-current",
+                    "authenticated": False,
+                    "auth_type": auth_type,
+                    "key_env": key_env,
+                    "warning": warning,
+                }
+            )
             continue
         extras.append(
             {
@@ -232,6 +576,85 @@ def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict
             }
         )
     return extras
+
+
+def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+    """Keep only rows backed by explicit user configuration.
+
+    ``list_authenticated_providers`` intentionally discovers ambient / auto-
+    seeded credentials (for example GitHub CLI -> Copilot). Desktop chat model
+    pickers want the narrower subset the user explicitly configured for Hermes.
+    """
+    from hermes_cli.auth import is_provider_explicitly_configured
+
+    current_slug = str(ctx.current_provider or "").strip().lower()
+    kept: list[dict] = []
+    for row in rows:
+        slug = str(row.get("slug", "")).strip().lower()
+        if not slug:
+            continue
+        if row.get("is_user_defined"):
+            kept.append(row)
+            continue
+        if current_slug and slug == current_slug:
+            kept.append(row)
+            continue
+        if slug == "moa":
+            # MoA is a virtual routing mode, not an independently configured
+            # provider. Hide it from explicit-only pickers unless it is the
+            # current provider (handled above) or the user explicitly wrote an
+            # enabled MoA preset into config.yaml. Use raw config so the
+            # DEFAULT_CONFIG preset does not make every desktop picker show MoA.
+            if _raw_config_has_enabled_moa_preset():
+                kept.append(row)
+            continue
+        if is_provider_explicitly_configured(slug):
+            kept.append(row)
+    return kept
+
+
+def _raw_config_has_enabled_moa_preset() -> bool:
+    """Return True when the user's raw config explicitly enables MoA.
+
+    ``load_config()`` includes ``DEFAULT_CONFIG["moa"].presets.default`` for
+    everyone. Explicit-only model pickers must not treat that default as a user
+    choice, but they should keep MoA visible once the user has saved at least
+    one enabled preset (or an older flat MoA config) in their own config.yaml.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+    except Exception:
+        return False
+
+    if not isinstance(raw, dict):
+        return False
+    moa = raw.get("moa")
+    if not isinstance(moa, dict):
+        return False
+
+    presets = moa.get("presets")
+    if isinstance(presets, dict):
+        for name, preset in presets.items():
+            if not str(name or "").strip():
+                continue
+            if not isinstance(preset, dict):
+                return True
+            if preset.get("enabled", True):
+                return True
+        return False
+
+    legacy_keys = {
+        "reference_models",
+        "aggregator",
+        "reference_temperature",
+        "aggregator_temperature",
+        "max_tokens",
+        "reference_max_tokens",
+        "fanout",
+    }
+    return any(key in moa for key in legacy_keys) and bool(moa.get("enabled", True))
 
 
 def _apply_picker_hints(rows: list[dict]) -> None:
@@ -293,7 +716,11 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
-def _apply_pricing(rows: list[dict]) -> None:
+def _apply_pricing(
+    rows: list[dict],
+    *,
+    force_fresh_nous_tier: bool = False,
+) -> None:
     """Enrich each provider row with per-model pricing + Nous tier gating.
 
     Mutates ``rows`` in-place. For every row whose provider supports live
@@ -314,6 +741,7 @@ def _apply_pricing(rows: list[dict]) -> None:
     from hermes_cli.models import (
         _format_price_per_mtok,
         check_nous_free_tier,
+        compute_sale_discount,
         get_pricing_for_provider,
         partition_nous_models_by_tier,
     )
@@ -346,12 +774,32 @@ def _apply_pricing(rows: list[dict]) -> None:
             cache = _format_price_per_mtok(cache_raw) if cache_raw else None
             # A model is "free" when both input and output cost nothing.
             is_free = inp == "free" and (out == "free" or out == "")
-            formatted[mid] = {
+            entry: dict = {
                 "input": inp,
                 "output": out,
                 "cache": cache,
                 "free": is_free,
             }
+            # Sale chrome is Nous Portal-only. Other providers (OpenRouter,
+            # Novita, …) never get discount_percent / was_* even if a nested
+            # pricing.original somehow appeared in their catalog. Free / $0
+            # models never get sale chrome either — even if original leaked.
+            if slug == "nous" and not is_free:
+                sale = compute_sale_discount(
+                    inp_raw, out_raw, p.get("original")
+                )
+                if sale is not None:
+                    discount_percent, was_prompt_raw, was_out_raw = sale
+                    entry["discount_percent"] = discount_percent
+                    if was_prompt_raw != "":
+                        entry["was_input"] = _format_price_per_mtok(
+                            was_prompt_raw
+                        )
+                    if was_out_raw != "":
+                        entry["was_output"] = _format_price_per_mtok(
+                            was_out_raw
+                        )
+            formatted[mid] = entry
 
         if formatted:
             row["pricing"] = formatted
@@ -359,7 +807,9 @@ def _apply_pricing(rows: list[dict]) -> None:
         if slug == "nous":
             try:
                 if nous_free_tier is None:
-                    nous_free_tier = check_nous_free_tier(force_fresh=True)
+                    nous_free_tier = check_nous_free_tier(
+                        force_fresh=force_fresh_nous_tier
+                    )
                 row["free_tier"] = bool(nous_free_tier)
                 if nous_free_tier:
                     _selectable, unavailable = partition_nous_models_by_tier(
@@ -373,3 +823,34 @@ def _apply_pricing(rows: list[dict]) -> None:
                 # is never blocked from picking a model.
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+
+
+def _moa_provider_row(current_provider: str = "") -> dict | None:
+    """Build the virtual ``moa`` provider row for model pickers.
+
+    Shared by the CLI inventory (:func:`build_models_payload`) and the gateway
+    picker path (:func:`hermes_cli.model_switch.list_picker_providers`) so the
+    row shape stays in one place. Returns ``None`` when no MoA presets exist.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        cfg = normalize_moa_config(load_config().get("moa") or {})
+        models = list(cfg.get("presets", {}).keys())
+        if not models:
+            return None
+        return {
+            "slug": "moa",
+            "name": "Mixture of Agents",
+            "is_current": (current_provider or "").lower() == "moa",
+            "is_user_defined": False,
+            "models": models,
+            "total_models": len(models),
+            "source": "virtual",
+            "authenticated": True,
+            "auth_type": "virtual",
+            "warning": "Aggregator acts as the selected model; references provide analysis before each call.",
+        }
+    except Exception:
+        return None

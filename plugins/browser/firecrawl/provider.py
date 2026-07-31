@@ -78,7 +78,10 @@ class FirecrawlBrowserProvider(BrowserProvider):
         }
 
     def create_session(self, task_id: str) -> Dict[str, object]:
-        ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
+        try:
+            ttl = int(os.environ.get("FIRECRAWL_BROWSER_TTL", "300"))
+        except (ValueError, TypeError):
+            ttl = 300
 
         body: Dict[str, object] = {"ttl": ttl}
 
@@ -164,5 +167,7 @@ class FirecrawlBrowserProvider(BrowserProvider):
                     "url": "https://firecrawl.dev",
                 },
             ],
-            "post_setup": "agent_browser",
+            # Cloud-scoped hook: installs the agent-browser CLI only (no
+            # local Chromium — Firecrawl hosts the browser).
+            "post_setup": "browserbase",
         }

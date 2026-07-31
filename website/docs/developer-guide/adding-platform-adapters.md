@@ -34,11 +34,11 @@ The plugin system lets you add a platform adapter without modifying any core Her
 
 ```
 ~/.hermes/plugins/my-platform/
-  PLUGIN.yaml      # Plugin metadata
+  plugin.yaml      # Plugin metadata
   adapter.py       # Adapter class + register() entry point
 ```
 
-### PLUGIN.yaml
+### plugin.yaml
 
 Plugin metadata. The `requires_env` and `optional_env` blocks auto-populate `hermes config` UI entries (see [Surfacing Env Vars](#surfacing-env-vars-in-hermes-config) below).
 
@@ -77,7 +77,7 @@ class MyPlatformAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self.token = os.getenv("MY_PLATFORM_TOKEN") or extra.get("token", "")
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Connect to the platform API, start listeners
         self._mark_connected()
         return True
@@ -185,7 +185,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
 | `hermes config` UI entries | `requires_env` / `optional_env` in `plugin.yaml` auto-populate |
-| send_message tool | Routes through live gateway adapter |
+| send engine (`tools/send_message_tool.py`) | Routes through live gateway adapter |
 | Webhook cross-platform delivery | Registry checked for known platforms |
 | `/update` command access | `allow_update_command` flag |
 | Channel directory | Plugin platforms included in enumeration |
@@ -469,14 +469,14 @@ This checklist is for adding a platform directly to the Hermes core codebase —
 Add your platform to the `Platform` enum in `gateway/config.py`:
 
 ```python
-class Platform(str, Enum):
+class Platform(Enum):
     # ... existing platforms ...
     NEWPLAT = "newplat"
 ```
 
 ### 2. Adapter File
 
-Create `gateway/platforms/newplat.py`:
+Create `plugins/platforms/newplat/adapter.py`:
 
 ```python
 from gateway.config import Platform, PlatformConfig
@@ -495,7 +495,7 @@ class NewPlatAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         self._api_key = extra.get("api_key") or os.getenv("NEWPLAT_API_KEY", "")
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Set up connection, start polling/webhook
         self._mark_connected()
         return True
@@ -541,7 +541,7 @@ Three touchpoints:
 
 ### 4. Gateway Runner (`gateway/run.py`)
 
-Five touchpoints:
+Six touchpoints:
 
 1. **`_create_adapter()`** — Add an `elif platform == Platform.NEWPLAT:` branch
 2. **`_is_user_authorized()` allowed_users map** — `Platform.NEWPLAT: "NEWPLAT_ALLOWED_USERS"`
@@ -576,10 +576,10 @@ Five touchpoints:
 
 ### 9. Optional: Platform Hints
 
-**`agent/prompt_builder.py`** — If your platform has specific rendering limitations (no markdown, message length limits, etc.), add an entry to the `_PLATFORM_HINTS` dict. This injects platform-specific guidance into the system prompt:
+**`agent/prompt_builder.py`** — If your platform has specific rendering limitations (no markdown, message length limits, etc.), add an entry to the `PLATFORM_HINTS` dict. This injects platform-specific guidance into the system prompt:
 
 ```python
-_PLATFORM_HINTS = {
+PLATFORM_HINTS = {
     # ...
     "newplat": (
         "You are chatting via NewPlat. It supports markdown formatting "
@@ -672,8 +672,9 @@ If the adapter holds a persistent connection with a unique credential, add a sco
 ```python
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 
-async def connect(self):
-    if not acquire_scoped_lock("newplat", self._token):
+async def connect(self, *, is_reconnect: bool = False):
+    acquired, _existing = acquire_scoped_lock("newplat", self._token)
+    if not acquired:
         logger.error("Token already in use by another profile")
         return False
     # ... connect
@@ -688,5 +689,5 @@ async def disconnect(self):
 |---------|---------|------------|-------------------|
 | `bluebubbles.py` | REST + webhook | Medium | Simple REST API integration |
 | `weixin.py` | Long-poll + CDN | High | Media handling, encryption |
-| `wecom_callback.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
-| `telegram.py` | Long-poll + Bot API | High | Full-featured adapter with groups, threads |
+| `plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
+| `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |

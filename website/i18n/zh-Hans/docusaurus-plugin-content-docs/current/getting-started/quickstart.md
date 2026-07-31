@@ -48,21 +48,20 @@ description: "与 Hermes Agent 的第一次对话——从安装到开始聊天�
 
 ## 1. 安装 Hermes Agent
 
-**方式 A — pip（最简单）：**
+### 在 macOS 或 Windows 上使用 Hermes Desktop 安装器（推荐）
 
-```bash
-pip install hermes-agent
-hermes postinstall     # 可选：安装 Node.js、浏览器、ripgrep、ffmpeg 并运行 setup
-```
+如需同时安装命令行与桌面应用，请从我们的官网[下载 Hermes Desktop 安装器](https://hermes-agent.nousresearch.com/)并运行。
 
-PyPI 发布版本跟踪带标签的版本（主/次版本发布），而非 `main` 分支上的每次提交。如需最新代码，请使用方式 B。
+### 不使用 Hermes Desktop：
 
-**方式 B — git 安装器（跟踪 main 分支）：**
+仅安装命令行版本（跟踪 main 分支）：
 
 ```bash
 # Linux / macOS / WSL2 / Android (Termux)
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
+
+安装脚本会在 `~/.hermes/hermes-agent` 创建一个受管理的隔离环境（独立的 uv 托管解释器和 venv），这是唯一受支持的安装方式 —— 包括开发用途。请勿使用 `pip install hermes-agent`。
 
 :::tip Android / Termux
 如果你在手机上安装，请参阅专门的 [Termux 指南](./termux.md)，其中包含经过测试的手动安装步骤、支持的扩展功能以及当前 Android 特有的限制。
@@ -124,6 +123,7 @@ hermes setup --portal
 | **NVIDIA NIM** | 通过 build.nvidia.com 或本地 NIM 使用 Nemotron 模型 | 设置 `NVIDIA_API_KEY`（可选：`NVIDIA_BASE_URL`） |
 | **GitHub Copilot** | GitHub Copilot 订阅（GPT-5.x、Claude、Gemini 等） | 通过 `hermes model` 进行 OAuth，或设置 `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` |
 | **GitHub Copilot ACP** | Copilot ACP agent 后端（在本地启动 `copilot` CLI） | `hermes model`（需要 `copilot` CLI + `copilot login`） |
+| **Vercel AI Gateway** | Vercel AI Gateway 路由 | 设置 `AI_GATEWAY_API_KEY` |
 | **Custom Endpoint** | VLLM、SGLang、Ollama 或任何兼容 OpenAI 的 API | 设置 base URL + API key |
 
 对于大多数初次使用的用户：选择一个 provider，接受默认值（除非你明确知道为何要修改）。完整的 provider 目录及环境变量和配置步骤请参阅 [Providers](../integrations/providers.md) 页面。
@@ -259,7 +259,7 @@ hermes config set terminal.backend ssh       # 远程服务器
 # 在 Hermes 安装目录下运行（curl 安装器在 Linux/macOS 上将其放置于
 # ~/.hermes/hermes-agent，在 Windows 上为 %LOCALAPPDATA%\hermes\hermes-agent）：
 cd ~/.hermes/hermes-agent
-uv pip install -e ".[voice]"
+uv pip install --python ./venv/bin/python -e ".[voice]"
 # 包含 faster-whisper，用于免费的本地语音转文字
 ```
 

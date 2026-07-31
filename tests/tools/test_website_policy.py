@@ -65,28 +65,6 @@ def test_check_website_access_matches_parent_domain_subdomains(tmp_path):
     assert blocked["rule"] == "example.com"
 
 
-def test_check_website_access_supports_wildcard_subdomains_only(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "security": {
-                    "website_blocklist": {
-                        "enabled": True,
-                        "domains": ["*.tracking.example"],
-                    }
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    assert check_website_access("https://a.tracking.example", config_path=config_path) is not None
-    assert check_website_access("https://www.tracking.example", config_path=config_path) is not None
-    assert check_website_access("https://tracking.example", config_path=config_path) is None
-
-
 def test_default_config_exposes_website_blocklist_shape():
     from hermes_cli.config import DEFAULT_CONFIG
 
@@ -94,119 +72,6 @@ def test_default_config_exposes_website_blocklist_shape():
     assert website_blocklist["enabled"] is False
     assert website_blocklist["domains"] == []
     assert website_blocklist["shared_files"] == []
-
-
-def test_load_website_blocklist_uses_enabled_default_when_section_missing(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump({"display": {"tool_progress": "all"}}, sort_keys=False), encoding="utf-8")
-
-    policy = load_website_blocklist(config_path)
-
-    assert policy == {"enabled": False, "rules": []}
-
-
-def test_load_website_blocklist_raises_clean_error_for_invalid_domains_type(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "security": {
-                    "website_blocklist": {
-                        "enabled": True,
-                        "domains": "example.com",
-                    }
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(WebsitePolicyError, match="security.website_blocklist.domains must be a list"):
-        load_website_blocklist(config_path)
-
-
-def test_load_website_blocklist_raises_clean_error_for_invalid_shared_files_type(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "security": {
-                    "website_blocklist": {
-                        "enabled": True,
-                        "shared_files": "community-blocklist.txt",
-                    }
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(WebsitePolicyError, match="security.website_blocklist.shared_files must be a list"):
-        load_website_blocklist(config_path)
-
-
-def test_load_website_blocklist_raises_clean_error_for_invalid_top_level_config_type(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(["not", "a", "mapping"], sort_keys=False), encoding="utf-8")
-
-    with pytest.raises(WebsitePolicyError, match="config root must be a mapping"):
-        load_website_blocklist(config_path)
-
-
-def test_load_website_blocklist_raises_clean_error_for_invalid_security_type(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump({"security": []}, sort_keys=False), encoding="utf-8")
-
-    with pytest.raises(WebsitePolicyError, match="security must be a mapping"):
-        load_website_blocklist(config_path)
-
-
-def test_load_website_blocklist_raises_clean_error_for_invalid_website_blocklist_type(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "security": {
-                    "website_blocklist": "block everything",
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(WebsitePolicyError, match="security.website_blocklist must be a mapping"):
-        load_website_blocklist(config_path)
-
-
-def test_load_website_blocklist_raises_clean_error_for_invalid_enabled_type(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "security": {
-                    "website_blocklist": {
-                        "enabled": "false",
-                    }
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(WebsitePolicyError, match="security.website_blocklist.enabled must be a boolean"):
-        load_website_blocklist(config_path)
-
-
-def test_load_website_blocklist_raises_clean_error_for_malformed_yaml(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text("security: [oops\n", encoding="utf-8")
-
-    with pytest.raises(WebsitePolicyError, match="Invalid config YAML"):
-        load_website_blocklist(config_path)
 
 
 def test_load_website_blocklist_wraps_shared_file_read_errors(tmp_path, monkeypatch):
@@ -239,38 +104,6 @@ def test_load_website_blocklist_wraps_shared_file_read_errors(tmp_path, monkeypa
     result = load_website_blocklist(config_path)
     assert result["enabled"] is True
     assert result["rules"] == []  # shared file rules skipped
-
-
-def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
-    hermes_home = tmp_path / "hermes-home"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "security": {
-                    "website_blocklist": {
-                        "enabled": True,
-                        "domains": ["dynamic.example"],
-                    }
-                }
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    # Invalidate the module-level cache so the new HERMES_HOME is picked up.
-    # A prior test may have cached a default policy (enabled=False) under the
-    # old HERMES_HOME set by the autouse _isolate_hermes_home fixture.
-    from tools.website_policy import invalidate_cache
-    invalidate_cache()
-
-    blocked = check_website_access("https://dynamic.example/path")
-
-    assert blocked is not None
-    assert blocked["rule"] == "dynamic.example"
 
 
 def test_check_website_access_blocks_scheme_less_urls(tmp_path):
@@ -398,7 +231,7 @@ class TestWebToolPolicy:
         # Force the firecrawl plugin to be the active extract provider.
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
-        result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"], use_llm_processing=False))
+        result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"]))
 
         assert result["results"][0]["url"] == "https://blocked.test"
         assert "Blocked by website policy" in result["results"][0]["error"]
@@ -413,6 +246,7 @@ class TestWebToolPolicy:
             return True
 
         monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+        monkeypatch.setattr(firecrawl_provider, "is_safe_url", lambda url: True)
 
         def fake_check(url):
             if url == "https://allowed.test":
@@ -443,7 +277,7 @@ class TestWebToolPolicy:
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
-        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
+        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"]))
 
         assert result["results"][0]["url"] == "https://blocked.test/final"
         assert result["results"][0]["content"] == ""

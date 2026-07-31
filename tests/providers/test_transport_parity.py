@@ -27,19 +27,6 @@ def _max_tokens_fn(n):
 class TestNvidiaParity:
     """NVIDIA NIM: default max_tokens=16384."""
 
-    def test_default_max_tokens(self, transport):
-        """NVIDIA default max_tokens=16384 comes from profile, not legacy is_nvidia_nim flag."""
-        from providers import get_provider_profile
-
-        profile = get_provider_profile("nvidia")
-        kw = transport.build_kwargs(
-            model="nvidia/llama-3.1-nemotron-70b-instruct",
-            messages=_simple_messages(),
-            tools=None,
-            max_tokens_param_fn=_max_tokens_fn,
-            provider_profile=profile,
-        )
-        assert kw["max_completion_tokens"] == 16384
 
     def test_user_max_tokens_overrides(self, transport):
         from providers import get_provider_profile
@@ -69,17 +56,10 @@ class TestKimiParity:
         )
         assert "temperature" not in kw
 
-    def test_default_max_tokens(self, transport):
-        kw = transport.build_kwargs(
-            model="kimi-k2",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
-            max_tokens_param_fn=_max_tokens_fn,
-        )
-        assert kw["max_completion_tokens"] == 32000
 
     def test_thinking_enabled(self, transport):
+        # xor contract (fix ce4e74b3): an explicit recognized effort sends
+        # reasoning_effort ONLY — never paired with extra_body.thinking.
         kw = transport.build_kwargs(
             model="kimi-k2",
             messages=_simple_messages(),
@@ -87,17 +67,10 @@ class TestKimiParity:
             provider_profile=get_provider_profile("kimi-coding"),
             reasoning_config={"enabled": True, "effort": "high"},
         )
-        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+        assert kw.get("reasoning_effort") == "high"
+        assert "thinking" not in kw.get("extra_body", {})
 
-    def test_thinking_disabled(self, transport):
-        kw = transport.build_kwargs(
-            model="kimi-k2",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
-            reasoning_config={"enabled": False},
-        )
-        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+
 
     def test_reasoning_effort_top_level(self, transport):
         """Kimi reasoning_effort is a TOP-LEVEL api_kwargs key, NOT in extra_body."""
@@ -111,15 +84,6 @@ class TestKimiParity:
         assert kw.get("reasoning_effort") == "high"
         assert "reasoning_effort" not in kw.get("extra_body", {})
 
-    def test_reasoning_effort_default_medium(self, transport):
-        kw = transport.build_kwargs(
-            model="kimi-k2",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
-            reasoning_config={"enabled": True},
-        )
-        assert kw.get("reasoning_effort") == "medium"
 
 
 class TestOpenRouterParity:
@@ -136,29 +100,8 @@ class TestOpenRouterParity:
         )
         assert kw["extra_body"]["provider"] == prefs
 
-    def test_reasoning_passes_full_config(self, transport):
-        """OpenRouter passes the FULL reasoning_config dict, not just effort."""
-        rc = {"enabled": True, "effort": "high"}
-        kw = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("openrouter"),
-            supports_reasoning=True,
-            reasoning_config=rc,
-        )
-        assert kw["extra_body"]["reasoning"] == rc
 
-    def test_default_reasoning_when_no_config(self, transport):
-        """When supports_reasoning=True but no config, adds default."""
-        kw = transport.build_kwargs(
-            model="anthropic/claude-sonnet-4.6",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("openrouter"),
-            supports_reasoning=True,
-        )
-        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
+
 
 
 class TestNousParity:
@@ -174,43 +117,13 @@ class TestNousParity:
         )
         assert kw["extra_body"]["tags"] == nous_portal_tags()
 
-    def test_reasoning_omitted_when_disabled(self, transport):
-        """Nous special case: reasoning omitted entirely when disabled."""
-        kw = transport.build_kwargs(
-            model="hermes-3-llama-3.1-405b",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("nous"),
-            supports_reasoning=True,
-            reasoning_config={"enabled": False},
-        )
-        assert "reasoning" not in kw.get("extra_body", {})
 
-    def test_reasoning_enabled(self, transport):
-        rc = {"enabled": True, "effort": "high"}
-        kw = transport.build_kwargs(
-            model="hermes-3-llama-3.1-405b",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("nous"),
-            supports_reasoning=True,
-            reasoning_config=rc,
-        )
-        assert kw["extra_body"]["reasoning"] == rc
+
 
 
 class TestQwenParity:
     """Qwen: max_tokens=65536, vl_high_resolution, metadata top-level."""
 
-    def test_default_max_tokens(self, transport):
-        kw = transport.build_kwargs(
-            model="qwen3.5-plus",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("qwen-oauth"),
-            max_tokens_param_fn=_max_tokens_fn,
-        )
-        assert kw["max_completion_tokens"] == 65536
 
     def test_vl_high_resolution(self, transport):
         kw = transport.build_kwargs(

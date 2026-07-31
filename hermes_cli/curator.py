@@ -36,6 +36,35 @@ def _fmt_ts(ts: Optional[str]) -> str:
     return f"{secs // 86400}d ago"
 
 
+def _print_unmanaged_summary() -> None:
+    """Report curation-eligible skills that carry no provenance marker.
+
+    A skill only becomes curator-managed once ``created_by: agent`` lands on
+    its usage record, which happens ONLY for background-review creations.
+    Skills predating that marker, plus every foreground
+    ``skill_manage(create)``, are eligible but unmanaged — no automatic
+    transition ever considers them. Printing just the managed count made a
+    large library look fully curated while a big slice was untouchable.
+    """
+    from tools import skill_usage
+
+    try:
+        unmanaged = skill_usage.unmanaged_report()
+    except Exception:
+        return
+    if not unmanaged:
+        return
+    legacy = sum(1 for r in unmanaged if not r.get("has_provenance_key"))
+    foreground = len(unmanaged) - legacy
+    print(f"\nunmanaged (no provenance marker): {len(unmanaged)} total")
+    print(f"  pre-dates marker    {legacy}")
+    print(f"  foreground-created  {foreground}")
+    print(
+        "  never auto-staled or archived — "
+        "`hermes curator adopt <name>` hands one over"
+    )
+
+
 def _cmd_status(args) -> int:
     from agent import curator
     from tools import skill_usage
@@ -77,27 +106,43 @@ def _cmd_status(args) -> int:
     print(f"  interval:       every {_interval_label}")
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
+    print(
+        f"  consolidate:    {'on' if curator.get_consolidate() else 'off'}"
+        f"{'' if curator.get_consolidate() else ' (prune-only; LLM merge pass opt-in)'}"
+    )
 
-    rows = skill_usage.agent_created_report()
+    rows = skill_usage.curated_report()
     if not rows:
-        print("\nno agent-created skills")
+        print("\nno curator-managed skills")
+        _print_unmanaged_summary()
         return 0
 
     by_state = {"active": [], "stale": [], "archived": []}
     pinned = []
+    agent_count = 0
+    bundled_count = 0
     for r in rows:
         state_name = r.get("state", "active")
         by_state.setdefault(state_name, []).append(r)
         if r.get("pinned"):
             pinned.append(r["name"])
+        prov = r.get("provenance", "agent")
+        if prov == "agent":
+            agent_count += 1
+        elif prov == "bundled":
+            bundled_count += 1
 
-    print(f"\nagent-created skills: {len(rows)} total")
+    print(f"\ncurator-managed skills: {len(rows)} total  "
+          f"(agent-created={agent_count}  bundled={bundled_count})")
     for state_name in ("active", "stale", "archived"):
         bucket = by_state.get(state_name, [])
         print(f"  {state_name:10s} {len(bucket)}")
 
     if pinned:
         print(f"\npinned ({len(pinned)}): {', '.join(pinned)}")
+
+    # Surface the curation blind spot on the managed path too.
+    _print_unmanaged_summary()
 
     # Show top 5 least-recently-active skills. Views and edits are activity too:
     # curator should not report a skill as "never used" right after skill_view()
@@ -174,10 +219,20 @@ def _cmd_run(args) -> int:
     dry = bool(getattr(args, "dry_run", False))
     background = bool(getattr(args, "background", False))
     synchronous = bool(getattr(args, "synchronous", False)) or not background
+    # --consolidate forces the LLM umbrella-building pass on for this run,
+    # overriding the config default (off). When the flag is absent, pass None
+    # so run_curator_review reads curator.consolidate from config.
+    consolidate = True if bool(getattr(args, "consolidate", False)) else None
     if dry:
         print("curator: running DRY-RUN (report only, no mutations)...")
     else:
         print("curator: running review pass...")
+    if consolidate is None and not curator.get_consolidate():
+        print(
+            "curator: consolidation is off — running prune-only "
+            "(deterministic stale/archive). Pass --consolidate or set "
+            "`curator.consolidate: true` to enable the LLM merge pass."
+        )
 
     def _on_summary(msg: str) -> None:
         print(msg)
@@ -186,6 +241,7 @@ def _cmd_run(args) -> int:
         on_summary=_on_summary,
         synchronous=synchronous,
         dry_run=dry,
+        consolidate=consolidate,
     )
     auto = result.get("auto_transitions", {})
     if auto:
@@ -257,6 +313,90 @@ def _cmd_unpin(args) -> int:
     return 0
 
 
+def _cmd_list_unmanaged(args) -> int:
+    """List curation-eligible skills that carry no provenance marker.
+
+    The same population `status` summarizes, itemized. Useful before deciding
+    what to hand over with `adopt`.
+    """
+    from tools import skill_usage
+
+    rows = skill_usage.unmanaged_report()
+    if not rows:
+        print("curator: no unmanaged skills — every eligible skill is managed")
+        return 0
+
+    print(f"unmanaged skills ({len(rows)}):")
+    for r in sorted(rows, key=lambda x: x["name"]):
+        why = "created_by:null" if r.get("has_provenance_key") else "no marker"
+        last = _fmt_ts(r.get("last_activity_at"))
+        print(
+            f"  {r['name']:44s} "
+            f"activity={r.get('activity_count', 0):4d}  "
+            f"last_activity={last:14s}  "
+            f"({why})"
+        )
+    print("\nadopt one with `hermes curator adopt <name>`, "
+          "or all with `hermes curator adopt --all-unmanaged`")
+    return 0
+
+
+def _cmd_adopt(args) -> int:
+    """Hand unmanaged skills to the curator by explicit user declaration.
+
+    Provenance cannot be inferred from telemetry: a high patch count proves
+    the agent MAINTAINS a skill, not that it AUTHORED it (the agent edits
+    user-written skills on the user's behalf constantly). So adoption is never
+    automatic — the user names what they're handing over, or passes
+    ``--all-unmanaged`` to hand over every eligible skill at once.
+    """
+    from tools import skill_usage
+
+    names = list(getattr(args, "skill", None) or [])
+    adopt_all = bool(getattr(args, "all_unmanaged", False))
+    if adopt_all:
+        if names:
+            print("curator: pass either skill names or --all-unmanaged, not both")
+            return 1
+        names = skill_usage.list_unmanaged_skill_names()
+        if not names:
+            print("curator: no unmanaged skills to adopt")
+            return 0
+    if not names:
+        print("curator: name a skill to adopt, or pass --all-unmanaged")
+        return 1
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    if dry_run:
+        print(f"curator: would adopt {len(names)} skill(s) (dry run):")
+        for n in names:
+            print(f"  + {n}")
+        return 0
+
+    # Bulk adoption is a real lifecycle change (adopted skills become
+    # archivable), so confirm unless the caller opted out.
+    if adopt_all and not bool(getattr(args, "yes", False)):
+        print(f"curator: adopt {len(names)} unmanaged skill(s) into curator management?")
+        print("  they become eligible for automatic staleness + archival")
+        try:
+            reply = input("  proceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reply = ""
+        if reply not in {"y", "yes"}:
+            print("curator: aborted")
+            return 1
+
+    failed = 0
+    for n in names:
+        ok, msg = skill_usage.adopt_skill(n)
+        print(f"curator: {msg}")
+        if not ok:
+            failed += 1
+    if len(names) > 1:
+        print(f"curator: adopted {len(names) - failed}/{len(names)}")
+    return 1 if failed else 0
+
+
 def _cmd_restore(args) -> int:
     from tools import skill_usage
     ok, msg = skill_usage.restore_skill(args.skill)
@@ -302,7 +442,7 @@ def _idle_days(record: dict) -> Optional[int]:
 
 
 def _cmd_prune(args) -> int:
-    """Bulk-archive agent-created skills idle for >= N days.
+    """Bulk-archive curator-managed skills idle for >= N days.
 
     Pinned skills are exempt. Already-archived skills are skipped. Default
     ``--days 90`` matches a conservative read of the curator's own archive
@@ -318,7 +458,7 @@ def _cmd_prune(args) -> int:
     skip_confirm = bool(getattr(args, "yes", False))
 
     candidates = []
-    for r in skill_usage.agent_created_report():
+    for r in skill_usage.curated_report():
         if r.get("pinned"):
             continue
         if r.get("state") == skill_usage.STATE_ARCHIVED:
@@ -473,6 +613,66 @@ def _cmd_list_archived(args) -> int:
     return 0
 
 
+def _cmd_usage(args) -> int:
+    """Show usage telemetry for ALL skills, with provenance.
+
+    Unlike `status` (curator-scoped to curated candidates), this lists
+    every skill on disk — bundled built-ins and hub-installed included — so you
+    can see how often each is actually used regardless of curation.
+    """
+    import json as _json
+    from tools import skill_usage
+
+    rows = skill_usage.usage_report()
+
+    prov_filter = getattr(args, "provenance", None)
+    if prov_filter:
+        rows = [r for r in rows if r.get("provenance") == prov_filter]
+
+    sort_key = getattr(args, "sort", "activity")
+    if sort_key == "name":
+        rows.sort(key=lambda r: r["name"])
+    elif sort_key == "recent":
+        # Most-recently-active first; never-active sinks to the bottom.
+        rows.sort(key=lambda r: r.get("last_activity_at") or "", reverse=True)
+    else:  # "activity" (default): most-used first
+        rows.sort(key=lambda r: r.get("activity_count", 0), reverse=True)
+
+    if getattr(args, "json", False):
+        print(_json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+
+    if not rows:
+        print("curator: no skills found")
+        return 0
+
+    # Provenance tallies for a quick header.
+    counts = {"agent": 0, "bundled": 0, "hub": 0}
+    for r in rows:
+        counts[r.get("provenance", "agent")] = counts.get(r.get("provenance", "agent"), 0) + 1
+    print(
+        f"skills: {len(rows)} total  "
+        f"(agent={counts['agent']}  bundled={counts['bundled']}  hub={counts['hub']})"
+    )
+    print()
+    print(
+        f"  {'skill':40s}  {'origin':8s}  "
+        f"{'use':>4s}  {'view':>4s}  {'patch':>5s}  {'act':>4s}  last_activity"
+    )
+    for r in rows:
+        last = _fmt_ts(r.get("last_activity_at"))
+        print(
+            f"  {r['name'][:40]:40s}  "
+            f"{r.get('provenance', 'agent'):8s}  "
+            f"{r.get('use_count', 0):>4d}  "
+            f"{r.get('view_count', 0):>4d}  "
+            f"{r.get('patch_count', 0):>5d}  "
+            f"{r.get('activity_count', 0):>4d}  "
+            f"{last}"
+        )
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring (called from hermes_cli.main)
 # ---------------------------------------------------------------------------
@@ -489,6 +689,25 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_status = subs.add_parser("status", help="Show curator status and skill stats")
     p_status.set_defaults(func=_cmd_status)
 
+    p_usage = subs.add_parser(
+        "usage",
+        help="Show usage telemetry for ALL skills (built-in, hub, agent) with provenance",
+    )
+    p_usage.add_argument(
+        "--sort", choices=("activity", "recent", "name"), default="activity",
+        help="Sort order: activity (most-used first, default), recent "
+             "(most-recently-active first), or name (alphabetical)",
+    )
+    p_usage.add_argument(
+        "--provenance", choices=("agent", "bundled", "hub"), default=None,
+        help="Only show skills of this origin",
+    )
+    p_usage.add_argument(
+        "--json", action="store_true",
+        help="Emit the full report as JSON instead of a table",
+    )
+    p_usage.set_defaults(func=_cmd_usage)
+
     p_run = subs.add_parser("run", help="Trigger a curator review now")
     p_run.add_argument(
         "--sync", "--synchronous", dest="synchronous", action="store_true",
@@ -502,6 +721,12 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
         "--dry-run", dest="dry_run", action="store_true",
         help="Report only — no state changes, no archives, no consolidation "
              "(use this to preview what curator would do)",
+    )
+    p_run.add_argument(
+        "--consolidate", dest="consolidate", action="store_true",
+        help="Force the LLM umbrella-building consolidation pass on for this "
+             "run, overriding the config default (off). Without this flag the "
+             "run is prune-only unless `curator.consolidate: true` is set.",
     )
     p_run.set_defaults(func=_cmd_run)
 
@@ -519,6 +744,33 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_unpin.add_argument("skill", help="Skill name")
     p_unpin.set_defaults(func=_cmd_unpin)
 
+    subs.add_parser(
+        "list-unmanaged",
+        help="List curation-eligible skills with no provenance marker",
+    ).set_defaults(func=_cmd_list_unmanaged)
+
+    p_adopt = subs.add_parser(
+        "adopt",
+        help="Hand unmanaged skills to the curator (provenance is a user declaration)",
+    )
+    p_adopt.add_argument(
+        "skill", nargs="*",
+        help="Skill name(s) to adopt. Omit when using --all-unmanaged.",
+    )
+    p_adopt.add_argument(
+        "--all-unmanaged", action="store_true",
+        help="Adopt every curation-eligible skill that has no provenance marker",
+    )
+    p_adopt.add_argument(
+        "--dry-run", action="store_true",
+        help="List what would be adopted without writing anything",
+    )
+    p_adopt.add_argument(
+        "--yes", action="store_true",
+        help="Skip the confirmation prompt for --all-unmanaged",
+    )
+    p_adopt.set_defaults(func=_cmd_adopt)
+
     p_restore = subs.add_parser("restore", help="Restore an archived skill")
     p_restore.add_argument("skill", help="Skill name")
     p_restore.set_defaults(func=_cmd_restore)
@@ -535,7 +787,7 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     p_prune = subs.add_parser(
         "prune",
-        help="Bulk-archive agent-created skills idle for >= N days (default 90)",
+        help="Bulk-archive curator-managed skills idle for >= N days (default 90)",
     )
     p_prune.add_argument(
         "--days", type=int, default=90,

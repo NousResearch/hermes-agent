@@ -127,7 +127,7 @@ See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a tem
 
 Use the full checklist below when your provider needs any of the following:
 
-- OAuth or token refresh (Nous Portal, Codex, Google Gemini, Qwen Portal, Copilot)
+- OAuth or token refresh (Nous Portal, Codex, Qwen Portal, Copilot)
 - A non-OpenAI API shape that requires a new adapter (Anthropic Messages, Codex Responses)
 - Custom endpoint detection or multi-region probing (z.ai, Kimi)
 - A curated static model catalog or live `/models` fetch
@@ -338,11 +338,11 @@ For docs-only examples, the exact file set may differ. The point is to cover:
 - provider:model parsing
 - any adapter-specific message conversion
 
-Run tests with xdist disabled:
+Run the targeted tests (or use `scripts/run_tests.sh`, which runs each file in its own subprocess):
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -n0 -q
+python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -q
 ```
 
 For deeper changes, run the full suite before pushing:

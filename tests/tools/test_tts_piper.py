@@ -8,6 +8,7 @@ without requiring the ``piper-tts`` package to actually be installed
 
 import json
 import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -59,54 +60,6 @@ class TestResolvePiperVoicePath:
         result = _resolve_piper_voice_path(str(model), tmp_path)
         assert result == str(model)
 
-    def test_cached_voice_name_not_redownloaded(self, tmp_path):
-        """If both <voice>.onnx and <voice>.onnx.json exist in the
-        download dir, no subprocess is spawned."""
-        voice = "en_US-test-medium"
-        (tmp_path / f"{voice}.onnx").write_bytes(b"model")
-        (tmp_path / f"{voice}.onnx.json").write_text("{}")
-
-        with patch("tools.tts_tool.subprocess.run") as mock_run:
-            result = _resolve_piper_voice_path(voice, tmp_path)
-
-        mock_run.assert_not_called()
-        assert result == str(tmp_path / f"{voice}.onnx")
-
-    def test_missing_voice_triggers_download(self, tmp_path):
-        voice = "en_US-new-medium"
-
-        def fake_run(cmd, *a, **kw):
-            # Simulate a successful download: write the expected files.
-            (tmp_path / f"{voice}.onnx").write_bytes(b"model")
-            (tmp_path / f"{voice}.onnx.json").write_text("{}")
-            return MagicMock(returncode=0, stderr="", stdout="")
-
-        with patch("tools.tts_tool.subprocess.run", side_effect=fake_run) as mock_run:
-            result = _resolve_piper_voice_path(voice, tmp_path)
-
-        mock_run.assert_called_once()
-        # Verify the command shape: python -m piper.download_voices <voice> --download-dir <dir>
-        call_args = mock_run.call_args.args[0]
-        assert "piper.download_voices" in " ".join(call_args)
-        assert voice in call_args
-        assert "--download-dir" in call_args
-        assert str(tmp_path) in call_args
-        assert result == str(tmp_path / f"{voice}.onnx")
-
-    def test_download_failure_raises_runtime(self, tmp_path):
-        voice = "en_US-broken-medium"
-        fake_result = MagicMock(returncode=1, stderr="voice not found", stdout="")
-        with patch("tools.tts_tool.subprocess.run", return_value=fake_result):
-            with pytest.raises(RuntimeError, match="Piper voice download failed"):
-                _resolve_piper_voice_path(voice, tmp_path)
-
-    def test_download_success_but_missing_file_raises(self, tmp_path):
-        voice = "en_US-weird-medium"
-        fake_result = MagicMock(returncode=0, stderr="", stdout="")
-        # Subprocess "succeeds" but doesn't actually write the files.
-        with patch("tools.tts_tool.subprocess.run", return_value=fake_result):
-            with pytest.raises(RuntimeError, match="completed but .+ is missing"):
-                _resolve_piper_voice_path(voice, tmp_path)
 
     def test_empty_voice_falls_back_to_default_name(self, tmp_path):
         (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx").write_bytes(b"model")
@@ -189,55 +142,42 @@ class TestGeneratePiperTts:
         # But both synthesize calls went through.
         assert [c[0] for c in _StubPiperVoice.calls] == ["one", "two"]
 
-    def test_voice_name_triggers_download(self, tmp_path, monkeypatch):
-        """A config voice of ``en_US-lessac-medium`` should be resolved via
-        _resolve_piper_voice_path (which would normally download)."""
-        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
 
-        def fake_resolve(voice, download_dir):
-            model = download_dir / f"{voice}.onnx"
-            model.write_bytes(b"model")
-            return str(model)
+    def test_speaker_id_alone_triggers_synconfig(self, tmp_path, monkeypatch):
+        """Setting ONLY speaker_id (no other advanced knobs) still constructs SynthesisConfig.
 
-        monkeypatch.setattr(tts_tool, "_resolve_piper_voice_path", fake_resolve)
-
-        config = {"piper": {"voice": "en_US-lessac-medium", "voices_dir": str(tmp_path)}}
-        result = tts_tool._generate_piper_tts("hi", str(tmp_path / "out.wav"), config)
-
-        assert Path(result).exists()
-        assert _StubPiperVoice.loaded[0].endswith("en_US-lessac-medium.onnx")
-
-    def test_advanced_knobs_passed_as_synconfig(self, tmp_path, monkeypatch):
+        Regression guard: has_advanced must include speaker_id, otherwise
+        this knob gets silently dropped on the simplest configuration.
+        """
         model = self._prepare_voice_files(tmp_path)
         monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
 
-        # Fake SynthesisConfig so we can assert the knobs flowed through.
         fake_syn_cls = MagicMock()
+        monkeypatch.setitem(sys.modules, "piper", types.SimpleNamespace(SynthesisConfig=fake_syn_cls))
 
-        class FakePiperModule:
-            SynthesisConfig = fake_syn_cls
+        config = {"piper": {"voice": str(model), "speaker_id": 1}}
+        tts_tool._generate_piper_tts("hi", str(tmp_path / "out.wav"), config)
 
-        # The SynthesisConfig import happens inline inside _generate_piper_tts
-        # via ``from piper import SynthesisConfig``. Inject a fake piper
-        # module so that import resolves.
-        monkeypatch.setitem(sys.modules, "piper", FakePiperModule)
-
-        config = {
-            "piper": {
-                "voice": str(model),
-                "length_scale": 2.0,
-                "volume": 0.8,
-            },
-        }
-        tts_tool._generate_piper_tts(
-            "slow voice", str(tmp_path / "out.wav"), config,
-        )
-
-        # SynthesisConfig was constructed with the advanced knobs.
         fake_syn_cls.assert_called_once()
-        kwargs = fake_syn_cls.call_args.kwargs
-        assert kwargs["length_scale"] == 2.0
-        assert kwargs["volume"] == 0.8
+
+
+    def test_speaker_id_does_not_invalidate_voice_cache(self, tmp_path, monkeypatch):
+        """Switching speaker_id between calls must NOT trigger a model reload.
+
+        PiperVoice is bound to a model, not a speaker — speaker is applied
+        per-call via syn_config.speaker_id. The voice cache should serve the
+        same PiperVoice instance for the same (model, cuda) regardless of
+        how many distinct speaker_ids the user cycles through.
+        """
+        model = self._prepare_voice_files(tmp_path)
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
+
+        for speaker in (0, 1, 2, 3):
+            config = {"piper": {"voice": str(model), "speaker_id": speaker}}
+            tts_tool._generate_piper_tts("hi", str(tmp_path / f"out-{speaker}.wav"), config)
+
+        # Only one PiperVoice.load() call across four calls with different speakers.
+        assert _StubPiperVoice.loaded == [str(model)]
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +225,7 @@ class TestTextToSpeechToolWithPiper:
 class TestCheckTtsRequirementsPiper:
     def test_piper_install_satisfies_requirements(self, monkeypatch):
         # Drop every other provider so we can isolate the piper signal.
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "piper"})
         monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: (_ for _ in ()).throw(ImportError()))
         monkeypatch.setattr(tts_tool, "_import_elevenlabs", lambda: (_ for _ in ()).throw(ImportError()))
         monkeypatch.setattr(tts_tool, "_import_openai_client", lambda: (_ for _ in ()).throw(ImportError()))

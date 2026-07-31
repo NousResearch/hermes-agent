@@ -172,4 +172,138 @@ describe('preprocessMarkdown', () => {
       '<https://www.getyourguide.com/en-gb/san-juan-puerto-rico-l355/san-juan-old-san-juan-sunset-cruise-with-drinks-transfer-t405191/>'
     )
   })
+
+  it('does not swallow trailing emphasis asterisks into an autolinked url', () => {
+    const input = '**PR opened: https://github.com/NousResearch/hermes-agent/pull/12345**'
+
+    const output = preprocessMarkdown(input)
+
+    // The URL is autolinked WITHOUT the trailing `**` glued into the href,
+    // and the bold emphasis run stays intact so it renders as bold + a link.
+    expect(output).toContain('<https://github.com/NousResearch/hermes-agent/pull/12345>')
+    expect(output).not.toContain('pull/12345**>')
+    expect(output).not.toContain('12345*')
+  })
+
+  it('stops an autolinked url at mid-string bold markers', () => {
+    const input = 'See https://github.com/foo/bar**bold** for details.'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('<https://github.com/foo/bar>')
+    expect(output).toContain('**bold**')
+  })
+
+  it('keeps underscores and tildes inside autolinked url paths', () => {
+    const input = 'Docs at https://example.com/a_b/c~d/page'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('<https://example.com/a_b/c~d/page>')
+  })
+
+  it('handles a fenced block larger than V8 spread-argument limit', () => {
+    // A single huge code block (e.g. a logged minified bundle) used to throw
+    // `RangeError: Maximum call stack size exceeded` via `out.push(...lines)`.
+    const body = Array.from({ length: 200_000 }, (_, i) => `line ${i}`).join('\n')
+    const input = `\`\`\`js\n${body}\n\`\`\``
+
+    expect(() => preprocessMarkdown(input)).not.toThrow()
+  })
+
+  it('keeps $$<digit>$$ display math intact instead of escaping it as currency', () => {
+    const output = preprocessMarkdown('$$5x = 10$$')
+
+    expect(output).toContain('$$5x = 10$$')
+    expect(output).not.toContain('\\$')
+  })
+
+  it('keeps numeric inline math intact instead of escaping it as currency', () => {
+    const input = ['- The observed outcome might be $4$', '- Because $4\\in A$, event $A$ occurred'].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it.each(['$4$', '$2/3$', '$5x=10$', '$4xy$', '$10kg$'])('preserves balanced numeric inline math: %s', input => {
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('does not mistake a numeric formula closer for a later price opener', () => {
+    expect(preprocessMarkdown('Probability is $2/3$ and fee is $7.')).toBe('Probability is $2/3$ and fee is \\$7.')
+    expect(preprocessMarkdown('$4$ and $10')).toBe('$4$ and \\$10')
+  })
+
+  it('keeps escaping currency ranges instead of treating them as inline math', () => {
+    expect(preprocessMarkdown('$5-$10')).toBe('\\$5-\\$10')
+    expect(preprocessMarkdown('$5 and $x$')).toBe('\\$5 and $x$')
+    expect(preprocessMarkdown('Costs $5 + tax; formula is $x$.')).toBe('Costs \\$5 + tax; formula is $x$.')
+    expect(preprocessMarkdown('Costs $5 = base rate; formula is $x$.')).toBe('Costs \\$5 = base rate; formula is $x$.')
+  })
+
+  it.each([
+    ['Costs $5; delta is $-x$.', 'Costs \\$5; delta is $-x$.'],
+    ['Costs $5; result is $(x+1)$.', 'Costs \\$5; result is $(x+1)$.'],
+    ['Costs $5; set is $[1,2]$.', 'Costs \\$5; set is $[1,2]$.']
+  ])('escapes a price before a later complete math span: %s', (input, expected) => {
+    expect(preprocessMarkdown(input)).toBe(expected)
+  })
+
+  it('keeps the existing currency escaping semantics', () => {
+    expect(preprocessMarkdown('$1,299 total')).toBe('\\$1,299 total')
+    expect(preprocessMarkdown('already \\$5')).toBe('already \\$5')
+    expect(preprocessMarkdown('\\\\$5')).toBe('\\\\\\$5')
+  })
+
+  it('escapes a price while preserving numeric math later in the same sentence', () => {
+    const input = 'Costs $5; outcome is $4\\in A$.'
+
+    expect(preprocessMarkdown(input)).toBe('Costs \\$5; outcome is $4\\in A$.')
+  })
+
+  it('normalizes multiline bracket display math with delimiter-only lines', () => {
+    const input = [
+      'Correct.',
+      '',
+      'Both paths reach the same intersection:',
+      '',
+      '\\[',
+      'P(B)\\cdot P(A\\mid B)',
+      '=',
+      'P(A)\\cdot P(B\\mid A)',
+      '\\]',
+      '',
+      'Now isolate $P(A\\mid B)$.'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('$$\nP(B)\\cdot P(A\\mid B)\n=\nP(A)\\cdot P(B\\mid A)\n$$')
+    expect(output).not.toContain('$$P(B)')
+  })
+
+  it('keeps display math inside its markdown container', () => {
+    const listInput = ['- \\[', '  P(A)', '  =', '  P(B)', '  \\]'].join('\n')
+    const listOutput = ['- $$', '  P(A)', '  =', '  P(B)', '  $$'].join('\n')
+
+    expect(preprocessMarkdown(listInput)).toBe(listOutput)
+    expect(preprocessMarkdown(['> \\[', '> P(A)', '>  \\]'].join('\n'))).toBe(['> $$', '> P(A)', '>  $$'].join('\n'))
+  })
+
+  it('rewrites double-backslash bracket math to dollar delimiters', () => {
+    const output = preprocessMarkdown('\\\\(x^2\\\\)')
+
+    expect(output).toContain('$x^2$')
+  })
+
+  it('rewrites [/math] and [/inline] tag pairs to dollar delimiters', () => {
+    expect(preprocessMarkdown('[/math]a+b[/math]')).toContain('$$a+b$$')
+    expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
+  })
+
+  it('escapes currency dollars in prose so they are not parsed as math', () => {
+    const output = preprocessMarkdown('$5 and $10')
+
+    expect(output).toContain('\\$5')
+    expect(output).toContain('\\$10')
+  })
 })

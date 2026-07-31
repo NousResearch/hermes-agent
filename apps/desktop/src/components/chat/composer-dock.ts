@@ -1,0 +1,53 @@
+import { cn } from '@/lib/utils'
+
+/**
+ * The composer surface and the status/queue stack paint ONE shared
+ * `--composer-fill` var. The state ladder (rest / scrolled) lives in styles.css
+ * on `[data-slot='composer-root']`, so the layers can never disagree.
+ */
+export const composerFill = 'bg-(--composer-fill)'
+
+/** Backdrop treatment for the composer input surface. Harmless when the fill
+ *  goes opaque (drawer open) — nothing shows through to blur. */
+export const composerSurfaceGlass = cn(
+  'backdrop-blur-[0.75rem] backdrop-saturate-[1.12] [-webkit-backdrop-filter:blur(0.75rem)_saturate(1.12)]',
+  'transition-[background-color] duration-150 ease-out'
+)
+
+const composerDockEdge = (edge: 'bottom' | 'top') =>
+  cn('border border-border/65', edge === 'top' ? 'rounded-t-2xl border-b-0' : 'rounded-b-2xl border-t-0')
+
+/** Glassy docked card — the status stack / queue. Paints the SAME
+ *  `--composer-fill` as the surface, so rest / scrolled / focused / drawer-open
+ *  all match the composer by construction. */
+export const composerDockCard = (edge: 'bottom' | 'top' = 'top') =>
+  cn(composerDockEdge(edge), composerFill, composerSurfaceGlass)
+
+/** Floating composer panel skin — the `/`·`@`·`?` completion drawer and the
+ *  attach (`+`) menu. Glassy translucent card, hairline border, full radius,
+ *  smallest type, soft nous shadow. Uses an explicit fill (not `--composer-fill`)
+ *  so it renders identically whether mounted inside the composer or portaled out
+ *  of it. Visual skin only — consumers add their own size/position/padding. */
+export const composerPanelCard = cn(
+  'rounded-2xl border border-border/65 shadow-nous text-[length:var(--conversation-tool-font-size)]',
+  'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
+  composerSurfaceGlass
+)
+
+/**
+ * Shared grid for the chrome-free floating strips that bracket the composer —
+ * the micro-action pills above the surface and the `composer.underside` slot
+ * below it.
+ *
+ * Both are in-flow children of the composer DOCK, siblings of the composer
+ * itself rather than children of it. That's deliberate: the pop-out drag
+ * region is `absolute inset-0` inside the composer, so anything rendered in
+ * there is inside the grab area by construction. Living outside makes that
+ * impossible instead of something the gesture has to exclude.
+ *
+ * One parent and one constant means the two strips share a left edge without
+ * anyone matching numbers across files. Vertical spacing stays at the call
+ * site; the horizontal inset matches the composer's 5px grab margin so the
+ * strips line up with the surface rather than the margin's outer edge.
+ */
+export const composerFloatingStrip = 'flex flex-wrap items-center gap-1.5'

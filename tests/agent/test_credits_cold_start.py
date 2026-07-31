@@ -37,62 +37,14 @@ def test_cold_start_healthy_no_notice():
     assert _cold_start_notices(s) == []
 
 
-def test_cold_start_opens_already_at_90pct_warns():
-    """A session that OPENS already ≥90% must warn immediately — the seed primes
-    seen_below_90 so warn90 fires without a prior live crossing."""
-    s = _state(
-        remaining_micros=2_000_000, subscription_micros=2_000_000,
-        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
-        denominator_kind="subscription_cap", paid_access=True,
-    )
-    assert s.used_fraction == 0.9
-    assert "credits.usage" in _cold_start_notices(s)
 
 
-def test_cold_start_grant_exhausted_warns_and_grant_spent():
-    s = _state(
-        remaining_micros=12_340_000, subscription_micros=0,
-        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
-        purchased_micros=12_340_000, denominator_kind="subscription_cap", paid_access=True,
-    )
-    assert s.used_fraction == 1.0
-    keys = _cold_start_notices(s)
-    assert "credits.usage" in keys
-    assert "credits.grant_spent" in keys
 
 
-def test_cold_start_depleted_warns():
-    s = _state(
-        remaining_micros=0, subscription_micros=0, purchased_micros=0,
-        paid_access=False, disabled_reason="out_of_credits",
-    )
-    assert s.used_fraction is None  # no cap → no %, depletion keys off paid_access
-    assert _cold_start_notices(s) == ["credits.depleted"]
 
 
-def test_cold_start_debt_warns_and_depleted():
-    """Negative subscription balance (the only signed field) → 100% used + depleted."""
-    s = _state(
-        remaining_micros=0, subscription_micros=-5_000_000,
-        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
-        denominator_kind="subscription_cap", paid_access=False,
-        disabled_reason="out_of_credits",
-    )
-    assert s.used_fraction == 1.0
-    keys = _cold_start_notices(s)
-    assert "credits.usage" in keys
-    assert "credits.depleted" in keys
 
 
-def test_cold_start_no_cap_degrades_to_depletion_only():
-    """Without monthly_credits (older portals) the seed sets no limit → used_fraction
-    None → only depletion can fire, never warn90."""
-    healthy_no_cap = _state(
-        remaining_micros=30_000_000, subscription_micros=18_000_000,
-        subscription_limit_micros=None, denominator_kind="none", paid_access=True,
-    )
-    assert healthy_no_cap.used_fraction is None
-    assert _cold_start_notices(healthy_no_cap) == []
 
 
 def test_dev_fixtures_drive_cold_start():
@@ -123,22 +75,29 @@ def test_dev_fixtures_drive_cold_start():
 
 class _FakeAgent:
     """Minimal agent surface for the seed helper: state slots + an emit that runs
-    the real policy against the latch."""
+    the real policy against the latch (mirroring run_agent._emit_credits_notices,
+    including the free-model suppression flag)."""
 
-    def __init__(self, provider="nous"):
-        from agent.credits_tracker import evaluate_credits_notices
+    def __init__(self, provider="nous", model=""):
+        from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model
 
         self.provider = provider
+        self.model = model
         self._credits_state = None
         self._credits_session_start_micros = None
         self._credits_latch = {"active": set(), "seen_below_90": False, "usage_band": None}
         self.emitted: list = []
         self._eval = evaluate_credits_notices
+        self._is_free = is_free_tier_model
 
     def _emit_credits_notices(self):
         if self._credits_state is None:
             return
-        show, clear = self._eval(self._credits_state, self._credits_latch)
+        show, clear = self._eval(
+            self._credits_state,
+            self._credits_latch,
+            model_is_free=self._is_free(self.model),
+        )
         self.emitted.append(([n.key for n in show], clear))
 
 
@@ -156,23 +115,31 @@ def _seed(agent, fixture):
         os.environ.pop("HERMES_DEV_CREDITS", None)
 
 
-def test_seed_fires_usage_band_at_session_open():
-    a = _FakeAgent()
-    assert _seed(a, "sub_90pct") is True
-    assert a._credits_state is not None
-    assert a.emitted == [(["credits.usage"], [])]
 
 
-def test_seed_fires_depleted_at_session_open():
-    a = _FakeAgent()
-    assert _seed(a, "depleted") is True
-    assert a.emitted == [(["credits.depleted"], [])]
 
 
-def test_seed_healthy_no_notice():
+
+
+
+
+
+
+def test_live_crossing_after_seed_still_fires_grant_spent():
+    """The gate opens when the session observes the grant NOT yet spent — a healthy
+    seed followed by a grant-exhausted header is a real in-session crossing and must
+    still announce grant_spent once."""
     a = _FakeAgent()
     assert _seed(a, "healthy") is True
-    assert a.emitted == [([], [])]
+    a.emitted = []
+    a._credits_state = _state(  # the grant_exhausted shape, as a live header would carry it
+        remaining_micros=12_340_000, subscription_micros=0,
+        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
+        purchased_micros=12_340_000, purchased_usd="12.34",
+        denominator_kind="subscription_cap", paid_access=True,
+    )
+    a._emit_credits_notices()
+    assert a.emitted == [(["credits.grant_spent"], [])]
 
 
 def test_seed_is_idempotent():

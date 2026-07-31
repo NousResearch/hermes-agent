@@ -68,13 +68,6 @@ class TestNeuterAsyncHttpxDel:
         finally:
             AsyncHttpxClientWrapper.__del__ = original_del
 
-    def test_neuter_graceful_without_sdk(self):
-        """neuter_async_httpx_del doesn't raise if the openai SDK isn't installed."""
-        from agent.auxiliary_client import neuter_async_httpx_del
-
-        with patch.dict("sys.modules", {"openai._base_client": None}):
-            # Should not raise
-            neuter_async_httpx_del()
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +169,16 @@ class TestClientCacheBoundedGrowth:
         """When the loop changes, the old entry should be replaced, not duplicated."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             _get_cached_client,
         )
 
-        key = ("test_replace", True, "", "", "", (), False, "")
+        key = _client_cache_key(
+            "test_replace",
+            async_mode=True,
+            task="",
+        )
 
         # Simulate a stale entry from a closed loop
         old_loop = asyncio.new_event_loop()

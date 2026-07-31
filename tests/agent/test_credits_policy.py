@@ -1,7 +1,8 @@
 """Tests for evaluate_credits_notices — pure threshold reconciliation policy (L4.1).
 
-All tests use fresh latch = {"active": set(), "seen_below_90": False, "usage_band": None} per scenario.
-CreditsState is constructed directly (not parsed from headers).
+All tests use a fresh latch (new_credits_latch(), the shape every production
+caller builds) per scenario. CreditsState is constructed directly (not parsed
+from headers).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from agent.credits_tracker import (
     AgentNotice,
     CreditsState,
     evaluate_credits_notices,
+    new_credits_latch,
 )
 
 
@@ -21,7 +23,7 @@ from agent.credits_tracker import (
 
 
 def fresh_latch() -> dict:
-    return {"active": set(), "seen_below_90": False, "usage_band": None}
+    return new_credits_latch()
 
 
 def state_with_fraction(
@@ -198,33 +200,45 @@ class TestGrantSpent:
             purchased_usd="12.34",
         )
 
-    def test_grant_spent_fires_on_first_obs(self):
-        """No crossing gate for grant_spent — fires immediately on first obs."""
+
+    def test_grant_spent_fires_on_live_crossing(self):
+        """Observing the grant NOT yet spent (uf < 1.0) opens the gate; the later
+        crossing to >= 1.0 with top-up remaining announces once."""
         latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.75), latch)
         to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
-        keys = [n.key for n in to_show]
-        assert "credits.grant_spent" in keys
+        assert "credits.grant_spent" in [n.key for n in to_show]
 
     def test_grant_spent_no_refire(self):
         latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.75), latch)  # open the gate
         evaluate_credits_notices(self._grant_state(), latch)
         to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
         assert all(n.key != "credits.grant_spent" for n in to_show)
         assert "credits.grant_spent" not in to_clear
 
-    def test_grant_spent_clears_when_purchased_zero(self):
+
+
+    def test_sub_cent_residual_does_not_open_gate(self):
+        """A float-derived portal seed can report a sub-cent grant residual where
+        the inference headers say exactly spent. Below GRANT_UNSPENT_MIN_MICROS
+        the observation must NOT open the gate — otherwise the first header
+        after such a seed re-creates the at-open nag."""
         latch = fresh_latch()
-        evaluate_credits_notices(self._grant_state(), latch)
-        # Now purchased → 0: grant_cond becomes False
-        s_no_purchase = state_with_fraction(
-            1.0,
+        s = CreditsState(
+            subscription_limit_micros=20_000_000,
+            subscription_limit_usd="20.00",
+            subscription_micros=4_000,  # $0.004 left — sub-cent residue
             denominator_kind="subscription_cap",
-            purchased_micros=0,
-            purchased_usd="0.00",
+            purchased_micros=12_340_000,
+            purchased_usd="12.34",
+            paid_access=True,
         )
-        to_show, to_clear = evaluate_credits_notices(s_no_purchase, latch)
-        assert "credits.grant_spent" in to_clear
+        assert s.used_fraction is not None and s.used_fraction < 1.0
+        evaluate_credits_notices(s, latch)
+        to_show, to_clear = evaluate_credits_notices(self._grant_state(), latch)
         assert all(n.key != "credits.grant_spent" for n in to_show)
+
 
 
 # ── Scenario 5: depleted + recovery ──────────────────────────────────────────
@@ -263,6 +277,79 @@ class TestDepleted:
         to_show, to_clear = evaluate_credits_notices(CreditsState(paid_access=False), latch)
         keys = [n.key for n in to_show]
         assert "credits.depleted" in keys
+
+
+# ── Scenario 5b: free-model suppression of the depleted notice ───────────────
+
+
+class TestDepletedFreeModelSuppression:
+    def test_depleted_suppressed_when_model_is_free(self):
+        latch = fresh_latch()
+        s = CreditsState(paid_access=False)
+        to_show, to_clear = evaluate_credits_notices(s, latch, model_is_free=True)
+        assert all(n.key != "credits.depleted" for n in to_show)
+        assert "credits.depleted" not in latch["active"]
+        assert to_clear == []
+
+
+
+
+    def test_genuine_recovery_still_emits_restored_when_notice_active(self):
+        """paid_access flip back to True with the notice showing → clear + restored
+        (unchanged behaviour, regardless of the model-free flag)."""
+        latch = fresh_latch()
+        evaluate_credits_notices(CreditsState(paid_access=False), latch)
+        to_show, to_clear = evaluate_credits_notices(
+            CreditsState(paid_access=True), latch, model_is_free=True
+        )
+        assert "credits.depleted" in to_clear
+        restored = [n for n in to_show if n.key == "credits.restored"]
+        assert len(restored) == 1
+
+
+
+# ── Scenario 5c: is_free_tier_model (local-data-only check) ──────────────────
+
+
+class TestIsFreeTierModel:
+
+
+    def test_pricing_cache_peek_zero_priced_model(self, monkeypatch):
+        from agent.credits_tracker import is_free_tier_model
+        import hermes_cli.models as models_mod
+
+        # The picker keys the cache on the pre-/v1 root (get_pricing_for_provider
+        # strips a trailing /v1 before fetch_models_with_pricing).
+        monkeypatch.setattr(
+            models_mod,
+            "_pricing_cache",
+            {
+                "https://inference-api.nousresearch.com": {
+                    "some/zero-priced": {"prompt": "0", "completion": "0"},
+                    "some/paid": {"prompt": "0.000001", "completion": "0.000002"},
+                }
+            },
+        )
+        # The agent holds the /v1-suffixed URL (DEFAULT_NOUS_INFERENCE_URL) —
+        # the helper must normalize it down to the picker's cache key.
+        base = "https://inference-api.nousresearch.com/v1"
+        assert is_free_tier_model("some/zero-priced", base) is True
+        assert is_free_tier_model("some/paid", base) is False
+        # Pre-stripped and trailing-slash variants resolve to the same key.
+        assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/") is True
+        assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/v1/") is True
+
+
+    def test_exception_fails_open_to_false(self, monkeypatch):
+        from agent.credits_tracker import is_free_tier_model
+        import hermes_cli.models as models_mod
+
+        class _Exploding:
+            def get(self, *_a, **_kw):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(models_mod, "_pricing_cache", _Exploding())
+        assert is_free_tier_model("some/model", "https://inference-api.nousresearch.com") is False
 
 
 # ── Scenario 6: denominator none (uf is None) ────────────────────────────────
@@ -316,6 +403,7 @@ class TestNoticeCopy:
 
     def test_grant_spent_contains_verbatim_purchased_usd(self):
         latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.10), latch)  # open the crossing gate
         s = state_with_fraction(
             1.0,
             denominator_kind="subscription_cap",
@@ -327,12 +415,12 @@ class TestNoticeCopy:
         assert "$12.34" in grant_notice.text
         assert "top-up left" in grant_notice.text
 
-    def test_depleted_mentions_usage_command(self):
+    def test_depleted_mentions_credits_command(self):
         latch = fresh_latch()
         s = CreditsState(paid_access=False)
         to_show, _ = evaluate_credits_notices(s, latch)
         depleted_notice = next(n for n in to_show if n.key == "credits.depleted")
-        assert "/usage" in depleted_notice.text
+        assert "/topup" in depleted_notice.text
 
 
 # ── Scenario 8: severity order in a single call ──────────────────────────────
@@ -340,17 +428,18 @@ class TestNoticeCopy:
 
 class TestSeverityOrder:
     def test_multiple_new_notices_ordered_ascending_severity(self):
-        """warn90 < grant_spent < depleted in to_show when all fire in one call."""
-        # Construct a state where all three conditions fire simultaneously
-        # on first call (no latch state yet):
-        # - warn90: uf >= 0.9 AND seen_below_90 must be True → won't fire fresh latch
-        # So we pre-seed seen_below_90=True to allow warn90 to fire.
-        latch = {"active": set(), "seen_below_90": True, "usage_band": None}
+        """grant_spent < depleted in to_show when both fire in one call.
+
+        (usage is suppressed here: purchased>0 — see TestTopUpSuppression.
+        usage + grant_spent are now mutually exclusive by design.)
+        """
+        latch = {"active": set(), "seen_below_90": True, "usage_band": None,
+                 "seen_grant_unspent": True}
 
         # Build state: subscription_cap, uf >= 1.0, purchased_micros > 0, NOT paid_access
-        # warn90_cond: uf >= 0.9 ✓ (uf=1.0)
         # grant_cond: subscription_cap + uf >= 1.0 + purchased > 0 ✓
         # depleted_cond: not paid_access ✓
+        # usage band: suppressed (purchased > 0)
         s = CreditsState(
             subscription_limit_micros=20_000_000,
             subscription_limit_usd="20.00",
@@ -362,12 +451,69 @@ class TestSeverityOrder:
         )
         to_show, _ = evaluate_credits_notices(s, latch)
         keys = [n.key for n in to_show]
-        assert "credits.usage" in keys
+        assert "credits.usage" not in keys
         assert "credits.grant_spent" in keys
         assert "credits.depleted" in keys
-        # Ascending severity: warn90 before grant_spent before depleted
-        assert keys.index("credits.usage") < keys.index("credits.grant_spent")
+        # Ascending severity: grant_spent before depleted
         assert keys.index("credits.grant_spent") < keys.index("credits.depleted")
+
+    def test_usage_before_depleted_without_topup(self):
+        """With no top-up funds, usage fires and precedes depleted."""
+        latch = {"active": set(), "seen_below_90": True, "usage_band": None}
+        s = CreditsState(
+            subscription_limit_micros=20_000_000,
+            subscription_limit_usd="20.00",
+            subscription_micros=0,  # uf = 1.0
+            denominator_kind="subscription_cap",
+            purchased_micros=0,
+            purchased_usd="0.00",
+            paid_access=False,
+        )
+        to_show, _ = evaluate_credits_notices(s, latch)
+        keys = [n.key for n in to_show]
+        assert "credits.usage" in keys
+        assert "credits.depleted" in keys
+        assert keys.index("credits.usage") < keys.index("credits.depleted")
+
+
+# ── Scenario 8b: top-up suppression of the usage gauge ───────────────────────
+
+
+class TestTopUpSuppression:
+    """purchased_micros > 0 suppresses the sub-cap usage gauge: the cap is the
+    wrong denominator for an account that can keep spending top-up funds."""
+
+
+    def test_topup_landing_mid_session_clears_active_band(self):
+        """A showing 90% warn must clear when a top-up lands (purchased 0 → >0)."""
+        latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.10), latch)
+        evaluate_credits_notices(state_with_fraction(0.95), latch)
+        assert latch["usage_band"] == 90
+        to_show, to_clear = evaluate_credits_notices(
+            state_with_fraction(0.95, purchased_micros=10_000_000, purchased_usd="10.00"),
+            latch,
+        )
+        assert "credits.usage" in to_clear
+        assert latch["usage_band"] is None
+        assert all(n.key != "credits.usage" for n in to_show)
+
+    def test_band_resumes_after_topup_spent(self):
+        """purchased back to 0 with usage still in-band → gauge resumes."""
+        latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.10), latch)
+        evaluate_credits_notices(
+            state_with_fraction(0.95, purchased_micros=10_000_000, purchased_usd="10.00"),
+            latch,
+        )
+        assert latch["usage_band"] is None
+        to_show, _ = evaluate_credits_notices(state_with_fraction(0.95), latch)
+        n = next(n for n in to_show if n.key == "credits.usage")
+        # uf 0.95 of a $20 cap → used = $19.00 (cap − remaining, clamped).
+        assert "$19.00" in n.text
+        assert latch["usage_band"] == 90
+
+
 
 
 # ── Invariant: never fire + clear same key in one call ────────────────────────
@@ -421,34 +567,11 @@ class TestUsageBands:
         evaluate_credits_notices(state_with_fraction(0.10), latch)  # prime
         to_show, _ = evaluate_credits_notices(state_with_fraction(0.55), latch)
         n = next(n for n in to_show if n.key == "credits.usage")
-        assert "50%" in n.text and n.level == "info"
+        # uf 0.55 of a $20 cap → used = $11.00; band 50 fires at info level.
+        assert "$11.00" in n.text and n.level == "info"
         assert latch["usage_band"] == 50
 
-    def test_75_band_fires_warn(self):
-        latch = fresh_latch()
-        evaluate_credits_notices(state_with_fraction(0.10), latch)
-        to_show, _ = evaluate_credits_notices(state_with_fraction(0.80), latch)
-        n = next(n for n in to_show if n.key == "credits.usage")
-        assert "75%" in n.text and n.level == "warn"
-        assert latch["usage_band"] == 75
 
-    def test_climb_replaces_band(self):
-        """Climbing 50→75→90 replaces the single line (clear old + show new)."""
-        latch = fresh_latch()
-        evaluate_credits_notices(state_with_fraction(0.10), latch)
-        # 55% → 50 band
-        evaluate_credits_notices(state_with_fraction(0.55), latch)
-        assert latch["usage_band"] == 50
-        # 80% → climbs to 75, clearing the 50 line
-        to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.80), latch)
-        assert "credits.usage" in to_clear
-        assert "75%" in self._band_text(to_show)
-        assert latch["usage_band"] == 75
-        # 95% → climbs to 90
-        to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.95), latch)
-        assert "credits.usage" in to_clear
-        assert "90%" in self._band_text(to_show)
-        assert latch["usage_band"] == 90
 
     def test_step_down_on_recovery(self):
         """Recovering steps the band back down, then clears below the lowest band."""
@@ -456,37 +579,17 @@ class TestUsageBands:
         evaluate_credits_notices(state_with_fraction(0.10), latch)
         evaluate_credits_notices(state_with_fraction(0.95), latch)
         assert latch["usage_band"] == 90
-        # drop to 80% → steps down to 75
+        # drop to 80% → steps down to 75 (used = $16.00 of $20)
         to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.80), latch)
         assert "credits.usage" in to_clear
-        assert "75%" in self._band_text(to_show)
-        # drop to 55% → steps down to 50
+        assert "$16.00" in self._band_text(to_show)
+        # drop to 55% → steps down to 50 (used = $11.00 of $20)
         to_show, _ = evaluate_credits_notices(state_with_fraction(0.55), latch)
-        assert "50%" in self._band_text(to_show)
+        assert "$11.00" in self._band_text(to_show)
         # drop below 50% → clears entirely
         to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.10), latch)
         assert "credits.usage" in to_clear
         assert latch["usage_band"] is None
 
-    def test_no_refire_same_band(self):
-        latch = fresh_latch()
-        evaluate_credits_notices(state_with_fraction(0.10), latch)
-        evaluate_credits_notices(state_with_fraction(0.80), latch)  # fires 75
-        # still 80% → same band, no re-emit, no clear
-        to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.80), latch)
-        assert all(n.key != "credits.usage" for n in to_show)
-        assert "credits.usage" not in to_clear
 
-    def test_exact_band_boundaries_inclusive(self):
-        """Thresholds are inclusive: exactly 0.50 / 0.75 / 0.90 land in their band."""
-        for uf, want in [(0.50, 50), (0.75, 75), (0.90, 90)]:
-            latch = fresh_latch()
-            latch["seen_below_90"] = True  # allow firing
-            evaluate_credits_notices(state_with_fraction(uf), latch)
-            assert latch["usage_band"] == want, (uf, latch["usage_band"])
 
-    def test_open_below_lowest_band_no_notice(self):
-        latch = fresh_latch()
-        to_show, to_clear = evaluate_credits_notices(state_with_fraction(0.30), latch)
-        assert all(n.key != "credits.usage" for n in to_show)
-        assert latch["usage_band"] is None

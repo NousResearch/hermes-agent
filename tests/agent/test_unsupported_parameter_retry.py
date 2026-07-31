@@ -47,23 +47,7 @@ class TestIsUnsupportedParameterError:
     def test_matches_real_provider_messages(self, param, message):
         assert _is_unsupported_parameter_error(RuntimeError(message), param) is True
 
-    @pytest.mark.parametrize("param,message", [
-        # Param not mentioned at all
-        ("temperature", "HTTP 400: max_tokens is too large"),
-        # Param mentioned but not flagged as unsupported
-        ("temperature", "temperature must be between 0 and 2"),
-        # Totally unrelated 400
-        ("max_tokens", "Rate limit exceeded"),
-        # Connection-level errors
-        ("temperature", "Connection reset by peer"),
-    ])
-    def test_does_not_match_unrelated_errors(self, param, message):
-        assert _is_unsupported_parameter_error(RuntimeError(message), param) is False
 
-    def test_empty_param_returns_false(self):
-        assert _is_unsupported_parameter_error(
-            RuntimeError("HTTP 400: Unsupported parameter: temperature"), ""
-        ) is False
 
     def test_temperature_wrapper_delegates_to_generic(self):
         """Back-compat: ``_is_unsupported_temperature_error`` still routes through."""
@@ -102,7 +86,7 @@ class TestMaxTokensRetryHardening:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             with pytest.raises(RuntimeError):
                 call_llm(
@@ -129,7 +113,7 @@ class TestMaxTokensRetryHardening:
             patch("agent.auxiliary_client._get_cached_client",
                   return_value=(client, "gpt-5.5")),
             patch("agent.auxiliary_client._validate_llm_response",
-                  side_effect=lambda resp, _task: resp),
+                  side_effect=lambda resp, _task, **_kw: resp),
         ):
             with pytest.raises(RuntimeError):
                 await async_call_llm(

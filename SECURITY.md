@@ -121,10 +121,11 @@ outside the supported security posture.
 ### 2.3 Credential Scoping
 
 Hermes Agent filters the environment it passes to its lower-trust
-in-process components: shell subprocesses, MCP subprocesses, and
-the code-execution child. Credentials like provider API keys and
-gateway tokens are stripped by default; variables explicitly
-declared by the operator or by a loaded skill are passed through.
+in-process components: shell subprocesses, MCP subprocesses,
+cron job scripts, and the code-execution child. Credentials like
+provider API keys and gateway tokens are stripped by default;
+variables explicitly declared by the operator or by a loaded
+skill are passed through.
 
 This reduces casual exfiltration. It is not containment. Any
 component running inside the agent process (skills, plugins, hook
@@ -176,9 +177,12 @@ authorization model, but the rules below apply uniformly.
 
 **Surfaces in Hermes Agent:**
 
-- **Gateway platform adapters.** Messaging integrations in
-  `gateway/platforms/` (Telegram, Discord, Slack, email, SMS, etc.)
-  and analogous adapters shipped as plugins.
+- **Gateway platform adapters.** Most messaging integrations ship as
+  bundled plugins under `plugins/platforms/<name>/` (Telegram, Discord,
+  Slack, email, SMS, etc.). Shared base types and a smaller set of
+  legacy/direct adapters live under `gateway/platforms/`
+  (`base.py`, Signal, API server, webhooks, …), with discovery and
+  deferred loading via `gateway/platform_registry.py`.
 - **Network-exposed HTTP surfaces.** The API server adapter, the
   dashboard plugin, the kanban plugin's HTTP endpoints, and any
   other plugin that binds a listening socket.

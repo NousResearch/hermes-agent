@@ -1,12 +1,11 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
-import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import {
   buildSubagentTree,
-  fmtCost,
   fmtTokens,
   formatSummary as formatSpawnSummary,
   hotnessBucket,
@@ -361,12 +360,6 @@ function SubagentAccordion({
     rollupBits.push(`${fmtTokens(localTokens)} tok`)
   }
 
-  const localCost = item.costUsd ?? 0
-
-  if (localCost > 0) {
-    rollupBits.push(fmtCost(localCost))
-  }
-
   const filesLocal = (item.filesWritten?.length ?? 0) + (item.filesRead?.length ?? 0)
 
   if (filesLocal > 0) {
@@ -378,12 +371,6 @@ function SubagentAccordion({
 
     if (subtreeTools > 0) {
       rollupBits.push(`+${subtreeTools}t sub`)
-    }
-
-    const subCost = aggregate.costUsd - localCost
-
-    if (subCost >= 0.01) {
-      rollupBits.push(`+${fmtCost(subCost)} sub`)
     }
 
     if (aggregate.activeCount > 0 && item.status !== 'running') {
@@ -467,7 +454,7 @@ function SubagentAccordion({
               color={t.color.text}
               content={
                 <>
-                  <Text color={t.color.accent}>● </Text>
+                  <Text color={t.color.tool}>● </Text>
                   {line}
                 </>
               }
@@ -653,22 +640,22 @@ export const Thinking = memo(function Thinking({
         {preview ? (
           mode === 'full' ? (
             lines.map((line, index) => (
-              <Text color={t.color.muted} key={index} wrap="wrap-trim">
+              <Text color={t.color.thinking} key={index} wrap="wrap-trim">
                 {line || ' '}
                 {index === lines.length - 1 ? (
-                  <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+                  <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
                 ) : null}
               </Text>
             ))
           ) : (
-            <Text color={t.color.muted} wrap="truncate-end">
+            <Text color={t.color.thinking} wrap="truncate-end">
               {preview}
-              <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+              <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
             </Text>
           )
         ) : (
-          <Text color={t.color.muted}>
-            <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
+          <Text color={t.color.thinking}>
+            <StreamCursor color={t.color.thinking} streaming={streaming} visible={active} />
           </Text>
         )}
       </Box>
@@ -693,6 +680,7 @@ export const ToolTrail = memo(function ToolTrail({
   outcome = '',
   reasoningActive = false,
   reasoning = '',
+  reasoningAlwaysVisible = false,
   reasoningTokens,
   reasoningStreaming = false,
   sections,
@@ -709,6 +697,10 @@ export const ToolTrail = memo(function ToolTrail({
   outcome?: string
   reasoningActive?: boolean
   reasoning?: string
+  // MoA reference blocks (see Msg.isMoaReference) stay visible even when
+  // `visible.thinking === 'hidden'` — they're the mixture-of-agents process
+  // the user opted into, not private model reasoning (#64657).
+  reasoningAlwaysVisible?: boolean
   reasoningTokens?: number
   reasoningStreaming?: boolean
   sections?: SectionVisibility
@@ -737,7 +729,13 @@ export const ToolTrail = memo(function ToolTrail({
   // `visible.X === 'expanded'` at render time — that locks the panel open
   // and silently breaks manual chevron clicks for default-expanded
   // sections (regression caught after #14968).
-  const [openThinking, setOpenThinking] = useState(visible.thinking === 'expanded')
+  // A MoA reference panel (reasoningAlwaysVisible) opens by default on
+  // mount even under `thinking: hidden` — the user opted into MoA and
+  // should see the reference immediately, not a collapsed "Thinking"
+  // label. This only affects the initial mount value; the re-sync effect
+  // below deliberately does NOT re-apply it, so a manual collapse still
+  // sticks (see the no-OR-at-effect-time warning above, #14968).
+  const [openThinking, setOpenThinking] = useState(visible.thinking === 'expanded' || reasoningAlwaysVisible)
   const [openTools, setOpenTools] = useState(visible.tools === 'expanded')
   const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
   const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
@@ -753,7 +751,21 @@ export const ToolTrail = memo(function ToolTrail({
     return () => clearInterval(id)
   }, [openTools, tools.length, visible.tools])
 
+  // Effects run after the FIRST render too, not just on later updates — so
+  // this re-sync was clobbering the reasoningAlwaysVisible mount value above
+  // right after mount, collapsing a just-opened MoA reference panel under
+  // `thinking: hidden` before the user ever saw it (#64701). Skip only the
+  // very first run; every subsequent `visible` change (the case this effect
+  // exists for) still re-syncs without the override, so a manual collapse
+  // still sticks per the no-OR-at-effect-time rule above.
+  const skippedInitialSync = useRef(false)
   useEffect(() => {
+    if (!skippedInitialSync.current) {
+      skippedInitialSync.current = true
+
+      return
+    }
+
     setOpenThinking(visible.thinking === 'expanded')
     setOpenTools(visible.tools === 'expanded')
     setOpenSubagents(visible.subagents === 'expanded')
@@ -868,7 +880,7 @@ export const ToolTrail = memo(function ToolTrail({
         : [],
       content: (
         <>
-          <Spinner color={t.color.accent} variant="tool" /> {label}
+          <Spinner color={t.color.tool} variant="tool" /> {label}
           {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
         </>
       )
@@ -928,6 +940,7 @@ export const ToolTrail = memo(function ToolTrail({
 
   const allHidden =
     visible.thinking === 'hidden' &&
+    !reasoningAlwaysVisible &&
     visible.tools === 'hidden' &&
     visible.subagents === 'hidden' &&
     visible.activity === 'hidden'
@@ -952,7 +965,7 @@ export const ToolTrail = memo(function ToolTrail({
   // hidden sections stay hidden so the override is honoured.
 
   const expandAll = () => {
-    if (visible.thinking !== 'hidden') {
+    if (visible.thinking !== 'hidden' || reasoningAlwaysVisible) {
       setOpenThinking(true)
     }
 
@@ -999,7 +1012,7 @@ export const ToolTrail = memo(function ToolTrail({
     render: (rails: boolean[]) => ReactNode
   }[] = []
 
-  if (hasThinking && visible.thinking !== 'hidden') {
+  if (hasThinking && (visible.thinking !== 'hidden' || reasoningAlwaysVisible)) {
     panels.push({
       header: (
         <Box
@@ -1085,7 +1098,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.accent}>● </Text>
+                      <Text color={t.color.tool}>● </Text>
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>

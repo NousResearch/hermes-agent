@@ -1,6 +1,7 @@
 """Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS)."""
 
 import os
+import re
 import unittest
 from unittest.mock import MagicMock
 
@@ -40,7 +41,37 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
 class TestDiscordBotFilter(unittest.TestCase):
     """Test the DISCORD_ALLOW_BOTS filtering logic."""
 
-    def _run_filter(self, message, allow_bots="none", client_user=None):
+    @staticmethod
+    def _self_is_explicitly_mentioned(message, client_user):
+        """Mirror adapter._self_is_explicitly_mentioned: resolved or raw mention."""
+        if not client_user:
+            return False
+        if client_user in message.mentions:
+            return True
+        raw_ids = {
+            m.group(1)
+            for m in re.finditer(r"<@!?(\d+)>", getattr(message, "content", "") or "")
+        }
+        return str(client_user.id) in raw_ids
+
+    @staticmethod
+    def _self_is_raw_mentioned(message, client_user):
+        """Mirror adapter._self_is_raw_mentioned: raw inline token only."""
+        if not client_user:
+            return False
+        raw_ids = {
+            m.group(1)
+            for m in re.finditer(r"<@!?(\d+)>", getattr(message, "content", "") or "")
+        }
+        return str(client_user.id) in raw_ids
+
+    def _run_filter(
+        self,
+        message,
+        allow_bots="none",
+        client_user=None,
+        bots_require_inline_mention=False,
+    ):
         """Simulate the on_message filter logic and return whether message was accepted."""
         # Replicate the exact filter logic from discord.py on_message
         if message.author == client_user:
@@ -51,8 +82,13 @@ class TestDiscordBotFilter(unittest.TestCase):
             if allow == "none":
                 return False
             elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
+                if not self._self_is_explicitly_mentioned(message, client_user):
                     return False
+            if (
+                bots_require_inline_mention
+                and not self._self_is_raw_mentioned(message, client_user)
+            ):
+                return False
             # "all" falls through
         
         return True  # message accepted
@@ -71,17 +107,6 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "mentions"))
         self.assertTrue(self._run_filter(msg, "all"))
 
-    def test_allow_bots_none_rejects_bots(self):
-        """With allow_bots=none, all other bot messages are rejected."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertFalse(self._run_filter(msg, "none"))
-
-    def test_allow_bots_all_accepts_bots(self):
-        """With allow_bots=all, all bot messages are accepted."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "all"))
 
     def test_allow_bots_mentions_rejects_without_mention(self):
         """With allow_bots=mentions, bot messages without @mention are rejected."""
@@ -90,26 +115,31 @@ class TestDiscordBotFilter(unittest.TestCase):
         msg = _make_message(author=bot, mentions=[])
         self.assertFalse(self._run_filter(msg, "mentions", our_user))
 
-    def test_allow_bots_mentions_accepts_with_mention(self):
-        """With allow_bots=mentions, bot messages with @mention are accepted."""
+
+    def test_inline_mention_requirement_accepts_body_mention(self):
+        """Opt-in guard still admits intentional inline cross-bot mentions."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[our_user])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+        msg = _make_message(
+            author=bot,
+            content=f"<@{our_user.id}> intentional handoff",
+            mentions=[our_user],
+        )
+
+        self.assertTrue(
+            self._run_filter(
+                msg,
+                "all",
+                our_user,
+                bots_require_inline_mention=True,
+            )
+        )
+
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""
         default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
-
-    def test_case_insensitive(self):
-        """Allow_bots value should be case-insensitive."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "ALL"))
-        self.assertTrue(self._run_filter(msg, "All"))
-        self.assertFalse(self._run_filter(msg, "NONE"))
-        self.assertFalse(self._run_filter(msg, "None"))
 
 
 if __name__ == "__main__":

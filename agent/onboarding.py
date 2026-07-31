@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 BUSY_INPUT_FLAG = "busy_input_prompt"
 TOOL_PROGRESS_FLAG = "tool_progress_prompt"
 OPENCLAW_RESIDUE_FLAG = "openclaw_residue_cleanup"
+PROFILE_BUILD_FLAG = "profile_build_offered"
 
 
 # -------------------------------------------------------------------------
@@ -51,6 +52,13 @@ def busy_input_hint_gateway(mode: str) -> str:
             "Send `/busy interrupt` or `/busy queue` to change this, or "
             "`/busy status` to check. This notice won't appear again."
         )
+    if mode == "redirect":
+        return (
+            "💡 First-time tip — I redirected the current run using your message. "
+            "Completed work stays in context, and `/stop` still cancels the task. "
+            "Send `/busy queue` to wait for a separate turn, or `/busy status` "
+            "to check. This notice won't appear again."
+        )
     return (
         "💡 First-time tip — I just interrupted my current task to answer you. "
         "Send `/busy queue` to queue follow-ups for after the current task instead, "
@@ -72,6 +80,12 @@ def busy_input_hint_cli(mode: str) -> str:
             "(tip) Your message was steered into the current run; it arrives "
             "after the next tool call. Use /busy interrupt or /busy queue to "
             "change this. This tip only shows once."
+        )
+    if mode == "redirect":
+        return (
+            "(tip) Your correction redirected the current run without discarding "
+            "completed work. Use /stop to cancel or /busy queue to wait for a "
+            "separate turn. This tip only shows once."
         )
     return (
         "(tip) Your message interrupted the current run. "
@@ -127,6 +141,62 @@ def detect_openclaw_residue(home: Optional[Path] = None) -> bool:
 
 
 # -------------------------------------------------------------------------
+# Onboarding profile-build path (opt-in, consent-gated)
+# -------------------------------------------------------------------------
+
+def profile_build_mode(config: Mapping[str, Any]) -> str:
+    """Resolve the onboarding profile-build mode from config.
+
+    Returns one of:
+      ``"ask"``  — on first contact, OFFER to build a profile (default).
+      ``"off"``  — never offer; the first-message note stays a plain intro.
+
+    Read from ``config.onboarding.profile_build``. Unknown / missing values
+    fall back to ``"ask"`` so the default experience offers the flow. Any
+    network/account lookups inside the flow are separately consented to in
+    conversation — this setting only governs whether the offer is made.
+    """
+    if not isinstance(config, Mapping):
+        return "ask"
+    onboarding = config.get("onboarding")
+    if not isinstance(onboarding, Mapping):
+        return "ask"
+    mode = onboarding.get("profile_build")
+    if isinstance(mode, str) and mode.strip().lower() == "off":
+        return "off"
+    return "ask"
+
+
+def profile_build_directive() -> str:
+    """System-note directive appended to the very first message ever.
+
+    Instructs the agent to run a short, opt-in, consent-gated profile-build
+    flow and persist confirmed facts to the user-profile memory store
+    (``memory`` tool, ``target="user"``). Phrased so the agent ASKS before any
+    lookup and never silently reads connected accounts — directly addressing
+    the privacy concern that reading email/accounts unprompted feels invasive.
+    """
+    return (
+        "\n\n[System note: This is the user's very first message ever. "
+        "After a one-sentence introduction (mention /help shows commands), "
+        "OFFER — do not assume — to build a short profile of them so you can "
+        "be more useful, and explain they can decline or do it later. If and "
+        "ONLY IF they accept:\n"
+        "  1. Ask for whatever they're comfortable sharing (name, what they "
+        "do, how they like you to work). Volunteered facts come first.\n"
+        "  2. Before ANY external lookup, say what you intend to look up and "
+        "get explicit consent for that step. Never read their connected "
+        "accounts (email, calendar, etc.) silently — ask each time.\n"
+        "  3. With consent, you may use web_search to confirm public details "
+        "(e.g. employer, public profiles) from the data points they gave.\n"
+        "  4. Save each confirmed, durable fact with the memory tool using "
+        "target=\"user\" — keep entries compact and high-signal.\n"
+        "If they decline at any point, stop immediately and continue normally. "
+        "Keep the whole exchange light and conversational, not an interrogation.]"
+    )
+
+
+# -------------------------------------------------------------------------
 # State read / write
 # -------------------------------------------------------------------------
 
@@ -152,7 +222,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
     """
     try:
         import yaml
-        from utils import atomic_yaml_write
+        from hermes_cli.config import atomic_config_write
     except Exception as e:  # pragma: no cover — dependency issue
         logger.debug("onboarding: failed to import yaml/utils: %s", e)
         return False
@@ -171,7 +241,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
         if seen.get(flag) is True:
             return True  # already marked — nothing to do
         seen[flag] = True
-        atomic_yaml_write(config_path, cfg)
+        atomic_config_write(config_path, cfg)
         return True
     except Exception as e:
         logger.debug("onboarding: failed to mark flag %s: %s", flag, e)
@@ -182,12 +252,15 @@ __all__ = [
     "BUSY_INPUT_FLAG",
     "TOOL_PROGRESS_FLAG",
     "OPENCLAW_RESIDUE_FLAG",
+    "PROFILE_BUILD_FLAG",
     "busy_input_hint_gateway",
     "busy_input_hint_cli",
     "tool_progress_hint_gateway",
     "tool_progress_hint_cli",
     "openclaw_residue_hint_cli",
     "detect_openclaw_residue",
+    "profile_build_mode",
+    "profile_build_directive",
     "is_seen",
     "mark_seen",
 ]

@@ -155,7 +155,7 @@ Hermes 将：
 这是获得 worktree 隔离的最简便方式。也可与单次查询结合使用：
 
 ```bash
-hermes -w -q "Fix issue #123"
+hermes -w -z "Fix issue #123"
 ```
 
 如需并行运行多个 agent，在多个终端中分别运行 `hermes -w`——每次调用都会自动获得独立的 worktree 和分支。

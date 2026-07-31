@@ -23,6 +23,16 @@ function installDesktopBridge(partial: Partial<Window['hermesDesktop']> = {}) {
   } as unknown as Window['hermesDesktop']
 }
 
+const FORGEJO_URL = 'https://forgejo.home.example/homelab/homelab-ops/issues/101'
+
+function installTitleBridge(title: string) {
+  const bridge = vi.fn().mockResolvedValue(title)
+
+  installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+  return bridge
+}
+
 afterEach(() => {
   __resetLinkTitleCache()
   vi.restoreAllMocks()
@@ -102,10 +112,23 @@ describe('external link helpers', () => {
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
   })
 
-  it('shows a trailing external-link icon', () => {
+  it('hides the trailing external-link icon by default', () => {
     installDesktopBridge()
 
     render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    const link = screen.getByRole('link', { name: 'Example link' })
+    expect(link.querySelector('svg')).toBeNull()
+  })
+
+  it('shows a trailing external-link icon when opted in', () => {
+    installDesktopBridge()
+
+    render(
+      <ExternalLink href="https://example.com/path/to/resource" showExternalIcon>
+        Example link
+      </ExternalLink>
+    )
 
     const link = screen.getByRole('link', { name: 'Example link' })
     expect(link.querySelector('svg')).toBeTruthy()
@@ -155,6 +178,39 @@ describe('external link helpers', () => {
     })
   })
 
+  it('treats not-found fetched titles as unusable', async () => {
+    const bridge = installTitleBridge('Page not found - Forgejo')
+
+    await expect(fetchLinkTitle(FORGEJO_URL)).resolves.toBe('')
+    expect(bridge).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an authored fallbackLabel ahead of a fetched title, and skips the fetch', async () => {
+    const bridge = installTitleBridge('Kinkolino Forgejo')
+
+    // Chat markdown passes authored link text as `fallbackLabel`, not `label`.
+    render(<PrettyLink fallbackLabel="FJ #101" href={FORGEJO_URL} />)
+
+    const link = screen.getByTitle(FORGEJO_URL)
+
+    await waitFor(() => {
+      expect(link.textContent).toContain('FJ #101')
+    })
+    expect(link.textContent).not.toContain('Kinkolino Forgejo')
+    expect(bridge).not.toHaveBeenCalled()
+  })
+
+  it('still resolves a title when no label was authored', async () => {
+    const bridge = installTitleBridge('Homelab Ops Issue 101')
+
+    render(<PrettyLink href={FORGEJO_URL} />)
+
+    await waitFor(() => {
+      expect(screen.getByTitle(FORGEJO_URL).textContent).toContain('Homelab Ops Issue 101')
+    })
+    expect(bridge).toHaveBeenCalledTimes(1)
+  })
+
   it('normalizes scheme-less links before opening', () => {
     installDesktopBridge()
 
@@ -164,5 +220,56 @@ describe('external link helpers', () => {
     expect(link.getAttribute('href')).toBe(
       'https://expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
     )
+  })
+
+  it('explicitOnly skips bare filename/domain tokens and only links explicit URLs', () => {
+    installDesktopBridge()
+
+    render(
+      <LinkifiedText
+        explicitOnly
+        pretty={false}
+        text={'Report  https://paste.rs/abc\nagent.log  https://paste.rs/def\nerrors.log'}
+      />
+    )
+
+    const links = screen.getAllByRole('link')
+    expect(links.map(a => a.getAttribute('href'))).toEqual(['https://paste.rs/abc', 'https://paste.rs/def'])
+    // Bare filename-shaped tokens stay as plain text, not links.
+    expect(screen.queryByText(content => content.includes('agent.log'))).toBeTruthy()
+    expect(links.some(a => (a.textContent ?? '').includes('.log'))).toBe(false)
+  })
+
+  it('without explicitOnly, bare filename tokens are still linkified (default behavior)', () => {
+    installDesktopBridge()
+
+    render(<LinkifiedText pretty={false} text="open agent.log please" />)
+
+    const link = screen.getByRole('link', { name: 'agent.log' })
+    expect(link.getAttribute('href')).toBe('https://agent.log')
+  })
+
+  it('prefixes a pretty link to a known host with its brand glyph', () => {
+    installDesktopBridge()
+
+    const url = 'https://github.com/NousResearch/hermes-agent/pull/123'
+
+    render(<PrettyLink fallbackLabel="#123" href={url} />)
+
+    const link = screen.getByTitle(url)
+
+    expect(link.querySelector('svg')).toBeTruthy()
+    // The glyph is decorative — it must not pollute the link's accessible name.
+    expect(link.textContent).toBe('#123')
+  })
+
+  it('renders no brand glyph for an unknown host', () => {
+    installDesktopBridge()
+
+    const url = 'https://example.com/some/page'
+
+    render(<PrettyLink fallbackLabel="Some Page" href={url} />)
+
+    expect(screen.getByTitle(url).querySelector('svg')).toBeNull()
   })
 })

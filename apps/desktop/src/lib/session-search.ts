@@ -1,9 +1,11 @@
+import { normalize } from '@/lib/text'
 import type { SessionInfo } from '@/types/hermes'
 
 import { sessionTitle } from './chat-runtime'
+import { sessionSourceSearchTerms } from './session-source'
 
 export function sessionMatchesSearch(session: SessionInfo, query: string): boolean {
-  const needle = query.trim().toLowerCase()
+  const needle = normalize(query)
 
   if (!needle) {
     return true
@@ -14,6 +16,8 @@ export function sessionMatchesSearch(session: SessionInfo, query: string): boole
     session._lineage_root_id ?? '',
     sessionTitle(session),
     session.preview ?? '',
-    session.cwd ?? ''
+    session.cwd ?? '',
+    session.git_branch ?? '',
+    ...sessionSourceSearchTerms(session.source)
   ].some(value => value.toLowerCase().includes(needle))
 }

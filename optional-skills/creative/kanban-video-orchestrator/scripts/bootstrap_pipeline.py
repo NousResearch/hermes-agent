@@ -68,7 +68,7 @@ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 
 def load_template(name: str) -> str:
-    return (ASSETS_DIR / name).read_text()
+    return (ASSETS_DIR / name).read_text(encoding="utf-8")
 
 
 PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -311,12 +311,12 @@ def render_team_md(plan: dict) -> str:
         "",
         "## Per-task workspace requirement",
         "",
-        f"All `kanban_create` calls MUST pass:",
-        f"```",
-        f'workspace_kind="dir"',
+        "All `kanban_create` calls MUST pass:",
+        "```",
+        'workspace_kind="dir"',
         f'workspace_path="$HOME/projects/video-pipeline/{plan["slug"]}"',
         f'tenant="{plan["tenant"]}"',
-        f"```",
+        "```",
     ])
     return "\n".join(lines)
 
@@ -423,8 +423,6 @@ def render_soul_md(team_member: dict, plan: dict) -> str:
             "- **Decompose, route, comment, approve — that's the whole job.**\n"
             "- **Read TEAM.md** for the canonical task graph. Do not invent "
             "new roles unless the brief truly demands it.\n"
-            "- **Load the `kanban-orchestrator` skill** for the deeper "
-            "decomposition playbook beyond the auto-injected baseline.\n"
         )
 
     common_commands = (
@@ -473,7 +471,7 @@ def main():
                     help="Write TEAM.md alongside (default: skipped)")
     args = ap.parse_args()
 
-    plan = json.loads(Path(args.plan_json).read_text())
+    plan = json.loads(Path(args.plan_json).read_text(encoding="utf-8"))
     errors = validate_plan(plan)
     if errors:
         print("Plan validation failed:", file=sys.stderr)
@@ -485,15 +483,15 @@ def main():
     team = render_team_md(plan)
     setup = render_setup_sh(plan, brief, team)
 
-    Path(args.out).write_text(setup)
+    Path(args.out).write_text(setup, encoding="utf-8")
     os.chmod(args.out, 0o755)
     print(f"Wrote {args.out}")
 
     if args.brief_out:
-        Path(args.brief_out).write_text(brief)
+        Path(args.brief_out).write_text(brief, encoding="utf-8")
         print(f"Wrote {args.brief_out}")
     if args.team_out:
-        Path(args.team_out).write_text(team)
+        Path(args.team_out).write_text(team, encoding="utf-8")
         print(f"Wrote {args.team_out}")
 
 

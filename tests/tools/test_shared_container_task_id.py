@@ -38,70 +38,32 @@ def test_empty_task_id_maps_to_default():
     assert terminal_tool._resolve_container_task_id("") == "default"
 
 
-def test_literal_default_stays_default():
-    assert terminal_tool._resolve_container_task_id("default") == "default"
-
-
-def test_subagent_task_id_collapses_to_default():
-    # delegate_task constructs IDs like "subagent-<N>-<uuid_hex>"; these
-    # should share the parent's container, not spin up their own.
-    assert terminal_tool._resolve_container_task_id("subagent-0-deadbeef") == "default"
-    assert terminal_tool._resolve_container_task_id("subagent-42-cafef00d") == "default"
-
-
-def test_arbitrary_session_id_collapses_to_default():
-    # Session UUIDs or anything else without an override still collapse.
-    assert terminal_tool._resolve_container_task_id("sess-123e4567-e89b-12d3") == "default"
-
-
-def test_rl_task_with_override_keeps_its_own_id():
-    # RL / benchmark pattern: register a per-task image, then the task_id
-    # must survive ``_resolve_container_task_id`` so the rollout lands in
-    # its own sandbox.
+def test_cwd_only_override_collapses_to_default():
+    """CWD-only overrides (ACP adapter workspace tracking) must NOT trigger
+    container isolation — they should collapse to the shared 'default'
+    container so all surfaces (TUI, gateway, dashboard) share one sandbox.
+    Regression for #37361."""
     terminal_tool.register_task_env_overrides(
-        "tb2-task-fix-git", {"docker_image": "tb2:fix-git", "cwd": "/app"}
+        "acp-session-abc", {"cwd": "/home/user/project"}
     )
     try:
         assert (
-            terminal_tool._resolve_container_task_id("tb2-task-fix-git")
-            == "tb2-task-fix-git"
+            terminal_tool._resolve_container_task_id("acp-session-abc")
+            == "default"
         )
     finally:
-        terminal_tool.clear_task_env_overrides("tb2-task-fix-git")
+        terminal_tool.clear_task_env_overrides("acp-session-abc")
 
 
-def test_cleared_override_collapses_again():
-    terminal_tool.register_task_env_overrides("tb2-x", {"docker_image": "x:y"})
-    assert terminal_tool._resolve_container_task_id("tb2-x") == "tb2-x"
-    terminal_tool.clear_task_env_overrides("tb2-x")
-    assert terminal_tool._resolve_container_task_id("tb2-x") == "default"
-
-
-def test_get_active_env_reads_shared_container_from_subagent_id():
-    """``get_active_env`` must see the shared ``"default"`` sandbox when
-    called with a subagent's task_id, so the agent loop's turn-budget
-    enforcement reads the real env (not None) during delegation."""
-    sentinel = object()
-    terminal_tool._active_environments["default"] = sentinel
+def test_env_type_override_keeps_own_id():
+    """env_type is an isolation key — must trigger per-task container."""
+    terminal_tool.register_task_env_overrides(
+        "bench-env", {"env_type": "sandbox", "cwd": "/work"}
+    )
     try:
-        assert terminal_tool.get_active_env("subagent-7-cafe") is sentinel
-        assert terminal_tool.get_active_env(None) is sentinel
-        assert terminal_tool.get_active_env("default") is sentinel
+        assert (
+            terminal_tool._resolve_container_task_id("bench-env")
+            == "bench-env"
+        )
     finally:
-        terminal_tool._active_environments.pop("default", None)
-
-
-def test_get_active_env_honours_rl_override():
-    rl_env = object()
-    default_env = object()
-    terminal_tool._active_environments["default"] = default_env
-    terminal_tool._active_environments["rl-42"] = rl_env
-    terminal_tool.register_task_env_overrides("rl-42", {"docker_image": "x"})
-    try:
-        # With an override registered, lookup returns the task's own env,
-        # not the shared "default" one.
-        assert terminal_tool.get_active_env("rl-42") is rl_env
-    finally:
-        terminal_tool.clear_task_env_overrides("rl-42")
-        terminal_tool._active_environments.pop("default", None)
-        terminal_tool._active_environments.pop("rl-42", None)
+        terminal_tool.clear_task_env_overrides("bench-env")

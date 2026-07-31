@@ -170,6 +170,27 @@ CREDITS_USAGE_BANDS: tuple[tuple[float, str, int], ...] = (
 )
 CREDITS_USAGE_KEY = "credits.usage"  # single key for the escalating usage notice
 
+# Minimum subscription balance that counts as "grant not yet spent" for the
+# grant_spent crossing gate (see evaluate_credits_notices). 1¢: portal-seeded
+# states derive micros from float dollars and can carry sub-cent residue where
+# the inference headers report exactly 0 — without this floor such a seed
+# opens the gate and the first header re-creates the at-open nag.
+GRANT_UNSPENT_MIN_MICROS = 10_000
+
+
+def new_credits_latch() -> dict:
+    """Fresh notice latch in the shape :func:`evaluate_credits_notices` expects.
+
+    The policy owns this schema — every producer (agent build, lazy re-init,
+    tests) must build the latch through here so a new gate key lands everywhere
+    at once instead of drifting across hand-rolled literals."""
+    return {
+        "active": set(),
+        "seen_below_90": False,
+        "usage_band": None,
+        "seen_grant_unspent": False,
+    }
+
 
 # ── AgentNotice (out-of-band notice payload; driver-agnostic) ────────────────
 
@@ -194,16 +215,71 @@ class AgentNotice:
     id: Optional[str] = None
 
 
+# ── is_free_tier_model (local-data-only free-model check) ────────────────────
+
+
+def is_free_tier_model(model: str, base_url: str = "") -> bool:
+    """Return True when *model* is a Nous free-tier model, using ONLY local data.
+
+    Two signals, both zero-network:
+
+    1. The ``:free`` suffix — the canonical Nous free SKU marker (e.g.
+       ``nvidia/nemotron-3-ultra:free``). Free by construction on the API side
+       (spend is forced to 0 for ``:free`` ids).
+    2. A peek into the in-process pricing cache in ``hermes_cli.models``
+       (populated when the model picker fetched ``/v1/models`` pricing for
+       *base_url*). PEEK ONLY — a cache miss never triggers a fetch. This is
+       CLI/TUI-session best-effort: gateway sessions never run the picker's
+       pricing fetch, so suppression there rests entirely on the ``:free``
+       suffix (which all Nous free SKUs carry).
+
+    Fail-open to False (the depleted notice still shows) on any error: wrongly
+    showing the warning is recoverable noise; wrongly hiding it on a paid model
+    would mask a real billing block.
+    """
+    if not model:
+        return False
+    if model.endswith(":free"):
+        return True
+    if not base_url:
+        return False
+    try:
+        from hermes_cli.models import _is_model_free, _pricing_cache
+
+        # Mirror get_pricing_for_provider's key normalization: the agent's
+        # Nous base_url is /v1-suffixed (https://inference-api.nousresearch.com/v1)
+        # but the picker keys _pricing_cache on the pre-/v1 root.
+        key = base_url.rstrip("/")
+        if key.endswith("/v1"):
+            key = key[:-3].rstrip("/")
+        pricing = _pricing_cache.get(key)
+        if not pricing:
+            return False
+        return _is_model_free(model, pricing)
+    except Exception:
+        return False
+
+
 # ── evaluate_credits_notices (pure reconciliation function) ──────────────────
 
 
 def evaluate_credits_notices(
     state: CreditsState,
     latch: dict,
+    *,
+    model_is_free: bool = False,
 ) -> tuple[list[AgentNotice], list[str]]:
     """Reconcile credits notices against the latch. Mutates ``latch`` IN PLACE.
 
-    latch = {"active": set[str], "seen_below_90": bool, "usage_band": Optional[int]}.
+    latch = {"active": set[str], "seen_below_90": bool, "usage_band": Optional[int],
+    "seen_grant_unspent": bool}.
+
+    ``model_is_free``: True when the session's active model is a Nous free-tier
+    model (see :func:`is_free_tier_model`). Suppresses the ``credits.depleted``
+    notice — a depleted account on a free model can keep inferencing, so the
+    error banner is noise (and confuses free-tier users who never had credits).
+    Suppression does NOT emit the "restored" success notice; that fires only on
+    a genuine ``paid_access`` flip back to True.
 
     Returns ``(to_show: list[AgentNotice], to_clear: list[str])``.
     Caller emits to_clear FIRST, then to_show.
@@ -223,6 +299,18 @@ def evaluate_credits_notices(
     if uf is not None and uf < _lowest_band:
         latch["seen_below_90"] = True  # gate opened: usage-band notices may now fire
 
+    # Grant-spent crossing gate: grant_spent may fire only after this session
+    # has OBSERVED the grant meaningfully unspent (≥1¢ left — see
+    # GRANT_UNSPENT_MIN_MICROS). Opening at grant-spent is a steady STATE, not
+    # an event — /usage carries it; only a live in-session crossing announces.
+    # Unlike seen_below_90, seeds must NOT prime this gate.
+    if (
+        uf is not None
+        and uf < 1.0
+        and state.subscription_micros >= GRANT_UNSPENT_MIN_MICROS
+    ):
+        latch["seen_grant_unspent"] = True
+
     active = latch["active"]
 
     # ── Conditions ───────────────────────────────────────────────────────────
@@ -232,6 +320,16 @@ def evaluate_credits_notices(
         for band in CREDITS_USAGE_BANDS:  # ascending → last match wins = highest
             if uf >= band[0]:
                 current_band = band
+    # Top-up suppression: when the account holds purchased (top-up) credits,
+    # the subscription-cap gauge is the wrong denominator — warning "90% used"
+    # at a user sitting on $50 of top-up is noise (and it previously stuck
+    # PERMANENTLY alongside grant_spent at >=100%). Suppress the usage band
+    # entirely; the cap-reached case is covered by the grant_spent info notice
+    # below, which already names the remaining top-up balance. A top-up landing
+    # mid-session flips current_band → None and the clear path below removes
+    # any showing band line.
+    if state.purchased_micros > 0:
+        current_band = None
     grant_cond = (
         state.denominator_kind == "subscription_cap"
         and uf is not None
@@ -252,12 +350,21 @@ def evaluate_credits_notices(
             active.discard(CREDITS_USAGE_KEY)
         if target_band is not None:
             # Belt-and-suspenders: a producer could set subscription_limit_micros
-            # without subscription_limit_usd. Render "$? cap" rather than "$None cap".
+            # without subscription_limit_usd. Render "$?" rather than "$None".
             _cap_usd = state.subscription_limit_usd or "?"
             _level = current_band[1]  # type: ignore[index]  (current_band set when target_band set)
+            # Report absolute dollars used, not a bare "N% used": the percentage is
+            # only meaningful against a Nous subscription cap (no cap → never fires),
+            # so dollars are clearer and don't imply a universal %. Used = cap −
+            # remaining (micros, money-safe), clamped to [0, cap]. Re-emits on band
+            # change (50 → 75 → 90), not every turn — a snapshot, not a live ticker.
+            _lim = state.subscription_limit_micros or 0
+            _used_micros = max(0, min(_lim, _lim - state.subscription_micros))
+            _used_usd = f"{_used_micros / 1_000_000:.2f}" if _lim else "?"
+            _glyph = "⚠" if _level == "warn" else "•"
             to_show.append(
                 AgentNotice(
-                    text=f"{'⚠' if _level == 'warn' else '•'} Credits {target_band}% used · ${_cap_usd} cap",
+                    text=f"{_glyph} You've used ${_used_usd} of your ${_cap_usd} cap",
                     level=_level,
                     kind=CREDITS_NOTICE_KIND,
                     key=CREDITS_USAGE_KEY,
@@ -268,7 +375,17 @@ def evaluate_credits_notices(
         latch["usage_band"] = target_band
 
     # ── grant_spent ──────────────────────────────────────────────────────────
-    if grant_cond and "credits.grant_spent" not in active:
+    # The crossing gate guards only the SHOW and is CONSUMED by it — one
+    # announcement per crossing. A header flicker (uf → None → back to 1.0)
+    # clears the sticky line via grant_cond but cannot re-announce; only a
+    # renewal that re-opens the gate (a fresh ≥1¢ observation) arms the next
+    # announcement. .get(): default closed for any hand-built latch missing
+    # the key, so a first observation can never fire this notice.
+    if (
+        grant_cond
+        and "credits.grant_spent" not in active
+        and latch.get("seen_grant_unspent", False)
+    ):
         to_show.append(
             AgentNotice(
                 text=f"• Grant spent · ${state.purchased_usd} top-up left",
@@ -279,15 +396,20 @@ def evaluate_credits_notices(
             )
         )
         active.add("credits.grant_spent")
+        latch["seen_grant_unspent"] = False
     elif "credits.grant_spent" in active and not grant_cond:
         to_clear.append("credits.grant_spent")
         active.discard("credits.grant_spent")
 
     # ── depleted ─────────────────────────────────────────────────────────────
-    if depleted_cond and "credits.depleted" not in active:
+    # Suppressed while the active model is free: inference still works there,
+    # so the error banner would just alarm users (free-tier users especially,
+    # who never had paid credits to "lose").
+    show_depleted = depleted_cond and not model_is_free
+    if show_depleted and "credits.depleted" not in active:
         to_show.append(
             AgentNotice(
-                text="✕ Credit access paused · run /usage for balance",
+                text="✕ Credit access paused · run /topup to top up",
                 level="error",
                 kind=CREDITS_NOTICE_KIND,
                 key="credits.depleted",
@@ -295,20 +417,23 @@ def evaluate_credits_notices(
             )
         )
         active.add("credits.depleted")
-    elif "credits.depleted" in active and not depleted_cond:
+    elif "credits.depleted" in active and not show_depleted:
         to_clear.append("credits.depleted")
         active.discard("credits.depleted")
-        # Recovery: also emit the success notice
-        to_show.append(
-            AgentNotice(
-                text="✓ Credit access restored",
-                level="success",
-                kind="ttl",
-                ttl_ms=CREDITS_RESTORED_TTL_MS,
-                key="credits.restored",
-                id="credits.restored",
+        if not depleted_cond:
+            # Genuine recovery (paid_access flipped back True): also emit the
+            # success notice. A clear caused by switching to a free model while
+            # still depleted must NOT claim access was restored.
+            to_show.append(
+                AgentNotice(
+                    text="✓ Credit access restored",
+                    level="success",
+                    kind="ttl",
+                    ttl_ms=CREDITS_RESTORED_TTL_MS,
+                    key="credits.restored",
+                    id="credits.restored",
+                )
             )
-        )
 
     return (to_show, to_clear)
 
@@ -547,7 +672,8 @@ _DEV_FIXTURES: dict[str, dict] = {
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
         denominator_kind="subscription_cap", paid_access=True,
     ),
-    "grant_exhausted": dict(  # used_fraction == 1.0 + purchased>0 → credits.grant_spent
+    "grant_exhausted": dict(  # uf == 1.0 + purchased>0 → SILENT at open (crossing-gated);
+    # flip healthy → grant_exhausted via the fixture-file path to see credits.grant_spent
         remaining_micros=12_340_000, remaining_usd="12.34",
         subscription_micros=0, subscription_usd="0.00",
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
@@ -661,6 +787,9 @@ def _hydrate_seed_state(agent, state) -> None:
         agent._credits_session_start_micros = state.remaining_micros
     _latch = getattr(agent, "_credits_latch", None)
     if isinstance(_latch, dict) and state.used_fraction is not None:
+        # Prime ONLY seen_below_90 (open-high band warnings are wanted at open).
+        # Never prime seen_grant_unspent here: a seed observing grant-spent is a
+        # steady state, and priming it would revive the every-session nag.
         _latch["seen_below_90"] = True
     emit = getattr(agent, "_emit_credits_notices", None)
     if callable(emit):

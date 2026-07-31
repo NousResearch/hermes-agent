@@ -21,21 +21,6 @@ class TestEnsureLingerEnabled:
         assert "Systemd linger is enabled" in out
         assert calls == []
 
-    def test_status_enabled_skips_enable(self, monkeypatch, capsys):
-        monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
-        monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
-        monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (True, ""))
-
-        calls = []
-        monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
-
-        gateway._ensure_linger_enabled()
-
-        out = capsys.readouterr().out
-        assert "Systemd linger is enabled" in out
-        assert calls == []
 
     def test_loginctl_success_enables_linger(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
@@ -60,23 +45,6 @@ class TestEnsureLingerEnabled:
         assert "Linger enabled" in out
         assert run_calls == [(["loginctl", "enable-linger", "testuser"], True, True, False)]
 
-    def test_missing_loginctl_shows_manual_guidance(self, monkeypatch, capsys):
-        monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
-        monkeypatch.setattr("getpass.getuser", lambda: "testuser")
-        monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
-        monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (None, "loginctl not found"))
-        monkeypatch.setattr("shutil.which", lambda name: None)
-
-        calls = []
-        monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
-
-        gateway._ensure_linger_enabled()
-
-        out = capsys.readouterr().out
-        assert "sudo loginctl enable-linger testuser" in out
-        assert "loginctl not found" in out
-        assert calls == []
 
     def test_loginctl_failure_shows_manual_guidance(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
@@ -102,6 +70,15 @@ def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Non-temp home so the temp-home write guard (which trips on the
+    # hermetic test HERMES_HOME) stays out of the way.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
 

@@ -180,7 +180,11 @@ def _clamp_duration(family: Dict[str, Any], duration: Optional[int]) -> Optional
     if not durations:
         return duration
     if duration is None:
-        return durations[0]
+        # Range families (e.g. pixverse-v6 (1,15)) should omit the field so
+        # the FAL endpoint applies its own default rather than receiving the
+        # minimum value.  Enum families (e.g. veo3.1 (4,6,8)) keep sending
+        # their first entry as the default.
+        return None if _is_duration_range(durations) else durations[0]
     if _is_duration_range(durations):
         lo, hi = durations
         return max(lo, min(hi, duration))
@@ -291,6 +295,7 @@ def _build_payload(
 # ---------------------------------------------------------------------------
 
 _fal_client: Any = None
+_fal_client_lock = threading.Lock()
 
 
 def _load_fal_client() -> Any:
@@ -298,13 +303,19 @@ def _load_fal_client() -> Any:
 
     Delegates the actual import to :func:`tools.fal_common.import_fal_client`
     so the ``lazy_deps`` ensure-install handling stays in one place.
+
+    Thread-safe via double-checked locking: concurrent first calls import
+    the SDK exactly once instead of each racing thread re-running the import.
     """
     global _fal_client
     if _fal_client is not None:
         return _fal_client
-    from tools.fal_common import import_fal_client
-    _fal_client = import_fal_client()
-    return _fal_client
+    with _fal_client_lock:
+        if _fal_client is not None:  # re-check inside the lock
+            return _fal_client
+        from tools.fal_common import import_fal_client
+        _fal_client = import_fal_client()
+        return _fal_client
 
 
 # ---------------------------------------------------------------------------

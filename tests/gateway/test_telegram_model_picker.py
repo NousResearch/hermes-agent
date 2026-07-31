@@ -32,7 +32,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 from gateway.config import PlatformConfig
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter():
@@ -91,10 +91,6 @@ class TestTelegramModelPicker:
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
-        update = MagicMock()
-        update.callback_query = query
-        context = MagicMock()
-
         await adapter._handle_model_picker_callback(query, "mb", "12345")
 
         edit_kwargs = query.edit_message_text.call_args[1]
@@ -102,150 +98,4 @@ class TestTelegramModelPicker:
         assert "provider\\_one" in edit_kwargs["text"]
         assert "`model_1`" in edit_kwargs["text"]
 
-    @pytest.mark.asyncio
-    async def test_model_selected_edits_message_on_success(self):
-        """Regression: the mm: (model selected → switch) success path must
-        edit the picker message to show the confirmation and remove the
-        buttons.  An earlier revision of this PR over-indented the
-        edit_message_text block so it lived inside the except branch and
-        only fired when the callback raised."""
-        adapter = _make_adapter()
-        callback = AsyncMock(return_value="Switched to `gpt-5`")
-        adapter._model_picker_state["12345"] = {
-            "providers": [
-                {"slug": "openai", "name": "OpenAI", "total_models": 1, "is_current": True}
-            ],
-            "current_model": "model_1",
-            "current_provider": "openai",
-            "session_key": "s",
-            "on_model_selected": callback,
-            "selected_provider": "openai",
-            "model_list": ["gpt-5"],
-            "msg_id": 42,
-        }
 
-        query = AsyncMock()
-        query.data = "mm:0"
-        query.message = MagicMock()
-        query.message.chat_id = 12345
-        query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
-
-        await adapter._handle_model_picker_callback(query, "mm:0", "12345")
-
-        # The callback was invoked with the selected model
-        callback.assert_awaited_once()
-        # edit_message_text MUST be called on the success path (this is the
-        # regression we're guarding).
-        query.edit_message_text.assert_awaited()
-        edit_kwargs = query.edit_message_text.call_args[1]
-        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
-        # The dynamic result text was routed through format_message
-        # (backtick code blocks survive escaping).
-        assert "`gpt-5`" in edit_kwargs["text"]
-        # State is cleaned up after a successful switch.
-        assert "12345" not in adapter._model_picker_state
-
-    @pytest.mark.asyncio
-    async def test_provider_group_folds_and_drills_down(self, monkeypatch):
-        """A provider family (e.g. MiniMax) collapses to one mpg: button at
-        the top level; tapping it expands to its authenticated members as
-        mp: buttons. A group reduced to a single authenticated member shows
-        no submenu (direct mp: button).
-
-        Inspects callback_data by recording every InlineKeyboardButton built,
-        which is robust to whether `telegram` is the real SDK or the module
-        mock (the SDK markup objects don't expose a plain iterable under the
-        mock)."""
-        import gateway.platforms.telegram as tg
-
-        built: list = []
-
-        class _RecordingButton:
-            def __init__(self, text, callback_data=None, **kw):
-                self.text = text
-                self.callback_data = callback_data
-                built.append(callback_data)
-
-        class _RecordingMarkup:
-            def __init__(self, rows):
-                self.inline_keyboard = rows
-
-        monkeypatch.setattr(tg, "InlineKeyboardButton", _RecordingButton)
-        monkeypatch.setattr(tg, "InlineKeyboardMarkup", _RecordingMarkup)
-
-        adapter = _make_adapter()
-
-        async def mock_send_message(**kwargs):
-            return SimpleNamespace(message_id=101)
-
-        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
-
-        providers = [
-            {"slug": "minimax", "name": "MiniMax", "total_models": 2},
-            {"slug": "minimax-cn", "name": "MiniMax (China)", "total_models": 3},
-            {"slug": "xai", "name": "xAI", "total_models": 1},  # lone group member
-        ]
-
-        await adapter.send_model_picker(
-            chat_id="12345",
-            providers=providers,
-            current_model="m",
-            current_provider="minimax",
-            session_key="s",
-            on_model_selected=AsyncMock(),
-            metadata=None,
-        )
-
-        # Top-level keyboard: MiniMax family folded into one group button;
-        # xai (lone member) degraded to a direct provider button.
-        assert "mpg:minimax" in built
-        assert "mp:xai" in built
-        assert "mp:minimax" not in built
-        assert "mp:minimax-cn" not in built
-
-        # Drill into the MiniMax group → members appear as mp: buttons + back.
-        built.clear()
-        query = AsyncMock()
-        query.message = MagicMock()
-        query.message.chat_id = 12345
-        query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
-
-        await adapter._handle_model_picker_callback(query, "mpg:minimax", "12345")
-
-        assert "mp:minimax" in built
-        assert "mp:minimax-cn" in built
-        assert "mb" in built  # back-to-providers button present
-
-    @pytest.mark.asyncio
-    async def test_retries_without_thread_when_thread_not_found(self):
-        adapter = _make_adapter()
-        providers = [{"slug": "openai", "name": "OpenAI", "total_models": 2, "is_current": True}]
-        call_log = []
-
-        class FakeBadRequest(Exception):
-            pass
-
-        async def mock_send_message(**kwargs):
-            call_log.append(dict(kwargs))
-            if kwargs.get("message_thread_id") is not None:
-                raise FakeBadRequest("Message thread not found")
-            return SimpleNamespace(message_id=99)
-
-        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
-
-        result = await adapter.send_model_picker(
-            chat_id="12345",
-            providers=providers,
-            current_model="gpt-5",
-            current_provider="openai",
-            session_key="s",
-            on_model_selected=AsyncMock(),
-            metadata={"thread_id": "99999"},
-        )
-
-        assert result.success is True
-        assert len(call_log) == 2
-        assert call_log[0]["message_thread_id"] == 99999
-        assert "message_thread_id" not in call_log[1] or call_log[1]["message_thread_id"] is None

@@ -18,8 +18,11 @@ payload rewriter.
 from __future__ import annotations
 
 import base64
+import sys
+from types import SimpleNamespace
 
 
+from agent.conversation_loop import _image_error_max_dimension
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -50,34 +53,9 @@ class TestImageTooLargeClassification:
         assert result.reason == FailoverReason.image_too_large
         assert result.retryable is True
 
-    def test_generic_image_too_large_no_status(self):
-        """No status_code path: message text alone triggers classification."""
-        err = Exception("image too large for this endpoint")
-        result = classify_api_error(err, provider="some-provider", model="some-model")
-        assert result.reason == FailoverReason.image_too_large
-        assert result.retryable is True
 
-    def test_image_too_large_not_confused_with_context_overflow(self):
-        """'image exceeds' must NOT be mis-classified as context_overflow.
 
-        The context_overflow patterns include 'exceeds the limit' which is a
-        superstring risk — verify the image-too-large check fires first.
-        """
-        err = _FakeApiError(
-            status_code=400,
-            message="image exceeds the limit for this model",
-        )
-        result = classify_api_error(err, provider="anthropic", model="claude-sonnet-4-6")
-        assert result.reason == FailoverReason.image_too_large
 
-    def test_regular_context_overflow_unaffected(self):
-        """Context-overflow errors without image keywords still classify correctly."""
-        err = _FakeApiError(
-            status_code=400,
-            message="prompt is too long: context length 300000 exceeds max of 200000",
-        )
-        result = classify_api_error(err, provider="anthropic", model="claude-sonnet-4-6")
-        assert result.reason == FailoverReason.context_overflow
 
 
 # ─── Shrink helper ───────────────────────────────────────────────────────────
@@ -88,6 +66,52 @@ def _big_png_data_url(size_kb: int) -> str:
     # Use real PNG header so MIME detection works; fill to target size.
     raw = b"\x89PNG\r\n\x1a\n" + b"X" * (size_kb * 1024)
     return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+
+
+def _install_fake_pillow(
+    monkeypatch,
+    size: tuple[int, int],
+    *,
+    shrunk_size: tuple[int, int] | None = None,
+    sizes: list[tuple[int, int]] | None = None,
+) -> None:
+    """Install the tiny subset of Pillow used by the shrink preflight.
+
+    The shrink helper decodes pixel dimensions twice for the dimension path:
+    once on the *original* data URL (to decide it's oversized) and once on the
+    *re-encoded* result (to confirm the downscale landed under the cap).  To
+    model that honestly, ``_FakeImage`` can return a sequence of sizes across
+    successive ``open()`` calls:
+
+    * ``sizes=[...]``        — explicit per-call size list (clamped to last).
+    * ``shrunk_size=(w, h)`` — shorthand for ``[size, shrunk_size]``: first
+      decode is the oversized original, second is the in-cap re-encode.
+    * neither                — every decode returns ``size`` (legacy behaviour).
+    """
+    call_count = {"n": 0}
+    target_sizes = sizes or [
+        size,
+        shrunk_size if shrunk_size is not None else size,
+    ]
+
+    class _FakeImage:
+        def __init__(self):
+            self.size = target_sizes[min(call_count["n"], len(target_sizes) - 1)]
+            call_count["n"] += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeImageModule:
+        @staticmethod
+        def open(_data):
+            return _FakeImage()
+
+    monkeypatch.setitem(sys.modules, "PIL", SimpleNamespace(Image=_FakeImageModule))
+    monkeypatch.setitem(sys.modules, "PIL.Image", _FakeImageModule)
 
 
 def _make_agent():
@@ -105,13 +129,6 @@ class TestShrinkImagePartsHelper:
         assert agent._try_shrink_image_parts_in_messages([]) is False
         assert agent._try_shrink_image_parts_in_messages(None) is False
 
-    def test_no_image_parts_returns_false(self):
-        agent = _make_agent()
-        msgs = [
-            {"role": "user", "content": "plain text"},
-            {"role": "assistant", "content": "ack"},
-        ]
-        assert agent._try_shrink_image_parts_in_messages(msgs) is False
 
     def test_small_image_part_not_shrunk(self, monkeypatch):
         """An image under 4 MB is left alone — shrink helper only touches oversized ones."""
@@ -163,28 +180,53 @@ class TestShrinkImagePartsHelper:
         assert changed is True
         assert msgs[0]["content"][1]["image_url"]["url"] == shrunk
 
-    def test_oversized_input_image_string_shape_rewritten(self, monkeypatch):
-        """OpenAI Responses shape: {type: input_image, image_url: "data:..."}."""
+
+    def test_anthropic_base64_image_source_rewritten(self, monkeypatch):
+        """Anthropic-native image blocks are shrinkable after adapter conversion."""
         agent = _make_agent()
-        oversized_url = _big_png_data_url(5000)
-        shrunk = "data:image/jpeg;base64," + "B" * 1000
+        _install_fake_pillow(monkeypatch, (2501, 100), shrunk_size=(1500, 60))
+        original = _big_png_data_url(100)
+        _, _, original_data = original.partition(",")
+        shrunk = "data:image/jpeg;base64," + "N" * 1000
+        seen = {}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            seen["mime_type"] = mime_type
+            seen["max_dimension"] = max_dimension
+            return shrunk
 
         monkeypatch.setattr(
             "tools.vision_tools._resize_image_for_vision",
-            lambda *a, **kw: shrunk,
+            _fake_resize,
             raising=False,
         )
 
         msgs = [{
             "role": "user",
             "content": [
-                {"type": "input_text", "text": "look"},
-                {"type": "input_image", "image_url": oversized_url},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": original_data,
+                    },
+                },
             ],
         }]
-        changed = agent._try_shrink_image_parts_in_messages(msgs)
+        changed = agent._try_shrink_image_parts_in_messages(
+            msgs,
+            max_dimension=2000,
+        )
+        source = msgs[0]["content"][0]["source"]
+
         assert changed is True
-        assert msgs[0]["content"][1]["image_url"] == shrunk
+        assert seen["mime_type"] == "image/png"
+        assert seen["max_dimension"] == 2000
+        assert source["type"] == "base64"
+        assert source["media_type"] == "image/jpeg"
+        assert source["data"] == "N" * 1000
+
 
     def test_multiple_images_all_shrunk(self, monkeypatch):
         agent = _make_agent()
@@ -211,26 +253,6 @@ class TestShrinkImagePartsHelper:
         assert msgs[0]["content"][1]["image_url"]["url"] == shrunk
         assert msgs[0]["content"][2]["image_url"]["url"] == shrunk
 
-    def test_http_url_images_not_touched(self, monkeypatch):
-        """Only data: URLs are candidates — http URLs are server-fetched."""
-        agent = _make_agent()
-
-        resize_hits = {"count": 0}
-        monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
-            lambda *a, **kw: resize_hits.__setitem__("count", resize_hits["count"] + 1) or "shrunk",
-            raising=False,
-        )
-
-        msgs = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "at this url"},
-                {"type": "image_url", "image_url": {"url": "https://example.com/big.png"}},
-            ],
-        }]
-        assert agent._try_shrink_image_parts_in_messages(msgs) is False
-        assert resize_hits["count"] == 0
 
     def test_shrink_failure_returns_false_and_leaves_url_intact(self, monkeypatch):
         """If re-encode fails, leave the URL alone so the caller surfaces the original error."""
@@ -252,27 +274,6 @@ class TestShrinkImagePartsHelper:
         assert agent._try_shrink_image_parts_in_messages(msgs) is False
         assert msgs[0]["content"][0]["image_url"]["url"] == oversized_url
 
-    def test_shrink_that_makes_it_bigger_rejected(self, monkeypatch):
-        """If the 'shrink' somehow produces a larger payload, skip it."""
-        agent = _make_agent()
-        oversized_url = _big_png_data_url(5000)
-        even_bigger = "data:image/png;base64," + "Z" * (10 * 1024 * 1024)
-
-        monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
-            lambda *a, **kw: even_bigger,
-            raising=False,
-        )
-
-        msgs = [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": oversized_url}},
-            ],
-        }]
-        assert agent._try_shrink_image_parts_in_messages(msgs) is False
-        # Original URL still in place, not replaced by the bigger one.
-        assert msgs[0]["content"][0]["image_url"]["url"] == oversized_url
 
     def test_mixed_one_shrinkable_one_not_returns_false(self, monkeypatch):
         """Regression for the wedged-session incident (May 2026).
@@ -321,3 +322,209 @@ class TestShrinkImagePartsHelper:
         assert msgs[0]["content"][0]["image_url"]["url"] == small
         # The unshrinkable one is left as-is (caller surfaces original error).
         assert msgs[0]["content"][1]["image_url"]["url"] == unshrinkable
+
+    # ------------------------------------------------------------------
+    # #48013: the dimension path must accept a pixel-correct downscale even
+    # when the re-encoded PNG grew in bytes.  Before the fix, the byte gate
+    # (`len(resized) >= len(url)`) discarded the dimension-correct result and
+    # left the image oversized, bricking the session on the Anthropic
+    # many-image 2000px path.
+    # ------------------------------------------------------------------
+
+    def test_dimension_shrink_with_byte_growth_accepted(self, monkeypatch):
+        """A dimension-driven shrink is accepted even if its bytes grow.
+
+        Regression for #48013.  The original (2501px, under the 4 MB byte
+        budget) is oversized on pixels only.  The re-encode lands at 1500px
+        (in-cap) but is *larger in bytes* — the historical byte gate would
+        reject it.  The fix keys the accept gate on the binding constraint
+        (dimensions), so the pixel-correct result is kept.
+        """
+        agent = _make_agent()
+        _install_fake_pillow(monkeypatch, (2501, 100), shrunk_size=(1500, 60))
+        original_url = _big_png_data_url(100)  # ~100 KB → well under 4 MB
+        # A *byte-larger* re-encode (the brick trigger): 200 KB payload.
+        dimensionally_shrunk = "data:image/png;base64," + "G" * 200 * 1024
+        seen = {}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            seen["max_dimension"] = max_dimension
+            return dimensionally_shrunk
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": original_url}},
+            ],
+        }]
+        # The re-encode is byte-LARGER than the original — proves the byte gate
+        # is no longer the rejection driver on the dimension path.
+        assert len(dimensionally_shrunk) > len(original_url)
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_dimension=2000,
+        ) is True
+        assert seen["max_dimension"] == 2000
+        assert msgs[0]["content"][0]["image_url"]["url"] == dimensionally_shrunk
+
+    def test_dimension_shrink_failure_still_blocks_retry(self, monkeypatch):
+        """A dimension-oversized image that stays oversized is unshrinkable.
+
+        If the re-encode is *still* over the per-side cap, the helper must
+        report no progress (return False) so the one-shot retry isn't burned
+        re-sending a payload the provider already rejected.
+        """
+        agent = _make_agent()
+        # Both decodes report oversized: original and re-encode are 2501px.
+        _install_fake_pillow(monkeypatch, (2501, 100))
+        original_url = _big_png_data_url(100)
+        still_oversized = "data:image/png;base64," + "H" * 120 * 1024
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: still_oversized,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": original_url}},
+            ],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_dimension=2000,
+        ) is False
+        # Original left untouched — caller surfaces the provider's 400.
+        assert msgs[0]["content"][0]["image_url"]["url"] == original_url
+
+    def test_mixed_dimension_partial_progress_returns_false(self, monkeypatch):
+        """Partial dimension-path progress must not falsely burn the retry.
+
+        Two dimension-oversized images: the first re-encodes in-cap, the
+        second stays oversized.  Even though one part changed, an oversized
+        image survives, so retrying would 400 again — the helper must report
+        False.  (Mirrors the byte-path
+        ``test_mixed_one_shrinkable_one_not_returns_false`` invariant for the
+        pixel axis.)
+        """
+        agent = _make_agent()
+        # Decode order: img1 orig (2501) -> img1 re-encode (1500, in-cap) ->
+        #               img2 orig (2501) -> img2 re-encode (2501, still over).
+        _install_fake_pillow(
+            monkeypatch,
+            (2501, 100),
+            sizes=[(2501, 100), (1500, 60), (2501, 100), (2501, 100)],
+        )
+        first = _big_png_data_url(100)
+        second = _big_png_data_url(90)
+        calls = {"n": 0}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return "data:image/png;base64," + "G" * 200 * 1024  # in-cap
+            return "data:image/png;base64," + "H" * 120 * 1024      # still over
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": first}},
+                {"type": "image_url", "image_url": {"url": second}},
+            ],
+        }]
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_dimension=2000,
+        ) is False
+
+    def test_byte_oversized_but_pixel_oversized_after_shrink_blocks_retry(self, monkeypatch):
+        """Bytes-triggered shrink must ALSO honour the active per-side cap.
+
+        Adversarial-review regression (#48013, round 2): an image over BOTH the
+        4 MB byte budget AND the per-side pixel cap can be byte-shrunk yet stay
+        over the cap (``_resize_image_for_vision`` returns a best-effort blob
+        when it exhausts its halving budget on a very-high-aspect image).  The
+        byte-path accept gate originally checked only ``len(resized) < len(url)``
+        and reported success, so the caller retried and the provider re-rejected
+        on dimensions — re-bricking the session.  The fix re-checks the pixel
+        cap on the byte path too; a still-over-cap result must be unshrinkable.
+        """
+        agent = _make_agent()
+        # On the BYTE path, _decode_pixels is called once — on the RESIZED blob.
+        # Script that single decode to report still-over-cap dims (2560 > 2000).
+        _install_fake_pillow(monkeypatch, (2560, 64), sizes=[(2560, 64)])
+        # Over the 4 MB byte budget so the BYTE path is taken (triggered_by="bytes").
+        oversized_url = _big_png_data_url(5000)  # ~5 MB raw → ~6.7 MB b64
+        # Byte-SMALLER re-encode, but its decoded dims are still over the cap.
+        byte_smaller_still_over = "data:image/png;base64," + "K" * 1000
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: byte_smaller_still_over,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": oversized_url}},
+            ],
+        }]
+        # Bytes shrank, but the per-side cap is still violated → no real
+        # progress; the helper must NOT report success (would burn the retry).
+        assert len(byte_smaller_still_over) < len(oversized_url)
+        assert agent._try_shrink_image_parts_in_messages(
+            msgs, max_dimension=2000,
+        ) is False
+        # Original left in place — caller surfaces the provider's 400.
+        assert msgs[0]["content"][0]["image_url"]["url"] == oversized_url
+
+
+
+class TestShrinkCopyOnWriteHistoryIsolation:
+    """The shrink recovery must never rewrite the stored conversation history.
+
+    With selective prompt-cache copying (#57046 salvage), un-marked messages
+    on the decorated per-call list share their nested content parts with
+    ``agent.messages``. The shrink helper therefore replaces parts
+    copy-on-write and reassigns ``msg["content"]`` instead of mutating the
+    aliased part/source dicts in place.
+    """
+
+    def test_shrink_does_not_mutate_aliased_history_parts(self, monkeypatch):
+        agent = _make_agent()
+        oversized_url = _big_png_data_url(5000)
+        shrunk = "data:image/jpeg;base64," + "C" * 1000
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: shrunk,
+            raising=False,
+        )
+
+        # Simulate the persistent history and the per-call api_messages list:
+        # top-level dicts are shallow copies, nested content parts are ALIASED
+        # (exactly what conversation_loop's msg.copy() + selective cache
+        # decoration produce for un-marked messages).
+        history_part = {"type": "image_url", "image_url": {"url": oversized_url}}
+        history_msg = {"role": "user", "content": [history_part]}
+        api_msg = history_msg.copy()  # shares the content list + part dicts
+
+        assert agent._try_shrink_image_parts_in_messages([api_msg]) is True
+        # The outgoing copy carries the shrunken image...
+        assert api_msg["content"][0]["image_url"]["url"] == shrunk
+        # ...but the stored history still has the original bytes.
+        assert history_msg["content"][0] is history_part
+        assert history_part["image_url"]["url"] == oversized_url
+

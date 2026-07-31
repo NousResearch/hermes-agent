@@ -16,13 +16,17 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 
+from agent.conversation_compression import (
+    finalize_context_engine_compression_notification,
+)
 
 class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
-            return AIAgent(
+            agent = AIAgent(
                 api_key="test-key",
                 base_url="https://openrouter.ai/api/v1",
                 model="test/model",
@@ -32,6 +36,9 @@ class TestCompressionBoundaryHook:
                 skip_context_files=True,
                 skip_memory=True,
             )
+            # ROTATION fallback — pin in_place=False regardless of default (#38763).
+            agent.compression_in_place = False
+            return agent
 
     def test_on_session_start_called_with_compression_boundary(self):
         from hermes_state import SessionDB
@@ -89,6 +96,89 @@ class TestCompressionBoundaryHook:
                 f"Expected new session_id as first positional arg, got {call!r}"
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
+            assert len(comp_calls) == 1
+
+    def test_automatic_notification_follows_core_persistence(self):
+        from hermes_state import SessionDB
+
+        events = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            compressor = MagicMock()
+            compressor.compress.return_value = [
+                {"role": "user", "content": "summary"}
+            ]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            compressor.on_session_start.side_effect = (
+                lambda *_args, **kwargs: events.append(
+                    kwargs.get("boundary_reason")
+                )
+            )
+            agent.context_compressor = compressor
+            original_publish = db.publish_compression_child
+
+            def _record_publish(*args, **kwargs):
+                result = original_publish(*args, **kwargs)
+                events.append("persist")
+                return result
+
+            with patch.object(
+                db, "publish_compression_child", side_effect=_record_publish
+            ):
+                agent._compress_context(
+                    [{"role": "user", "content": "request"}],
+                    "sys",
+                    approx_tokens=100,
+                )
+
+            assert events == ["persist", "compression"]
+
+    def test_failure_before_persistence_does_not_notify(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            compressor = MagicMock()
+            compressor.compress.side_effect = RuntimeError("synthetic compression failure")
+            agent.context_compressor = compressor
+
+            with pytest.raises(RuntimeError, match="synthetic compression failure"):
+                agent._compress_context(
+                    [{"role": "user", "content": "request"}],
+                    "sys",
+                    approx_tokens=100,
+                )
+
+            compressor.on_session_start.assert_not_called()
+
+
+    def test_no_progress_does_not_notify(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            compressor = MagicMock()
+            compressor.compress.side_effect = lambda messages, **_kwargs: messages
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+            messages = [{"role": "user", "content": "request"}]
+
+            returned, _ = agent._compress_context(
+                messages,
+                "sys",
+                approx_tokens=100,
+            )
+
+            assert returned is messages
+            compressor.on_session_start.assert_not_called()
+
 
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""
@@ -159,3 +249,77 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
+
+
+class TestSessionCompressEvent:
+    """The session:compress event_callback fires after a compression split."""
+
+    def _make_agent(self, session_db, event_callback=None):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=session_db,
+                session_id="original-session",
+                skip_context_files=True,
+                skip_memory=True,
+                event_callback=event_callback,
+            )
+            # ROTATION fallback — pin in_place=False regardless of default (#38763).
+            agent.compression_in_place = False
+            return agent
+
+    def _stub_compressor(self):
+        compressor = MagicMock()
+        compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+            {"role": "user", "content": "tail"},
+        ]
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        return compressor
+
+    def test_event_emitted_on_compression(self):
+        from hermes_state import SessionDB
+
+        events = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(
+                db, event_callback=lambda et, ctx: events.append((et, ctx))
+            )
+            original_sid = agent.session_id
+            agent.context_compressor = self._stub_compressor()
+
+            agent._compress_context(
+                [{"role": "user", "content": f"m{i}"} for i in range(10)],
+                "sys",
+                approx_tokens=10_000,
+            )
+
+            compress_events = [e for e in events if e[0] == "session:compress"]
+            assert compress_events, f"session:compress not emitted, got {events!r}"
+            _, ctx = compress_events[-1]
+            assert ctx["session_id"] == agent.session_id
+            assert ctx["old_session_id"] == original_sid
+            assert ctx["compression_count"] == 1
+
+    def test_no_callback_is_safe(self):
+        """Compression must work when no event_callback is wired."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db, event_callback=None)
+            agent.context_compressor = self._stub_compressor()
+            compressed, _ = agent._compress_context(
+                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+            )
+            assert compressed
+

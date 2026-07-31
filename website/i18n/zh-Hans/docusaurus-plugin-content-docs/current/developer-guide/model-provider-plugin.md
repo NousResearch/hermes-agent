@@ -194,7 +194,7 @@ register_provider(ProviderProfile(
 |---|---|---|
 | `api_key` | 单个环境变量携带静态 API key | 大多数提供商 |
 | `oauth_device_code` | 设备码 OAuth 流程 | — |
-| `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Gemini Cloud Code、Qwen Portal、Nous Portal |
+| `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Qwen Portal、Nous Portal |
 | `copilot` | GitHub Copilot token 刷新周期 | 仅 `copilot` 插件 |
 | `aws_sdk` | AWS SDK 凭据链（IAM role、profile、env） | 仅 `bedrock` 插件 |
 | `external_process` | 认证由 agent 启动的子进程处理 | 仅 `copilot-acp` 插件 |
@@ -250,13 +250,13 @@ hermes -z "hello" --provider my-provider -m some-model
 与所有 Hermes 插件一样，模型提供商可以作为 pip 包发布。在你的 `pyproject.toml` 中添加入口点：
 
 ```toml
-[project.entry-points."hermes.plugins"]
+[project.entry-points."hermes_agent.plugins"]
 acme-inference = "acme_hermes_plugin:register"
 ```
 
 ……其中 `acme_hermes_plugin:register` 是一个调用 `register_provider(profile)` 的函数。通用 PluginManager 在 `discover_and_load()` 期间会拾取入口点插件。对于 `kind: model-provider` 的 pip 插件，你仍需在 manifest 中声明 kind（或依赖源码文本启发式检测）。
 
-完整的入口点设置请参阅 [构建 Hermes 插件](/guides/build-a-hermes-plugin#distribute-via-pip)。
+完整的入口点设置请参阅 [构建 Hermes 插件](/developer-guide/plugins#distribute-via-pip)。
 
 ## 相关页面
 
@@ -264,4 +264,4 @@ acme-inference = "acme_hermes_plugin:register"
 - [添加提供商](/developer-guide/adding-providers) — 新推理后端的端到端检查清单（涵盖快速插件路径和完整 CLI/auth 集成）
 - [Memory Provider 插件](/developer-guide/memory-provider-plugin)
 - [Context Engine 插件](/developer-guide/context-engine-plugin)
-- [构建 Hermes 插件](/guides/build-a-hermes-plugin) — 通用插件编写指南
+- [构建 Hermes 插件](/developer-guide/plugins) — 通用插件编写指南

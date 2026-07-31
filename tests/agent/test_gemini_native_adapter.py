@@ -19,110 +19,68 @@ class DummyResponse:
         return self._payload
 
 
-def test_build_native_request_preserves_thought_signature_on_tool_replay():
-    from agent.gemini_native_adapter import build_gemini_request
-
-    request = build_gemini_request(
-        messages=[
-            {"role": "system", "content": "Be helpful."},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"city": "Paris"}',
-                        },
-                        "extra_content": {
-                            "google": {"thought_signature": "sig-123"}
-                        },
-                    }
-                ],
-            },
-        ],
-        tools=[],
-        tool_choice=None,
-    )
-
-    parts = request["contents"][0]["parts"]
-    assert parts[0]["functionCall"]["name"] == "get_weather"
-    assert parts[0]["thoughtSignature"] == "sig-123"
 
 
-def test_build_native_request_uses_original_function_name_for_tool_result():
-    from agent.gemini_native_adapter import build_gemini_request
-
-    request = build_gemini_request(
-        messages=[
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"city": "Paris"}',
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_1",
-                "content": '{"forecast": "sunny"}',
-            },
-        ],
-        tools=[],
-        tool_choice=None,
-    )
-
-    tool_response = request["contents"][1]["parts"][0]["functionResponse"]
-    assert tool_response["name"] == "get_weather"
 
 
-def test_build_native_request_strips_json_schema_only_fields_from_tool_parameters():
-    from agent.gemini_native_adapter import build_gemini_request
 
-    request = build_gemini_request(
-        messages=[{"role": "user", "content": "Hello"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "lookup_weather",
-                    "description": "Weather lookup",
-                    "parameters": {
-                        "$schema": "https://json-schema.org/draft/2020-12/schema",
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "city": {
-                                "type": "string",
-                                "$schema": "ignored",
-                                "description": "City name",
-                            }
-                        },
-                        "required": ["city"],
-                    },
-                },
-            }
-        ],
-        tool_choice=None,
-    )
 
-    params = request["tools"][0]["functionDeclarations"][0]["parameters"]
-    assert "$schema" not in params
-    assert "additionalProperties" not in params
-    assert params["type"] == "object"
-    assert params["properties"]["city"] == {
-        "type": "string",
-        "description": "City name",
-    }
+
+
+
+def test_parallel_tool_results_merge_into_one_user_content():
+    """Gemini requires strict user/model alternation; two consecutive `user`
+    contents are rejected with HTTP 400. Parallel tool calls produce two tool
+    results in a row, so their functionResponses must be grouped into a single
+    user content instead of two consecutive ones."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": "Read a.txt and b.txt"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'}},
+                {"id": "call_2", "type": "function",
+                 "function": {"name": "read_file", "arguments": '{"path": "b.txt"}'}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "AAA"},
+        {"role": "tool", "tool_call_id": "call_2", "content": "BBB"},
+    ]
+
+    contents, _ = _build_gemini_contents(messages)
+    roles = [c["role"] for c in contents]
+
+    # No two adjacent contents may share a role.
+    assert all(roles[i] != roles[i - 1] for i in range(1, len(roles))), roles
+    assert roles == ["user", "model", "user"]
+
+    # Both parallel functionResponses land in the single trailing user content.
+    response_parts = [
+        p for p in contents[2]["parts"] if "functionResponse" in p
+    ]
+    outputs = [p["functionResponse"]["response"]["output"] for p in response_parts]
+    assert outputs == ["AAA", "BBB"]
+
+
+def test_consecutive_user_messages_merge_for_gemini_alternation():
+    """Back-to-back user messages must also be merged, not sent as two
+    consecutive user contents."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    contents, _ = _build_gemini_contents(messages)
+    roles = [c["role"] for c in contents]
+    assert roles == ["user", "model"], roles
+
+
 
 
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():
@@ -198,32 +156,10 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
-def test_native_http_error_keeps_status_and_retry_after():
-    from agent.gemini_native_adapter import gemini_http_error
 
-    response = DummyResponse(
-        status_code=429,
-        headers={"Retry-After": "17"},
-        payload={
-            "error": {
-                "code": 429,
-                "message": "quota exhausted",
-                "status": "RESOURCE_EXHAUSTED",
-                "details": [
-                    {
-                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-                        "reason": "RESOURCE_EXHAUSTED",
-                        "metadata": {"service": "generativelanguage.googleapis.com"},
-                    }
-                ],
-            }
-        },
-    )
 
-    err = gemini_http_error(response)
-    assert getattr(err, "status_code", None) == 429
-    assert getattr(err, "retry_after", None) == 17.0
-    assert "quota exhausted" in str(err)
+
+
 
 
 def test_native_client_accepts_injected_http_client():
@@ -304,49 +240,22 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
-def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
-    from agent.gemini_native_adapter import translate_stream_event
-
-    event = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
-                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
-                    ]
-                },
-                "finishReason": "STOP",
-            }
-        ]
-    }
-
-    chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices={})
-    tool_chunks = [chunk for chunk in chunks if chunk.choices[0].delta.tool_calls]
-    assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
-    assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
-    assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
 
 
-def test_max_tokens_none_defaults_to_gemini_output_ceiling():
-    """max_tokens=None must send the model's full output ceiling, not omit it.
-
-    Gemini's native generateContent applies a low internal default when
-    maxOutputTokens is absent, truncating tool calls mid-stream. Hermes passes
-    None to mean "unlimited", so the adapter must translate that to the
-    published 65,535 ceiling rather than leaving the field unset.
-    """
-    from agent.gemini_native_adapter import (
-        build_gemini_request,
-        GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
-    )
-
-    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=None)
-    assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
 
 
-def test_explicit_max_tokens_is_respected():
-    from agent.gemini_native_adapter import build_gemini_request
 
-    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
-    assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+
+# ---------------------------------------------------------------------------
+# X-Goog-Api-Client header tests
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+

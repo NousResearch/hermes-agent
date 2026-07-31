@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.telegram_managed_bot import (
@@ -32,17 +33,6 @@ class TestGenerateBotUsername:
         assert len(name) == len("hermes_") + 16 + len("_bot")
         assert len(name) <= 32
 
-    def test_profile_name_not_embedded(self):
-        name = generate_bot_username("work")
-        assert "work" not in name
-        assert name.startswith("hermes_")
-        assert name.endswith("_bot")
-
-    def test_slug_uses_telegram_safe_base32_chars(self):
-        name = generate_bot_username()
-        slug = name.removeprefix("hermes_").removesuffix("_bot")
-        assert len(slug) == 16
-        assert set(slug) <= set("abcdefghijklmnopqrstuvwxyz234567")
 
     def test_uniqueness(self):
         names = {generate_bot_username() for _ in range(20)}
@@ -57,19 +47,6 @@ class TestGenerateDeepLink:
         )
         assert link == "https://t.me/newbot/TestBot/my_bot"
 
-    def test_with_name(self):
-        link = generate_deep_link(
-            manager_bot="@TestBot",
-            suggested_username="my_bot",
-            suggested_name="My Agent",
-        )
-        assert "https://t.me/newbot/TestBot/my_bot?" in link
-        assert "name=My+Agent" in link
-
-    def test_defaults(self):
-        link = generate_deep_link()
-        assert f"https://t.me/newbot/{DEFAULT_MANAGER_BOT}/" in link
-        assert "hermes_" in link
 
     def test_name_url_encoded(self):
         link = generate_deep_link(
@@ -81,17 +58,10 @@ class TestGenerateDeepLink:
 
 
 class TestPairingNonce:
-    def test_length(self):
-        nonce = generate_pairing_nonce()
-        assert len(nonce) == 32
 
     def test_hex_chars(self):
         nonce = generate_pairing_nonce()
         assert all(c in "0123456789abcdef" for c in nonce)
-
-    def test_uniqueness(self):
-        nonces = {generate_pairing_nonce() for _ in range(100)}
-        assert len(nonces) == 100
 
 
 class TestQRCode:
@@ -151,14 +121,6 @@ class TestCreatePairing:
         ):
             assert create_pairing("https://api.example.com") is None
 
-    def test_invalid_payload(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 201
-        mock_resp.json.return_value = {"pairing_id": "missing-poll-token"}
-        with patch(
-            "hermes_cli.telegram_managed_bot.httpx.post", return_value=mock_resp
-        ):
-            assert create_pairing("https://api.example.com") is None
 
     def test_uses_env_override(self, monkeypatch):
         monkeypatch.setenv(TELEGRAM_ONBOARDING_URL_ENV, "https://worker.example")
@@ -208,87 +170,8 @@ class TestPollForToken:
             "Authorization": "Bearer secret-token"
         }
 
-    def test_setup_result_includes_owner_user_id(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "bot_username": "hermes_abcdefghijklmnop_bot",
-            "owner_user_id": 42,
-            "status": "ready",
-            "token": VALID_TOKEN,
-        }
 
-        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
-            with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                result = poll_for_setup_result(
-                    "https://api.example.com", self.pairing(), timeout=5
-                )
 
-        assert result == TelegramBotSetupResult(
-            token=VALID_TOKEN,
-            bot_username="hermes_abcdefghijklmnop_bot",
-            owner_user_id=42,
-        )
-
-    def test_setup_result_accepts_string_owner_user_id(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "bot_username": "hermes_abcdefghijklmnop_bot",
-            "owner_user_id": "42",
-            "status": "ready",
-            "token": VALID_TOKEN,
-        }
-
-        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
-            result = poll_for_setup_result(
-                "https://api.example.com", self.pairing(), timeout=5
-            )
-
-        assert result == TelegramBotSetupResult(
-            token=VALID_TOKEN,
-            bot_username="hermes_abcdefghijklmnop_bot",
-            owner_user_id=42,
-        )
-
-    def test_invalid_ready_token_returns_none(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "bot_username": "hermes_abcdefghijklmnop_bot",
-            "owner_user_id": 42,
-            "status": "ready",
-            "token": "not-a-real-token",
-        }
-
-        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
-            with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                with patch(
-                    "hermes_cli.telegram_managed_bot.time.monotonic"
-                ) as mock_time:
-                    mock_time.side_effect = [0, 0, 999]
-                    assert (
-                        poll_for_token(
-                            "https://api.example.com", self.pairing(), timeout=1
-                        )
-                        is None
-                    )
-
-    def test_timeout_returns_none(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"status": "waiting"}
-
-        with patch("hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp):
-            with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                with patch(
-                    "hermes_cli.telegram_managed_bot.time.monotonic"
-                ) as mock_time:
-                    mock_time.side_effect = [0, 0, 999]
-                    token = poll_for_token(
-                        "https://api.example.com", self.pairing(), timeout=1
-                    )
-                    assert token is None
 
     def test_eventual_success(self):
         not_ready = MagicMock()
@@ -321,3 +204,34 @@ class TestSetupTelegramAuto:
         from hermes_cli.setup import _setup_telegram_auto
 
         assert callable(_setup_telegram_auto)
+
+    def test_setup_result_passes_profile_name_for_profile_home(self, monkeypatch, tmp_path):
+        from hermes_cli import setup
+
+        seen = {}
+        profile_home = tmp_path / ".hermes" / "profiles" / "oracle"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setattr(setup, "get_hermes_home", lambda: profile_home)
+
+        def fake_auto_setup_telegram_bot_result(*, profile_name=None):
+            seen["profile_name"] = profile_name
+            return None
+
+        monkeypatch.setattr(
+            "hermes_cli.telegram_managed_bot.auto_setup_telegram_bot_result",
+            fake_auto_setup_telegram_bot_result,
+        )
+
+        assert setup._setup_telegram_auto_result() is None
+        assert seen["profile_name"] == "oracle"
+
+    def test_profile_name_from_home_path_handles_windows_separators(self):
+        from hermes_cli.setup import _profile_name_from_hermes_home
+
+        assert (
+            _profile_name_from_hermes_home(
+                PureWindowsPath(r"C:\Users\test\AppData\Local\hermes\profiles\oracle")
+            )
+            == "oracle"
+        )

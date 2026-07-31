@@ -1,7 +1,12 @@
 # nix/tui.nix — Hermes TUI (Ink/React) compiled with tsc and bundled
 { pkgs, hermesNpmLib, ... }:
 let
-  npm = hermesNpmLib.mkNpmPassthru { folder = "ui-tui"; attr = "tui"; pname = "hermes-tui"; };
+  npm = hermesNpmLib.mkNpmPassthru {
+    dirs = [
+      "ui-tui"
+      "apps/shared"
+    ];
+  };
 
   packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/ui-tui/package.json"));
   version = packageJson.version;

@@ -14,7 +14,8 @@ export type Locale =
   | "ga"
   | "pt"
   | "ru"
-  | "hu";
+  | "hu"
+  | "ar";
 
 export interface Translations {
   // ── Common ──
@@ -110,6 +111,10 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    /** Optional — fall back to English literals until translated. */
+    managingProfile?: string;
+    currentProfileOption?: string;
+    managingProfileBanner?: string;
   };
 
   // ── Status page ──
@@ -120,6 +125,7 @@ export interface Translations {
     agent: string;
     connected: string;
     connectedPlatforms: string;
+    disabled?: string;
     disconnected: string;
     error: string;
     failed: string;
@@ -134,6 +140,8 @@ export interface Translations {
     activeSessions: string;
     recentSessions: string;
     restartGateway: string;
+    restartGatewayConfirmMessage?: string;
+    restartGatewayConfirmTitle?: string;
     restartingGateway: string;
     running: string;
     runningRemote: string;
@@ -142,6 +150,9 @@ export interface Translations {
     startedInBackground: string;
     stopped: string;
     updateHermes: string;
+    updateHermesConfirmMessage?: string;
+    updateHermesConfirmNow?: string;
+    updateHermesConfirmTitle?: string;
     updatingHermes: string;
     waitingForOutput: string;
   };
@@ -151,8 +162,14 @@ export interface Translations {
     title: string;
     history: string;
     overview: string;
+    filterChats: string;
+    filterAutomation: string;
+    filterAll: string;
+    sourceFilter: string;
+    anySource: string;
     searchPlaceholder: string;
     noSessions: string;
+    noSessionsInFilter: string;
     noMatch: string;
     startConversation: string;
     noMessages: string;
@@ -177,6 +194,7 @@ export interface Translations {
     selectedSessionsDeleted: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
+    newChat: string;
     previousPage: string;
     nextPage: string;
     roles: {
@@ -350,7 +368,8 @@ export interface Translations {
     nameRequired: string;
     nameRule: string;
     invalidName: string;
-    cloneFromDefault: string;
+    cloneFrom: string;
+    cloneFromNone: string;
     allProfiles: string;
     noProfiles: string;
     defaultBadge: string;
@@ -404,6 +423,8 @@ export interface Translations {
     modelSaved?: string;
     modelSelect?: string;
     actions?: string;
+    manageSkills?: string;
+    activeSetHint?: string;
   };
 
   // ── Skills page ──
@@ -425,6 +446,10 @@ export interface Translations {
     setupNeeded: string;
     disabledForCli: string;
     more: string;
+    /** Optional — fall back to English literals until translated. */
+    profileSelector?: string;
+    currentProfile?: string;
+    managingProfile?: string;
   };
 
   // ── Config page ──
@@ -488,6 +513,14 @@ export interface Translations {
     showLess: string;
     showMore: string;
     showValue: string;
+    customTitle: string;
+    customHint: string;
+    customConfigured: string;
+    addCustomKey: string;
+    customKeyName: string;
+    customKeyNamePlaceholder: string;
+    add: string;
+    invalidKeyName: string;
   };
 
   // ── OAuth ──
@@ -504,6 +537,8 @@ export interface Translations {
     disconnect: string;
     managedExternally: string;
     copied: string;
+    copyCode: string;
+    copyFailed: string;
     cli: string;
     copyCliCommand: string;
     connect: string;
@@ -539,6 +574,13 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+    /** Font-override section (optional — locales fall back to English). */
+    fontTitle?: string;
+    fontDefault?: string;
+    fontDefaultHint?: string;
+    fontSans?: string;
+    fontSerif?: string;
+    fontMono?: string;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──
@@ -791,5 +833,25 @@ export interface Translations {
     workspacePathOptional: string;
     logTruncated: string;
     logAt: string;
+    // Optional keys added with the modal create-task dialog, board-settings
+    // dialog, and comment workflow hint. Non-English locales fall back to
+    // the English literal in the plugin bundle until translated, so these
+    // are optional to avoid churning every locale file.
+    newTaskTitle?: string;
+    taskTitleLabel?: string;
+    assigneeLabel?: string;
+    assigneeLabelHint?: string;
+    skillsLabel?: string;
+    skillsLabelHint?: string;
+    parentLabel?: string;
+    parentLabelHint?: string;
+    create?: string;
+    boardSettings?: string;
+    boardSettingsTitle?: string;
+    boardSettingsTitleFor?: string;
+    projectDirectoryOverrideHint?: string;
+    saving?: string;
+    commentHint?: string;
+    commentHintTitle?: string;
   };
 }

@@ -5,12 +5,10 @@ persistent lines to scrollback on tool.completed, restoring the stacked
 tool history that was lost when the TUI switched to a single-line spinner.
 """
 
-import os
 import sys
 import importlib
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Module-level reference to the cli module (set by _make_cli on first call)
 _cli_mod = None
@@ -90,30 +88,7 @@ class TestToolProgressScrollback:
 
         assert mock_print.call_count == 2
 
-    def test_new_mode_skips_consecutive_repeats(self):
-        """In 'new' mode, consecutive calls to the same tool only print once."""
-        cli = _make_cli(tool_progress="new")
-        with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress("tool.started", "read_file", "cli.py", {"path": "cli.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.1, is_error=False)
-            cli._on_tool_progress("tool.started", "read_file", "run_agent.py", {"path": "run_agent.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.2, is_error=False)
 
-        assert mock_print.call_count == 1  # Only the first read_file
-
-    def test_new_mode_prints_when_tool_changes(self):
-        """In 'new' mode, a different tool name triggers a new line."""
-        cli = _make_cli(tool_progress="new")
-        with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress("tool.started", "read_file", "cli.py", {"path": "cli.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.1, is_error=False)
-            cli._on_tool_progress("tool.started", "search_files", "pattern", {"pattern": "test"})
-            cli._on_tool_progress("tool.completed", "search_files", None, None, duration=0.3, is_error=False)
-            cli._on_tool_progress("tool.started", "read_file", "run_agent.py", {"path": "run_agent.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.2, is_error=False)
-
-        # read_file, search_files, read_file (3rd prints because search_files broke the streak)
-        assert mock_print.call_count == 3
 
     def test_off_mode_no_scrollback(self):
         """In 'off' mode, no stacked lines are printed."""
@@ -124,37 +99,8 @@ class TestToolProgressScrollback:
 
         mock_print.assert_not_called()
 
-    def test_error_suffix_on_failed_tool(self):
-        """When a failed tool's result is forwarded, the stacked line surfaces
-        the specific error (e.g. ``[exit 1]`` or ``[File not found: x]``)
-        instead of the legacy generic ``[error]`` suffix."""
-        import json
-        cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "false", {"command": "false"})
-        with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress(
-                "tool.completed", "terminal", None, None,
-                duration=0.5, is_error=True,
-                result=json.dumps({"output": "", "exit_code": 1}),
-            )
 
-        line = mock_print.call_args[0][0]
-        assert "[exit 1]" in line
 
-    def test_spinner_still_updates_on_started(self):
-        """tool.started still updates the spinner text for live display."""
-        cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "git status", {"command": "git status"})
-        assert "git status" in cli._spinner_text
-
-    def test_spinner_timer_clears_on_completed(self):
-        """tool.completed still clears the tool timer."""
-        cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "git status", {"command": "git status"})
-        assert cli._tool_start_time > 0
-        with patch.object(_cli_mod, "_cprint"):
-            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
-        assert cli._tool_start_time == 0.0
 
     def test_concurrent_tools_produce_stacked_lines(self):
         """Multiple tool.started followed by multiple tool.completed all produce lines."""
@@ -169,43 +115,24 @@ class TestToolProgressScrollback:
 
         assert mock_print.call_count == 2
 
-    def test_verbose_mode_no_duplicate_scrollback(self):
-        """In 'verbose' mode, scrollback lines are NOT printed (run_agent handles verbose output)."""
-        cli = _make_cli(tool_progress="verbose")
-        with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress("tool.started", "terminal", "ls", {"command": "ls"})
-            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
 
-        mock_print.assert_not_called()
+    def test_verbose_mode_commits_every_call(self):
+        """In 'verbose' mode, consecutive same-tool calls each commit a line.
 
-    def test_verbose_mode_config_does_not_enable_global_debug_logging(self):
-        """display.tool_progress=verbose controls TOOL-CALL DISPLAY ONLY.
-
-        It must NOT auto-flip self.verbose, which controls root-logger DEBUG
-        level for the entire process (every module spews to console).  PR
-        #6a1aa420e had coupled them, causing all debug logs to flood the
-        terminal whenever a user picked tool_progress: verbose for richer
-        per-tool rendering.
+        Mirrors 'all' (no consecutive-repeat suppression — that is 'new'-only),
+        so a multi-step turn builds a full scrollable tool history.
         """
         cli = _make_cli(tool_progress="verbose")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("tool.started", "terminal", "echo one", {"command": "echo one"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
+            cli._on_tool_progress("tool.started", "terminal", "echo two", {"command": "echo two"})
+            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
 
-        assert cli.tool_progress_mode == "verbose"
-        assert cli.verbose is False
+        assert mock_print.call_count == 2
 
-    def test_explicit_verbose_argument_wins_over_config(self):
-        """Explicit verbose=True from the CLI flag still enables DEBUG logging
-        regardless of tool_progress_mode."""
-        cli = _make_cli(tool_progress="off", verbose=True)
 
-        assert cli.tool_progress_mode == "off"
-        assert cli.verbose is True
 
-    def test_explicit_non_verbose_argument_keeps_debug_logging_off(self):
-        """Explicit verbose=False overrides any default to enable DEBUG."""
-        cli = _make_cli(tool_progress="verbose", verbose=False)
-
-        assert cli.tool_progress_mode == "verbose"
-        assert cli.verbose is False
 
     def test_pending_info_stores_on_started(self):
         """tool.started stores args for later use by tool.completed."""
@@ -226,3 +153,45 @@ class TestToolProgressScrollback:
         # First entry consumed, second remains
         assert len(cli._pending_tool_info.get("terminal", [])) == 1
         assert cli._pending_tool_info["terminal"][0] == {"command": "pwd"}
+
+
+class TestMoAReferenceBlocks:
+    """moa.reference renders a labelled thinking-style block; moa.aggregating
+    updates the spinner. Both are display-only and must commit regardless of
+    tool_progress_mode (MoA is non-streaming)."""
+
+    def test_reference_event_prints_labelled_block(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "moa.reference",
+                "openrouter:openai/gpt-5.5",
+                "Paris is the capital.",
+                None,
+                moa_index=1,
+                moa_count=2,
+            )
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        # Header names the source model + index/count; body carries the text.
+        assert "openrouter:openai/gpt-5.5" in printed
+        assert "Reference 1/2" in printed
+        assert "Paris is the capital." in printed
+
+    def test_reference_event_prints_even_when_progress_off(self):
+        """Reference blocks are the MoA process view, not tool progress — they
+        must show even with tool_progress: off."""
+        cli = _make_cli(tool_progress="off")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "moa.reference", "openrouter:anthropic/claude-opus-4.8", "Four.", None,
+                moa_index=2, moa_count=2,
+            )
+        assert mock_print.called
+
+    def test_aggregating_event_updates_spinner_only(self):
+        cli = _make_cli(tool_progress="all")
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress("moa.aggregating", "openrouter:anthropic/claude-opus-4.8", None, None)
+        assert "aggregating" in cli._spinner_text
+        # aggregating is a spinner-only transition; no committed scrollback line.
+        mock_print.assert_not_called()

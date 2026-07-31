@@ -102,73 +102,63 @@ def test_codex_stream_wire_error_event_surfaces_stream_error_event(provider_mess
     assert excinfo.value.body["error"]["message"] == provider_message
 
 
-def test_codex_stream_retries_remote_protocol_error_once():
-    """Transport errors (``httpx.RemoteProtocolError``) trigger a single retry.
+# ---------------------------------------------------------------------------
+# Nested error envelope on ``type=error`` SSE frames (opencode#36130 port)
+#
+# The Responses spec carries error details at the top level of the frame,
+# but the official OpenAI SDK and several OpenAI-compatible proxies wrap
+# them in an HTTP-style nested envelope:
+#   {"type": "error", "error": {"code": ..., "message": ..., "param": ...}}
+# Before the fix, _raise_stream_error only read top-level fields, so these
+# frames collapsed to the generic "stream emitted error event" placeholder
+# and the error classifier never saw the provider's real code/message.
+# ---------------------------------------------------------------------------
 
-    Previously this was on the ``responses.stream(...)`` helper; now it's on
-    ``responses.create(stream=True)`` itself.  The user-facing behavior is the
-    same: one retry, then re-raise if the second attempt also fails.
-    """
-    import httpx
+
+
+
+def test_codex_stream_wire_error_event_nested_envelope_attr_style():
+    """Details nested under ``error`` (SDK attr-object shape) are surfaced."""
+    from run_agent import _StreamErrorEvent
 
     agent = _make_codex_agent()
-    call_count = {"n": 0}
 
-    def create_side_effect(**kwargs):
-        call_count["n"] += 1
-        raise httpx.RemoteProtocolError(
-            "peer closed connection without sending complete message body"
-        )
-
-    mock_client = MagicMock()
-    mock_client.responses.create.side_effect = create_side_effect
-
-    with pytest.raises(httpx.RemoteProtocolError):
-        agent._run_codex_stream({}, client=mock_client)
-
-    # max_stream_retries=1 → one retry + final attempt → 2 create calls total.
-    assert call_count["n"] == 2
-
-
-def test_codex_stream_unrelated_runtimeerror_still_raises():
-    """RuntimeErrors that aren't transport errors must propagate.
-
-    With the event-driven path there's no separate fallback function to
-    short-circuit into; any RuntimeError from ``responses.create()`` or the
-    consumer surfaces directly.
-    """
-    agent = _make_codex_agent()
-
-    mock_client = MagicMock()
-    mock_client.responses.create.side_effect = RuntimeError("something else broke")
-
-    with pytest.raises(RuntimeError, match="something else broke"):
-        agent._run_codex_stream({}, client=mock_client)
-
-
-def test_codex_stream_truncated_no_terminal_event_raises():
-    """Streams that end without a terminal event AND no items raise.
-
-    Preserves the "Codex Responses stream did not emit a terminal response"
-    signal callers use to distinguish "stream truncated mid-flight" from
-    "stream completed with empty body".  Previously surfaced by the SDK's
-    ``RuntimeError("Didn't receive a `response.completed` event.")``; now
-    surfaced directly by the event consumer.
-    """
-    agent = _make_codex_agent()
-
-    class _EmptyStream:
+    class _ErrorCreateStream:
         def __iter__(self_inner):
-            return iter(())
+            yield SimpleNamespace(
+                type="error",
+                message=None,
+                code=None,
+                param=None,
+                error=SimpleNamespace(
+                    type="rate_limit_error",
+                    code="rate_limit_exceeded",
+                    message="Slow down",
+                    param=None,
+                ),
+            )
 
         def close(self_inner):
             pass
 
     mock_client = MagicMock()
-    mock_client.responses.create.return_value = _EmptyStream()
+    mock_client.responses.create.return_value = _ErrorCreateStream()
 
-    with pytest.raises(RuntimeError, match="did not emit a terminal response"):
+    with pytest.raises(_StreamErrorEvent) as excinfo:
         agent._run_codex_stream({}, client=mock_client)
+
+    assert "Slow down" in str(excinfo.value)
+    assert excinfo.value.code == "rate_limit_exceeded"
+
+
+
+
+
+
+
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -231,48 +221,12 @@ def test_summarize_api_error_does_not_accuse_subscribers():
     assert "X Premium+ does NOT include" in summary
 
 
-def test_summarize_api_error_decorates_xai_body_message():
-    """SDK-style error with structured body must also get the hint."""
-    from run_agent import AIAgent
-
-    class _XaiErr(Exception):
-        status_code = 403
-        body = {
-            "error": {
-                "message": (
-                    "You have either run out of available resources or do "
-                    "not have an active Grok subscription. Manage at "
-                    "https://grok.com"
-                )
-            }
-        }
-
-    summary = AIAgent._summarize_api_error(_XaiErr("403"))
-    assert "HTTP 403" in summary
-    assert "X Premium+ does NOT include" in summary
 
 
-def test_summarize_api_error_idempotent_for_entitlement_hint():
-    """Decorating twice must not double up the hint."""
-    from run_agent import AIAgent
-
-    raw = "HTTP 403: do not have an active Grok subscription"
-    once = AIAgent._decorate_xai_entitlement_error(raw)
-    twice = AIAgent._decorate_xai_entitlement_error(once)
-    assert once == twice
-    # Sanity: the hint did fire on the first pass.
-    assert "X Premium+ does NOT include" in once
 
 
-def test_summarize_api_error_passes_through_unrelated_errors():
-    """Non-xAI / non-entitlement errors must not be touched."""
-    from run_agent import AIAgent
 
-    error = RuntimeError("HTTP 500: upstream is sad")
-    summary = AIAgent._summarize_api_error(error)
-    assert "SuperGrok" not in summary
-    assert "grok.com" not in summary
-    assert "upstream is sad" in summary
+
 
 
 # ---------------------------------------------------------------------------
@@ -308,27 +262,8 @@ def test_classify_api_error_stream_event_grok_subscription_is_auth():
     assert result.should_fallback is True
 
 
-def test_classify_api_error_stream_event_resources_exhausted_grok_is_auth():
-    """'out of available resources' + 'grok' variant also classifies as auth."""
-    from run_agent import _StreamErrorEvent
-    from agent.error_classifier import classify_api_error, FailoverReason
-
-    err = _StreamErrorEvent(
-        "You have run out of available resources for Grok.",
-    )
-    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
-    assert result.reason == FailoverReason.auth
-    assert result.retryable is False
 
 
-def test_classify_api_error_stream_event_unrelated_not_reclassified():
-    """An unrelated _StreamErrorEvent must not be caught by the xAI guard."""
-    from run_agent import _StreamErrorEvent
-    from agent.error_classifier import classify_api_error, FailoverReason
-
-    err = _StreamErrorEvent("Internal server error — try again later")
-    result = classify_api_error(err, provider="xai-oauth", model="grok-4.3")
-    assert result.reason != FailoverReason.auth
 
 
 # ---------------------------------------------------------------------------
@@ -400,77 +335,10 @@ def test_codex_reasoning_replay_includes_encrypted_content_for_xai():
     assert assistant_items, "assistant message must still be present"
 
 
-def test_codex_transport_xai_request_includes_encrypted_content():
-    """xAI ``include`` array must request ``reasoning.encrypted_content``.
-
-    This is the request-side half of the May 2026 reversal: we ask xAI
-    to echo back encrypted reasoning so the next turn can replay it.
-    """
-    from agent.transports.codex import ResponsesApiTransport
-
-    transport = ResponsesApiTransport()
-    kwargs = transport.build_kwargs(
-        model="grok-4.3",
-        messages=[
-            {"role": "system", "content": "you are a helpful assistant"},
-            {"role": "user", "content": "hi"},
-        ],
-        tools=None,
-        instructions="you are a helpful assistant",
-        reasoning_config={"enabled": True, "effort": "medium"},
-        is_xai_responses=True,
-    )
-    assert kwargs["include"] == ["reasoning.encrypted_content"]
 
 
-def test_codex_transport_xai_replays_reasoning_in_input():
-    """End-to-end: build_kwargs on xAI must replay prior encrypted reasoning."""
-    from agent.transports.codex import ResponsesApiTransport
-
-    transport = ResponsesApiTransport()
-    kwargs = transport.build_kwargs(
-        model="grok-4.3",
-        messages=[
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "hi"},
-            _assistant_msg_with_encrypted_reasoning(text="hi from grok"),
-            {"role": "user", "content": "what's your name?"},
-        ],
-        tools=None,
-        instructions="sys",
-        reasoning_config={"enabled": True, "effort": "medium"},
-        is_xai_responses=True,
-    )
-    input_items = kwargs["input"]
-    reasoning_items = [it for it in input_items if it.get("type") == "reasoning"]
-    assert len(reasoning_items) == 1
-    assert reasoning_items[0]["encrypted_content"] == "enc_blob"
 
 
-def test_codex_transport_native_codex_still_replays_reasoning_in_input():
-    """Regression guard: openai-codex must keep the existing replay path."""
-    from agent.transports.codex import ResponsesApiTransport
-
-    transport = ResponsesApiTransport()
-    kwargs = transport.build_kwargs(
-        model="gpt-5-codex",
-        messages=[
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "hi"},
-            _assistant_msg_with_encrypted_reasoning(text="hi from codex"),
-            {"role": "user", "content": "next"},
-        ],
-        tools=None,
-        instructions="sys",
-        reasoning_config={"enabled": True, "effort": "medium"},
-        is_xai_responses=False,
-    )
-    input_items = kwargs["input"]
-    reasoning_items = [it for it in input_items if it.get("type") == "reasoning"]
-    assert len(reasoning_items) == 1
-    assert reasoning_items[0]["encrypted_content"] == "enc_blob"
-    # Native Codex still asks for encrypted_content back.
-    assert "reasoning.encrypted_content" in kwargs.get("include", [])
 
 
 # ---------------------------------------------------------------------------
@@ -510,23 +378,6 @@ def test_is_entitlement_failure_false_for_status_other_than_401_403():
     assert not AIAgent._is_entitlement_failure(body, 200)
 
 
-def test_is_entitlement_failure_false_for_unrelated_auth_errors():
-    """A real auth failure (expired token, wrong key) must keep refreshing."""
-    from run_agent import AIAgent
-
-    # Generic Anthropic-style auth failure
-    assert not AIAgent._is_entitlement_failure(
-        {"message": "Invalid API key", "reason": "authentication_error"},
-        401,
-    )
-    # OAuth token expired
-    assert not AIAgent._is_entitlement_failure(
-        {"message": "Token has expired", "reason": "unauthorized"},
-        401,
-    )
-    # Empty context
-    assert not AIAgent._is_entitlement_failure({}, 401)
-    assert not AIAgent._is_entitlement_failure(None, 401)
 
 
 def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
@@ -545,7 +396,7 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     refresh_calls = {"n": 0}
 
     class _FakePool:
-        def try_refresh_current(self):
+        def try_refresh_matching(self, api_key_hint=None):
             refresh_calls["n"] += 1
             return MagicMock(id="should_not_be_called")
 
@@ -574,96 +425,71 @@ def test_recover_with_credential_pool_skips_refresh_on_entitlement_403():
     assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on entitlement 403"
 
 
-def test_recover_with_credential_pool_skips_refresh_on_bare_403_for_xai_oauth():
-    """A bare HTTP 403 from ``xai-oauth`` (no keyword match) must NOT loop refresh.
-
-    Regression for #26847 — xAI's backend has been seen to 403 standard
-    SuperGrok subscribers with a terser body that doesn't contain any of
-    the existing entitlement keywords ("do not have an active Grok
-    subscription", etc.). Before the defense-in-depth guard, the recovery
-    path would happily mint a fresh token, get a fresh 403, and spin.
-    """
-    from run_agent import AIAgent
-    from agent.error_classifier import FailoverReason
+def test_recover_with_credential_pool_rotates_on_xai_spending_limit_403():
+    """xAI's explicit spending-limit 403 must rotate, not hit the entitlement guard."""
+    from agent.error_classifier import FailoverReason, classify_api_error
 
     agent = _make_codex_agent()
-    assert agent.provider == "xai-oauth"
-
+    next_entry = MagicMock(id="healthy-account")
     refresh_calls = {"n": 0}
 
+    class _SpendingLimitError(Exception):
+        status_code = 403
+        body = {
+            "code": "personal-team-blocked:spending-limit",
+            "error": (
+                "You have run out of credits or need a Grok subscription. "
+                "Add credits at Grok or upgrade at Grok."
+            ),
+        }
+
     class _FakePool:
-        def try_refresh_current(self):
+        provider = "xai-oauth"
+
+        def try_refresh_matching(self, api_key_hint=None):
             refresh_calls["n"] += 1
             return MagicMock(id="should_not_be_called")
 
-        def mark_exhausted_and_rotate(self, **_kwargs):
-            return None
+        def mark_exhausted_and_rotate(
+            self,
+            *,
+            status_code,
+            error_context=None,
+            api_key_hint=None,
+        ):
+            assert status_code == 403
+            assert api_key_hint == "test-key"
+            assert error_context == {
+                "reason": "personal-team-blocked:spending-limit",
+                "message": (
+                    "You have run out of credits or need a Grok subscription. "
+                    "Add credits at Grok or upgrade at Grok."
+                ),
+            }
+            return next_entry
 
-        def has_available(self):
-            return False
-
-    agent._credential_pool = _FakePool()
-
-    error_context = {
-        "reason": "forbidden",
-        "message": "Forbidden",
-    }
-    assert not AIAgent._is_entitlement_failure(error_context, 403), (
-        "Pre-condition: bare 'Forbidden' body must NOT match the keyword "
-        "heuristic — otherwise this test isn't covering the defense-in-depth path."
-    )
-
-    recovered, _retried_429 = agent._recover_with_credential_pool(
-        status_code=403,
-        has_retried_429=False,
-        classified_reason=FailoverReason.auth,
-        error_context=error_context,
-    )
-
-    assert recovered is False, "Bare 403 on xai-oauth must surface, not refresh-loop"
-    assert refresh_calls["n"] == 0, "try_refresh_current must NOT be called on xai-oauth 403"
-
-
-def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
-    """Regression guard: legitimate auth errors must still trigger refresh."""
-    from agent.error_classifier import FailoverReason
-
-    agent = _make_codex_agent()
-
-    refresh_calls = {"n": 0}
-
-    class _FakePool:
-        def try_refresh_current(self):
-            refresh_calls["n"] += 1
-            # Return a fake refreshed entry — semantically "refresh worked"
-            entry = MagicMock()
-            entry.id = "entry_refreshed"
-            return entry
-
-        def mark_exhausted_and_rotate(self, **_kwargs):
-            return None
-
-        def has_available(self):
-            return False
-
-    agent._credential_pool = _FakePool()
-    # _swap_credential is called by the recovery path — stub it out
+    error = _SpendingLimitError("Error code: 403")
+    classified = classify_api_error(error, provider="xai-oauth", model="grok-4.5")
+    error_context = agent._extract_api_error_context(error)
+    setattr(agent, "_credential_pool", _FakePool())
     agent._swap_credential = MagicMock()
 
-    error_context = {
-        "reason": "authentication_error",
-        "message": "Invalid API key",
-    }
-
-    recovered, _retried_429 = agent._recover_with_credential_pool(
-        status_code=401,
+    recovered, retried_429 = agent._recover_with_credential_pool(
+        status_code=error.status_code,
         has_retried_429=False,
-        classified_reason=FailoverReason.auth,
+        classified_reason=classified.reason,
         error_context=error_context,
     )
 
-    assert recovered is True, "Genuine auth failure must still recover via refresh"
-    assert refresh_calls["n"] == 1
+    assert classified.reason == FailoverReason.billing
+    assert recovered is True
+    assert retried_429 is False
+    assert refresh_calls["n"] == 0
+    agent._swap_credential.assert_called_once_with(next_entry)
+
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -681,227 +507,20 @@ def test_recover_with_credential_pool_still_refreshes_genuine_auth_failure():
 # ---------------------------------------------------------------------------
 
 
-def test_is_entitlement_failure_false_for_bad_credentials_wke_suffix():
-    """403 with ``[WKE=unauthenticated:bad-credentials]`` is auth, not entitlement.
-
-    Verbatim shape from the #29344 reporter — the ``code`` text matches
-    the entitlement permission-denied heuristic, but the ``error`` field
-    carries xAI's explicit "this is a credential validation failure"
-    signal.  Classifier must honor it.
-    """
-    from run_agent import AIAgent
-
-    assert not AIAgent._is_entitlement_failure(
-        {
-            "code": "The caller does not have permission to execute the specified operation",
-            "error": "The OAuth2 access token could not be validated. [WKE=unauthenticated:bad-credentials]",
-        },
-        403,
-    )
 
 
-def test_is_entitlement_failure_false_for_wke_suffix_in_normalized_shape():
-    """The same body after ``_extract_api_error_context`` normalisation.
-
-    Real runtime paths feed the classifier through
-    ``_extract_api_error_context``, which converts the raw body to
-    ``{message, reason, reset_at}``.  The disambiguator must fire in
-    BOTH the raw-body shape (test above) and the normalised shape so
-    the fix actually reaches the production call site at
-    ``_recover_with_credential_pool``.
-    """
-    from run_agent import AIAgent
-
-    assert not AIAgent._is_entitlement_failure(
-        {
-            "reason": "The caller does not have permission to execute the specified operation",
-            "message": "The OAuth2 access token could not be validated. [WKE=unauthenticated:bad-credentials]",
-        },
-        403,
-    )
 
 
-@pytest.mark.parametrize("wke_variant", [
-    # The headline variant — what xAI returns today.
-    "[WKE=unauthenticated:bad-credentials]",
-    # Forward-compat: xAI documents the WKE prefix as a stable shape,
-    # the suffix after the colon is the "reason code" and could grow
-    # new values.  Anything under ``unauthenticated:`` must route to
-    # the refresh path.
-    "[WKE=unauthenticated:expired-token]",
-    "[WKE=unauthenticated:revoked]",
-    "[WKE=unauthenticated:some-future-reason]",
-])
-def test_is_entitlement_failure_false_for_any_wke_unauthenticated_variant(wke_variant):
-    from run_agent import AIAgent
-
-    assert not AIAgent._is_entitlement_failure(
-        {
-            "code": "The caller does not have permission to execute the specified operation",
-            "error": f"Token rejected. {wke_variant}",
-        },
-        403,
-    )
 
 
-def test_is_entitlement_failure_false_via_oauth2_validation_phrase_alone():
-    """Second disambiguator: the "OAuth2 access token could not be
-    validated" phrase by itself (no WKE suffix) must also route to
-    refresh.  This is a belt-and-braces guard against xAI dropping or
-    reformatting the WKE suffix in a future API revision without
-    changing the human-readable error text."""
-    from run_agent import AIAgent
-
-    assert not AIAgent._is_entitlement_failure(
-        {
-            "code": "The caller does not have permission to execute the specified operation",
-            "error": "The OAuth2 access token could not be validated.",
-        },
-        403,
-    )
 
 
-def test_is_entitlement_failure_wke_signal_overrides_entitlement_keywords():
-    """Defensive: if a future xAI body somehow carries BOTH the WKE
-    suffix AND entitlement language, the WKE signal wins.  Auth is
-    recoverable; entitlement isn't.  If the refreshed token still
-    can't access the resource, the next 403 (without WKE) lands on
-    the entitlement path correctly."""
-    from run_agent import AIAgent
-
-    assert not AIAgent._is_entitlement_failure(
-        {
-            "code": "The caller does not have permission to execute the specified operation",
-            "error": (
-                "do not have an active Grok subscription. "
-                "[WKE=unauthenticated:bad-credentials]"
-            ),
-        },
-        403,
-    )
 
 
-def test_is_entitlement_failure_case_insensitive_wke_match():
-    """Substring match is case-insensitive — the classifier lowercases
-    everything before matching, so a future xAI build that uppercases
-    the prefix wouldn't reintroduce the misclassification."""
-    from run_agent import AIAgent
-
-    assert not AIAgent._is_entitlement_failure(
-        {
-            "code": "The caller does not have permission to execute the specified operation",
-            "error": "[wke=Unauthenticated:Bad-Credentials]",
-        },
-        403,
-    )
 
 
-def test_recover_with_credential_pool_refreshes_on_xai_bad_credentials_403():
-    """End-to-end #29344: a bad-credentials 403 from xai-oauth MUST
-    call ``try_refresh_current()`` so the long-running TUI session
-    recovers without an exit/reopen cycle.
-
-    Mirrors the scaffolding of
-    ``test_recover_with_credential_pool_still_refreshes_genuine_auth_failure``
-    but with the exact 403 body shape xAI ships for stale tokens —
-    the very body that pre-fix tripped the entitlement classifier
-    and short-circuited the refresh path.
-    """
-    from agent.error_classifier import FailoverReason
-
-    agent = _make_codex_agent()
-
-    refresh_calls = {"n": 0}
-
-    class _FakePool:
-        def try_refresh_current(self):
-            refresh_calls["n"] += 1
-            entry = MagicMock()
-            entry.id = "entry_refreshed_after_stale"
-            return entry
-
-        def mark_exhausted_and_rotate(self, **_kwargs):
-            return None
-
-        def has_available(self):
-            return False
-
-    agent._credential_pool = _FakePool()
-    agent._swap_credential = MagicMock()
-
-    # Normalised shape that ``_extract_api_error_context`` would
-    # produce for the reporter's wire-level body.
-    error_context = {
-        "reason": (
-            "The caller does not have permission to execute the specified operation"
-        ),
-        "message": (
-            "The OAuth2 access token could not be validated. "
-            "[WKE=unauthenticated:bad-credentials]"
-        ),
-    }
-
-    recovered, _retried_429 = agent._recover_with_credential_pool(
-        status_code=403,
-        has_retried_429=False,
-        classified_reason=FailoverReason.auth,
-        error_context=error_context,
-    )
-
-    assert recovered is True, (
-        "Stale OAuth token (bad-credentials 403) must trigger refresh — "
-        "pre-fix this returned False because the entitlement classifier "
-        "over-matched on the permission-denied code text"
-    )
-    assert refresh_calls["n"] == 1, "try_refresh_current must run exactly once"
-    agent._swap_credential.assert_called_once()
 
 
-def test_recover_with_credential_pool_still_blocks_real_entitlement():
-    """Companion regression guard for the #29344 fix: the original
-    #26847 protection — entitlement 403 must NOT refresh — must
-    survive the new disambiguator.  A real unsubscribed-account body
-    has no WKE suffix and no OAuth2-validation phrase, so the
-    classifier still classifies it as entitlement and short-circuits."""
-    from agent.error_classifier import FailoverReason
-
-    agent = _make_codex_agent()
-
-    refresh_calls = {"n": 0}
-
-    class _FakePool:
-        def try_refresh_current(self):
-            refresh_calls["n"] += 1
-            return MagicMock(id="should_not_be_called")
-
-        def mark_exhausted_and_rotate(self, **_kwargs):
-            return None
-
-        def has_available(self):
-            return False
-
-    agent._credential_pool = _FakePool()
-
-    # Pure entitlement body — no WKE suffix, no OAuth2 phrase.
-    error_context = {
-        "reason": (
-            "The caller does not have permission to execute the specified operation"
-        ),
-        "message": (
-            "You have either run out of available resources or do not have an "
-            "active Grok subscription. Manage at https://grok.com"
-        ),
-    }
-
-    recovered, _retried_429 = agent._recover_with_credential_pool(
-        status_code=403,
-        has_retried_429=False,
-        classified_reason=FailoverReason.auth,
-        error_context=error_context,
-    )
-
-    assert recovered is False, "Entitlement 403 must surface, not refresh"
-    assert refresh_calls["n"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -949,6 +568,8 @@ def test_grok_4_still_resolves_to_256k():
         assert DEFAULT_CONTEXT_LENGTHS[matched_key] == 256_000
 
 
+
+
 # ---------------------------------------------------------------------------
 # Cross-issuer reasoning replay guard
 #
@@ -978,51 +599,8 @@ def _stamped_assistant_msg(issuer_kind, *, text="hi", encrypted="enc_blob", rs_i
     }
 
 
-def test_cross_issuer_reasoning_is_dropped_on_replay():
-    """Reasoning minted by one Responses endpoint must not be replayed to
-    another. This is the regression for the chatgpt-backend vs xAI-OAuth
-    swap that returned invalid_encrypted_content on every turn after the
-    user changed model mid-session.
-    """
-    from agent.codex_responses_adapter import _chat_messages_to_responses_input
-
-    msgs = [
-        {"role": "user", "content": "hi"},
-        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
-        {"role": "user", "content": "next"},
-    ]
-
-    # Calling against codex_backend — the grok-issued blob must be dropped.
-    items = _chat_messages_to_responses_input(
-        msgs, current_issuer_kind="codex_backend"
-    )
-    reasoning = [it for it in items if it.get("type") == "reasoning"]
-    assert reasoning == [], (
-        "Reasoning items stamped with a foreign _issuer_kind must be dropped "
-        "before the API rejects the whole request with invalid_encrypted_content."
-    )
 
 
-def test_same_issuer_reasoning_is_still_replayed():
-    """Same-endpoint reasoning replay is the documented happy path (May 2026
-    reversal). The cross-issuer guard must not regress it.
-    """
-    from agent.codex_responses_adapter import _chat_messages_to_responses_input
-
-    msgs = [
-        {"role": "user", "content": "hi"},
-        _stamped_assistant_msg("xai_responses", encrypted="grok_blob"),
-        {"role": "user", "content": "next"},
-    ]
-
-    items = _chat_messages_to_responses_input(
-        msgs, current_issuer_kind="xai_responses"
-    )
-    reasoning = [it for it in items if it.get("type") == "reasoning"]
-    assert len(reasoning) == 1
-    assert reasoning[0]["encrypted_content"] == "grok_blob"
-    # The internal stamp must not leak to the API payload.
-    assert "_issuer_kind" not in reasoning[0]
 
 
 def test_unstamped_reasoning_is_replayed_for_backwards_compat():

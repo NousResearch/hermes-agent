@@ -1,27 +1,73 @@
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { $connection } from '@/store/session'
 
 import { PreviewPane } from './preview-pane'
 
 describe('PreviewPane console state', () => {
-  afterEach(() => {
-    cleanup()
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(Date.now()), 0)
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
   })
 
-  it('does not rebuild the pane titlebar group for streamed console logs', () => {
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    vi.unstubAllGlobals()
+  })
+
+  it('does not watch backend-only remote filesystem previews locally', async () => {
+    const watchPreviewFile = vi.fn(async () => ({ id: 'watch-1', path: '/remote/file.txt' }))
+    const onPreviewFileChanged = vi.fn(() => vi.fn())
+    $connection.set({ mode: 'remote' } as never)
+    vi.stubGlobal('window', {
+      ...window,
+      hermesDesktop: {
+        onPreviewFileChanged,
+        watchPreviewFile
+      }
+    })
+
+    await act(async () => {
+      render(
+        <PreviewPane
+          setTitlebarToolGroup={vi.fn()}
+          target={{
+            kind: 'file',
+            label: 'file.txt',
+            path: '/remote/file.txt',
+            previewKind: 'text',
+            source: '/remote/file.txt',
+            url: 'file:///remote/file.txt'
+          }}
+        />
+      )
+    })
+
+    expect(watchPreviewFile).not.toHaveBeenCalled()
+    expect(onPreviewFileChanged).not.toHaveBeenCalled()
+  })
+
+  it('does not rebuild the pane titlebar group for streamed console logs', async () => {
     const setTitlebarToolGroup = vi.fn()
 
-    const rendered = render(
-      <PreviewPane
-        setTitlebarToolGroup={setTitlebarToolGroup}
-        target={{
-          kind: 'url',
-          label: 'Preview',
-          source: 'http://localhost:5174',
-          url: 'http://localhost:5174'
-        }}
-      />
-    )
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          setTitlebarToolGroup={setTitlebarToolGroup}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174',
+            url: 'http://localhost:5174'
+          }}
+        />
+      )
+    })
 
     const initialCalls = setTitlebarToolGroup.mock.calls.length
     const webview = rendered.container.querySelector('webview')

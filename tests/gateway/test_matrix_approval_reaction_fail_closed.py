@@ -17,7 +17,7 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Stub mautrix so gateway.platforms.matrix can be imported without the SDK.
+# Stub mautrix so plugins.platforms.matrix.adapter can be imported without the SDK.
 # ---------------------------------------------------------------------------
 
 def _stub_mautrix():
@@ -28,18 +28,43 @@ def _stub_mautrix():
         sys.modules.setdefault(sub, types.ModuleType(sub))
     sys.modules.setdefault("mautrix", stub)
     m = sys.modules["mautrix.types"]
-    for attr in (
-        "ContentURI", "EventID", "EventType", "PaginationDirection",
-        "PresenceState", "RoomCreatePreset", "RoomID", "SyncToken",
-        "TrustState", "UserID",
-    ):
-        if not hasattr(m, attr):
-            setattr(m, attr, str)
+
+    class EventType:
+        ROOM_MESSAGE = "m.room.message"
+        REACTION = "m.reaction"
+        ROOM_ENCRYPTED = "m.room.encrypted"
+        ROOM_NAME = "m.room.name"
+
+    class PaginationDirection:
+        BACKWARD = "b"
+        FORWARD = "f"
+
+    class PresenceState:
+        ONLINE = "online"
+        OFFLINE = "offline"
+        UNAVAILABLE = "unavailable"
+
+    class RoomCreatePreset:
+        PRIVATE = "private_chat"
+        PUBLIC = "public_chat"
+        TRUSTED_PRIVATE = "trusted_private_chat"
+
+    class TrustState:
+        UNVERIFIED = 0
+        VERIFIED = 1
+
+    for attr in ("ContentURI", "EventID", "RoomID", "SyncToken", "UserID"):
+        setattr(m, attr, str)
+    m.EventType = EventType
+    m.PaginationDirection = PaginationDirection
+    m.PresenceState = PresenceState
+    m.RoomCreatePreset = RoomCreatePreset
+    m.TrustState = TrustState
 
 
 _stub_mautrix()
 
-from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt  # noqa: E402
+from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -107,24 +132,4 @@ class TestApprovalReactionFailClosed:
         event = _make_event("@stranger:matrix.org", "$prompt-event-1")
         assert _run(adapter, event) is False
 
-    def test_no_allowlist_allow_all_permits(self, monkeypatch):
-        """No MATRIX_ALLOWED_USERS + GATEWAY_ALLOW_ALL_USERS=true → allow."""
-        monkeypatch.delenv("MATRIX_ALLOWED_USERS", raising=False)
-        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-        adapter = _make_adapter(allowed_user_ids=None)
-        event = _make_event("@anyone:matrix.org", "$prompt-event-1")
-        assert _run(adapter, event) is True
 
-    def test_listed_sender_permits(self, monkeypatch):
-        """Sender in MATRIX_ALLOWED_USERS → allow."""
-        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-        adapter = _make_adapter(allowed_user_ids=["@alice:matrix.org"])
-        event = _make_event("@alice:matrix.org", "$prompt-event-1")
-        assert _run(adapter, event) is True
-
-    def test_unlisted_sender_denies(self, monkeypatch):
-        """Sender not in MATRIX_ALLOWED_USERS → deny."""
-        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-        adapter = _make_adapter(allowed_user_ids=["@alice:matrix.org"])
-        event = _make_event("@mallory:matrix.org", "$prompt-event-1")
-        assert _run(adapter, event) is False

@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
+import type { SessionMessage } from '@/types/hermes'
+
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
+  appendReasoningPart,
   chatMessageText,
+  collectUnspokenTurnSpeech,
+  mergeFinalAssistantText,
   preserveLocalAssistantErrors,
+  reasoningPart,
   renderMediaTags,
   toChatMessages,
   upsertToolPart
@@ -95,6 +101,97 @@ describe('toChatMessages', () => {
     )
   })
 
+  it('keeps the generated image on the tool row while preserving agent prose', () => {
+    const [message] = toChatMessages([
+      {
+        content: '',
+        role: 'assistant',
+        timestamp: 1,
+        tool_calls: [{ id: 'img-1', function: { name: 'image_generate', arguments: '{"prompt":"draw a cat"}' } }]
+      },
+      {
+        content: '{"success":true,"image":"https://cdn.example/cat.png"}',
+        role: 'tool',
+        timestamp: 2,
+        tool_call_id: 'img-1',
+        tool_name: 'image_generate'
+      },
+      {
+        content: 'Here you go.\n\n![Generated image](https://cdn.example/cat.png)',
+        role: 'assistant',
+        timestamp: 3
+      }
+    ])
+
+    const toolPart = message.parts.find(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'image_generate'
+    )
+
+    expect(toolPart?.result).toMatchObject({ image: 'https://cdn.example/cat.png', success: true })
+    // The duplicated image is stripped, but the agent's words survive.
+    expect(chatMessageText(message)).toBe('Here you go.')
+  })
+
+  it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: '@image:/tmp/cat.png\nwhat is in this photo?',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
+  })
+
+  it('keeps a user turn that carried only an attached image (no caption)', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: '@image:/tmp/cat.png',
+        timestamp: 1
+      }
+    ])
+
+    // The bubble has no visible text, but must survive the empty-turn filter
+    // because it carries attachment refs — otherwise a stand-alone attachment
+    // vanishes from the transcript after a session switch / restart.
+    expect(chatMessageText(message)).toBe('')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual(['@image:/tmp/cat.png'])
+  })
+
+  it('renders a native-vision turn as caption plus thumbnail, not raw placeholder text', () => {
+    // How a turn sent to a natively-vision-capable model comes back out of the
+    // session store: a backtick-quoted ref (the path has spaces) and the
+    // `[screenshot]` stand-in left by flattening the parts list.
+    const ref = '@image:`/Users/me/Library/Application Support/Hermes/composer-images/a.png`'
+
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: `${ref}\nwhat is in this photo?\n[screenshot]`,
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
+  })
+
+  it('leaves a plain user prompt without attachment refs untouched', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: 'just a question',
+        timestamp: 1
+      }
+    ])
+
+    expect((message as { attachmentRefs?: string[] }).attachmentRefs).toBeUndefined()
+  })
+
   it('coerces non-string message content without throwing', () => {
     const [message] = toChatMessages([
       {
@@ -122,6 +219,122 @@ describe('toChatMessages', () => {
 
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
   })
+
+  it('leaves an inline @ ref in place instead of hoisting a duplicate', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content:
+          'summarize @file:`src/main.ts` for me\n\n--- Attached Context ---\n\n📄 @file:`src/main.ts` (10 tokens)\n```ts\nconst x = 1\n```',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('summarize @file:`src/main.ts` for me')
+  })
+
+  it('never paints redirect scaffolding as an assistant bubble', () => {
+    // What the desktop actually receives after a mid-stream steer: the runtime
+    // keeps the interrupt scaffolding in a server-only api_content sidecar
+    // (never shipped to the client) so content is already clean, and marks a
+    // prose-free checkpoint display_kind:'hidden'. The transcript must show the
+    // partial reply and the user's correction — never
+    // "[This response was interrupted by a user correction.]".
+    const messages = toChatMessages([
+      { role: 'user', content: 'go', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Hey. I was mid-Figma MCP fix when we paused.',
+        timestamp: 2
+      },
+      { role: 'user', content: 'i love you', timestamp: 3 },
+      {
+        // Nothing had reached the screen — checkpoint exists only for the model.
+        role: 'assistant',
+        content: '[This response was interrupted by a user correction.]',
+        display_kind: 'hidden',
+        timestamp: 4
+      },
+      { role: 'user', content: 'keep going', timestamp: 5 }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual([
+      'go',
+      'Hey. I was mid-Figma MCP fix when we paused.',
+      'i love you',
+      'keep going'
+    ])
+
+    for (const message of messages) {
+      expect(chatMessageText(message)).not.toContain('This response was interrupted')
+      expect(chatMessageText(message)).not.toContain('Visible response before the interruption')
+      expect(chatMessageText(message)).not.toContain('Context from the interrupted assistant response')
+    }
+  })
+
+  it('projects durable timeline kinds without inspecting their text', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'real user turn', timestamp: 1 },
+      { role: 'assistant', content: 'real assistant reply', timestamp: 2 },
+      {
+        role: 'user',
+        content: 'opaque compaction payload',
+        display_kind: 'hidden',
+        timestamp: 3
+      },
+      {
+        role: 'user',
+        content: 'opaque model context payload',
+        display_kind: 'model_switch',
+        timestamp: 4
+      },
+      {
+        role: 'user',
+        content: 'opaque delegation context payload',
+        display_kind: 'async_delegation_complete',
+        timestamp: 5
+      },
+      {
+        role: 'user',
+        content: '[System note: Your previous turn was interrupted mid-run…]\n\noriginal prompt',
+        display_kind: 'auto_continue',
+        timestamp: 6
+      }
+    ])
+
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system', 'system'])
+    expect(messages.map(chatMessageText)).toEqual([
+      'real user turn',
+      'real assistant reply',
+      'model changed',
+      'background agent work finished',
+      'resumed interrupted turn'
+    ])
+  })
+
+  // A backend older than this app serves display_metadata as unparsed JSON
+  // text. Indexing into that string used to throw and fail the whole resume.
+  it.each([
+    ['an object', { delegation_id: 'deleg_1', task_count: 2 }, '2 background agents finished'],
+    ['JSON text', JSON.stringify({ delegation_id: 'deleg_1', task_count: 1 }), '1 background agent finished'],
+    ['unparseable text', '{not-json', 'background agent work finished'],
+    ['text that is not an object', '"deleg_1"', 'background agent work finished'],
+    ['a missing task count', { delegation_id: 'deleg_1' }, 'background agent work finished']
+  ])('labels a delegation event given %s', (_case, displayMetadata, expected) => {
+    const read = () =>
+      toChatMessages([
+        {
+          role: 'user',
+          content: 'opaque delegation context payload',
+          display_kind: 'async_delegation_complete',
+          display_metadata: displayMetadata as SessionMessage['display_metadata'],
+          timestamp: 1
+        }
+      ])
+
+    expect(read).not.toThrow()
+    expect(chatMessageText(read()[0])).toBe(expected)
+  })
 })
 
 describe('renderMediaTags', () => {
@@ -140,6 +353,52 @@ describe('renderMediaTags', () => {
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+})
+
+describe('interleaved reasoning/text coalescing', () => {
+  it('keeps narration contiguous when reasoning interrupts mid-sentence', () => {
+    // Models that interleave reasoning_content + content deltas emit
+    // text → reasoning → text within one tool-bounded segment. The two text
+    // fragments are really one sentence and must not be split by the
+    // "Thinking" block between them.
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me ')
+    parts = appendReasoningPart(parts, 'checking the file...')
+    parts = appendAssistantTextPart(parts, 'verify the full file is correct:')
+
+    expect(parts.map(p => p.type)).toEqual(['text', 'reasoning'])
+    expect((parts[0] as { text: string }).text).toBe('Let me verify the full file is correct:')
+    expect((parts[1] as { text: string }).text).toBe('checking the file...')
+  })
+
+  it('merges reasoning bursts that straddle a narration fragment', () => {
+    let parts: ChatMessagePart[] = appendReasoningPart([], 'first thought ')
+    parts = appendAssistantTextPart(parts, 'Working on it.')
+    parts = appendReasoningPart(parts, 'second thought')
+
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'text'])
+    expect((parts[0] as { text: string }).text).toBe('first thought second thought')
+    expect((parts[1] as { text: string }).text).toBe('Working on it.')
+  })
+
+  it('starts a fresh text part after a tool call (segment boundary)', () => {
+    let parts: ChatMessagePart[] = appendAssistantTextPart([], 'Let me check.')
+    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
+    parts = appendAssistantTextPart(parts, 'Now editing.')
+
+    expect(parts.map(p => p.type)).toEqual(['text', 'tool-call', 'text'])
+    expect((parts[0] as { text: string }).text).toBe('Let me check.')
+    expect((parts[2] as { text: string }).text).toBe('Now editing.')
+  })
+
+  it('does not merge reasoning across a tool call', () => {
+    let parts: ChatMessagePart[] = appendReasoningPart([], 'before tool')
+    parts = upsertToolPart(parts, { name: 'read_file', tool_id: 'tc-1' }, 'running')
+    parts = appendReasoningPart(parts, 'after tool')
+
+    expect(parts.map(p => p.type)).toEqual(['reasoning', 'tool-call', 'reasoning'])
+    expect((parts[0] as { text: string }).text).toBe('before tool')
+    expect((parts[2] as { text: string }).text).toBe('after tool')
   })
 })
 
@@ -457,6 +716,37 @@ describe('upsertToolPart', () => {
     expect(summaries).toEqual(['Did 5 searches', 'Did 5 searches'])
   })
 
+  it('pairs a terminal completion with its context-only start when event IDs differ', () => {
+    const started = upsertToolPart(
+      [],
+      { context: 'echo "Hello from the terminal"', name: 'terminal', tool_id: 'terminal-start' },
+      'running'
+    )
+
+    const completed = upsertToolPart(
+      started,
+      {
+        args: { command: 'echo "Hello from the terminal"' },
+        name: 'terminal',
+        result: { exit_code: 0, stdout: 'Hello from the terminal' },
+        tool_id: 'terminal-complete'
+      },
+      'complete'
+    )
+
+    const terminalParts = completed.filter(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'terminal'
+    )
+
+    expect(terminalParts).toHaveLength(1)
+    expect(terminalParts[0]?.toolCallId).toBe('terminal-complete')
+    expect(terminalParts[0] && 'result' in terminalParts[0] ? terminalParts[0].result : undefined).toMatchObject({
+      exit_code: 0,
+      stdout: 'Hello from the terminal'
+    })
+  })
+
   it('preserves query args when completion payload omits context', () => {
     const started = upsertToolPart(
       [],
@@ -704,5 +994,143 @@ describe('upsertToolPart', () => {
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
+  })
+})
+
+describe('mergeFinalAssistantText', () => {
+  it('removes all text parts and appends the final text', () => {
+    const parts = [
+      { type: 'text' as const, text: 'streamed delta 1' },
+      { type: 'text' as const, text: 'streamed delta 2' },
+      { type: 'tool-call' as const, toolCallId: 'tc1', toolName: 'terminal', args: {} as never, argsText: '{}' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'final answer')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'final answer' })
+    expect(result.some(p => p.type === 'tool-call')).toBe(true)
+  })
+
+  it('drops reasoning that the final text fully covers (reasoning ⊆ final)', () => {
+    const parts = [reasoningPart('Let me check the files.'), { type: 'text' as const, text: 'streamed' }]
+
+    const result = mergeFinalAssistantText(parts, 'Let me check the files. Everything looks good.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+  })
+
+  it('keeps a longer reasoning block when the final text is only a short prefix', () => {
+    // #61447: a short final ("Done.") must NOT swallow a longer reasoning block
+    // that merely starts with it.
+    const parts = [
+      reasoningPart(
+        'Done. The root cause was a bare catch block swallowing Stripe errors. The fix adds proper error logging.'
+      ),
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Done.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'Done.' })
+  })
+
+  it('keeps non-restating reasoning', () => {
+    const parts = [
+      reasoningPart('I analyzed the issue and found a race condition in the event loop.'),
+      { type: 'text' as const, text: 'streamed' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Fixed the race condition.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+  })
+
+  it('handles empty final text', () => {
+    const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
+
+    const result = mergeFinalAssistantText(parts, '')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+})
+
+describe('collectUnspokenTurnSpeech', () => {
+  const assistant = (id: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    id,
+    role: 'assistant',
+    parts: text ? [{ type: 'text', text }] : [],
+    ...extra
+  })
+
+  const user = (id: string, text: string): ChatMessage => ({
+    id,
+    role: 'user',
+    parts: [{ type: 'text', text }]
+  })
+
+  it('includes sealed interim narration AND the final answer of a tool-calling turn', () => {
+    const messages = [
+      user('u1', 'what time is it?'),
+      assistant('a1', 'Let me check the clock.', { interim: true }),
+      assistant('a2', 'It is 9 PM.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech).not.toBeNull()
+    expect(speech?.id).toBe('a1')
+    expect(speech?.text).toBe('Let me check the clock.\n\nIt is 9 PM.')
+    expect(speech?.pending).toBe(false)
+  })
+
+  it('keeps the binding id stable while later bubbles stream in', () => {
+    const turnStart = [user('u1', 'go'), assistant('a1', 'Let me check.', { interim: true })]
+    const first = collectUnspokenTurnSpeech(turnStart, null)
+
+    const turnLater = [...turnStart, assistant('a2', 'Still work', { pending: true })]
+    const later = collectUnspokenTurnSpeech(turnLater, null)
+
+    expect(first?.id).toBe('a1')
+    expect(later?.id).toBe('a1')
+    // The earlier snapshot's text is a prefix of the later one — the live
+    // session appends by length, so aggregation must be append-only.
+    expect(later?.text.startsWith(first?.text ?? '')).toBe(true)
+    expect(later?.pending).toBe(true)
+  })
+
+  it('starts after the last spoken message and skips hidden/empty bubbles', () => {
+    const messages = [
+      assistant('a0', 'Spoken last turn.'),
+      user('u1', 'next'),
+      assistant('a1', '', { pending: false }),
+      assistant('a2', 'hidden note', { hidden: true }),
+      assistant('a3', 'The real reply.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, 'a0')
+
+    expect(speech?.id).toBe('a3')
+    expect(speech?.text).toBe('The real reply.')
+  })
+
+  it('reports pending from the newest assistant bubble even when it has no text yet', () => {
+    const messages = [assistant('a1', 'Narration done.', { interim: true }), assistant('a2', '', { pending: true })]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech?.id).toBe('a1')
+    expect(speech?.text).toBe('Narration done.')
+    expect(speech?.pending).toBe(true)
+  })
+
+  it('returns null when everything is spoken or there is no assistant text', () => {
+    expect(collectUnspokenTurnSpeech([], null)).toBeNull()
+    expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
+    expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
   })
 })

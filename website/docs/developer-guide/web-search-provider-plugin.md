@@ -9,7 +9,7 @@ description: "How to build a web-search/extract/crawl backend plugin for Hermes 
 Web-search provider plugins register a backend that services `web_search`, `web_extract`, and (optionally) deep-crawl tool calls. Built-in providers — Firecrawl, SearXNG, Tavily, Exa, Parallel, Brave Search (free tier), xAI, and DDGS — all ship as plugins under `plugins/web/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
 
 :::tip
-Web search is one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin), [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin), [Memory Provider Plugins](/developer-guide/memory-provider-plugin), [Context Engine Plugins](/developer-guide/context-engine-plugin), and [Model Provider Plugins](/developer-guide/model-provider-plugin). General tool/hook/CLI plugins live in [Build a Hermes Plugin](/guides/build-a-hermes-plugin).
+Web search is one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin), [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin), [Memory Provider Plugins](/developer-guide/memory-provider-plugin), [Context Engine Plugins](/developer-guide/context-engine-plugin), and [Model Provider Plugins](/developer-guide/model-provider-plugin). General tool/hook/CLI plugins live in [Build a Hermes Plugin](/developer-guide/plugins).
 :::
 
 ## How discovery works
@@ -43,7 +43,7 @@ plugins/web/my-backend/
 
 ## The WebSearchProvider ABC
 
-Subclass `agent.web_search_provider.WebSearchProvider`. The only required members are `name`, `is_available()`, and whichever of `search()` / `extract()` / `crawl()` you implement.
+Subclass `agent.web_search_provider.WebSearchProvider`. The only required members are `name`, `is_available()`, and whichever of `search()` / `extract()` you implement. (Deep crawling is not a separate method — it's a mode of `extract()`.)
 
 ```python
 # plugins/web/my-backend/provider.py
@@ -141,7 +141,7 @@ requires_env:
 |---|---|
 | `kind: backend` | Routes the plugin through the backend-loading path |
 | `provides_web_providers` | List of provider `name`s this plugin registers — used by the loader to advertise the plugin in `hermes tools` even before `register()` runs |
-| `requires_env` | Interactive credential prompt during `hermes plugins install` (see [Build a Hermes Plugin](/guides/build-a-hermes-plugin#gate-on-environment-variables) for the rich format) |
+| `requires_env` | Interactive credential prompt during `hermes plugins install` (see [Build a Hermes Plugin](/developer-guide/plugins#gate-on-environment-variables) for the rich format) |
 
 ## ABC reference
 
@@ -226,14 +226,14 @@ The `web_search` and `web_extract` tools live in `tools/web_tools.py`. At call t
 1. Read the relevant config key (`web.search_backend` for `web_search`, `web.extract_backend` for `web_extract`)
 2. Ask the registry for the provider with that `name`
 3. Check `is_available()` and the matching `supports_*()` flag
-4. Dispatch to `search()` / `extract()` / `crawl()`, awaiting if the method is a coroutine
+4. Dispatch to `search()` / `extract()` (deep crawl runs as a mode inside `extract()`), awaiting if the method is a coroutine
 5. JSON-serialize the response envelope and hand it back to the LLM
 
 Errors surface as the tool result; the LLM decides how to explain them. If no provider is registered (or every available one fails the capability gate), the tool returns a helpful error pointing at `hermes tools`.
 
 ## Lazy-installing optional dependencies
 
-If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package), don't `import` it at module top level. Use `tools.lazy_deps.ensure(...)` inside `is_available()` or `search()` — Hermes will install the package on first use, gated by `security.allow_lazy_installs`. See [Build a Hermes Plugin → Lazy-install](/guides/build-a-hermes-plugin#lazy-install-optional-python-dependencies) for the security model.
+If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package), don't `import` it at module top level. Use `tools.lazy_deps.ensure(...)` inside `is_available()` or `search()` — Hermes will install the package on first use, gated by `security.allow_lazy_installs`. See [Build a Hermes Plugin → Lazy-install](/developer-guide/plugins#lazy-install-optional-python-dependencies) for the security model.
 
 ## Reference implementations
 
@@ -251,10 +251,10 @@ If your provider wraps a third-party SDK (like DDGS does with the `ddgs` package
 my-backend-web = "my_backend_web_package"
 ```
 
-`my_backend_web_package` must expose a top-level `register` function. See [Distribute via pip](/guides/build-a-hermes-plugin#distribute-via-pip) in the general plugin guide for the full setup.
+`my_backend_web_package` must expose a top-level `register` function. See [Distribute via pip](/developer-guide/plugins#distribute-via-pip) in the general plugin guide for the full setup.
 
 ## Related pages
 
 - [Web Search](/user-guide/features/web-search) — user-facing feature documentation and per-backend configuration
 - [Plugins overview](/user-guide/features/plugins) — all plugin types at a glance
-- [Build a Hermes Plugin](/guides/build-a-hermes-plugin) — general tools/hooks/slash commands guide
+- [Build a Hermes Plugin](/developer-guide/plugins) — general tools/hooks/slash commands guide

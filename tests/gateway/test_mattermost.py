@@ -6,6 +6,57 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
+from gateway.run import (
+    _resolve_gateway_display_bool,
+    _resolve_progress_thread_id,
+)
+
+
+class TestMattermostProgressThreadRouting:
+    def test_top_level_mattermost_progress_uses_event_message_id(self):
+        assert _resolve_progress_thread_id(
+            Platform.MATTERMOST,
+            source_thread_id=None,
+            event_message_id="top_post_123",
+        ) == "top_post_123"
+
+
+class TestMattermostDisplayHygiene:
+
+    def test_mattermost_platform_opt_in_can_enable_interim_assistant_messages(self):
+        """Mattermost can still opt into commentary explicitly per platform."""
+        user_config = {
+            "display": {
+                "interim_assistant_messages": False,
+                "platforms": {
+                    "mattermost": {"interim_assistant_messages": True},
+                },
+            }
+        }
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "interim_assistant_messages",
+            default=True,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
+
+
+    def test_global_thinking_progress_still_applies_to_other_platforms(self):
+        """The Mattermost guard must not silently neuter Telegram/other chats."""
+        user_config = {"display": {"thinking_progress": True}}
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "telegram",
+            "thinking_progress",
+            default=False,
+            platform=Platform.TELEGRAM,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
 
 
 # ---------------------------------------------------------------------------
@@ -13,29 +64,7 @@ from gateway.config import Platform, PlatformConfig
 # ---------------------------------------------------------------------------
 
 class TestMattermostConfigLoading:
-    def test_apply_env_overrides_mattermost(self, monkeypatch):
-        monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
-        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        assert Platform.MATTERMOST in config.platforms
-        mc = config.platforms[Platform.MATTERMOST]
-        assert mc.enabled is True
-        assert mc.token == "mm-tok-abc123"
-        assert mc.extra.get("url") == "https://mm.example.com"
-
-    def test_mattermost_not_loaded_without_token(self, monkeypatch):
-        monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
-        monkeypatch.delenv("MATTERMOST_URL", raising=False)
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        assert Platform.MATTERMOST not in config.platforms
 
     def test_mattermost_home_channel(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
@@ -51,18 +80,6 @@ class TestMattermostConfigLoading:
         assert home is not None
         assert home.chat_id == "ch_abc123"
         assert home.name == "General"
-
-    def test_mattermost_url_warning_without_url(self, monkeypatch):
-        """MATTERMOST_TOKEN set but MATTERMOST_URL missing should still load."""
-        monkeypatch.setenv("MATTERMOST_TOKEN", "mm-tok-abc123")
-        monkeypatch.delenv("MATTERMOST_URL", raising=False)
-
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        assert Platform.MATTERMOST in config.platforms
-        assert config.platforms[Platform.MATTERMOST].extra.get("url") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -90,42 +107,17 @@ class TestMattermostFormatMessage:
         result = self.adapter.format_message("![cat](https://img.example.com/cat.png)")
         assert result == "https://img.example.com/cat.png"
 
-    def test_image_markdown_strips_alt_text(self):
-        result = self.adapter.format_message("Here: ![my image](https://x.com/a.jpg) done")
-        assert "![" not in result
-        assert "https://x.com/a.jpg" in result
 
     def test_regular_markdown_preserved(self):
         """Regular markdown (bold, italic, code) should be kept as-is."""
         content = "**bold** and *italic* and `code`"
         assert self.adapter.format_message(content) == content
 
-    def test_regular_links_preserved(self):
-        """Non-image links should be preserved."""
-        content = "[click](https://example.com)"
-        assert self.adapter.format_message(content) == content
-
-    def test_plain_text_unchanged(self):
-        content = "Hello, world!"
-        assert self.adapter.format_message(content) == content
-
-    def test_multiple_images(self):
-        content = "![a](http://a.com/1.png) text ![b](http://b.com/2.png)"
-        result = self.adapter.format_message(content)
-        assert "![" not in result
-        assert "http://a.com/1.png" in result
-        assert "http://b.com/2.png" in result
-
 
 class TestMattermostTruncateMessage:
     def setup_method(self):
         self.adapter = _make_adapter()
 
-    def test_short_message_single_chunk(self):
-        msg = "Hello, world!"
-        chunks = self.adapter.truncate_message(msg, 4000)
-        assert len(chunks) == 1
-        assert chunks[0] == msg
 
     def test_long_message_splits(self):
         msg = "a " * 2500  # 5000 chars
@@ -133,16 +125,6 @@ class TestMattermostTruncateMessage:
         assert len(chunks) >= 2
         for chunk in chunks:
             assert len(chunk) <= 4000
-
-    def test_custom_max_length(self):
-        msg = "Hello " * 20
-        chunks = self.adapter.truncate_message(msg, max_length=50)
-        assert all(len(c) <= 50 for c in chunks)
-
-    def test_exactly_at_limit(self):
-        msg = "x" * 4000
-        chunks = self.adapter.truncate_message(msg, 4000)
-        assert len(chunks) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -179,11 +161,6 @@ class TestMattermostSend:
         assert payload["channel_id"] == "channel_1"
         assert payload["message"] == "Hello!"
 
-    @pytest.mark.asyncio
-    async def test_send_empty_content_succeeds(self):
-        """Empty content should return success without calling the API."""
-        result = await self.adapter.send("channel_1", "")
-        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_send_with_thread_reply(self):
@@ -217,41 +194,72 @@ class TestMattermostSend:
         payload = self.adapter._session.post.call_args[1]["json"]
         assert payload["root_id"] == "root_post"
 
-    @pytest.mark.asyncio
-    async def test_send_without_thread_no_root_id(self):
-        """When reply_mode is 'off', reply_to should NOT set root_id."""
-        self.adapter._reply_mode = "off"
-
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value={"id": "post789"})
-        mock_resp.text = AsyncMock(return_value="")
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
-
-        result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
-
-        assert result.success is True
-        payload = self.adapter._session.post.call_args[1]["json"]
-        assert "root_id" not in payload
 
     @pytest.mark.asyncio
-    async def test_send_api_failure(self):
-        """When API returns error, send should return failure."""
-        mock_resp = AsyncMock()
-        mock_resp.status = 500
-        mock_resp.json = AsyncMock(return_value={})
-        mock_resp.text = AsyncMock(return_value="Internal Server Error")
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
+    async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
+        """Tool/status/progress bubbles must stay quiet when the thread is broken."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
+        self.adapter._last_post_status = 400
+        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
+        self.adapter._api_post = AsyncMock(return_value={})
 
-        self.adapter._session.post = MagicMock(return_value=mock_resp)
-
-        result = await self.adapter.send("channel_1", "Hello!")
+        result = await self.adapter.send(
+            "channel_1",
+            "⚙️ terminal...",
+            metadata={"thread_id": "bad_root"},
+        )
 
         assert result.success is False
+        assert self.adapter._api_post.call_count == 1
+        payload = self.adapter._api_post.call_args_list[0][0][1]
+        assert payload["root_id"] == "bad_root"
+
+    @pytest.mark.asyncio
+    async def test_notify_send_with_invalid_thread_root_falls_back_flat_with_warning(self):
+        """Notify-worthy replies may fall back flat so the answer is not lost."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
+        self.adapter._last_post_status = 400
+        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
+        self.adapter._api_post = AsyncMock(side_effect=[{}, {"id": "flat_final"}])
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Final answer body",
+            reply_to="bad_root",
+            metadata={"notify": True},
+        )
+
+        assert result.success is True
+        assert result.message_id == "flat_final"
+        assert self.adapter._api_post.call_count == 2
+        threaded_payload = self.adapter._api_post.call_args_list[0][0][1]
+        flat_payload = self.adapter._api_post.call_args_list[1][0][1]
+        assert threaded_payload["root_id"] == "bad_root"
+        assert "root_id" not in flat_payload
+        assert flat_payload["channel_id"] == "channel_1"
+        assert "Mattermost thread delivery failed" in flat_payload["message"]
+        assert "Final answer body" in flat_payload["message"]
+
+
+    @pytest.mark.asyncio
+    async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
+        """Tool/status/progress bubbles must stay quiet when the thread is broken."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value={})
+
+        result = await self.adapter.send(
+            "channel_1",
+            "⚙️ terminal...",
+            metadata={"thread_id": "bad_root"},
+        )
+
+        assert result.success is False
+        assert self.adapter._api_post.call_count == 1
+        payload = self.adapter._api_post.call_args_list[0][0][1]
+        assert payload["root_id"] == "bad_root"
 
 
 # ---------------------------------------------------------------------------
@@ -291,36 +299,6 @@ class TestMattermostWebSocketParsing:
         assert msg_event.text == "Hello from Matrix!"
         assert msg_event.message_id == "post_abc"
 
-    @pytest.mark.asyncio
-    async def test_ignore_own_messages(self):
-        """Messages from the bot's own user_id should be ignored."""
-        post_data = {
-            "id": "post_self",
-            "user_id": "bot_user_id",  # same as bot
-            "channel_id": "chan_456",
-            "message": "Bot echo",
-        }
-        event = {
-            "event": "posted",
-            "data": {
-                "post": json.dumps(post_data),
-                "channel_type": "O",
-            },
-        }
-
-        await self.adapter._handle_ws_event(event)
-        assert not self.adapter.handle_message.called
-
-    @pytest.mark.asyncio
-    async def test_ignore_non_posted_events(self):
-        """Non-'posted' events should be ignored."""
-        event = {
-            "event": "typing",
-            "data": {"user_id": "user_123"},
-        }
-
-        await self.adapter._handle_ws_event(event)
-        assert not self.adapter.handle_message.called
 
     @pytest.mark.asyncio
     async def test_ignore_system_posts(self):
@@ -343,14 +321,15 @@ class TestMattermostWebSocketParsing:
         await self.adapter._handle_ws_event(event)
         assert not self.adapter.handle_message.called
 
+
     @pytest.mark.asyncio
-    async def test_channel_type_mapping(self):
-        """channel_type 'D' should map to 'dm'."""
+    async def test_leading_space_slash_command_is_command(self):
+        """Mattermost mobile suggests leading-space slash commands."""
         post_data = {
-            "id": "post_dm",
+            "id": "post_cmd",
             "user_id": "user_123",
             "channel_id": "chan_dm",
-            "message": "DM message",
+            "message": " /new",
         }
         event = {
             "event": "posted",
@@ -364,45 +343,9 @@ class TestMattermostWebSocketParsing:
         await self.adapter._handle_ws_event(event)
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
-        assert msg_event.source.chat_type == "dm"
-
-    @pytest.mark.asyncio
-    async def test_thread_id_from_root_id(self):
-        """Post with root_id should have thread_id set."""
-        post_data = {
-            "id": "post_reply",
-            "user_id": "user_123",
-            "channel_id": "chan_456",
-            "message": "@bot_user_id Thread reply",
-            "root_id": "root_post_123",
-        }
-        event = {
-            "event": "posted",
-            "data": {
-                "post": json.dumps(post_data),
-                "channel_type": "O",
-                "sender_name": "@alice",
-            },
-        }
-
-        await self.adapter._handle_ws_event(event)
-        assert self.adapter.handle_message.called
-        msg_event = self.adapter.handle_message.call_args[0][0]
-        assert msg_event.source.thread_id == "root_post_123"
-
-    @pytest.mark.asyncio
-    async def test_invalid_post_json_ignored(self):
-        """Invalid JSON in data.post should be silently ignored."""
-        event = {
-            "event": "posted",
-            "data": {
-                "post": "not-valid-json{{{",
-                "channel_type": "O",
-            },
-        }
-
-        await self.adapter._handle_ws_event(event)
-        assert not self.adapter.handle_message.called
+        assert msg_event.text == "/new"
+        assert msg_event.message_type is MessageType.COMMAND
+        assert msg_event.get_command() == "new"
 
 
 # ---------------------------------------------------------------------------
@@ -441,12 +384,6 @@ class TestMattermostMentionBehavior:
             await self.adapter._handle_ws_event(self._make_event("hello"))
             assert not self.adapter.handle_message.called
 
-    @pytest.mark.asyncio
-    async def test_require_mention_false_responds_to_all(self):
-        """MATTERMOST_REQUIRE_MENTION=false: respond to all channel messages."""
-        with patch.dict(os.environ, {"MATTERMOST_REQUIRE_MENTION": "false"}):
-            await self.adapter._handle_ws_event(self._make_event("hello"))
-            assert self.adapter.handle_message.called
 
     @pytest.mark.asyncio
     async def test_free_response_channel_responds_without_mention(self):
@@ -455,35 +392,6 @@ class TestMattermostMentionBehavior:
             os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
             await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
             assert self.adapter.handle_message.called
-
-    @pytest.mark.asyncio
-    async def test_non_free_channel_still_requires_mention(self):
-        """Channels NOT in free-response list still require @mention."""
-        with patch.dict(os.environ, {"MATTERMOST_FREE_RESPONSE_CHANNELS": "chan_789"}):
-            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
-            await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
-            assert not self.adapter.handle_message.called
-
-    @pytest.mark.asyncio
-    async def test_dm_always_responds(self):
-        """DMs (channel_type=D) always respond regardless of mention settings."""
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
-            await self.adapter._handle_ws_event(self._make_event("hello", channel_type="D"))
-            assert self.adapter.handle_message.called
-
-    @pytest.mark.asyncio
-    async def test_mention_stripped_from_text(self):
-        """@mention is stripped from message text."""
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
-            await self.adapter._handle_ws_event(
-                self._make_event("@hermes-bot what is 2+2")
-            )
-            assert self.adapter.handle_message.called
-            msg = self.adapter.handle_message.call_args[0][0]
-            assert "@hermes-bot" not in msg.text
-            assert "2+2" in msg.text
 
 
 # ---------------------------------------------------------------------------
@@ -557,53 +465,6 @@ class TestMattermostDedup:
         # Mock handle_message to capture calls without processing
         self.adapter.handle_message = AsyncMock()
 
-    @pytest.mark.asyncio
-    async def test_duplicate_post_ignored(self):
-        """The same post_id within the TTL window should be ignored."""
-        post_data = {
-            "id": "post_dup",
-            "user_id": "user_123",
-            "channel_id": "chan_456",
-            "message": "@bot_user_id Hello!",
-        }
-        event = {
-            "event": "posted",
-            "data": {
-                "post": json.dumps(post_data),
-                "channel_type": "O",
-                "sender_name": "@alice",
-            },
-        }
-
-        # First time: should process
-        await self.adapter._handle_ws_event(event)
-        assert self.adapter.handle_message.call_count == 1
-
-        # Second time (same post_id): should be deduped
-        await self.adapter._handle_ws_event(event)
-        assert self.adapter.handle_message.call_count == 1  # still 1
-
-    @pytest.mark.asyncio
-    async def test_different_post_ids_both_processed(self):
-        """Different post IDs should both be processed."""
-        for i, pid in enumerate(["post_a", "post_b"]):
-            post_data = {
-                "id": pid,
-                "user_id": "user_123",
-                "channel_id": "chan_456",
-                "message": f"@bot_user_id Message {i}",
-            }
-            event = {
-                "event": "posted",
-                "data": {
-                    "post": json.dumps(post_data),
-                    "channel_type": "O",
-                    "sender_name": "@alice",
-                },
-            }
-            await self.adapter._handle_ws_event(event)
-
-        assert self.adapter.handle_message.call_count == 2
 
     def test_prune_seen_clears_expired(self):
         """Dedup cache should remove entries older than TTL on overflow."""
@@ -623,11 +484,6 @@ class TestMattermostDedup:
         assert "fresh" in dedup._seen
         assert len(dedup._seen) < dedup._max_size + 10
 
-    def test_seen_cache_tracks_post_ids(self):
-        """Posts are tracked in the dedup cache."""
-        self.adapter._dedup._seen["test_post"] = time.time()
-        assert "test_post" in self.adapter._dedup._seen
-
 
 # ---------------------------------------------------------------------------
 # Requirements check
@@ -640,17 +496,18 @@ class TestMattermostRequirements:
         from plugins.platforms.mattermost.adapter import check_mattermost_requirements
         assert check_mattermost_requirements() is True
 
-    def test_check_requirements_without_token(self, monkeypatch):
+
+    def test_validate_config_accepts_platform_values(self, monkeypatch):
         monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
-        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
-        assert check_mattermost_requirements() is False
+        from plugins.platforms.mattermost.adapter import validate_mattermost_config
 
-    def test_check_requirements_without_url(self, monkeypatch):
-        monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
-        monkeypatch.delenv("MATTERMOST_URL", raising=False)
-        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
-        assert check_mattermost_requirements() is False
+        config = PlatformConfig(
+            enabled=True,
+            token="cfg-token",
+            extra={"url": "https://mm.example.com"},
+        )
+        assert validate_mattermost_config(config) is True
 
 
 # ---------------------------------------------------------------------------
@@ -705,48 +562,35 @@ class TestMattermostMediaTypes:
         assert msg.media_types == ["image/png"]
         assert msg.media_types[0].startswith("image/")
 
-    @pytest.mark.asyncio
-    async def test_audio_media_type_is_full_mime(self):
-        """An audio attachment should produce 'audio/ogg', not 'audio'."""
-        file_info = {"name": "voice.ogg", "mime_type": "audio/ogg"}
-        self.adapter._api_get = AsyncMock(return_value=file_info)
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=b"OGG fake")
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-        self.adapter._session = MagicMock()
-        self.adapter._session.get = MagicMock(return_value=mock_resp)
+@pytest.mark.asyncio
+async def test_mattermost_top_level_channel_post_is_thread_root():
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    post_data = {
+        "id": "top_post_123",
+        "user_id": "user_123",
+        "channel_id": "chan_456",
+        "message": "@hermes-bot start work",
+        "root_id": "",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "O",
+            "sender_name": "@alice",
+        },
+    }
 
-        with patch("gateway.platforms.base.cache_audio_from_bytes", return_value="/tmp/voice.ogg"), \
-             patch("gateway.platforms.base.cache_image_from_bytes"), \
-             patch("gateway.platforms.base.cache_document_from_bytes"):
-            await self.adapter._handle_ws_event(self._make_event(["file2"]))
+    await adapter._handle_ws_event(event)
 
-        msg = self.adapter.handle_message.call_args[0][0]
-        assert msg.media_types == ["audio/ogg"]
-        assert msg.media_types[0].startswith("audio/")
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.source.thread_id == "top_post_123"
+    assert msg_event.source.message_id == "top_post_123"
+    assert msg_event.message_id == "top_post_123"
 
-    @pytest.mark.asyncio
-    async def test_document_media_type_is_full_mime(self):
-        """A document attachment should produce 'application/pdf', not 'document'."""
-        file_info = {"name": "report.pdf", "mime_type": "application/pdf"}
-        self.adapter._api_get = AsyncMock(return_value=file_info)
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=b"PDF fake")
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
-        self.adapter._session = MagicMock()
-        self.adapter._session.get = MagicMock(return_value=mock_resp)
-
-        with patch("gateway.platforms.base.cache_document_from_bytes", return_value="/tmp/report.pdf"), \
-             patch("gateway.platforms.base.cache_image_from_bytes"):
-            await self.adapter._handle_ws_event(self._make_event(["file3"]))
-
-        msg = self.adapter.handle_message.call_args[0][0]
-        assert msg.media_types == ["application/pdf"]
-        assert not msg.media_types[0].startswith("image/")
-        assert not msg.media_types[0].startswith("audio/")

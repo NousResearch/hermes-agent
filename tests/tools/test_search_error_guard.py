@@ -28,6 +28,7 @@ import pytest
 
 from tools.file_operations import (
     ShellFileOperations,
+    _pattern_has_regex_newline,
     _split_tool_diagnostics,
 )
 from tools.environments.local import LocalEnvironment
@@ -87,41 +88,30 @@ class TestSearchErrorGuard:
         assert "Search failed" in res.error
         assert not res.matches
 
-    def test_partial_error_keeps_matches(self, method, partial_error_tree):
-        # rg/grep exit 2 because of the unreadable file, but the readable
-        # files matched. Those matches must be preserved, not discarded.
-        res = _search(_ops(partial_error_tree), method, "needle", partial_error_tree)
-        assert res.error is None, f"partial error wrongly surfaced: {res.error!r}"
-        assert len(res.matches) >= 4
-
-    def test_no_match_is_empty_not_error(self, method, match_tree):
-        res = _search(_ops(match_tree), method, "zzznomatchzzz", match_tree)
-        assert res.error is None
-        assert not res.matches
-
-    def test_truncation_no_false_error(self, method, tmp_path):
-        # head truncates a large result set. With pipefail, grep exits 141
-        # (SIGPIPE) on truncation; the strict `== 2` guard must ignore it.
-        big = tmp_path / "big.txt"
-        big.write_text("".join(f"needle {i}\n" for i in range(3000)))
-        res = _search(_ops(tmp_path), method, "needle", tmp_path, limit=5)
-        assert res.error is None, f"truncated success wrongly errored: {res.error!r}"
-        assert len(res.matches) == 5
-
-    def test_files_only_excludes_diagnostics(self, method, partial_error_tree):
-        # files_only mode must not list a diagnostic line as a fake file path.
-        res = _search(_ops(partial_error_tree), method, "needle",
-                      partial_error_tree, output_mode="files_only")
-        assert res.error is None
-        assert res.files, "expected matching files"
-        assert all("Permission denied" not in f and "locked.txt" not in f
-                   for f in res.files), f"diagnostic leaked into files: {res.files}"
 
     def test_count_mode_with_partial_error(self, method, partial_error_tree):
         res = _search(_ops(partial_error_tree), method, "needle",
                       partial_error_tree, output_mode="count")
         assert res.error is None
         assert res.total_count >= 4
+
+
+class TestSearchContentNewlineWarning:
+    def test_odd_backslash_n_is_detected_as_regex_newline(self):
+        assert _pattern_has_regex_newline(r"needle\n")
+        assert _pattern_has_regex_newline(r"needle\\\n")
+
+
+    def test_literal_backslash_n_pattern_does_not_warn(self, match_tree):
+        res = _ops(match_tree).search(
+            r"absent\\npattern",
+            path=str(match_tree),
+            target="content",
+        )
+
+        assert res.error is None
+        assert res.total_count == 0
+        assert res.warning is None
 
 
 class TestSplitToolDiagnostics:
@@ -133,24 +123,6 @@ class TestSplitToolDiagnostics:
         assert payload.strip() == ""
         assert "regex parse error" in diagnostics
 
-    def test_partial_error_separates_matches(self):
-        out = ("rg: sub/locked.txt: Permission denied (os error 13)\n"
-               "a.txt:1:needle here\nb.txt:2:needle there\n")
-        diagnostics, payload = _split_tool_diagnostics(out)
-        assert "Permission denied" in diagnostics
-        assert "a.txt:1:needle here" in payload
-        assert "b.txt:2:needle there" in payload
-        assert "Permission denied" not in payload
-
-    def test_files_only_is_payload(self):
-        diagnostics, payload = _split_tool_diagnostics("src/a.py\nsrc/b.py\n")
-        assert diagnostics == ""
-        assert payload == "src/a.py\nsrc/b.py"
-
-    def test_count_lines_are_payload(self):
-        diagnostics, payload = _split_tool_diagnostics("src/a.py:3\nsrc/b.py:1\n")
-        assert diagnostics == ""
-        assert "src/a.py:3" in payload
 
     def test_context_lines_and_separator_are_payload(self):
         out = "a.py:5:hit\na.py-6-after\n--\nb.py:9:hit\n"

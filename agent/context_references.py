@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
     rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
 )
 TRAILING_PUNCTUATION = ",.;!?"
+_NEEDS_QUOTING = re.compile(r"""[\s()\[\]{}<>"'`]""")
 _SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
 _SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
 _SENSITIVE_HOME_FILES = (
@@ -57,6 +59,21 @@ class ContextReferenceResult:
     injected_tokens: int = 0
     expanded: bool = False
     blocked: bool = False
+
+
+def format_reference_value(value: str) -> str:
+    """Quote a reference value so ``REFERENCE_PATTERN`` reads it back whole.
+
+    The unquoted alternative in the pattern is ``\\S+``, so a path containing a
+    space parses as a truncated ref with the tail left behind as loose text.
+    Mirrors ``formatRefValue`` in the desktop's directive-text.tsx.
+    """
+    if not _NEEDS_QUOTING.search(value):
+        return value
+    for quote in ("`", '"', "'"):
+        if quote not in value:
+            return f"{quote}{value}{quote}"
+    return value
 
 
 def parse_context_references(message: str) -> list[ContextReference]:
@@ -151,13 +168,24 @@ async def preprocess_context_references_async(
     blocks: list[str] = []
     injected_tokens = 0
 
-    for ref in refs:
-        warning, block = await _expand_reference(
-            ref,
-            cwd_path,
-            url_fetcher=url_fetcher,
-            allowed_root=allowed_root_path,
+    # Expand all references concurrently. Each _expand_reference is independent
+    # (no shared state during expansion) — a message with several @url: refs
+    # would otherwise pay one full web_extract round-trip per ref in series.
+    # gather preserves positional order, so we reassemble warnings/blocks in the
+    # original ref order exactly as the prior serial loop did; the token-budget
+    # check below is unchanged (it runs once, after all refs are expanded).
+    expanded = await asyncio.gather(
+        *(
+            _expand_reference(
+                ref,
+                cwd_path,
+                url_fetcher=url_fetcher,
+                allowed_root=allowed_root_path,
+            )
+            for ref in refs
         )
+    )
+    for warning, block in expanded:
         if warning:
             warnings.append(warning)
         if block:
@@ -185,8 +213,12 @@ async def preprocess_context_references_async(
             f"@ context injection warning: {injected_tokens} tokens exceeds the 25% soft limit ({soft_limit})."
         )
 
-    stripped = _remove_reference_tokens(message, refs)
-    final = stripped
+    # Leave the `@file:`/`@folder:` tokens where the user typed them. The token
+    # IS the reference, not scaffolding around it: clients render each one as an
+    # inline chip, so stripping them left a sentence with a hole in it ("review
+    # and ship") and made the desktop re-derive the refs from the attached block
+    # to show them as a detached list above the prose.
+    final = message
     if warnings:
         final = f"{final}\n\n--- Context Warnings ---\n" + "\n".join(f"- {warning}" for warning in warnings)
     if blocks:
@@ -246,7 +278,14 @@ def _expand_file_reference(
     if not path.is_file():
         return f"{ref.raw}: path is not a file", None
     if _is_binary_file(path):
-        return f"{ref.raw}: binary files are not supported", None
+        # A binary file can't be inlined as text, but it IS on disk (the agent's
+        # tools run where this resolves — the local cwd, or the staged copy in a
+        # remote session workspace). Returning a bare "not supported" warning
+        # with no content was a dead end: the model saw a failure and gave up
+        # (told the user the file type wasn't supported). Instead, hand it an
+        # actionable block — the path, type, size, and a nudge to use its tools —
+        # so it can read/convert/view the file itself.
+        return None, _binary_reference_block(ref, path)
 
     text = path.read_text(encoding="utf-8")
     if ref.line_start is not None:
@@ -283,13 +322,16 @@ def _expand_git_reference(
     args: list[str],
     label: str,
 ) -> tuple[str | None, str | None]:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=30,
+            stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
@@ -317,9 +359,9 @@ async def _fetch_url_content(
 async def _default_url_fetcher(url: str) -> str:
     from tools.web_tools import web_extract_tool
 
-    raw = await web_extract_tool([url], format="markdown", use_llm_processing=True)
+    raw = await web_extract_tool([url], format="markdown")
     payload = json.loads(raw)
-    docs = payload.get("data", {}).get("documents", [])
+    docs = payload.get("results", [])
     if not docs:
         return ""
     doc = docs[0]
@@ -358,6 +400,37 @@ def _ensure_reference_path_allowed(path: Path) -> None:
         except ValueError:
             continue
         raise ValueError("path is a sensitive credential or internal Hermes path and cannot be attached")
+
+    # Anchor to the canonical read deny-list (agent/file_safety.get_read_block_error),
+    # the single source of truth used by the file/terminal read path. The narrow
+    # list above predates that guard and never caught the real credential stores:
+    # provider keys (auth.json), Anthropic OAuth tokens (.anthropic_oauth.json),
+    # MCP OAuth material (mcp-tokens/), webhook HMAC secrets, and project-local
+    # .env files. That gap matters because the gateway feeds UNTRUSTED remote
+    # message text into reference expansion, so `@file:~/.hermes/auth.json` from a
+    # chat peer would otherwise read the operator's keys straight into context.
+    # Routing through the canonical guard closes the gap today and keeps this path
+    # protected automatically whenever that deny-list grows.
+    try:
+        from agent.file_safety import get_read_block_error
+
+        if get_read_block_error(str(path)) is not None:
+            raise ValueError(
+                "path is a sensitive credential or internal Hermes path and cannot be attached"
+            )
+    except ValueError:
+        raise
+    except Exception:
+        # Fail CLOSED on the security path. This guard exists specifically to
+        # cover credential stores the narrow list above misses (auth.json,
+        # .anthropic_oauth.json, mcp-tokens/, ...). If the canonical lookup
+        # ever fails, silently falling through would re-open that exact hole —
+        # the gateway feeds untrusted remote text here, so a probe could then
+        # attach the operator's keys. Refuse instead: a spurious block on a
+        # legitimate file is a recoverable annoyance; a leaked credential is not.
+        raise ValueError(
+            "path could not be verified against the credential deny-list and cannot be attached"
+        )
 
 
 def _strip_trailing_punctuation(value: str) -> str:
@@ -402,19 +475,6 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
         )
 
     return _strip_reference_wrappers(value), None, None
-
-
-def _remove_reference_tokens(message: str, refs: list[ContextReference]) -> str:
-    pieces: list[str] = []
-    cursor = 0
-    for ref in refs:
-        pieces.append(message[cursor:ref.start])
-        cursor = ref.end
-    pieces.append(message[cursor:])
-    text = "".join(pieces)
-    text = re.sub(r"\s{2,}", " ", text)
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
-    return text.strip()
 
 
 def _is_binary_file(path: Path) -> bool:
@@ -475,13 +535,16 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
 
 
 def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         result = subprocess.run(
             ["rg", "--files", str(path.relative_to(cwd))],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=10,
+            stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
@@ -489,6 +552,30 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
         return None
     files = [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
     return files[:limit]
+
+
+def _human_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _binary_reference_block(ref: ContextReference, path: Path) -> str:
+    mime, _ = mimetypes.guess_type(path.name)
+    mime = mime or "application/octet-stream"
+    try:
+        size = _human_bytes(path.stat().st_size)
+    except OSError:
+        size = "unknown size"
+    return (
+        f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
+        f"It is available on disk at `{path}`. Use your tools to work with it "
+        f"(read or convert it, extract its text, or view/render it as needed); "
+        f"do not tell the user the file type is unsupported."
+    )
 
 
 def _file_metadata(path: Path) -> str:

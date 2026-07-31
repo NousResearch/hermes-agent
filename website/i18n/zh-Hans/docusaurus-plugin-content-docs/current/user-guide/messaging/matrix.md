@@ -19,7 +19,7 @@ Hermes 兼容任何 Matrix homeserver——Synapse、Conduit、Dendrite 或 matr
 | **私聊（DM）** | Hermes 响应每条消息，无需 `@提及`。每个 DM 有独立的会话。设置 `MATRIX_DM_MENTION_THREADS=true` 可在 DM 中被 `@提及` 时创建线程。 |
 | **房间** | 默认情况下，Hermes 需要 `@提及` 才会响应。设置 `MATRIX_REQUIRE_MENTION=false` 或将房间 ID 添加到 `MATRIX_FREE_RESPONSE_ROOMS` 可开启自由响应模式。房间邀请会被自动接受。 |
 | **线程** | Hermes 支持 Matrix 线程（MSC3440）。在线程中回复时，Hermes 会将线程上下文与主房间时间线隔离。机器人已参与的线程无需提及即可响应。 |
-| **自动线程** | 默认情况下，Hermes 会为其在房间中响应的每条消息自动创建线程，以保持对话隔离。设置 `MATRIX_AUTO_THREAD=false` 可禁用此功能。 |
+| **自动线程** | 默认情况下，Hermes 会为其在房间中响应的每条消息自动创建线程，以保持对话隔离。设置 `MATRIX_AUTO_THREAD=false` 可禁用此功能。设置 `MATRIX_DM_AUTO_THREAD=true`（默认 false）可同时为私聊消息自动创建线程——这与 `MATRIX_DM_MENTION_THREADS` 不同，后者仅在私聊中 @提及 Bot 时才创建线程。 |
 | **多用户共享房间** | 默认情况下，Hermes 在房间内按用户隔离会话历史。同一房间中的两个人不会共享同一对话记录，除非你明确禁用该功能。 |
 
 :::tip
@@ -246,7 +246,7 @@ E2EE 需要带有加密扩展的 `mautrix` 库以及 `libolm` C 库：
 pip install 'mautrix[encryption]'
 
 # 或通过 hermes extras 安装
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
 你还需要在系统上安装 `libolm`：
@@ -427,7 +427,7 @@ pip install 'mautrix[encryption]'
 或通过 Hermes extras：
 
 ```bash
-pip install 'hermes-agent[matrix]'
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
 ### 加密错误/"无法解密事件"
@@ -589,7 +589,7 @@ services:
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y libolm-dev && rm -rf /var/lib/apt/lists/*
-RUN pip install 'hermes-agent[matrix]'
+RUN cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 CMD ["hermes", "gateway"]
 ```

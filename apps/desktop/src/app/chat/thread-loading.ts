@@ -3,9 +3,14 @@ import type { ChatMessage } from '@/lib/chat-messages'
 export type ThreadLoadingState = 'response' | 'session'
 
 export function lastVisibleMessageIsUser(messages: ChatMessage[]): boolean {
-  const lastVisible = [...messages].reverse().find(message => !message.hidden)
+  // Allocation-free reverse scan — runs in a hot $messages computed.
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (!messages[i].hidden) {
+      return messages[i].role === 'user'
+    }
+  }
 
-  return lastVisible?.role === 'user'
+  return false
 }
 
 export function threadLoadingState(

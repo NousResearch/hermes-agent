@@ -6,7 +6,7 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is `run_agent.py`'s `AIAgent` class — a large file (~4,400 lines) that handles everything from prompt assembly to tool dispatch to provider failover.
+The core orchestration engine is `run_agent.py`'s `AIAgent` class — a large file that handles everything from prompt assembly to tool dispatch to provider failover.
 
 ## Core Responsibilities
 
@@ -181,7 +181,7 @@ These tools modify agent state directly and return synthetic tool results withou
 
 The agent tracks iterations via `IterationBudget`:
 
-- Default: 90 iterations (configurable via `agent.max_turns`)
+- Default: 500 iterations (configurable via `agent.max_turns`)
 - Each agent gets its own budget. Subagents get independent budgets capped at `delegation.max_iterations` (default 50) — total iterations across parent + subagents can exceed the parent's cap
 - At 100%, the agent stops and returns a summary of work done
 

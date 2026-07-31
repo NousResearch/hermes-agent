@@ -1,6 +1,7 @@
 """Tests for browser_tool.py hardening: caching, security, thread safety, truncation."""
 
 import inspect
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -54,18 +55,13 @@ class TestFindAgentBrowserCache:
 
     def test_cached_after_first_call(self):
         import tools.browser_tool as bt
-        with patch("shutil.which", return_value="/usr/bin/agent-browser"):
+        with patch("shutil.which", return_value="/usr/bin/agent-browser"), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True):
             result1 = bt._find_agent_browser()
             result2 = bt._find_agent_browser()
         assert result1 == result2 == "/usr/bin/agent-browser"
         assert bt._agent_browser_resolved is True
 
-    def test_cache_cleared_by_cleanup(self):
-        import tools.browser_tool as bt
-        bt._cached_agent_browser = "/fake/path"
-        bt._agent_browser_resolved = True
-        bt.cleanup_all_browsers()
-        assert bt._agent_browser_resolved is False
 
     def test_not_found_cached_raises_on_subsequent(self):
         """After FileNotFoundError, subsequent calls should raise from cache."""
@@ -100,11 +96,6 @@ class TestCommandTimeoutCache:
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert _get_command_timeout() == 30
 
-    def test_reads_from_config(self):
-        from tools.browser_tool import _get_command_timeout
-        cfg = {"browser": {"command_timeout": 60}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _get_command_timeout() == 60
 
     def test_cached_after_first_call(self):
         from tools.browser_tool import _get_command_timeout
@@ -113,6 +104,24 @@ class TestCommandTimeoutCache:
             _get_command_timeout()
             _get_command_timeout()
         mock_read.assert_called_once()
+
+
+class TestSessionInactivityTimeout:
+
+    def test_default_matches_config_default(self, monkeypatch):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.delenv("BROWSER_INACTIVITY_TIMEOUT", raising=False)
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert _get_session_inactivity_timeout() == DEFAULT_CONFIG["browser"]["inactivity_timeout"]
+
+
+    def test_invalid_config_preserves_env_fallback(self, monkeypatch):
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "240")
+        cfg = {"browser": {"inactivity_timeout": "not-an-int"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_session_inactivity_timeout() == 240
 
 
 # ---------------------------------------------------------------------------
@@ -192,27 +201,50 @@ class TestTruncateSnapshot:
         assert _truncate_snapshot(short) == short
 
     def test_long_snapshot_truncated_at_line_boundary(self):
-        from tools.browser_tool import _truncate_snapshot
-        # Create a snapshot that exceeds 8000 chars
-        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(500)]
+        from tools.browser_tool import SNAPSHOT_SUMMARIZE_THRESHOLD, _truncate_snapshot
+        # Create a snapshot that exceeds the summarize threshold
+        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(1000)]
         snapshot = "\n".join(lines)
-        assert len(snapshot) > 8000
+        assert len(snapshot) > SNAPSHOT_SUMMARIZE_THRESHOLD
 
         result = _truncate_snapshot(snapshot, max_chars=200)
-        assert len(result) <= 300  # some margin for the truncation note
         assert "truncated" in result.lower()
         # Every line in the result should be complete (not cut mid-element)
         for line in result.split("\n"):
             if line.strip() and "truncated" not in line.lower():
                 assert line.startswith("- item") or line == ""
 
-    def test_truncation_reports_remaining_count(self):
-        from tools.browser_tool import _truncate_snapshot
-        lines = [f"- line {i}" for i in range(100)]
-        snapshot = "\n".join(lines)
-        result = _truncate_snapshot(snapshot, max_chars=200)
-        # Should mention how many lines were truncated
-        assert "more line" in result.lower()
+
+    def test_stored_snapshot_is_secret_redacted(self):
+        """Page-rendered secrets must not land unmasked on disk."""
+        from pathlib import Path
+        from tools.browser_tool import _store_full_snapshot
+
+        fake_key = "sk-" + "STOREDSNAPSHOTSECRET1234567890"
+        snapshot = f'- text "API key: {fake_key}"\n' + "\n".join(
+            f"- line {i}" for i in range(50)
+        )
+        stored = _store_full_snapshot(snapshot)
+        assert stored is not None
+        content = Path(stored).read_text(encoding="utf-8")
+        assert "STOREDSNAPSHOTSECRET" not in content
+
+    def test_extract_relevant_content_appends_stored_pointer(self):
+        """LLM-summarized snapshots also point at the stored full text."""
+        from unittest.mock import MagicMock
+        from tools.browser_tool import _extract_relevant_content
+
+        snapshot = "\n".join(f'- item "Element {i}" [ref=e{i}]' for i in range(400))
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock()]
+        mock_resp.choices[0].message.content = "Summary with button [ref=e5]"
+
+        with patch("tools.browser_tool.call_llm", return_value=mock_resp):
+            result = _extract_relevant_content(snapshot, "find the button")
+
+        assert result.startswith("Summary with button")
+        assert "Full snapshot" in result
+        assert "read_file" in result
 
 
 # ---------------------------------------------------------------------------

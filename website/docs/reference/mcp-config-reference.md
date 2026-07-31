@@ -54,19 +54,40 @@ mcp_servers:
 | `client_cert` | string or list | HTTP | mTLS client certificate. String = path to a PEM file containing cert + key. List `[cert, key]` = separate files. List `[cert, key, password]` = encrypted key |
 | `client_key` | string | HTTP | Path to the client private key, when `client_cert` is a string and the key is in a separate file |
 | `enabled` | bool | both | Skip the server entirely when false |
-| `timeout` | number | both | Tool call timeout |
-| `connect_timeout` | number | both | Initial connection timeout |
+| `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
+| `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
+| `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
+| `transport` | string | HTTP | Set to `sse` to use the SSE transport instead of Streamable HTTP |
+| `keepalive_interval` | number | both | Liveness ping cadence in seconds (default: `180`, floored at 5s). Set below the server's session TTL for servers that GC idle sessions quickly |
+| `idle_timeout_seconds` | number | stdio | Optional stdio server recycle after idle time (`0` disables). May also live under a `lifecycle:` mapping |
+| `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
+| `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
+
+## Environment variable references
+
+String values anywhere in a server entry (`env`, `headers`, `args`, `url`, …) may reference environment variables with `${VAR}` or the Cursor-style SecretRef form `${env:VAR}` — both resolve to the same variable, so MCP snippets copied from Cursor / Claude configs work unchanged:
+
+```yaml
+mcp_servers:
+  github:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${env:GITHUB_TOKEN}"   # same as "${GITHUB_TOKEN}"
+```
+
+Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder.
 
 ## `tools` policy keys
 
 | Key | Type | Meaning |
 |---|---|---|
-| `include` | string or list | Whitelist server-native MCP tools |
-| `exclude` | string or list | Blacklist server-native MCP tools |
+| `include` | string or list | Whitelist server-native MCP tools. Entries may be exact names or fnmatch-style globs (`*_radar_*`, `get_zones_*`) |
+| `exclude` | string or list | Blacklist server-native MCP tools. Same exact-name / glob semantics as `include` |
 | `resources` | bool-like | Enable/disable `list_resources` + `read_resource` |
 | `prompts` | bool-like | Enable/disable `list_prompts` + `get_prompt` |
 
@@ -246,28 +267,30 @@ After changing MCP config, reload servers with:
 Server-native MCP tools become:
 
 ```text
-mcp_<server>_<tool>
+mcp__<server>__<tool>
 ```
 
 Examples:
-- `mcp_github_create_issue`
-- `mcp_filesystem_read_file`
-- `mcp_my_api_query_data`
+- `mcp__github__create_issue`
+- `mcp__filesystem__read_file`
+- `mcp__my_api__query_data`
 
 Utility tools follow the same prefixing pattern:
-- `mcp_<server>_list_resources`
-- `mcp_<server>_read_resource`
-- `mcp_<server>_list_prompts`
-- `mcp_<server>_get_prompt`
+- `mcp__<server>__list_resources`
+- `mcp__<server>__read_resource`
+- `mcp__<server>__list_prompts`
+- `mcp__<server>__get_prompt`
+
+The double-underscore delimiter (`mcp__…__…`) matches the convention used by Claude Code, Codex, and OpenCode, and disambiguates the server/tool boundary even when either component contains underscores.
 
 ### Name sanitization
 
-Hyphens (`-`) and dots (`.`) in both server names and tool names are replaced with underscores before registration. This ensures tool names are valid identifiers for LLM function-calling APIs.
+Any character that is not a letter, digit, or underscore (hyphens, dots, spaces, etc.) in both server names and tool names is replaced with an underscore before registration. This ensures tool names are valid identifiers for LLM function-calling APIs.
 
 For example, a server named `my-api` exposing a tool called `list-items.v2` becomes:
 
 ```text
-mcp_my_api_list_items_v2
+mcp__my_api__list_items_v2
 ```
 
 Keep this in mind when writing `include` / `exclude` filters — use the **original** MCP tool name (with hyphens/dots), not the sanitized version.

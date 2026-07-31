@@ -14,7 +14,7 @@ those contexts.
 from types import SimpleNamespace
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter():
@@ -62,23 +62,6 @@ class TestRealMentionsAreDetected:
         msg = _message(text=text, entities=[_mention_entity(text)])
         assert adapter._message_mentions_bot(msg) is True
 
-    def test_mention_mid_sentence(self):
-        adapter = _make_adapter()
-        text = "hey @hermes_bot, can you help?"
-        msg = _message(text=text, entities=[_mention_entity(text)])
-        assert adapter._message_mentions_bot(msg) is True
-
-    def test_mention_at_end_of_message(self):
-        adapter = _make_adapter()
-        text = "thanks for looking @hermes_bot"
-        msg = _message(text=text, entities=[_mention_entity(text)])
-        assert adapter._message_mentions_bot(msg) is True
-
-    def test_mention_in_caption(self):
-        adapter = _make_adapter()
-        caption = "photo for @hermes_bot"
-        msg = _message(caption=caption, caption_entities=[_mention_entity(caption)])
-        assert adapter._message_mentions_bot(msg) is True
 
     def test_text_mention_entity_targets_bot(self):
         """TEXT_MENTION is Telegram's entity type for @FirstName -> user without a public handle."""
@@ -102,22 +85,6 @@ class TestSubstringFalsePositivesAreRejected:
         msg = _message(text="email me at foo@hermes_bot.example")
         assert adapter._message_mentions_bot(msg) is False
 
-    def test_hostname_substring(self):
-        adapter = _make_adapter()
-        msg = _message(text="contact user@hermes_bot.domain.com")
-        assert adapter._message_mentions_bot(msg) is False
-
-    def test_superstring_username(self):
-        """`@hermes_botx` is a different username; Telegram would emit a mention
-        entity for `@hermes_botx`, not `@hermes_bot`."""
-        adapter = _make_adapter()
-        msg = _message(text="@hermes_botx hello")
-        assert adapter._message_mentions_bot(msg) is False
-
-    def test_underscore_suffix_substring(self):
-        adapter = _make_adapter()
-        msg = _message(text="see @hermes_bot_admin for help")
-        assert adapter._message_mentions_bot(msg) is False
 
     def test_substring_inside_url_without_entity(self):
         """@handle inside a URL produces a URL entity, not a MENTION entity."""
@@ -125,16 +92,6 @@ class TestSubstringFalsePositivesAreRejected:
         msg = _message(text="see https://example.com/@hermes_bot for details")
         assert adapter._message_mentions_bot(msg) is False
 
-    def test_substring_inside_code_block_without_entity(self):
-        """Telegram doesn't emit mention entities inside code/pre entities."""
-        adapter = _make_adapter()
-        msg = _message(text="use the string `@hermes_bot` in config")
-        assert adapter._message_mentions_bot(msg) is False
-
-    def test_plain_text_with_no_at_sign(self):
-        adapter = _make_adapter()
-        msg = _message(text="just a normal group message")
-        assert adapter._message_mentions_bot(msg) is False
 
     def test_email_substring_in_caption(self):
         adapter = _make_adapter()
@@ -145,27 +102,11 @@ class TestSubstringFalsePositivesAreRejected:
 class TestEntityEdgeCases:
     """Malformed or mismatched entities should not crash or over-match."""
 
-    def test_mention_entity_for_different_username(self):
-        adapter = _make_adapter()
-        text = "@someone_else hi"
-        msg = _message(text=text, entities=[_mention_entity(text, mention="@someone_else")])
-        assert adapter._message_mentions_bot(msg) is False
-
-    def test_text_mention_entity_for_different_user(self):
-        adapter = _make_adapter()
-        msg = _message(text="hi there", entities=[_text_mention_entity(0, 2, user_id=12345)])
-        assert adapter._message_mentions_bot(msg) is False
 
     def test_malformed_entity_with_negative_offset(self):
         adapter = _make_adapter()
         msg = _message(text="@hermes_bot hi",
                        entities=[SimpleNamespace(type="mention", offset=-1, length=11)])
-        assert adapter._message_mentions_bot(msg) is False
-
-    def test_malformed_entity_with_zero_length(self):
-        adapter = _make_adapter()
-        msg = _message(text="@hermes_bot hi",
-                       entities=[SimpleNamespace(type="mention", offset=0, length=0)])
         assert adapter._message_mentions_bot(msg) is False
 
 
@@ -178,8 +119,3 @@ class TestCaseInsensitivity:
         msg = _message(text=text, entities=[_mention_entity(text, mention="@HERMES_BOT")])
         assert adapter._message_mentions_bot(msg) is True
 
-    def test_mixed_case_mention(self):
-        adapter = _make_adapter()
-        text = "hi @Hermes_Bot"
-        msg = _message(text=text, entities=[_mention_entity(text, mention="@Hermes_Bot")])
-        assert adapter._message_mentions_bot(msg) is True

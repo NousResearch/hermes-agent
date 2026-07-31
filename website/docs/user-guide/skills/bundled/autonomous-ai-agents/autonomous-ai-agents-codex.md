@@ -16,7 +16,7 @@ Delegate coding to OpenAI Codex CLI (features, PRs).
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/autonomous-ai-agents/codex` |
-| Version | `1.0.0` |
+| Version | `1.0.1` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -71,7 +71,7 @@ terminal(command="cd $(mktemp -d) && git init && codex exec 'Build a snake game 
 
 ```
 # Start in background with PTY
-terminal(command="codex exec --full-auto 'Refactor the auth module'", workdir="~/project", background=true, pty=true)
+terminal(command="codex exec --sandbox workspace-write 'Refactor the auth module'", workdir="~/project", background=true, pty=true)
 # Returns session_id
 
 # Monitor progress
@@ -90,8 +90,29 @@ process(action="kill", session_id="<id>")
 | Flag | Effect |
 |------|--------|
 | `exec "prompt"` | One-shot execution, exits when done |
-| `--full-auto` | Sandboxed but auto-approves file changes in workspace |
-| `--yolo` | No sandbox, no approvals (fastest, most dangerous) |
+| `--sandbox workspace-write` (`-s`) | Sandboxed but auto-approves file changes in the workspace (the recommended auto-build mode) |
+| `--dangerously-bypass-approvals-and-sandbox` | No sandbox, no approvals (fastest, most dangerous; `--yolo` still works as a hidden alias) |
+| `--sandbox danger-full-access` | No Codex sandbox; useful when the host service context breaks bubblewrap |
+
+> **Deprecated:** `--full-auto` still works but the live CLI warns to use `--sandbox workspace-write` instead.
+
+## Hermes Gateway Caveat
+
+When invoking the Codex CLI from a Hermes gateway/service context (for example,
+Telegram-driven agent sessions), Codex `workspace-write` sandboxing may fail even
+when the same command works in the user's interactive shell. A typical symptom is
+bubblewrap/user-namespace errors such as `setting up uid map: Permission denied`
+or `loopback: Failed RTM_NEWADDR: Operation not permitted`.
+
+In that context, prefer:
+
+```
+codex exec --sandbox danger-full-access "<task>"
+```
+
+Use process boundaries as the safety layer instead: explicit `workdir`, clean git
+status before launch, narrow task prompts, `git diff` review, targeted tests, and
+human/agent confirmation before committing broad changes.
 
 ## PR Reviews
 
@@ -109,8 +130,8 @@ terminal(command="git worktree add -b fix/issue-78 /tmp/issue-78 main", workdir=
 terminal(command="git worktree add -b fix/issue-99 /tmp/issue-99 main", workdir="~/project")
 
 # Launch Codex in each
-terminal(command="codex --yolo exec 'Fix issue #78: <description>. Commit when done.'", workdir="/tmp/issue-78", background=true, pty=true)
-terminal(command="codex --yolo exec 'Fix issue #99: <description>. Commit when done.'", workdir="/tmp/issue-99", background=true, pty=true)
+terminal(command="codex --sandbox workspace-write exec 'Fix issue #78: <description>. Commit when done.'", workdir="/tmp/issue-78", background=true, pty=true)
+terminal(command="codex --sandbox workspace-write exec 'Fix issue #99: <description>. Commit when done.'", workdir="/tmp/issue-99", background=true, pty=true)
 
 # Monitor
 process(action="list")
@@ -142,7 +163,7 @@ terminal(command="gh pr comment 86 --body '<review>'", workdir="~/project")
 1. **Always use `pty=true`** — Codex is an interactive terminal app and hangs without a PTY
 2. **Git repo required** — Codex won't run outside a git directory. Use `mktemp -d && git init` for scratch
 3. **Use `exec` for one-shots** — `codex exec "prompt"` runs and exits cleanly
-4. **`--full-auto` for building** — auto-approves changes within the sandbox
+4. **`--sandbox workspace-write` for building** — auto-approves changes within the sandbox (`--full-auto` is deprecated for this)
 5. **Background for long tasks** — use `background=true` and monitor with `process` tool
 6. **Don't interfere** — monitor with `poll`/`log`, be patient with long-running tasks
 7. **Parallel is fine** — run multiple Codex processes at once for batch work

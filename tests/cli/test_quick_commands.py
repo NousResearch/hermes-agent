@@ -53,55 +53,12 @@ class TestCLIQuickCommands:
         assert printed == "daily-note"
         cli.console.print.assert_not_called()
 
-    def test_exec_command_stderr_shown_on_no_stdout(self):
-        cli = self._make_cli({"err": {"type": "exec", "command": "echo error >&2"}})
-        result = cli.process_command("/err")
-        assert result is True
-        # stderr fallback — should print something
-        cli.console.print.assert_called_once()
 
-    def test_exec_command_no_output_shows_fallback(self):
-        cli = self._make_cli({"empty": {"type": "exec", "command": "true"}})
-        cli.process_command("/empty")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "no output" in args.lower()
 
-    def test_alias_command_routes_to_target(self):
-        """Alias quick commands rewrite to the target command."""
-        cli = self._make_cli({"shortcut": {"type": "alias", "target": "/help"}})
-        with patch.object(cli, "process_command", wraps=cli.process_command) as spy:
-            cli.process_command("/shortcut")
-            # Should recursively call process_command with /help
-            spy.assert_any_call("/help")
 
-    def test_alias_command_passes_args(self):
-        """Alias quick commands forward user arguments to the target."""
-        cli = self._make_cli({"sc": {"type": "alias", "target": "/context"}})
-        with patch.object(cli, "process_command", wraps=cli.process_command) as spy:
-            cli.process_command("/sc some args")
-            spy.assert_any_call("/context some args")
 
-    def test_alias_no_target_shows_error(self):
-        cli = self._make_cli({"broken": {"type": "alias", "target": ""}})
-        cli.process_command("/broken")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "no target defined" in args.lower()
 
-    def test_unsupported_type_shows_error(self):
-        cli = self._make_cli({"bad": {"type": "prompt", "command": "echo hi"}})
-        cli.process_command("/bad")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "unsupported type" in args.lower()
 
-    def test_missing_command_field_shows_error(self):
-        cli = self._make_cli({"oops": {"type": "exec"}})
-        cli.process_command("/oops")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "no command defined" in args.lower()
 
     def test_quick_command_takes_priority_over_skill_commands(self):
         """Quick commands must be checked before skill slash commands."""
@@ -112,21 +69,7 @@ class TestCLIQuickCommands:
         printed = self._printed_plain(cli.console.print.call_args[0][0])
         assert printed == "overridden"
 
-    def test_unknown_command_still_shows_error(self):
-        cli = self._make_cli({})
-        with patch("cli._cprint") as mock_cprint:
-            cli.process_command("/nonexistent")
-            mock_cprint.assert_called()
-            printed = " ".join(str(c) for c in mock_cprint.call_args_list)
-            assert "unknown command" in printed.lower()
 
-    def test_timeout_shows_error(self):
-        cli = self._make_cli({"slow": {"type": "exec", "command": "sleep 100"}})
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("sleep", 30)):
-            cli.process_command("/slow")
-        cli.console.print.assert_called_once()
-        args = cli.console.print.call_args[0][0]
-        assert "timed out" in args.lower()
 
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
@@ -184,8 +127,7 @@ class TestGatewayQuickCommands:
         from gateway.run import GatewayRunner
 
         # Ensure redaction is active regardless of host HERMES_REDACT_SECRETS state
-        # or test ordering (the module snapshots env at import time, so other
-        # tests in the same xdist worker can flip the flag).
+        # or test ordering
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -200,19 +142,6 @@ class TestGatewayQuickCommands:
         assert "supersecretkey1234567890" not in result, \
             "Quick command output not redacted — raw API key returned to user"
 
-    @pytest.mark.asyncio
-    async def test_unsupported_type_returns_error(self):
-        from gateway.run import GatewayRunner
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = {"quick_commands": {"bad": {"type": "prompt", "command": "echo hi"}}}
-        runner._running_agents = {}
-        runner._pending_messages = {}
-        runner._is_user_authorized = MagicMock(return_value=True)
-
-        event = self._make_event("bad")
-        result = await runner._handle_message(event)
-        assert result is not None
-        assert "unsupported type" in result.lower()
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):

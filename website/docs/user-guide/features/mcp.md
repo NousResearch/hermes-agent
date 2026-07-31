@@ -20,12 +20,7 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 
 ## Quick start
 
-1. Install MCP support (already included if you used the standard install script):
-
-```bash
-cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
-```
+1. MCP support ships with the standard install — no extra step needed.
 
 2. Add an MCP server to `~/.hermes/config.yaml`:
 
@@ -132,7 +127,12 @@ the hermes-agent repo, so Nous has reviewed each entry before it shipped —
 Manifests live at
 [`optional-mcps/<name>/manifest.yaml`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps)
 on GitHub. The picker also prints the manifest's `source:` URL at install
-time so you can quickly verify the upstream repo.
+time so you can quickly verify the upstream repo. The web dashboard's MCP
+page surfaces the same detail per catalog entry — transport, auth type, the
+endpoint URL (HTTP) or command + args (stdio), the git install source/ref and
+bootstrap commands, and setup notes — with the `source:` rendered as a
+clickable link, so you can inspect exactly what an entry connects to or runs
+before clicking Install.
 
 ### Manifest version compatibility
 
@@ -213,6 +213,19 @@ Use HTTP servers when:
 
 Most hosted MCP servers (Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, dynamic client registration, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
 
+:::tip Figma remote MCP
+Figma's hosted endpoint (`https://mcp.figma.com/mcp`) allowlists Dynamic Client Registration by **exact `client_name`** — bare `"Hermes Agent"` 403s, while `"Claude Code"` and `"Codex"` succeed. Hermes auto-sets `oauth.client_name: "Claude Code"` for `mcp.figma.com` so install/login works without a special trick:
+
+```yaml
+mcp_servers:
+  figma:
+    url: "https://mcp.figma.com/mcp"
+    auth: oauth
+```
+
+Or: `hermes mcp install figma`, then `hermes mcp login figma`.
+:::
+
 ```yaml
 mcp_servers:
   linear:
@@ -226,6 +239,21 @@ On first connect, Hermes prints an authorize URL, opens your browser when possib
 
 - **Paste-back (no setup):** on an interactive terminal Hermes prints "Or paste the redirect URL here…" alongside the authorize URL. Open the URL in your browser, approve, copy the full URL the browser ends up on (the redirect will show a connection error — that's expected), paste it at the prompt. Bare `?code=…&state=…` query strings work too.
 - **SSH port forward:** `ssh -N -L <port>:127.0.0.1:<port> user@host` in a separate terminal, then let the redirect flow normally.
+- **Proxied callback (`redirect_uri`):** when a public HTTPS endpoint forwards to the host (e.g. a Tailscale Funnel or reverse proxy pointed at the callback port), set `oauth.redirect_uri` and the browser redirect reaches Hermes on its own — no tunnel or paste needed:
+
+```yaml
+mcp_servers:
+  myserver:
+    url: "https://mcp.example.com/mcp"
+    auth: oauth
+    oauth:
+      redirect_port: 8765                                # fixed port for the proxy to target
+      redirect_uri: "https://oauth.example.ts.net/callback"
+```
+
+For fully headless gateways (messaging bot, no interactive terminal at all), the optional [`mcp-oauth-remote-gateway` skill](../skills/optional/mcp/mcp-mcp-oauth-remote-gateway.md) walks the agent through completing the flow manually and writing tokens where Hermes expects them.
+
+**Pitfall — WAF rejects `127.0.0.1` redirect URIs.** A few providers front their authorization server with a WAF that 403s any authorize request whose query string contains a literal `127.0.0.1` (Reclaim.ai's AWS API Gateway is a known example — every attempt returns `{"message":"Forbidden"}` before reaching the OAuth app). Set `oauth.redirect_host: localhost` to use `http://localhost:<port>/callback` instead; the callback listener still binds `127.0.0.1` either way.
 
 See [OAuth over SSH / Remote Hosts](../../guides/oauth-over-ssh.md#mcp-servers) for the full walkthrough, including DCR-less servers (e.g. Slack), pre-registered `client_id`/`client_secret`, scope customization, and re-auth via `hermes mcp login <server>`.
 
@@ -245,6 +273,41 @@ Then run `hermes mcp login googledrive` — with the pre-registered client, Herm
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
+## mTLS / client certificates
+
+Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.
+
+`client_cert` accepts three shapes:
+
+- **A single combined PEM path** — one file holding both the certificate and the private key:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: "~/.certs/mcp-client.pem"
+```
+
+- **A `[cert, key]` 2-tuple** — certificate and key in separate files (equivalent to setting `client_cert` + `client_key`):
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: ["~/.certs/mcp-client.crt", "~/.certs/mcp-client.key"]
+```
+
+- **A `[cert, key, password]` 3-tuple** — when the private key is encrypted, the third element is the key passphrase:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: ["~/.certs/mcp-client.crt", "~/.certs/mcp-client.key", "${MCP_KEY_PASSWORD}"]
+```
+
+You can also keep the cert and key fully separate via `client_cert` (combined PEM) plus an explicit `client_key`. Paths support `~` expansion; a missing file raises a clear, server-scoped error rather than an opaque TLS handshake failure.
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
@@ -258,8 +321,12 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `env` | mapping | Environment variables passed to the stdio server |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
+| `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
+| `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
 | `timeout` | number | Tool call timeout |
-| `connect_timeout` | number | Initial connection timeout |
+| `connect_timeout` | number | Initial connection timeout (also bounds the MCP `initialize` handshake) |
+| `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
+| `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `tools` | mapping | Per-server tool filtering and utility policy |
@@ -271,6 +338,23 @@ mcp_servers:
   filesystem:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+```
+
+### Recycling memory-heavy stdio servers
+
+Browser-based MCP servers (e.g. `@playwright/mcp`) keep a full Chromium
+resident after their first tool call — hundreds of MB that never get
+released. Opt in to automatic recycling and the server is torn down after
+the idle/lifetime limit, then restarted transparently the next time one of
+its tools is called (its tools stay registered the whole time):
+
+```yaml
+mcp_servers:
+  playwright:
+    command: "npx"
+    args: ["-y", "@playwright/mcp@latest", "--headless"]
+    idle_timeout_seconds: 900     # recycle after 15 min without a tool call
+    max_lifetime_seconds: 86400   # and at least once a day regardless
 ```
 
 ### Minimal HTTP example
@@ -388,6 +472,24 @@ mcp_servers:
 ```
 
 All server tools are registered except the excluded ones.
+
+### Glob patterns
+
+Both lists accept fnmatch-style globs alongside exact names — essential for
+huge flat surfaces like Cloudflare's API MCP (`?codemode=false`, ~3,300
+tools) where excluding product areas one endpoint at a time is impractical:
+
+```yaml
+mcp_servers:
+  cloudflare:
+    url: "https://mcp.cloudflare.com/mcp?codemode=false"
+    auth: oauth
+    tools:
+      exclude: ["*_radar_*", "*_accounts_dlp_*", "*_zones_web3_*"]
+```
+
+Entries without glob metacharacters (`*`, `?`, `[`) match exactly — `docs`
+excludes only the tool named `docs`, never `docs_search`.
 
 ### Precedence rule
 
@@ -640,6 +742,23 @@ mcp_servers:
       enabled: false
 ```
 
+## MCP Elicitation Support
+
+MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Hermes routes **form-mode** elicitations through its existing approval surface — an interactive prompt in the CLI/TUI, or approval buttons on gateway platforms like Telegram and Slack — so the request reaches you wherever the session lives. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
+
+Elicitation is **enabled by default** per server. Configure it under the `elicitation` key:
+
+```yaml
+mcp_servers:
+  my_server:
+    command: "my-mcp-server"
+    elicitation:
+      enabled: true    # default: true
+      timeout: 300     # seconds to wait for your answer (default: 300)
+```
+
+The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
+
 ## Running Hermes as an MCP server
 
 In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.
@@ -728,7 +847,7 @@ hermes mcp serve --verbose    # Debug logging on stderr
 
 ### How it works
 
-The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same `send_message` infrastructure as the Hermes agent itself.
+The MCP server reads conversation data directly from Hermes's session store — `~/.hermes/state.db` is the primary source, with `sessions.json` kept only as a legacy fallback. A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `hermes send` CLI.
 
 The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
 

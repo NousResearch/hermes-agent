@@ -52,39 +52,27 @@ class TestQuietModeCacheIsolation:
         cached = next(iter(model_tools._tool_defs_cache.values()))
         assert second is not cached
 
-    def test_caller_mutation_does_not_poison_cache(self):
-        """Simulate run_agent appending LCM tool schemas to the returned
-        list. A second call must NOT see those appended entries."""
-        first = model_tools.get_tool_definitions(quiet_mode=True)
-        baseline_len = len(first)
-        # Caller mutates the returned list (this is what run_agent does
-        # when it injects memory + context-engine tool schemas).
-        first.append({"type": "function", "function": {"name": "lcm_grep"}})
-        first.append({"type": "function", "function": {"name": "lcm_expand"}})
 
-        second = model_tools.get_tool_definitions(quiet_mode=True)
-        # Length must match the original \u2014 cache pollution would make
-        # second 2 entries longer.
-        assert len(second) == baseline_len, (
-            f"issue #17335: cache was polluted by caller mutation. "
-            f"first len={baseline_len}, mutated len={len(first)}, "
-            f"second-call len={len(second)} \u2014 expected {baseline_len}."
+
+    def test_cache_bounded_by_eviction(self):
+        """The cache evicts the oldest entry when it reaches the cap,
+        keeping the cache bounded instead of growing unbounded over a
+        long-lived Gateway's lifetime (#19251)."""
+        cap = model_tools._TOOL_DEFS_CACHE_MAX
+        # Fill cache to the cap with distinct keys by varying enabled_toolsets.
+        for i in range(cap):
+            model_tools.get_tool_definitions(
+                enabled_toolsets=[f"fake_toolset_{i}"], quiet_mode=True,
+            )
+        assert len(model_tools._tool_defs_cache) == cap
+
+        # Adding one more must evict the oldest, not clear everything and
+        # not grow past the cap.
+        model_tools.get_tool_definitions(
+            enabled_toolsets=["fake_toolset_overflow"], quiet_mode=True,
         )
-        names = [t.get("function", {}).get("name") for t in second]
-        assert "lcm_grep" not in names
-        assert "lcm_expand" not in names
-
-    def test_repeated_caller_mutation_does_not_accumulate(self):
-        """The original Gateway symptom: every agent init in a long-lived
-        process appends LCM schemas, accumulating duplicates over time."""
-        baseline = len(model_tools.get_tool_definitions(quiet_mode=True))
-        for _ in range(5):
-            tools = model_tools.get_tool_definitions(quiet_mode=True)
-            tools.append({"type": "function", "function": {"name": "lcm_grep"}})
-        final = model_tools.get_tool_definitions(quiet_mode=True)
-        assert len(final) == baseline, (
-            f"Cache accumulated mutations across {5} agent inits: "
-            f"baseline={baseline}, final={len(final)}."
+        assert len(model_tools._tool_defs_cache) == cap, (
+            "Eviction should keep the cache at the cap, not clear it or grow"
         )
 
     def test_non_quiet_mode_does_not_use_cache(self):

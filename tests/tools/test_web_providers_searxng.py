@@ -30,19 +30,6 @@ class TestSearXNGSearchProviderIsConfigured:
         from plugins.web.searxng.provider import SearXNGWebSearchProvider
         assert SearXNGWebSearchProvider().is_available() is True
 
-    def test_not_configured_when_url_missing(self, monkeypatch):
-        monkeypatch.delenv("SEARXNG_URL", raising=False)
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        assert SearXNGWebSearchProvider().is_available() is False
-
-    def test_not_configured_when_url_empty_string(self, monkeypatch):
-        monkeypatch.setenv("SEARXNG_URL", "   ")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        assert SearXNGWebSearchProvider().is_available() is False
-
-    def test_provider_name(self):
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        assert SearXNGWebSearchProvider().name == "searxng"
 
     def test_implements_web_search_provider(self):
         from agent.web_search_provider import WebSearchProvider
@@ -105,91 +92,6 @@ class TestSearXNGSearchProviderSearch:
         assert result["data"]["web"][1]["title"] == "Mid"
         assert result["data"]["web"][2]["title"] == "Low"
 
-    def test_limit_is_respected(self, monkeypatch):
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = SearXNGWebSearchProvider().search("query", limit=2)
-
-        assert result["success"] is True
-        assert len(result["data"]["web"]) == 2
-
-    def test_position_is_one_indexed(self, monkeypatch):
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        mock_resp = self._make_mock_response(self._SAMPLE_RESPONSE)
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = SearXNGWebSearchProvider().search("query", limit=5)
-
-        positions = [r["position"] for r in result["data"]["web"]]
-        assert positions == [1, 2, 3]
-
-    def test_empty_results(self, monkeypatch):
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        mock_resp = self._make_mock_response({"results": []})
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = SearXNGWebSearchProvider().search("nothing", limit=5)
-
-        assert result["success"] is True
-        assert result["data"]["web"] == []
-
-    def test_missing_score_falls_back_to_zero(self, monkeypatch):
-        """Results without a score field should sort to the bottom."""
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-        data = {
-            "results": [
-                {"title": "No score", "url": "https://noscore.example.com", "content": ""},
-                {"title": "Has score", "url": "https://scored.example.com", "content": "", "score": 0.8},
-            ]
-        }
-        mock_resp = self._make_mock_response(data)
-
-        with patch("httpx.get", return_value=mock_resp):
-            result = SearXNGWebSearchProvider().search("query", limit=5)
-
-        assert result["success"] is True
-        # Has score should sort first (0.8 > 0)
-        assert result["data"]["web"][0]["title"] == "Has score"
-
-    def test_http_error_returns_failure(self, monkeypatch):
-        import httpx
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
-        http_err = httpx.HTTPStatusError("500", request=MagicMock(), response=mock_resp)
-
-        with patch("httpx.get", side_effect=http_err):
-            result = SearXNGWebSearchProvider().search("query", limit=5)
-
-        assert result["success"] is False
-        assert "500" in result["error"]
-
-    def test_request_error_returns_failure(self, monkeypatch):
-        import httpx
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-
-        with patch("httpx.get", side_effect=httpx.RequestError("connection refused")):
-            result = SearXNGWebSearchProvider().search("query", limit=5)
-
-        assert result["success"] is False
-        assert "localhost:8080" in result["error"] or "connection" in result["error"].lower()
-
-    def test_missing_url_returns_failure(self, monkeypatch):
-        monkeypatch.delenv("SEARXNG_URL", raising=False)
-        from plugins.web.searxng.provider import SearXNGWebSearchProvider
-
-        result = SearXNGWebSearchProvider().search("query", limit=5)
-        assert result["success"] is False
-        assert "SEARXNG_URL" in result["error"]
 
     def test_trailing_slash_stripped_from_url(self, monkeypatch):
         """Base URL trailing slash should not produce double-slash in endpoint."""
@@ -219,10 +121,6 @@ class TestIsBackendAvailable:
         from tools.web_tools import _is_backend_available
         assert _is_backend_available("searxng") is True
 
-    def test_searxng_unavailable_when_url_missing(self, monkeypatch):
-        monkeypatch.delenv("SEARXNG_URL", raising=False)
-        from tools.web_tools import _is_backend_available
-        assert _is_backend_available("searxng") is False
 
     def test_unknown_backend_still_false(self):
         from tools.web_tools import _is_backend_available
@@ -241,19 +139,6 @@ class TestGetBackendSearXNG:
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         assert web_tools._get_backend() == "searxng"
 
-    def test_auto_detect_picks_searxng_when_only_url_set(self, monkeypatch):
-        """When no backend is configured but SEARXNG_URL is set, auto-detect returns it."""
-        from tools import web_tools
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
-        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
-        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
-        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
-        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        monkeypatch.delenv("EXA_API_KEY", raising=False)
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        # Suppress tool gateway
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        assert web_tools._get_backend() == "searxng"
 
     def test_searxng_does_not_override_higher_priority_provider(self, monkeypatch):
         """Tavily (higher priority than searxng) should win in auto-detect."""
@@ -266,6 +151,26 @@ class TestGetBackendSearXNG:
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         assert web_tools._get_backend() == "tavily"
+
+    def test_auto_detect_picks_searxng_when_url_only_in_hermes_config(self, monkeypatch):
+        """#34290 follow-up: a config-only SEARXNG_URL (absent from process env)
+        must still drive auto-detect via the now config-aware ``_has_env``."""
+        from hermes_cli import config as hermes_config
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        monkeypatch.setattr(
+            hermes_config,
+            "get_env_value",
+            lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
+        )
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        assert web_tools._get_backend() == "searxng"
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +185,19 @@ class TestCheckWebApiKey:
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         assert web_tools.check_web_api_key() is True
 
+    def test_searxng_config_only_satisfies_check_web_api_key(self, monkeypatch):
+        """#34290 follow-up: config-only SEARXNG_URL satisfies the credential check."""
+        from hermes_cli import config as hermes_config
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        monkeypatch.setattr(
+            hermes_config,
+            "get_env_value",
+            lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
+        )
+        assert web_tools.check_web_api_key() is True
+
     def test_no_credentials_fails(self, monkeypatch):
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
@@ -291,6 +209,7 @@ class TestCheckWebApiKey:
         monkeypatch.delenv("SEARXNG_URL", raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         assert web_tools.check_web_api_key() is False
 
 

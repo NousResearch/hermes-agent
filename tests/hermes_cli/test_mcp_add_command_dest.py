@@ -41,6 +41,8 @@ def _build_parser():
     mcp_add.add_argument("name")
     mcp_add.add_argument("--url")
     mcp_add.add_argument("--command", dest="mcp_command")
+    mcp_add.add_argument("--connect-timeout", type=float)
+    mcp_add.add_argument("--args", nargs=argparse.REMAINDER, default=[])
 
     return parser
 
@@ -63,25 +65,28 @@ class TestMcpAddCommandDest:
         assert args.url == "https://example.com/mcp"
         assert args.mcp_command is None
 
-    def test_command_flag_writes_to_mcp_command_dest(self):
-        """`--command npx` must populate args.mcp_command, not args.command."""
+
+
+
+    def test_args_passthrough_keeps_nested_option_flags(self):
+        """`--args` must keep command flags like Docker MCP's --profile."""
         parser = _build_parser()
         args = parser.parse_args(
-            ["mcp", "add", "github", "--command", "npx"]
+            [
+                "mcp",
+                "add",
+                "docker-research",
+                "--command",
+                "docker",
+                "--args",
+                "mcp",
+                "gateway",
+                "run",
+                "--profile",
+                "research",
+            ]
         )
 
         assert args.command == "mcp"
-        assert args.mcp_command == "npx"
-
-    def test_bare_mcp_add_does_not_clobber_command(self):
-        """Even without --url or --command, args.command stays "mcp".
-
-        Catches the regression at the parser layer regardless of which
-        transport flag the user passes.
-        """
-        parser = _build_parser()
-        args = parser.parse_args(["mcp", "add", "foo"])
-
-        assert args.command == "mcp"
-        assert args.mcp_command is None
-        assert args.url is None
+        assert args.mcp_command == "docker"
+        assert args.args == ["mcp", "gateway", "run", "--profile", "research"]

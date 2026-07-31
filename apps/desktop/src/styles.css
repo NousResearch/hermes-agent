@@ -1436,7 +1436,7 @@ text-* variant utilities. */ .btn-arc {
   font-size: 0.8125rem;
 }
 
-[data-slot='composer-rich-input']:empty::before {
+[data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
   color: var(--ui-text-tertiary) !important;
 }
 

@@ -21,6 +21,28 @@ import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
+/** Paints `data-placeholder` while the editor is empty.
+ *
+ *  `:empty` can't be the whole test: a cleared editor keeps a scaffolding <br>
+ *  so the contenteditable doesn't collapse, and that break makes `:empty`
+ *  false. Nor can CSS infer it on its own — a text node is invisible to
+ *  selectors, so `one<br>` and a lone `<br>` are the same shape, and
+ *  `:has(> br:only-child)` would paint the placeholder straight over the
+ *  user's text. The code that empties the editor is what knows, so it marks it.
+ *
+ *  @see markEditorEmptiness */
+export const COMPOSER_PLACEHOLDER_CLASS =
+  '[&:is(:empty,[data-empty])]:before:content-[attr(data-placeholder)] [&:is(:empty,[data-empty])]:before:text-muted-foreground/60'
+
+/** Keep that marker in step with the editor root's contents. */
+export function markEditorEmptiness(editor: HTMLElement) {
+  if (editor.childNodes.length === 0) {
+    editor.dataset.empty = ''
+  } else {
+    delete editor.dataset.empty
+  }
+}
+
 /** @see referenceRe — the shared pattern every surface recognises a reference
  *  with. Module-level `/g` regexes carry `lastIndex`, so call sites reset it. */
 export const REF_RE = referenceRe()
@@ -165,6 +187,10 @@ export function renderComposerContents(target: HTMLElement, text: string, option
   // typed (`/wor`) and must stay editable. Callers repainting inert text (a
   // restored draft, a sent message opened for edit) pass `trailingCommitted`.
   appendComposerContents(target, text, options)
+
+  // The other writer that reshapes the editor root: painting a restored draft
+  // in clears the marker, clearing back to '' sets it.
+  markEditorEmptiness(target)
 }
 
 /** Caret range when the selection lives inside `editor`; else null. */
@@ -681,6 +707,9 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
   // composer to appear as a tiny dot/pixel. Ensure there's always at least
   // one <br> so the element maintains intrinsic height. The CSS min-height
   // is a belt; the <br> is suspenders — together they prevent the shrink.
+  // That break is also why emptiness has to be marked, not inferred.
+  markEditorEmptiness(editor)
+
   if (editor.childNodes.length === 0) {
     editor.appendChild(document.createElement('br'))
   }

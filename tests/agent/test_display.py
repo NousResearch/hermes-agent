@@ -210,6 +210,32 @@ class TestEditDiffPreview:
         assert colors["plus"] == "\033[38;2;54;249;246;48;2;43;63;77m"
         assert colors["minus"] == "\033[38;2;255;126;219;48;2;72;40;61m"
 
+    def test_inline_diff_re_resolves_colors_after_skin_transition(self, monkeypatch):
+        class FakeSkin:
+            def __init__(self, added):
+                self.added = added
+
+            def get_color(self, key, default=""):
+                return {
+                    "diff_added": self.added,
+                    "diff_added_word": "#ffffff",
+                }.get(key, default)
+
+        active_skin = [FakeSkin("#112233")]
+        monkeypatch.setattr(
+            "hermes_cli.skin_engine.get_active_skin", lambda: active_skin[0]
+        )
+        monkeypatch.setattr(display_module, "_diff_colors_cached", None)
+        diff = "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new"
+
+        first_render = _render_inline_unified_diff(diff)
+        active_skin[0] = FakeSkin("#445566")
+        display_module.invalidate_diff_color_cache()
+        second_render = _render_inline_unified_diff(diff)
+
+        assert any("48;2;17;34;51m" in line for line in first_render)
+        assert any("48;2;68;85;102m" in line for line in second_render)
+
     def test_malformed_removed_color_does_not_discard_valid_added_colors(self, monkeypatch):
         class FakeSkin:
             def get_color(self, key, default=""):

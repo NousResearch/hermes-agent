@@ -42,6 +42,12 @@ def _display_url(value: Any) -> str:
 _diff_colors_cached: dict[str, str] | None = None
 
 
+def invalidate_diff_color_cache() -> None:
+    """Clear cached diff colors so the active skin is resolved again."""
+    global _diff_colors_cached
+    _diff_colors_cached = None
+
+
 def _diff_ansi() -> dict[str, str]:
     """Return ANSI escapes for diff display, resolved from the active skin."""
     global _diff_colors_cached

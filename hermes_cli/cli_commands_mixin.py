@@ -28,6 +28,7 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+from agent.display import invalidate_diff_color_cache
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL,
@@ -3070,6 +3071,7 @@ class CLICommandsMixin:
             return
 
         set_active_skin(new_skin)
+        invalidate_diff_color_cache()
         _ACCENT.reset()  # Re-resolve ANSI color for the new skin
         # _DIM is now a fixed dim+italic ANSI escape (terminal-default fg)
         # so it doesn't need re-resolving on skin switch.

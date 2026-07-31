@@ -155,8 +155,10 @@ export async function readImageForRemoteAttach(
 
 // Read a non-image file as a data URL for upload via file.attach. Returns null
 // when the desktop bridge can't read the file (e.g. it was moved/deleted).
+// Prefer the attach-specific IPC (256 MiB) so remote uploads are not stuck on
+// the preview/Settings default; fall back for older Electron shells.
 export async function readFileDataUrlForAttach(filePath: string): Promise<string | null> {
-  const reader = window.hermesDesktop?.readFileDataUrl
+  const reader = window.hermesDesktop?.readFileDataUrlForAttach ?? window.hermesDesktop?.readFileDataUrl
 
   if (!reader) {
     return null
@@ -167,13 +169,12 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   return dataUrl || null
 }
 
-// The readFileDataUrl IPC base64-loads the whole file into memory and is
-// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.ts, which
-// rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
-// remote mode every attachment's bytes go through that read, so a big file
-// surfaces that internal message verbatim in the failure toast. Translate it
-// into a friendly "too large to upload to the remote gateway" line, parsing the
-// limit out of the message so it tracks the real cap. Non-cap errors pass
+// The attach/preview IPC base64-loads the whole file into memory and rejects
+// with a raw "file is too large (N bytes; limit M bytes)" string when over
+// cap. In remote mode every attachment's bytes go through that read, so a big
+// file surfaces that internal message verbatim in the failure toast. Translate
+// it into a friendly "too large to upload to the remote gateway" line, parsing
+// the limit out of the message so it tracks the real cap. Non-cap errors pass
 // through unchanged.
 export function friendlyRemoteAttachError(err: unknown, label: string): Error {
   const message = err instanceof Error ? err.message : String(err)

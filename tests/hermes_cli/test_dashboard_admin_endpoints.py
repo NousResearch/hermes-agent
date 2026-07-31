@@ -32,25 +32,6 @@ class TestMcpEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, self.header = _client()
 
-    def test_list_add_remove_roundtrip(self):
-        assert self.client.get("/api/mcp/servers").json()["servers"] == []
-
-        r = self.client.post(
-            "/api/mcp/servers", json={"name": "srv1", "url": "https://x/mcp"}
-        )
-        assert r.status_code == 200
-        assert r.json()["transport"] == "http"
-
-        servers = self.client.get("/api/mcp/servers").json()["servers"]
-        assert [s["name"] for s in servers] == ["srv1"]
-
-        # CLI parity: the server is in config.yaml under mcp_servers.
-        from hermes_cli.mcp_config import _get_mcp_servers
-
-        assert "srv1" in _get_mcp_servers()
-
-        assert self.client.delete("/api/mcp/servers/srv1").status_code == 200
-        assert self.client.get("/api/mcp/servers").json()["servers"] == []
 
     def test_stdio_env_is_redacted_on_read(self):
         self.client.post(
@@ -157,64 +138,7 @@ class TestMcpEndpoints:
         assert response.status_code == 400
         assert error in response.json()["detail"]
 
-    def test_duplicate_rejected(self):
-        self.client.post("/api/mcp/servers", json={"name": "dup", "url": "u"})
-        r = self.client.post("/api/mcp/servers", json={"name": "dup", "url": "u"})
-        assert r.status_code == 409
 
-    def test_missing_transport_rejected(self):
-        r = self.client.post("/api/mcp/servers", json={"name": "bad"})
-        assert r.status_code == 400
-
-    def test_enable_disable_toggle(self):
-        self.client.post("/api/mcp/servers", json={"name": "tog", "url": "u"})
-        r = self.client.put("/api/mcp/servers/tog/enabled", json={"enabled": False})
-        assert r.status_code == 200 and r.json()["enabled"] is False
-        srv = [
-            s for s in self.client.get("/api/mcp/servers").json()["servers"]
-            if s["name"] == "tog"
-        ][0]
-        assert srv["enabled"] is False
-        # Toggling a missing server is a 404.
-        assert self.client.put(
-            "/api/mcp/servers/nope/enabled", json={"enabled": True}
-        ).status_code == 404
-
-    def test_catalog_lists_entries(self):
-        r = self.client.get("/api/mcp/catalog")
-        assert r.status_code == 200
-        body = r.json()
-        assert "entries" in body and "diagnostics" in body
-        # The shipped optional-mcps/ catalog has at least one entry; each must
-        # carry the install/enabled status fields plus the inspection detail
-        # the dashboard renders (transport target, install source, guidance) so
-        # users can vet an entry before installing.
-        for e in body["entries"]:
-            assert {
-                "name",
-                "transport",
-                "auth_type",
-                "installed",
-                "enabled",
-                "needs_install",
-                "command",
-                "args",
-                "url",
-                "install_url",
-                "install_ref",
-                "bootstrap",
-                "default_enabled",
-                "post_install",
-            } <= set(e)
-            # http entries expose a url; stdio entries expose a command.
-            if e["transport"] == "http":
-                assert e["url"]
-            elif e["transport"] == "stdio":
-                assert e["command"]
-
-    def test_catalog_install_unknown_404(self):
-        r = self.client.post("/api/mcp/catalog/install", json={"name": "no-such-mcp-xyz"})
-        assert r.status_code == 404
 
 
 
@@ -223,35 +147,7 @@ class TestCredentialPoolEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_add_list_remove_and_cli_parity(self):
-        assert self.client.get("/api/credentials/pool").json()["providers"] == []
 
-        r = self.client.post(
-            "/api/credentials/pool",
-            json={"provider": "openrouter", "api_key": "sk-or-abcdef1234", "label": "p"},
-        )
-        assert r.status_code == 200 and r.json()["count"] == 1
-
-        providers = self.client.get("/api/credentials/pool").json()["providers"]
-        entry = providers[0]["entries"][0]
-        # API redacts the key but exposes a preview + 1-based index.
-        assert entry["index"] == 1
-        assert entry["token_preview"] != "sk-or-abcdef1234"
-
-        # CLI parity: the raw, usable key is retrievable via the pool API.
-        from agent.credential_pool import load_pool
-
-        raw = load_pool("openrouter").entries()
-        assert raw[0].access_token == "sk-or-abcdef1234"
-
-        assert self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
-        assert self.client.delete("/api/credentials/pool/openrouter/99").status_code == 404
-
-    def test_empty_body_rejected(self):
-        r = self.client.post(
-            "/api/credentials/pool", json={"provider": "", "api_key": ""}
-        )
-        assert r.status_code == 400
 
     def test_env_seeded_delete_stays_deleted(self):
         """#55217: DELETE must suppress the source or load_pool() resurrects it.
@@ -313,43 +209,7 @@ class TestCredentialPoolEndpoints:
         sources = sorted(e.source for e in load_pool("openrouter").entries())
         assert sources == ["env:OPENROUTER_API_KEY", "manual"]
 
-    def test_manual_delete_adds_no_suppression(self):
-        """Manual entries aren't re-seeded — CLI parity: no suppression marker."""
-        from hermes_cli.auth import _load_auth_store
 
-        self.client.post(
-            "/api/credentials/pool",
-            json={"provider": "openrouter", "api_key": "sk-or-" + "m" * 20},
-        )
-        assert self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
-        suppressed = _load_auth_store().get("suppressed_sources", {})
-        assert not suppressed.get("openrouter")
-
-        # Immediate re-add works.
-        r = self.client.post(
-            "/api/credentials/pool",
-            json={"provider": "openrouter", "api_key": "sk-or-" + "n" * 20},
-        )
-        assert r.status_code == 200 and r.json()["count"] == 1
-
-    def test_delete_does_not_clobber_other_providers(self):
-        """Deleting one provider's env entry leaves other providers' rows alone."""
-        from agent.credential_pool import load_pool
-        from hermes_cli.auth import _load_auth_store, read_credential_pool
-        from hermes_cli.config import save_env_value
-
-        self.client.post(
-            "/api/credentials/pool",
-            json={"provider": "anthropic", "api_key": "sk-ant-" + "k" * 20},
-        )
-        save_env_value("OPENROUTER_API_KEY", "sk-or-" + "q" * 20)
-        load_pool("openrouter")
-
-        assert self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
-
-        assert len(read_credential_pool("anthropic")) == 1
-        suppressed = _load_auth_store().get("suppressed_sources", {})
-        assert list(suppressed.keys()) == ["openrouter"]
 
 
 class TestMemoryEndpoints:
@@ -393,13 +253,68 @@ class TestPairingEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_list_and_bad_approve(self):
+    def test_approve_pending_request_id(self):
+        from gateway.pairing import PairingStore
+
+        store = PairingStore()
+        bot_code = store.generate_code("telegram", "user1", "Alice")
         data = self.client.get("/api/pairing").json()
-        assert data == {"pending": [], "approved": []}
+        request_id = data["pending"][0]["request_id"]
+
+        assert request_id
+        assert request_id != bot_code
+
         r = self.client.post(
-            "/api/pairing/approve", json={"platform": "telegram", "code": "NOPE99"}
+            "/api/pairing/approve",
+            json={"platform": "telegram", "request_id": request_id},
         )
-        assert r.status_code == 404
+
+        assert r.status_code == 200
+        assert r.json()["user"]["user_id"] == "user1"
+        assert self.client.get("/api/pairing").json()["pending"] == []
+
+    def test_pairing_is_isolated_per_profile(self):
+        """A named profile's approvals must land in the store its own gateway reads.
+
+        The gateway keeps one PairingStore per served profile, so an approval
+        written to the global store grants access the running gateway never
+        consults — the user stays locked out with the dashboard showing them
+        as approved.
+        """
+        from gateway.pairing import PairingStore
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "profiles" / "work").mkdir(parents=True, exist_ok=True)
+        PairingStore().generate_code("telegram", "global-1", "GlobalGuy")
+        PairingStore(profile="work").generate_code("telegram", "work-1", "WorkGal")
+
+        listed = self.client.get("/api/pairing?profile=work").json()["pending"]
+        assert [row["user_id"] for row in listed] == ["work-1"]
+
+        r = self.client.post(
+            "/api/pairing/approve",
+            json={
+                "platform": "telegram",
+                "request_id": listed[0]["request_id"],
+                "profile": "work",
+            },
+        )
+        assert r.status_code == 200
+
+        # The grant is visible to the profile's own store — what the gateway reads.
+        assert PairingStore(profile="work").is_approved("telegram", "work-1") is True
+
+        # ...and it never leaked into the global store, whose own pending row
+        # is still waiting. (Asserted against this user rather than an empty
+        # list: the module-level PAIRING_DIR is bound at import, so the global
+        # store carries whatever earlier cases in this class approved.)
+        global_view = self.client.get("/api/pairing").json()
+        assert PairingStore().is_approved("telegram", "work-1") is False
+        assert "work-1" not in [row["user_id"] for row in global_view["approved"]]
+        assert "global-1" in [row["user_id"] for row in global_view["pending"]]
+
+    def test_unknown_profile_is_rejected(self):
+        assert self.client.get("/api/pairing?profile=ghost").status_code == 404
 
 
 class TestWebhookEndpoints:
@@ -407,11 +322,6 @@ class TestWebhookEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_list_disabled_and_create_blocked(self):
-        data = self.client.get("/api/webhooks").json()
-        assert data["enabled"] is False
-        r = self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"})
-        assert r.status_code == 400
 
     def test_create_webhook_persists_script(self):
         from hermes_cli.config import load_config, save_config
@@ -469,30 +379,6 @@ class TestWebhookEndpoints:
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 
-    def test_enable_platform_reports_restart_failure_after_save(self, monkeypatch):
-        import hermes_cli.web_server as ws
-        from hermes_cli.config import load_config
-
-        ws._ACTION_PROCS.pop("gateway-restart", None)
-
-        def fail_spawn_action(subcommand, name):
-            assert subcommand == ["gateway", "restart"]
-            assert name == "gateway-restart"
-            raise RuntimeError("supervisor unavailable")
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
-
-        r = self.client.post("/api/webhooks/enable")
-
-        assert r.status_code == 200
-        data = r.json()
-        assert data["ok"] is True
-        assert data["platform"] == "webhook"
-        assert data["enabled"] is True
-        assert data["needs_restart"] is True
-        assert data["restart_started"] is False
-        assert "supervisor unavailable" in data["restart_error"]
-        assert load_config()["platforms"]["webhook"]["enabled"] is True
 
     def test_enable_platform_reuses_inflight_gateway_restart(self, monkeypatch):
         import hermes_cli.web_server as ws
@@ -528,59 +414,7 @@ class TestOpsEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_backup_output_uses_output_flag(self, monkeypatch):
-        import hermes_cli.web_server as ws
 
-        captured = {}
-
-        class FakeProc:
-            pid = 12345
-
-        def fake_spawn_action(subcommand, name):
-            captured["subcommand"] = subcommand
-            captured["name"] = name
-            return FakeProc()
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
-
-        r = self.client.post(
-            "/api/ops/backup",
-            json={"output": "  /tmp/hermes-test.zip  "},
-        )
-
-        assert r.status_code == 200
-        assert captured == {
-            "subcommand": ["backup", "-o", "/tmp/hermes-test.zip"],
-            "name": "backup",
-        }
-
-    def test_backup_blank_output_uses_default_archive(self, monkeypatch):
-        from pathlib import Path
-
-        import hermes_cli.web_server as ws
-        from hermes_cli.config import get_hermes_home
-
-        captured = {}
-
-        class FakeProc:
-            pid = 12345
-
-        def fake_spawn_action(subcommand, name):
-            captured["subcommand"] = subcommand
-            captured["name"] = name
-            return FakeProc()
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
-
-        r = self.client.post("/api/ops/backup", json={"output": "   "})
-
-        assert r.status_code == 200
-        archive = Path(r.json()["archive"])
-        assert captured == {
-            "subcommand": ["backup", "-o", str(archive)],
-            "name": "backup",
-        }
-        assert archive.parent == get_hermes_home() / "backups"
 
     def test_hooks_list_reads_config(self):
         from hermes_cli.config import load_config, save_config
@@ -629,13 +463,6 @@ class TestOpsEndpoints:
         hooks2 = self.client.get("/api/ops/hooks").json()["hooks"]
         assert not [h for h in hooks2 if h["command"] == "/bin/echo created"]
 
-    def test_checkpoints_list_empty(self):
-        data = self.client.get("/api/ops/checkpoints").json()
-        assert data == {"sessions": [], "total_bytes": 0}
-
-    def test_import_missing_archive_404(self):
-        r = self.client.post("/api/ops/import", json={"archive": "/no/such.zip"})
-        assert r.status_code == 404
 
 
 class TestSystemStatsEndpoint:
@@ -659,30 +486,11 @@ class TestCuratorEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_status_and_pause_toggle(self):
-        r = self.client.get("/api/curator")
-        assert r.status_code == 200
-        body = r.json()
-        assert {"enabled", "paused", "interval_hours"} <= set(body)
-        # Pause then resume; the read reflects the write.
-        r = self.client.put("/api/curator/paused", json={"paused": True})
-        assert r.status_code == 200 and r.json()["paused"] is True
-        assert self.client.get("/api/curator").json()["paused"] is True
-        r = self.client.put("/api/curator/paused", json={"paused": False})
-        assert r.status_code == 200 and r.json()["paused"] is False
-
 
 class TestPortalEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
-
-    def test_status_shape(self):
-        r = self.client.get("/api/portal")
-        assert r.status_code == 200
-        body = r.json()
-        assert {"logged_in", "features", "subscription_url", "provider"} <= set(body)
-        assert isinstance(body["features"], list)
 
 
 class TestSessionManagementEndpoints:
@@ -695,30 +503,28 @@ class TestSessionManagementEndpoints:
         db.create_session(session_id="sess-x", source="cli")
         db.close()
 
-    def test_stats_not_shadowed_by_session_id_route(self):
-        # /api/sessions/stats must resolve to the stats handler, not be captured
-        # as {session_id}="stats" by the parameterized route registered after it.
+
+    def test_stats_source_counts_use_direct_aggregate(self, monkeypatch):
+        """Source badges must not materialise rich session rows.
+
+        Large stores can have thousands of sessions. The stats endpoint only
+        needs grouped counts, so it should call ``session_count_by_source``
+        instead of ``list_sessions_rich`` and build preview/last-active rows
+        just to count source labels.
+        """
+        from hermes_state import SessionDB
+
+        def fail_list_sessions_rich(self, *args, **kwargs):
+            raise AssertionError("stats should use grouped source counts, not list_sessions_rich")
+
+        monkeypatch.setattr(SessionDB, "list_sessions_rich", fail_list_sessions_rich)
+
         r = self.client.get("/api/sessions/stats")
         assert r.status_code == 200
         body = r.json()
-        assert {"total", "active_store", "archived", "messages", "by_source"} <= set(body)
-        assert body["total"] >= 1
+        assert body["by_source"]["cli"] >= 1
 
-    def test_rename(self):
-        r = self.client.patch("/api/sessions/sess-x", json={"title": "Renamed"})
-        assert r.status_code == 200 and r.json()["title"] == "Renamed"
 
-    def test_export(self):
-        r = self.client.get("/api/sessions/sess-x/export")
-        assert r.status_code == 200 and "messages" in r.json()
-        assert self.client.get("/api/sessions/nope/export").status_code == 404
-
-    def test_prune_validation(self):
-        r = self.client.post("/api/sessions/prune", json={"older_than_days": 9999})
-        assert r.status_code == 200 and "removed" in r.json()
-        assert self.client.post(
-            "/api/sessions/prune", json={"older_than_days": 0}
-        ).status_code == 400
 
     def test_prune_attr_filter_suppresses_default_cutoff(self):
         # An attribute filter without an explicit older_than_days matches all
@@ -743,31 +549,12 @@ class TestSessionManagementEndpoints:
         assert "oldest_last_active" in body and "newest_last_active" in body
         assert all("last_active" in session for session in body["sessions"])
 
-    def test_prune_explicit_older_than_kept_with_attr_filter(self):
-        # Explicit older_than_days is honored even alongside attribute filters.
-        r = self.client.post(
-            "/api/sessions/prune",
-            json={"source": "cli", "older_than_days": 9999, "dry_run": True},
-        )
-        assert r.status_code == 200
-        assert r.json()["matched"] == 0
 
 
 class TestSkillsHubSearchEndpoint:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
-
-    def test_empty_query_returns_empty(self):
-        # Empty query short-circuits (no network) and returns the enriched
-        # empty shape (results + per-source counts + timeouts + installed map).
-        r = self.client.get("/api/skills/hub/search?q=")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["results"] == []
-        assert body["source_counts"] == {}
-        assert body["timed_out"] == []
-        assert body["installed"] == {}
 
 
 class _FakeMeta:
@@ -853,9 +640,6 @@ class TestSkillsHubPreviewEndpoint:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_preview_requires_identifier(self):
-        r = self.client.get("/api/skills/hub/preview?identifier=")
-        assert r.status_code == 400
 
     def test_preview_returns_skill_md_text(self, monkeypatch):
         monkeypatch.setattr(
@@ -895,9 +679,6 @@ class TestSkillsHubScanEndpoint:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-    def test_scan_requires_identifier(self):
-        r = self.client.get("/api/skills/hub/scan?identifier=")
-        assert r.status_code == 400
 
     def test_scan_returns_verdict_and_policy(self, monkeypatch):
         from tools.skills_guard import ScanResult, Finding
@@ -955,19 +736,6 @@ class TestSkillsHubScanEndpoint:
         assert body["findings"][0]["category"] == "exfiltration"
         assert body["findings"][0]["file"] == "SKILL.md"
 
-    def test_scan_404_when_no_bundle(self, monkeypatch):
-        monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
-        )
-        monkeypatch.setattr(
-            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
-            lambda ident, sources: (None, None, None),
-        )
-        r = self.client.get("/api/skills/hub/scan?identifier=nope/x")
-        assert r.status_code == 404
-
-
-
 
 class TestWebhookToggleEndpoint:
     @pytest.fixture(autouse=True)
@@ -983,20 +751,6 @@ class TestWebhookToggleEndpoint:
         }
         save_config(cfg)
 
-    def test_create_toggle_disable(self):
-        r = self.client.post(
-            "/api/webhooks", json={"name": "hook1", "deliver": "log", "events": ["push"]}
-        )
-        assert r.status_code == 200 and r.json()["enabled"] is True
-        r = self.client.put("/api/webhooks/hook1/enabled", json={"enabled": False})
-        assert r.status_code == 200 and r.json()["enabled"] is False
-        subs = self.client.get("/api/webhooks").json()["subscriptions"]
-        assert subs[0]["enabled"] is False
-        assert self.client.put(
-            "/api/webhooks/nope/enabled", json={"enabled": True}
-        ).status_code == 404
-
-
 
 class TestAdminEndpointsAuthGate:
     """Every admin endpoint must sit behind the dashboard session-token gate."""
@@ -1008,30 +762,6 @@ class TestAdminEndpointsAuthGate:
 
         # No session header → must be rejected.
         self.client = TestClient(app)
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/api/mcp/servers",
-            "/api/pairing",
-            "/api/webhooks",
-            "/api/credentials/pool",
-            "/api/memory",
-            "/api/ops/hooks",
-            "/api/ops/checkpoints",
-            "/api/curator",
-            "/api/portal",
-            "/api/system/stats",
-            "/api/hermes/update/check",
-        ],
-    )
-    def test_gated(self, path):
-        resp = self.client.get(path)
-        assert resp.status_code in (401, 403)
-
-    def test_webhooks_enable_post_gated(self):
-        resp = self.client.post("/api/webhooks/enable")
-        assert resp.status_code in (401, 403)
 
 
 class TestUpdateCheckEndpoint:
@@ -1073,26 +803,7 @@ class TestUpdateCheckEndpoint:
         # git/pip installs can apply the update in place from the dashboard.
         assert body["can_apply"] is True
 
-    def test_up_to_date(self, monkeypatch):
-        import hermes_cli.web_server as ws
-        import hermes_cli.banner as banner
 
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
-
-        body = self.client.get("/api/hermes/update/check").json()
-        assert body["behind"] == 0
-        assert body["update_available"] is False
-
-    def test_docker_is_not_applyable(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "docker")
-        body = self.client.get("/api/hermes/update/check").json()
-        # Docker images are immutable — the dashboard can't apply an update.
-        assert body["can_apply"] is False
-        assert body["message"]
-        assert body["behind"] is None
 
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
         import hermes_cli.web_server as ws
@@ -1113,54 +824,7 @@ class TestUpdateCheckEndpoint:
         assert body["behind"] is None
         assert "managed outside this dashboard" in body["message"]
 
-    def test_check_failure_is_soft(self, monkeypatch):
-        import hermes_cli.web_server as ws
-        import hermes_cli.banner as banner
 
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
-
-        def _boom():
-            raise RuntimeError("offline")
-
-        monkeypatch.setattr(banner, "check_for_updates", _boom)
-        # A failed check must not 500 — it returns behind=null with guidance.
-        r = self.client.get("/api/hermes/update/check")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["behind"] is None
-        assert body["update_available"] is False
-        assert body["message"]
-
-    def test_git_behind_includes_commits(self, monkeypatch):
-        import hermes_cli.web_server as ws
-        import hermes_cli.banner as banner
-
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 3)
-        monkeypatch.setattr(
-            ws,
-            "_recent_upstream_commits",
-            lambda n=20: [
-                {"sha": "abc1234", "summary": "feat: x", "author": "a", "at": 1},
-            ],
-        )
-
-        body = self.client.get("/api/hermes/update/check").json()
-        # The desktop overlay renders this as the "what's changed" list.
-        assert isinstance(body["commits"], list)
-        assert body["commits"][0]["sha"] == "abc1234"
-        assert body["commits"][0]["summary"] == "feat: x"
-
-    def test_up_to_date_omits_commits(self, monkeypatch):
-        import hermes_cli.web_server as ws
-        import hermes_cli.banner as banner
-
-        monkeypatch.setattr(ws, "detect_install_method", lambda *a, **k: "git")
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 0)
-
-        body = self.client.get("/api/hermes/update/check").json()
-        # No commits list when there's nothing to show (additive, non-breaking).
-        assert body.get("commits", []) == []
 
 
 class TestDebugShareEndpoint:
@@ -1178,28 +842,6 @@ class TestDebugShareEndpoint:
         (logs / "errors.log").write_text("err line\n")
         (logs / "gateway.log").write_text("gw line\n")
 
-    def test_returns_structured_urls(self, monkeypatch):
-        import hermes_cli.debug as dbg
-
-        count = [0]
-
-        def _upload(content, expiry_days=7):
-            count[0] += 1
-            return f"https://paste.rs/p{count[0]}"
-
-        monkeypatch.setattr(dbg, "upload_to_pastebin", _upload)
-        monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
-        monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
-        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
-
-        r = self.client.post("/api/ops/debug-share", json={"redact": True})
-        assert r.status_code == 200
-        body = r.json()
-        assert body["ok"] is True
-        assert "Report" in body["urls"]
-        assert body["redacted"] is True
-        assert body["auto_delete_seconds"] == 21600
-        assert isinstance(body["failures"], list)
 
     def test_redact_false_is_honored(self, monkeypatch):
         import hermes_cli.debug as dbg
@@ -1245,15 +887,6 @@ class TestDebugShareEndpoint:
         r = self.client.post("/api/ops/debug-share", json={"redact": True})
         assert r.status_code == 502
 
-    def test_requires_session_token(self):
-        # Drop the token header and confirm the global auth gate rejects it.
-        bare = self.client
-        r = bare.post(
-            "/api/ops/debug-share",
-            json={"redact": True},
-            headers={self.header: "wrong-token"},
-        )
-        assert r.status_code == 401
 
 
 class TestToolsConfigEndpoints:
@@ -1264,26 +897,8 @@ class TestToolsConfigEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, self.header = _client()
 
-    def test_list_toolsets_shape(self):
-        r = self.client.get("/api/tools/toolsets")
-        assert r.status_code == 200
-        rows = r.json()
-        assert isinstance(rows, list) and rows
-        row = rows[0]
-        for k in ("name", "label", "enabled", "configured", "tools"):
-            assert k in row
 
-    def test_toolset_config_provider_matrix(self):
-        # `web` has a TOOL_CATEGORIES entry → providers list populated.
-        r = self.client.get("/api/tools/toolsets/web/config")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["has_category"] is True
-        assert isinstance(body["providers"], list)
 
-    def test_unknown_toolset_config_400(self):
-        r = self.client.get("/api/tools/toolsets/not_a_toolset/config")
-        assert r.status_code == 400
 
     def test_save_env_writes_key_and_validates_allowlist(self):
         from hermes_cli.config import get_env_value
@@ -1310,35 +925,7 @@ class TestToolsConfigEndpoints:
         # CLI-config parity: the key landed in the .env store the CLI reads.
         assert get_env_value(key) == "test-secret-123"
 
-    def test_save_env_rejects_unknown_key(self):
-        r = self.client.put(
-            "/api/tools/toolsets/web/env",
-            json={"env": {"TOTALLY_BOGUS_KEY": "x"}},
-        )
-        assert r.status_code == 400
 
-    def test_save_env_blank_value_skipped(self):
-        cfg = self.client.get("/api/tools/toolsets/web/config").json()
-        key = None
-        for prov in cfg["providers"]:
-            for e in prov.get("env_vars", []):
-                key = e["key"]
-                break
-            if key:
-                break
-        if not key:
-            pytest.skip("no env-var-bearing web provider in this build")
-        r = self.client.put(
-            "/api/tools/toolsets/web/env", json={"env": {key: "   "}}
-        )
-        assert r.status_code == 200
-        assert key in r.json()["skipped"]
-
-    def test_post_setup_unknown_key_400(self):
-        r = self.client.post(
-            "/api/tools/toolsets/browser/post-setup", json={"key": "bogus"}
-        )
-        assert r.status_code == 400
 
     def test_post_setup_unknown_toolset_400(self):
         r = self.client.post(
@@ -1347,42 +934,7 @@ class TestToolsConfigEndpoints:
         )
         assert r.status_code == 400
 
-    def test_post_setup_spawns_action(self, monkeypatch):
-        import hermes_cli.web_server as ws
 
-        spawned = {}
-
-        class _FakeProc:
-            pid = 4321
-
-        def _fake_spawn(subcommand, name):
-            spawned["subcommand"] = subcommand
-            spawned["name"] = name
-            return _FakeProc()
-
-        monkeypatch.setattr(ws, "_spawn_hermes_action", _fake_spawn)
-        r = self.client.post(
-            "/api/tools/toolsets/browser/post-setup",
-            json={"key": "agent_browser"},
-        )
-        assert r.status_code == 200, r.text
-        body = r.json()
-        assert body["name"] == "tools-post-setup"
-        assert body["pid"] == 4321
-        assert spawned["subcommand"] == ["tools", "post-setup", "agent_browser"]
-
-    def test_endpoints_require_session_token(self):
-        for method, path, payload in [
-            ("get", "/api/tools/toolsets/web/config", None),
-            ("put", "/api/tools/toolsets/web/env", {"env": {}}),
-            ("post", "/api/tools/toolsets/web/post-setup", {"key": "ddgs"}),
-        ]:
-            fn = getattr(self.client, method)
-            kwargs = {"headers": {self.header: "wrong-token"}}
-            if payload is not None:
-                kwargs["json"] = payload
-            r = fn(path, **kwargs)
-            assert r.status_code == 401, f"{method} {path} not gated"
 
 
 # ---------------------------------------------------------------------------

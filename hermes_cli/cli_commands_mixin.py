@@ -559,8 +559,30 @@ class CLICommandsMixin:
             return
 
         try:
+            from hermes_cli.clipboard import (
+                is_remote_shell_session,
+                write_clipboard_text,
+            )
+            if is_remote_shell_session():
+                # Over SSH, native tools would write the REMOTE clipboard
+                # (or an X-forwarded one) — OSC 52 reaches the terminal
+                # the user is actually sitting at. Fixes #31528.
+                self._write_osc52_clipboard(text)
+                _cprint(
+                    f"  Copied assistant response #{idx + 1} via OSC 52 "
+                    "(terminal support required)"
+                )
+                return
+            if write_clipboard_text(text):
+                _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+                return
+            # Native tools unavailable/failed — fall back to OSC 52 so
+            # SSH/tmux sessions can still copy via the terminal emulator.
             self._write_osc52_clipboard(text)
-            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+            _cprint(
+                f"  Copied assistant response #{idx + 1} via OSC 52 "
+                "(terminal support required)"
+            )
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
 
@@ -671,11 +693,11 @@ class CLICommandsMixin:
 
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
-        from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.slash_exec import CommandContext, execute_command
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        reply = execute_command("profile", CommandContext(surface="cli"))
+        profile_name = reply.data["profile"]
+        display = reply.data["home"]
 
         print()
         print(f"  Profile: {profile_name}")
@@ -1998,20 +2020,21 @@ class CLICommandsMixin:
         of their session. Bundles are loaded via ``/<bundle-name>``.
         """
         from cli import ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint
-        try:
-            from agent.skill_bundles import list_bundles, _bundles_dir
-        except Exception as exc:
-            _cprint(f"\033[1;31mBundle subsystem unavailable: {exc}{_RST}")
+        from hermes_cli.slash_exec import CommandContext, execute_command
+
+        reply = execute_command("bundles", CommandContext(surface="cli"))
+        if "error" in reply.data:
+            _cprint(f"\033[1;31mBundle subsystem unavailable: {reply.data['error']}{_RST}")
             return
 
-        bundles = list_bundles()
+        bundles = reply.data["bundles"]
         if not bundles:
             _cprint("  No skill bundles installed.")
             _cprint(
                 f"  {_DIM}Create one with: hermes bundles create "
                 f"<name> --skill <s1> --skill <s2>{_RST}"
             )
-            _cprint(f"  {_DIM}Directory: {_bundles_dir()}{_RST}")
+            _cprint(f"  {_DIM}Directory: {reply.data['dir']}{_RST}")
             return
 
         _cprint(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(bundles)} installed):")
@@ -3189,3 +3212,49 @@ class CLICommandsMixin:
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _handle_wake_command(self, command: str):
+        """Handle /wake [on|off|status] — the 'Hey Hermes' hotword listener.
+
+        The toggle IS the config: an explicit on/off (or bare toggle) also
+        writes ``wake_word.enabled`` to config.yaml so the choice persists
+        across sessions. Startup auto-arm (_maybe_start_wake_word) only reads.
+        """
+        from cli import _cprint
+        parts = command.strip().split(maxsplit=1)
+        subcommand = parts[1].lower().strip() if len(parts) > 1 else ""
+
+        if subcommand == "on":
+            if self._start_wake_word_listener(announce=True):
+                self._persist_wake_word_enabled(True)
+        elif subcommand == "off":
+            self._stop_wake_word_listener(announce=True)
+            self._persist_wake_word_enabled(False)
+        elif subcommand in ("", "status"):
+            if subcommand == "":
+                # Bare /wake toggles.
+                if getattr(self, "_wake_word_active", False):
+                    self._stop_wake_word_listener(announce=True)
+                    self._persist_wake_word_enabled(False)
+                elif self._start_wake_word_listener(announce=True):
+                    self._persist_wake_word_enabled(True)
+            else:
+                self._show_wake_word_status()
+        else:
+            _cprint(f"Unknown wake subcommand: {subcommand}")
+            _cprint("Usage: /wake [on|off|status]")
+
+    def _persist_wake_word_enabled(self, enabled: bool):
+        """Save ``wake_word.enabled`` so the /wake toggle sticks for future sessions."""
+        from cli import _cprint, _DIM, _RST, save_config_value
+
+        try:
+            from tools.wake_word import load_wake_word_config
+
+            if bool(load_wake_word_config().get("enabled")) == enabled:
+                return  # already persisted — don't rewrite config or re-announce
+        except Exception:
+            pass
+        if save_config_value("wake_word.enabled", enabled):
+            _cprint(f"{_DIM}Wake word {'enabled' if enabled else 'disabled'} in config "
+                    f"(wake_word.enabled: {str(enabled).lower()}).{_RST}")

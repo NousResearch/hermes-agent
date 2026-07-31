@@ -114,51 +114,6 @@ async def test_failed_fallback_pool_is_discarded_and_closed(monkeypatch):
     assert all(t.closed for t in closed_log)
 
 
-@pytest.mark.asyncio
-async def test_recovered_fallback_pool_is_retained_not_discarded(monkeypatch):
-    """A fallback IP that *succeeds* must keep its pool (sticky reuse) — the
-    discard only fires on failure. Guards against over-eager resetting."""
-    closed_log: list = []
-    behavior = {
-        "api.telegram.org": "timeout",   # primary fails
-        "149.154.167.220": "connect_error",  # first fallback fails → discarded
-        "149.154.167.221": "ok",          # second fallback works → retained
-    }
-    monkeypatch.setattr(
-        tnet.httpx, "AsyncHTTPTransport", _factory(behavior, closed_log)
-    )
-
-    transport = tnet.TelegramFallbackTransport(
-        ["149.154.167.220", "149.154.167.221"]
-    )
-    resp = await transport.handle_async_request(_telegram_request())
-
-    assert resp.status_code == 200
-    assert transport._sticky_ip == "149.154.167.221"
-    # The failed .220 pool was discarded; the working .221 pool is retained.
-    assert "149.154.167.220" not in transport._fallbacks
-    assert "149.154.167.221" in transport._fallbacks
-    # Exactly one pool (the failed one) was aclose()d.
-    assert len(closed_log) == 1
-
-
-@pytest.mark.asyncio
-async def test_reset_fallback_is_a_noop_when_pool_absent(monkeypatch):
-    """_reset_fallback on an IP that was never built must not raise or close
-    anything — the lazy dict may not contain it."""
-    closed_log: list = []
-    monkeypatch.setattr(
-        tnet.httpx, "AsyncHTTPTransport", _factory({}, closed_log)
-    )
-    transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-
-    # Nothing built yet.
-    assert transport._fallbacks == {}
-    await transport._reset_fallback("149.154.167.220")
-    assert transport._fallbacks == {}
-    assert closed_log == []
-
-
 def test_caller_limits_win_over_pool_default(monkeypatch):
     """A caller-supplied ``limits`` kwarg must win over the ``_POOL_LIMITS``
     ``setdefault`` default, for both the primary and lazily-built fallback

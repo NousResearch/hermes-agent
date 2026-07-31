@@ -2,6 +2,12 @@ export interface ConfigFieldSchema {
   category?: string
   description?: string
   options?: unknown[]
+  /** When true, renders a SearchableSelect (Popover + cmdk) instead of the
+   *  closed `<Select>` dropdown. For large option lists like IANA timezones. */
+  searchable?: boolean
+  /** When true, a searchable select prepends a "clear" item that resets the
+   *  value to ''. Matches the existing <Select> EMPTY_SELECT_VALUE pattern. */
+  clearable?: boolean
   type?: 'boolean' | 'list' | 'number' | 'select' | 'string' | 'text'
 }
 
@@ -232,6 +238,21 @@ export interface MessagingPlatformsResponse {
   platforms: MessagingPlatformInfo[]
 }
 
+/** A pending pairing request, or an already-approved user, for one platform. */
+export interface PairingUser {
+  age_minutes?: number
+  platform: string
+  /** Present on pending rows only — the id `approvePairing` grants on. */
+  request_id?: string
+  user_id: string
+  user_name?: string
+}
+
+export interface PairingResponse {
+  approved: PairingUser[]
+  pending: PairingUser[]
+}
+
 export interface MessagingPlatformUpdate {
   clear_env?: string[]
   enabled?: boolean
@@ -325,6 +346,8 @@ export interface HermesConfig {
   voice?: {
     max_recording_seconds?: number
     auto_tts?: boolean
+    stop_phrases?: unknown
+    thinking_sound?: unknown
   }
 }
 
@@ -380,6 +403,10 @@ export interface ModelOptionProvider {
   key_env?: string
   /** True for providers defined via the user's `providers:` config block. */
   is_user_defined?: boolean
+  /** OpenAI-compatible endpoint for a user-defined provider. The backend
+   *  exposes this as `api_url`; model assignments send it back as `base_url`
+   *  so switching providers does not discard the selected local endpoint. */
+  api_url?: string
   /** Per-model pricing keyed by model id (present when the picker requested
    *  pricing and the provider supports live pricing). */
   pricing?: Record<string, ModelPricing>
@@ -460,6 +487,13 @@ export interface SessionInfo {
   output_tokens: number
   /** Parent conversation when this row is a /branch fork. */
   parent_session_id?: null | string
+  /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
+   *  back-fill pinned conversations past their LIMIT, so a pinned row is
+   *  always present in a page — which makes this authoritative for the
+   *  sidebar's Pinned section and lets a second app adopt pins made
+   *  elsewhere. Undefined against a backend predating the flag; treat that as
+   *  "no opinion" and leave the local pin set alone. */
+  pinned?: boolean
   preview: null | string
   source: null | string
   started_at: number
@@ -490,6 +524,15 @@ export type TimelineDisplayMetadata =
       failed_count?: number
       duration_seconds?: number
     }
+  | { reactions: MessageReaction[] }
+
+/** One emoji reaction on a message. One per author, iOS-Tapback style. */
+export interface MessageReaction {
+  emoji: string
+  author: 'agent' | 'user'
+  /** Epoch seconds. */
+  at: number
+}
 
 export interface SessionMessage {
   codex_reasoning_items?: unknown
@@ -506,6 +549,17 @@ export interface SessionMessage {
    */
   display_metadata?: string | TimelineDisplayMetadata
   role: 'assistant' | 'system' | 'tool' | 'user'
+  /**
+   * Durable `messages.id` from the backend. The renderer's own message ids are
+   * ephemeral (derived from timestamp+index, and a different shape for live vs
+   * rehydrated vs optimistic rows), so anything addressing a specific persisted
+   * message — reactions — keys off this. Absent on a backend older than this app.
+   *
+   * The gateway resume path names it `row_id`; the REST transcript path
+   * (`SELECT *`) ships the same value as a numeric `id`. Read both.
+   */
+  row_id?: number
+  id?: number
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string

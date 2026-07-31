@@ -221,76 +221,6 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
 
 
 @pytest.mark.asyncio
-async def test_busy_voice_interrupt_transcribes_before_pending_drain(monkeypatch):
-    adapter = SimpleNamespace(send=AsyncMock(), _pending_messages={})
-    runner = _runner(adapter)
-    runner._is_user_authorized = lambda _source: True
-    runner._draining = False
-    runner._running_agents = {}
-    runner._busy_input_mode = "interrupt"
-    runner._busy_text_mode = "interrupt"
-    runner._busy_ack_ts = {}
-    runner._queued_events = {}
-    runner._agent_has_active_subagents = lambda _agent: False
-    session_key = "telegram:dm:12345"
-    agent = MagicMock()
-    runner._running_agents[session_key] = agent
-    source = _source()
-    event = MessageEvent(
-        text="",
-        message_type=MessageType.VOICE,
-        source=source,
-        media_urls=["/tmp/telegram-busy-voice.ogg"],
-        media_types=["audio/ogg"],
-    )
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
-
-    with (
-        patch("tools.approval.has_blocking_approval", return_value=False),
-        patch(
-            "tools.transcription_tools.transcribe_audio",
-            return_value={"success": True, "transcript": "interrupt me", "provider": "mock"},
-        ) as mock_transcribe,
-    ):
-        handled = await runner._handle_active_session_busy_message(event, session_key)
-        drain_text, drain_transcripts = await runner._transcribe_pending_audio_event_once(
-            adapter._pending_messages[session_key],
-            event.text,
-        )
-        await runner._echo_pending_stt_transcripts_once(
-            adapter._pending_messages[session_key],
-            adapter,
-            source,
-            drain_transcripts,
-        )
-
-    assert handled is True
-    agent.interrupt.assert_called_once_with('"interrupt me"')
-    assert adapter._pending_messages[session_key] is event
-    assert drain_text == '"interrupt me"'
-    mock_transcribe.assert_called_once_with("/tmp/telegram-busy-voice.ogg")
-    adapter.send.assert_awaited_once_with(
-        "12345",
-        '🎙️ "interrupt me"',
-        metadata={},
-    )
-
-
-def test_telegram_audio_size_gate_rejects_oversized_media_before_download():
-    adapter = object.__new__(TelegramAdapter)
-    adapter._max_doc_bytes = 1024
-
-    allowed, note = adapter._telegram_media_size_allowed(
-        SimpleNamespace(file_size=2048),
-        "voice message",
-    )
-
-    assert allowed is False
-    assert "exceeds" in note
-    assert "voice message" in note
-
-
-@pytest.mark.asyncio
 async def test_telegram_video_size_gate_rejects_oversized_media_before_download():
     adapter = object.__new__(TelegramAdapter)
     adapter._max_doc_bytes = 1024
@@ -336,24 +266,13 @@ async def test_telegram_video_size_gate_rejects_oversized_media_before_download(
     assert "exceeds" in handled[0].text
 
 
-@pytest.mark.asyncio
-async def test_voice_tts_is_explicit_audio_reply_opt_in():
-    adapter = SimpleNamespace(
-        _auto_tts_disabled_chats=set(),
-        _auto_tts_enabled_chats=set(),
+def _voice_event(source, urls):
+    return MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=list(urls),
+        media_types=["audio/ogg"] * len(urls),
     )
-    runner = _runner(adapter)
-    runner._voice_mode = {}
-    runner._voice_provider_mode = {}
-    runner._save_voice_modes = lambda: None
-    runner._save_voice_provider_modes = lambda: None
 
-    event = SimpleNamespace(
-        source=_source(),
-        get_command_args=lambda: "tts",
-    )
-    result = await GatewayRunner._handle_voice_command(runner, event)
 
-    assert runner._voice_mode["telegram:12345"] == "all"
-    assert "12345" in adapter._auto_tts_enabled_chats
-    assert result

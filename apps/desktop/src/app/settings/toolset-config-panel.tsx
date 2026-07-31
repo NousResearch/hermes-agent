@@ -492,7 +492,9 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [selecting, setSelecting] = useState<string | null>(null)
-  const [activeProvider, setActiveProvider] = useState<string | null>(null)
+  // Which provider row is EXPANDED in the panel (purely presentational —
+  // distinct from the backend-active provider in cfg.active_provider).
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
   // Live per-key set/unset state, seeded from the endpoint then patched locally.
   const [envState, setEnvState] = useState<Record<string, boolean>>({})
   // Default-provider selection and a user click race just after config arrives:
@@ -545,7 +547,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   // the user had already selected another (e.g. DuckDuckGo).
   // eslint-disable-next-line no-restricted-syntax -- one-shot provider-choice claim flag, not an atom mirror
   useEffect(() => {
-    if (providerChoiceClaimedRef.current || activeProvider || providers.length === 0) {
+    if (providerChoiceClaimedRef.current || expandedProvider || providers.length === 0) {
       return
     }
 
@@ -556,11 +558,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       providers[0]
 
     // Claim before enqueueing the state update. Effects can run with a stale
-    // activeProvider closure after a user click, so state alone is too late to
-    // protect that choice.
+    // expandedProvider closure after a user click, so state alone is too late
+    // to protect that choice.
     providerChoiceClaimedRef.current = true
-    setActiveProvider(selected.name)
-  }, [activeProvider, providers, envState, cfg])
+    setExpandedProvider(selected.name)
+  }, [expandedProvider, providers, envState, cfg])
 
   async function handleSelect(provider: ToolProvider) {
     if (selecting !== null) {
@@ -568,7 +570,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     }
 
     providerChoiceClaimedRef.current = true
-    setActiveProvider(provider.name)
+    setExpandedProvider(provider.name)
     setSelecting(provider.name)
 
     try {
@@ -735,7 +737,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
         </div>
       )}
       {providers.map(provider => {
-        const isActive = activeProvider === provider.name
+        const isExpanded = expandedProvider === provider.name
+        const isBackendActive = provider.is_active || cfg?.active_provider === provider.name
         const status = providerStatus(provider, envState)
         const webCaps = toolset === 'web' ? (provider.capabilities ?? []) : []
         const isSearchBackend = Boolean(provider.web_backend && cfg.active_search_backend === provider.web_backend)
@@ -744,19 +747,30 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
         return (
           <div className="overflow-hidden rounded-xl bg-background/60" key={provider.name}>
             <button
-              aria-pressed={isActive}
+              aria-expanded={isExpanded}
               className={cn(
                 'flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-accent/50',
-                isActive && 'bg-accent/40'
+                isExpanded && 'bg-accent/40'
               )}
-              disabled={selecting !== null}
-              onClick={() => void handleSelect(provider)}
+              onClick={() => {
+                // Row click only expands/collapses — activating a backend is
+                // the explicit "Use this backend" button below, so browsing
+                // provider details never silently rewrites config.
+                providerChoiceClaimedRef.current = true
+                setExpandedProvider(current => (current === provider.name ? null : provider.name))
+              }}
               type="button"
             >
               <span className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm font-medium">{provider.name}</span>
                 {provider.badge && <Pill>{provider.badge}</Pill>}
-                {status === 'ready' && (
+                {isBackendActive && (
+                  <Pill tone="primary">
+                    <Check className="size-3" />
+                    {copy.activeBackend}
+                  </Pill>
+                )}
+                {status === 'ready' && !isBackendActive && (
                   <Pill tone="primary">
                     <Check className="size-3" />
                     {copy.ready}
@@ -770,9 +784,27 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
               {selecting === provider.name && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
             </button>
 
-            {isActive && (
+            {isExpanded && (
               <div className="grid gap-2 bg-muted/20 p-3">
                 {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
+                {(toolset !== 'web' || webCaps.length === 0) && (
+                  // Explicit activation — the old row-click-selects UX gave no
+                  // signal about which backend was actually in use and made
+                  // reading a row's details indistinguishable from choosing it.
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isBackendActive ? (
+                      <Pill tone="primary">
+                        <Check className="size-3" />
+                        {copy.activeBackendHint}
+                      </Pill>
+                    ) : (
+                      <Button disabled={selecting !== null} onClick={() => void handleSelect(provider)} size="sm">
+                        {selecting === provider.name ? <Loader2 className="size-3.5 animate-spin" /> : <Check />}
+                        {copy.useBackend}
+                      </Button>
+                    )}
+                  </div>
+                )}
                 {webCaps.length > 0 && (
                   // Per-capability assignment: writes web.search_backend /
                   // web.extract_backend without touching the shared

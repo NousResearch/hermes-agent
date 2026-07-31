@@ -368,13 +368,31 @@ export function quickModelOptions(
   return options.slice(0, 8)
 }
 
+// A message's display time. `timestamp` (Unix seconds) is authoritative when
+// present. Without it we fall back to *now* rather than digging digits out of
+// the id: message ids come in incompatible shapes — `assistant-<ms>`,
+// `<seconds>-<i>-<role>`, session-style `20260728_184420_…` — and feeding any
+// of them to `new Date()` (which reads ms) lands on the 1970 epoch, rendering
+// as an absurd "20663d ago". A timestamp-less message is a freshly created
+// optimistic/streaming one, so *now* is the right age anyway.
+export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs = Date.now()): Date {
+  return typeof message.timestamp === 'number' && Number.isFinite(message.timestamp) && message.timestamp > 0
+    ? new Date(message.timestamp * 1000)
+    : new Date(nowMs)
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
 
-  const createdAt = message.timestamp
-    ? new Date(message.timestamp * 1000)
-    : new Date(Number(message.id.match(/\d+/)?.[0]) || Date.now())
+  const createdAt = messageCreatedAt(message)
+
+  // Reactions and the durable row id ride metadata.custom for every role — the
+  // established channel for per-message extras (attachmentRefs below).
+  const reactionMeta = {
+    ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
+    ...(message.reactions?.length ? { reactions: message.reactions } : {})
+  }
 
   if (role === 'user') {
     return {
@@ -383,7 +401,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [] } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta } }
     } as ThreadMessage
   }
 
@@ -415,7 +433,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_data: [],
       steps: [],
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
-      custom: message.interim ? { interim: true } : {}
+      custom: { ...(message.interim ? { interim: true } : {}), ...reactionMeta }
     }
   } as ThreadMessage
 }

@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.19.0"
+version = "0.19.1"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -137,6 +137,11 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
+  # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
+  # lossless provider-codec contract. Managed calls pass request/response data
+  # through this native module in-process; shared metrics installs no network
+  # exporter and consumes only its bounded projection.
+  "nemo-relay>=0.6.0,<0.7; (sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')",
 ]
 
 [project.optional-dependencies]
@@ -155,6 +160,7 @@ fal = ["fal-client==0.13.1"]
 edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
+vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
@@ -174,6 +180,26 @@ voice = [
   "faster-whisper==1.2.1",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
+]
+# "Hey Hermes" wake word — on-device hotword detection. All engines are
+# optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
+# open-vocabulary phrases (any typed phrase, zero training), Porcupine is
+# the premium alternative. Desktop installs ([--include-desktop]) eager-install
+# [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
+# first /wake; mirrored in tools/lazy_deps.py.
+wake = [
+  "openwakeword==0.6.0",
+  "onnxruntime==1.27.0",
+  "sherpa-onnx==1.13.4",
+  "sentencepiece==0.2.2",
+  "pvporcupine==4.0.3",
+  "sounddevice==0.5.5",
+  "numpy==2.4.3",
+  # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
+  # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
+  # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the
+  # macOS equivalent, bridged in tools/wake_word.py.
+  "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
 ]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
@@ -202,7 +228,9 @@ pty = []
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
 mcp = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
-nemo-relay = ["nemo-relay>=0.5,<1.0"]
+# Backwards-compatible no-op alias. Relay is a core dependency on supported
+# wheel targets and intentionally unavailable on other platforms.
+nemo-relay = []
 homeassistant = ["aiohttp==3.14.1"]
 sms = ["aiohttp==3.14.1"]
 teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
@@ -221,6 +249,11 @@ acp = ["agent-client-protocol==0.9.0"]
 # NOT re-added to [all] so a future quarantined release can't break fresh
 # installs (see [all] policy comment below).
 mistral = ["mistralai==2.4.8"]
+# OTLP gateway monitoring export (optional). Provides the OpenTelemetry SDK +
+# OTLP/HTTP exporter for monitoring.gateway_health_export. Lazy-installed via
+# tools/lazy_deps.py on first use; never a core dependency and deliberately
+# NOT in [all].
+otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
@@ -279,7 +312,7 @@ all = [
   #
   # Removed from [all] on 2026-05-12 (covered by lazy-install):
   #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
-  #   modal, daytona, messaging (telegram/discord/slack),
+  #   modal, daytona, vercel, messaging (telegram/discord/slack),
   #   matrix, slack, honcho, voice (faster-whisper),
   #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
   #
@@ -313,12 +346,32 @@ hermes-acp = "acp_adapter.entry:main"
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
 # sealed venv is missing hermes_constants, run_agent, etc.
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+py-modules = [
+  "run_agent",
+  "model_tools",
+  "toolsets",
+  "batch_runner",
+  "trajectory_compressor",
+  "toolset_distributions",
+  "cli",
+  "hermes_bootstrap",
+  "hermes_constants",
+  "hermes_state",
+  "hermes_state_common",
+  "hermes_state_portability",
+  "hermes_state_schema",
+  "hermes_state_search",
+  "hermes_time",
+  "hermes_logging",
+  "utils",
+  "mcp_serve",
+]
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.setuptools.package-data]
+hermes_cli = ["observability/schemas/*.json"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram
@@ -333,6 +386,8 @@ markers = [
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
+    "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
+    "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"

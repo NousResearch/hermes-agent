@@ -130,16 +130,63 @@ export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: 
 // stick-to-bottom lock drifts and the view creeps up over older turns — the
 // "long session eventually shows old responses" glitch.
 //
-// Keep the newest N turns always-rendered so a turn is only ever virtualized
+// Keep the newest turns always-rendered so a turn is only ever virtualized
 // once its layout has settled at its final size (remembered == real → skipping
 // it changes no height). Off-screen OLDER turns still skip, so the dialog/popover
-// recalc win on long transcripts is preserved (that scales with the hundreds of
-// old turns, not this small live tail).
-export const LIVE_TAIL_GROUPS = 6
+// recalc win on long transcripts is preserved.
+//
+// The tail is budgeted in PARTS, not turns, because that is what the cost
+// actually scales with — the same currency as RENDER_BUDGET / FIRST_PAINT_BUDGET.
+// A turn-count tail silently defeats itself on agent transcripts: one tool-heavy
+// turn is 50-200 parts, so a 6-TURN tail exempted the entire visible transcript
+// and nothing virtualized at all. Measured on a 5-tile window (7/3/5/3/2 groups
+// per tile): zero content-visibility containers were active, and every Radix
+// overlay open paid the full ~610ms whole-document recalc that #66470 fixed.
+//
+// 40 parts ≈ the 1-2 turns a viewport shows after scroll-to-bottom (the same
+// reasoning as FIRST_PAINT_BUDGET=20, doubled so a turn that grows mid-stream
+// doesn't fall out of the tail as it settles).
+export const LIVE_TAIL_PARTS = 40
+// Floor: always exempt at least this many turns regardless of weight, so a
+// transcript of very heavy turns still keeps the streaming one unvirtualized.
+export const LIVE_TAIL_MIN_GROUPS = 2
+// Ceiling: never exempt more than this many turns, however light they are. On a
+// long transcript of tiny turns a parts-only budget would walk back further
+// than the old turn-count tail did and virtualize LESS — this keeps the new
+// policy a strict improvement on every shape.
+export const LIVE_TAIL_MAX_GROUPS = 6
 
-/** True when a visible group is old enough to virtualize (outside the live tail). */
-export function isVirtualizedGroup(indexInVisible: number, visibleCount: number, liveTail = LIVE_TAIL_GROUPS): boolean {
-  return indexInVisible < visibleCount - liveTail
+/**
+ * Index of the newest group that still virtualizes — everything at or after it
+ * is the live tail and stays rendered. Walks newest-first accumulating parts,
+ * so the tail covers a viewport's worth of content rather than a fixed number
+ * of turns, clamped to [MIN, MAX] turns. Computed once per render, not per row.
+ */
+export function liveTailStart(
+  groups: readonly MessageGroup[],
+  tailParts = LIVE_TAIL_PARTS,
+  minGroups = LIVE_TAIL_MIN_GROUPS,
+  maxGroups = LIVE_TAIL_MAX_GROUPS
+): number {
+  let parts = 0
+  let start = groups.length
+
+  for (let i = groups.length - 1; i >= 0; i--) {
+    parts += groups[i]?.weight ?? 1
+    start = i
+
+    if (parts > tailParts) {
+      break
+    }
+  }
+
+  // Clamp the tail to [minGroups, maxGroups] turns: the floor keeps the live
+  // turn rendered when turns are huge, the ceiling stops a tail of tiny turns
+  // from sprawling past what the old turn-count policy rendered.
+  const floor = Math.max(0, groups.length - minGroups)
+  const ceiling = Math.max(0, groups.length - maxGroups)
+
+  return Math.min(floor, Math.max(ceiling, start))
 }
 
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
@@ -210,6 +257,27 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }
 
+  // Where to land after a prepend, in distance-from-bottom (survives the
+  // height change). Shared by "Show earlier" and the budget backfill below.
+  const restoreFromBottomRef = useRef<number | null>(null)
+  // False from a session switch until the settle loop below parks the
+  // transcript at its true bottom. While false, scrollTop is a way-point of a
+  // load in progress, not a reading position anyone chose — never anchor to it.
+  const loadSettledRef = useRef(false)
+  // Session the settle loop last armed for, so a re-arm within the same load
+  // is distinguishable from a switch to a different transcript.
+  const settleKeyRef = useRef(sessionKey)
+
+  // Record where the view should land once a prepend has grown the content,
+  // measured from the BOTTOM so the added height doesn't invalidate it. Only a
+  // settled load has an offset the user chose; mid-load the answer is simply
+  // the bottom.
+  const anchorBeforePrepend = useCallback(() => {
+    const el = scrollRef.current
+
+    restoreFromBottomRef.current = el && loadSettledRef.current ? el.scrollHeight - el.scrollTop : 0
+  }, [scrollRef])
+
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
   // commit painted — as a TRANSITION, so the heavy markdown + syntax
   // highlight render of the older turns is interruptible instead of one long
@@ -223,6 +291,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const rafId = requestAnimationFrame(() => {
+      // The backfill PREPENDS older turns, so everything on screen slides down
+      // by their height. Anchor first and let the restore effect below re-apply
+      // it in the same commit the taller tree lands in — otherwise the view is
+      // stranded near the TOP until use-stick-to-bottom's ResizeObserver
+      // catches up a frame or two later (measured: an 11.5k px jump showing
+      // ~160ms of unrelated old turns, on every session load).
+      anchorBeforePrepend()
+
       // Functional max, not a plain set: an urgent "Show earlier" click can
       // land between scheduling and committing this transition, and a plain
       // set would rebase over it and shrink the budget back down.
@@ -230,7 +306,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     })
 
     return () => cancelAnimationFrame(rafId)
-  }, [renderBudget])
+  }, [anchorBeforePrepend, renderBudget])
 
   // Weights (per-message part counts) fold into the BUDGET only. Group
   // identity stays structural, so a streaming append re-runs this cheap sum —
@@ -249,7 +325,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const hiddenCount = firstVisibleGroupIndex(weightedGroups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
-  const restoreFromBottomRef = useRef<number | null>(null)
+
+  // Where the always-rendered live tail begins. Derived from the WEIGHTED
+  // groups (parts, not turns) so the tail is a viewport's worth of content —
+  // see liveTailStart. Computed once here rather than per row.
+  const tailStart = useMemo(
+    () => liveTailStart(hiddenCount > 0 ? weightedGroups.slice(hiddenCount) : weightedGroups),
+    [weightedGroups, hiddenCount]
+  )
+
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.
@@ -302,6 +386,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // follow re-pins every frame to a moving target — visible as ~10 scroll jumps.
   // Instead: quiet it, glue to the true bottom until the height holds steady,
   // then hand back locked. Live streaming afterward uses the normal resize follow.
+  //
+  // `hasGroups` joins sessionKey as a dep because a COLD load changes the key
+  // while the transcript is still empty and publishes messages hundreds of ms
+  // later. Keyed on the switch alone the loop measured an EMPTY viewport, saw
+  // a stable height in two frames, and handed back "settled" before the
+  // transcript existed — so the turns painted at scrollTop 0 and only snapped
+  // down once use-stick-to-bottom's ResizeObserver noticed, a full-viewport
+  // lurch on every cold load. The empty→non-empty flip re-arms for the
+  // transcript that actually arrived; being a boolean, it cannot re-fire on a
+  // streaming append.
   useLayoutEffect(() => {
     const el = scrollRef.current
 
@@ -311,6 +405,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     stopScroll()
     el.scrollTop = el.scrollHeight
+    loadSettledRef.current = false
+
+    // An anchor captured for the OUTGOING transcript must not be applied to
+    // this one — a switch owns the position outright. The empty→non-empty
+    // re-arm is the SAME load, whose in-flight anchor is still correct.
+    if (settleKeyRef.current !== sessionKey) {
+      settleKeyRef.current = sessionKey
+      restoreFromBottomRef.current = null
+    }
 
     let frame = 0
     let stableFrames = 0
@@ -334,6 +437,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
         void scrollToBottom('instant')
+        loadSettledRef.current = true
 
         return
       }
@@ -344,17 +448,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     let rafId = requestAnimationFrame(settle)
 
     return () => cancelAnimationFrame(rafId)
-  }, [scrollRef, scrollToBottom, sessionKey, stopScroll])
+  }, [hasGroups, scrollRef, scrollToBottom, sessionKey, stopScroll])
 
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and
   // won't fight this manual restore.
   const showEarlier = useCallback(() => {
-    const el = scrollRef.current
-
-    restoreFromBottomRef.current = el ? el.scrollHeight - el.scrollTop : null
+    anchorBeforePrepend()
     setRenderBudget(budget => budget + RENDER_BUDGET)
-  }, [scrollRef])
+  }, [anchorBeforePrepend])
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -390,12 +492,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         // The live tail (newest turns) is exempt: virtualizing a turn
         // whose final size hasn't been remembered yet snaps it to a stale
         // height when it scrolls off, drifting stick-to-bottom up over old
-        // turns. See isVirtualizedGroup.
+        // turns. See liveTailStart.
         <div
           className={cn(
             'flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)',
-            isVirtualizedGroup(indexInVisible, visibleGroups.length) &&
-              '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
+            indexInVisible < tailStart && '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
           )}
           key={group.id}
         >
@@ -415,7 +516,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           </MessageRenderBoundary>
         </div>
       )),
-    [visibleGroups, components, structuralSignature]
+    [visibleGroups, components, structuralSignature, tailStart]
   )
 
   return (

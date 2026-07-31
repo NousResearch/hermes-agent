@@ -309,7 +309,10 @@ async def handle_ws(ws: Any) -> None:
                 "method": "event",
                 "params": {
                     "type": "gateway.ready",
-                    "payload": {"skin": server.resolve_skin()},
+                    # change_events: this backend broadcasts pet.changed /
+                    # cron.changed / sessions.changed, so clients can demote
+                    # their legacy polls to slow backstops.
+                    "payload": {"skin": server.resolve_skin(), "change_events": True},
                 },
             }
         )
@@ -421,6 +424,11 @@ async def handle_ws(ws: Any) -> None:
         if transport is not None:
             server.unregister_live_transport(transport)
             transport.close()
+
+            try:
+                await asyncio.to_thread(server._release_wake_for_transport, transport)
+            except Exception:
+                _log.exception("ws wake-word teardown failed peer=%s", peer)
 
             # Reap sessions this transport owned (close_on_disconnect sidecar
             # sessions) or detach the rest to the drop sentinel so later emits

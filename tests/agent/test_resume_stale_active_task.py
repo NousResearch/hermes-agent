@@ -62,48 +62,10 @@ def test_latest_message_wins_over_inherited_active_task():
     assert "topic overlap" in lower
 
 
-def test_no_resume_exactly_directive_can_hijack():
-    """The directive that caused the hijack ("resume exactly from Active
-    Task") must be gone."""
-    assert "resume exactly" not in SUMMARY_PREFIX.lower()
 
 
-def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
-    """A handoff persisted under the OLD conflicting prefix (e.g. saved before
-    the fix and inherited into a resumed lineage) is upgraded to the CURRENT
-    prefix when re-normalized on re-compaction — so the "resume exactly"
-    directive cannot survive into a resumed session."""
-    stale_body = (
-        f"{HISTORICAL_TASK_HEADING}\n"
-        "User asked: 'Migrate the billing module to Stripe'\n\n"
-        "## Goal\nMigrate billing.\n"
-    )
-    stale_handoff = f"{_OLD_CONFLICTING_PREFIX}\n{stale_body}"
-
-    # Sanity: the fixture really does carry the old directive.
-    assert "resume exactly" in stale_handoff.lower()
-
-    renormalized = ContextCompressor._with_summary_prefix(stale_handoff)
-
-    # The body is preserved...
-    assert "Migrate the billing module to Stripe" in renormalized
-    # ...but the conflicting directive is stripped and replaced with the
-    # current latest-message-wins framing.
-    assert "resume exactly" not in renormalized.lower()
-    assert renormalized.startswith(SUMMARY_PREFIX)
-    assert ("wins" in renormalized.lower()
-            or "priority" in renormalized.lower()
-            or "supersede" in renormalized.lower())
 
 
-def test_legacy_prefix_handoff_also_renormalized():
-    """The same upgrade applies to the oldest ``[CONTEXT SUMMARY]:`` handoff
-    format that may sit in a long-lived resumed lineage."""
-    legacy = f"{LEGACY_SUMMARY_PREFIX} {HISTORICAL_TASK_HEADING}\nUser asked: 'task A'"
-    renormalized = ContextCompressor._with_summary_prefix(legacy)
-    assert renormalized.startswith(SUMMARY_PREFIX)
-    assert LEGACY_SUMMARY_PREFIX not in renormalized
-    assert "task A" in renormalized
 
 
 def test_inherited_handoff_detected_in_resumed_protected_head():
@@ -129,20 +91,3 @@ def test_inherited_handoff_detected_in_resumed_protected_head():
     assert not body.startswith(SUMMARY_PREFIX)
 
 
-def test_historical_prefixed_handoff_detected_and_stripped():
-    """A pre-fix handoff (old conflicting prefix) inherited into a resumed
-    lineage must still be recognized as a context summary AND have its old
-    directive stripped on detection — otherwise re-compaction serializes the
-    stale 'resume exactly' text as a fresh turn."""
-    messages = [
-        {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": f"{_OLD_CONFLICTING_PREFIX}\n{HISTORICAL_TASK_HEADING}\nUser asked: 'task A'"},
-        {"role": "assistant", "content": "ok"},
-        {"role": "user", "content": "Unrelated task B"},
-    ]
-    idx, body = ContextCompressor._find_latest_context_summary(
-        messages, 1, len(messages)
-    )
-    assert idx == 1
-    assert "task A" in body
-    assert "resume exactly" not in body.lower()

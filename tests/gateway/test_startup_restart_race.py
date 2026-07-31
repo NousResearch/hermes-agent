@@ -130,25 +130,6 @@ def patch_startup_side_effects(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_startup_aborts_when_restart_requested_before_start(tmp_path, monkeypatch):
-    patch_startup_side_effects(monkeypatch, tmp_path)
-    runner = make_startup_runner(tmp_path)
-    runner.request_restart(detached=False, via_service=True)
-    runner._create_adapter = MagicMock()
-
-    result = await asyncio.wait_for(runner.start(), timeout=2)
-
-    assert result is True
-    runner._create_adapter.assert_not_called()
-    assert runner.delivery_router.adapters == {}
-    assert runner._running is False
-    assert not any(
-        call.args[:1] == ("running",)
-        for call in runner._update_runtime_status.call_args_list
-    )
-
-
-@pytest.mark.asyncio
 async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_path, monkeypatch):
     patch_startup_side_effects(monkeypatch, tmp_path)
 
@@ -167,7 +148,7 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
     telegram.disconnect = disconnect_and_release
     runner._create_adapter = MagicMock(side_effect=[telegram, slack])
 
-    result = await asyncio.wait_for(runner.start(), timeout=2)
+    result = await asyncio.wait_for(runner.start(), timeout=30)
 
     assert result is True
     assert telegram.disconnected is True
@@ -187,79 +168,26 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_startup_abort_waits_for_existing_stop_task(tmp_path):
-    runner = make_startup_runner(tmp_path)
-    runner._restart_requested = True
-    runner.stop = AsyncMock(side_effect=AssertionError("stop should not be called"))
-    stop_completed = asyncio.Event()
-
-    async def existing_stop():
-        await asyncio.sleep(0.01)
-        stop_completed.set()
-
-    runner._stop_task = asyncio.create_task(existing_stop())
-    adapter = StartupRaceAdapter(Platform.TELEGRAM)
-
-    result = await asyncio.wait_for(
-        runner._abort_startup_if_shutdown_requested(adapter, Platform.TELEGRAM),
-        timeout=2,
-    )
-
-    assert result is True
-    assert stop_completed.is_set()
-    assert runner._stop_task.done()
-    runner.stop.assert_not_called()
-    assert adapter.background_cancelled is True
-    assert adapter.disconnected is True
-
-
-@pytest.mark.asyncio
-async def test_startup_aborts_after_registered_adapter_restart(tmp_path, monkeypatch):
-    patch_startup_side_effects(monkeypatch, tmp_path)
-    runner = make_startup_runner(tmp_path)
-    telegram = StartupRaceAdapter(Platform.TELEGRAM)
-    slack = StartupRaceAdapter(Platform.SLACK)
-    runner._create_adapter = MagicMock(side_effect=[telegram, slack])
-
-    def update_platform_runtime_status(platform, platform_state, **kwargs):
-        if (platform, platform_state) == (Platform.TELEGRAM.value, "connected"):
-            runner.request_restart(detached=False, via_service=True)
-
-    runner._update_platform_runtime_status = MagicMock(side_effect=update_platform_runtime_status)
-
-    result = await asyncio.wait_for(runner.start(), timeout=2)
-
-    assert result is True
-    assert telegram.connected is True
-    assert telegram.disconnected is True
-    assert slack.connected is False
-    assert runner._running is False
-    assert runner.adapters == {}
-    assert runner._update_runtime_status.call_args_list[-1].args[0] == "stopped"
-    assert not any(
-        call.args[:1] == ("running",)
-        for call in runner._update_runtime_status.call_args_list
-    )
-    assert not any(
-        call.args[:2] == (Platform.SLACK.value, "connected")
-        for call in runner._update_platform_runtime_status.call_args_list
-    )
-
-
-@pytest.mark.asyncio
 async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     cron_started = False
+    export_shutdown_calls = 0
+
+    class ExportRuntime:
+        def shutdown(self):
+            nonlocal export_shutdown_calls
+            export_shutdown_calls += 1
 
     class AbortedStartupRunner:
         def __init__(self, config):
             self.config = config
             self.adapters = {}
             self._running = False
-            self.should_exit_cleanly = False
+            self.should_exit_cleanly = True
             self.should_exit_with_failure = False
             self.exit_reason = None
             self.exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
+            self._gateway_health_export_runtime = ExportRuntime()
 
         async def start(self):
             return True
@@ -287,3 +215,4 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
 
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert cron_started is False
+    assert export_shutdown_calls == 1

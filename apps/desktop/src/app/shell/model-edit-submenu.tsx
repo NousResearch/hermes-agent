@@ -150,7 +150,7 @@ function ModelEditSubmenuBody({
     // Preset-only without a session: `isActive` holds for the global/default
     // row pre-session, and the gateway's `config.set` falls back to global
     // config when none matches — so don't reach it (preset + optimistic store
-    // are the whole effect). Same guard in applyModelPreset / toggleFast.
+    // are the whole effect). Same guard in applyModelPreset / setFast.
     if (!activeSessionId) {
       return
     }
@@ -169,7 +169,7 @@ function ModelEditSubmenuBody({
     }
   }
 
-  const toggleFast = (enabled: boolean) => {
+  const setFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
       // Fast is a separate model id. Record the choice on the base model's
       // preset (selectFamily picks the `-fast` sibling later when set), and
@@ -245,7 +245,7 @@ function ModelEditSubmenuBody({
       {hasFast ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.fast}
-          <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
+          <Switch checked={fastOn} className="ml-auto" onCheckedChange={setFast} size="xs" />
         </DropdownMenuItem>
       ) : null}
       {reasoning ? (

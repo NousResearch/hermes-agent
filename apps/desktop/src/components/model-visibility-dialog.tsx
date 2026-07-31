@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -66,7 +67,7 @@ export function ModelVisibilityDialog({
     setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
 
-  const toggleProvider = (provider: ModelOptionProvider, next: boolean) => {
+  const setProviderVisible = (provider: ModelOptionProvider, next: boolean) => {
     setVisibleModels(setProviderVisibility($visibleModels.get(), providers, provider.slug, next))
   }
 
@@ -108,9 +109,11 @@ export function ModelVisibilityDialog({
               }
 
               const allFamilies = collapseModelFamilies(provider.models ?? [])
+
               const onCount = allFamilies.filter(family =>
                 visible.has(modelVisibilityKey(provider.slug, family.id))
               ).length
+
               const checkState = onCount === 0 ? false : onCount === allFamilies.length ? true : 'indeterminate'
 
               const collapsed = collapsedProviders.includes(provider.slug) && !q
@@ -123,14 +126,19 @@ export function ModelVisibilityDialog({
                       onClick={() => toggleCollapsedProvider(provider.slug)}
                       type="button"
                     >
-                      <span className="min-w-0 truncate">{provider.name}</span>
+                      <span className="min-w-0 truncate">
+                        <HighlightMatches query={search} text={provider.name} />
+                      </span>
                       <DisclosureCaret
                         className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
                         open={!collapsed}
                         size="0.625rem"
                       />
                     </button>
-                    <Checkbox checked={checkState} onCheckedChange={next => toggleProvider(provider, next !== false)} />
+                    <Checkbox
+                      checked={checkState}
+                      onCheckedChange={next => setProviderVisible(provider, next !== false)}
+                    />
                   </div>
                   {!collapsed &&
                     models.map(family => {
@@ -139,14 +147,18 @@ export function ModelVisibilityDialog({
 
                       return (
                         <label
-                          className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs"
+                          className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)"
                           key={key}
                         >
                           <span className="min-w-0 flex-1 truncate">
-                            {name}
+                            <HighlightMatches query={search} text={name} />
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                           </span>
-                          <Switch checked={visible.has(key)} onCheckedChange={() => toggle(provider, family.id)} size="xs" />
+                          <Switch
+                            checked={visible.has(key)}
+                            onCheckedChange={() => toggle(provider, family.id)}
+                            size="xs"
+                          />
                         </label>
                       )
                     })}

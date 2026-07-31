@@ -1,27 +1,96 @@
 /**
- * Mirror the sidebar's localStorage pins into the backend "keep" flag.
+ * Reconcile the sidebar's pins with the backend "keep" flag, both directions.
  *
- * Pins live in `$pinnedSessionIds` (localStorage) and drive the sidebar UI.
- * The `sessions.auto_archive` sweep, however, runs backend-side and is blind to
- * localStorage — so without this bridge it could hide a pinned chat. This
- * watcher PATCHes `pinned` on the session REST endpoint whenever the pinned set
- * changes, and re-asserts the whole current set at boot, which transparently
- * migrates pre-existing pins (no flag, no user action — the sweep just starts
- * honouring them). It never touches the sidebar's own display; localStorage
- * stays the source of truth there.
+ * Pins drive the sidebar UI out of `$pinnedSessionIds` (localStorage), but the
+ * durable record is `sessions.pinned` in each profile's state.db. Two things
+ * depend on the backend copy: the `sessions.auto_archive` sweep runs
+ * server-side and would otherwise hide a pinned chat, and a second Desktop app
+ * pointed at the same gateway has its own, separate localStorage.
+ *
+ * Push: PATCH `pinned` whenever the local set changes, and re-assert the whole
+ * set at boot — which transparently migrates pre-existing pins with no user
+ * action.
+ *
+ * Pull: session rows now carry `pinned`, and the list endpoints back-fill
+ * pinned conversations past their LIMIT, so a row's absence from a page no
+ * longer says anything about its pin state. That makes the server row
+ * authoritative: adopt pins this app hasn't seen, and drop local pins the
+ * server says are gone. Only rows actually present in the payload are
+ * consulted, so a backend predating the flag (`pinned === undefined`) leaves
+ * the local set untouched.
  */
 
 import { setSessionPinnedRemote } from '@/hermes'
-import { $pinnedSessionIds } from '@/store/layout'
-import { $sessions, sessionMatchesStoredId } from '@/store/session'
+import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
 // pin ids awaiting their row so we can resolve the owning profile before PATCH.
 const pending = new Set<string>()
+// Writes we've issued but not yet had acked, id -> value written. A list page
+// already in flight when we PATCH still carries the old value, so it must not
+// be read as the server disagreeing with us. Cleared when the write settles —
+// the request's own lifetime is the guard, so nothing can leave one open.
+const unconfirmed = new Map<string, boolean>()
 
 function profileFor(pinId: string): null | string | undefined {
   return $sessions.get().find(row => sessionMatchesStoredId(row, pinId))?.profile
+}
+
+/** PATCH the flag, guarding reads against pages that predate the write. */
+function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
+  unconfirmed.set(id, pinned)
+
+  return setSessionPinnedRemote(id, pinned, profile).then(
+    () => {
+      unconfirmed.delete(id)
+    },
+    (err: unknown) => {
+      unconfirmed.delete(id)
+      throw err
+    }
+  )
+}
+
+/**
+ * Adopt the server's pin state for every row in the current page.
+ *
+ * Runs before the push pass so a remote pin is already in the local set by the
+ * time we reconcile — it gets marked as mirrored rather than echoed straight
+ * back as a redundant PATCH.
+ */
+function pullRemotePins(): void {
+  const local = new Set($pinnedSessionIds.get())
+
+  for (const row of $sessions.get()) {
+    // A backend without the flag has no opinion; never act on `undefined`.
+    if (typeof row.pinned !== 'boolean') {
+      continue
+    }
+
+    // Pins are keyed on the durable lineage root so they survive compression
+    // tip rotation; the row may surface under either identity.
+    const pinId = sessionPinId(row)
+    const heldLocally = local.has(pinId) || local.has(row.id)
+
+    // A write of ours the page hasn't caught up to yet is newer than the page.
+    const awaited = unconfirmed.has(pinId) ? unconfirmed.get(pinId) : unconfirmed.get(row.id)
+
+    if (awaited !== undefined && awaited !== row.pinned) {
+      continue
+    }
+
+    if (row.pinned && !heldLocally) {
+      pinSession(pinId)
+      // Already true server-side; record it so the push pass doesn't re-PATCH.
+      mirrored.add(pinId)
+    } else if (!row.pinned && heldLocally) {
+      unpinSession(local.has(pinId) ? pinId : row.id)
+      mirrored.delete(pinId)
+      mirrored.delete(row.id)
+    }
+  }
 }
 
 function reconcile(): void {
@@ -30,6 +99,8 @@ function reconcile(): void {
     return
   }
 
+  pullRemotePins()
+
   const current = new Set($pinnedSessionIds.get())
 
   // Unpinned: anything we were tracking that's no longer in the set.
@@ -37,7 +108,7 @@ function reconcile(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
-      void setSessionPinnedRemote(id, false, profileFor(id)).catch(() => {})
+      void writePin(id, false, profileFor(id)).catch(() => {})
     }
   }
 
@@ -59,7 +130,7 @@ function reconcile(): void {
 
     pending.delete(id)
     mirrored.add(id)
-    void setSessionPinnedRemote(id, true, row.profile).catch(() => {
+    void writePin(id, true, row.profile).catch(() => {
       // Let a later reconcile retry the mirror.
       mirrored.delete(id)
       pending.add(id)

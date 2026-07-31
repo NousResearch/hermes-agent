@@ -27,7 +27,7 @@ import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
-import { $layoutTree, moveTreePane, setTreeGroupHeaderHidden } from '@/components/pane-shell/tree/store'
+import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupHeaderHidden } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
@@ -504,9 +504,10 @@ export function SessionTabMenu({
 }
 
 /** The MAIN tab's menu: the same session verbs targeting the primary's loaded
- *  session, plus the bar's off switch (the bar sticky-shows once a tab is
- *  ever gained; this is the explicit way back). A fresh draft has no session —
- *  no menu. */
+ *  session, plus Close (the tab empties to a fresh draft — the workspace pane
+ *  itself never leaves the tree) and the bar's off switch (the bar sticky-shows
+ *  once a tab is ever gained; this is the explicit way back). A fresh draft has
+ *  no session — no menu. */
 export function WorkspaceTabMenu({ children }: { children: React.ReactElement }) {
   const selected = useStore($selectedStoredSessionId)
 
@@ -524,7 +525,12 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
   }
 
   return (
-    <SessionTabMenu onHideTabBar={hideTabBar} storedSessionId={selected} tabPaneId="workspace">
+    <SessionTabMenu
+      onClose={() => closeTreePane('workspace')}
+      onHideTabBar={hideTabBar}
+      storedSessionId={selected}
+      tabPaneId="workspace"
+    >
       {children}
     </SessionTabMenu>
   )

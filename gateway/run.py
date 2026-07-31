@@ -4781,8 +4781,237 @@ def _looks_like_profile_conflict_from_cmdline(command: str, our_home) -> bool:
     return bool(home_value is not None and _norm(home_value) != _norm(str(our_home)))
 
 
+def _resolve_stderr_level(requested: int, stream: Any) -> int:
+    """Cap macOS non-TTY stderr without changing foreground or other-platform logging."""
+    try:
+        is_tty = stream.isatty()
+    except Exception:
+        is_tty = False
+    if sys.platform == "darwin" and not is_tty:
+        return max(requested, logging.CRITICAL)
+    return requested
+
+
 def _clear_takeover_marker_quiet() -> None:
     """Best-effort: the marker is scoped to one target; a stale one would grief an unrelated shutdown."""
+
+
+async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
+    """
+    Start the gateway and run until interrupted.
+    
+    This is the main entry point for running the gateway.
+    Returns True if the gateway ran successfully, False if it failed to start.
+    A False return causes a non-zero exit code so systemd can auto-restart.
+    
+    Args:
+        config: Optional gateway configuration override.
+        replace: If True, kill any existing gateway instance before starting.
+                 Useful for systemd services to avoid restart-loop deadlocks
+                 when the previous process hasn't fully exited yet.
+    """
+    # Enable interactive exec approval for dangerous commands on messaging
+    # platforms. Set here (not at module import) so incidental imports of
+    # gateway.run from CLI/tool code do not poison HERMES_EXEC_ASK.
+    os.environ["HERMES_EXEC_ASK"] = "1"
+
+    from hermes_cli.resource_limits import apply_nofile_soft_limit
+
+    apply_nofile_soft_limit()
+
+    # Snapshot the checkout revision now, while sys.modules still matches disk,
+    # so a later `git pull` under this long-lived process can be detected (and
+    # risky work like model switching refused) instead of crashing on a stale
+    # in-memory module.
+    from gateway.code_skew import record_boot_fingerprint
+    record_boot_fingerprint()
+
+    # ── Duplicate-instance guard ──────────────────────────────────────
+    # Prevent two gateways from running under the same HERMES_HOME.
+    # The PID file is scoped to HERMES_HOME, so future multi-profile
+    # setups (each profile using a distinct HERMES_HOME) will naturally
+    # allow concurrent instances without tripping this guard.
+    from gateway.status import (
+        acquire_gateway_runtime_lock,
+        get_running_pid,
+        get_process_start_time,
+        release_gateway_runtime_lock,
+        remove_pid_file,
+        terminate_pid,
+    )
+    existing_pid = get_running_pid()
+    if existing_pid is not None and existing_pid != os.getpid():
+        if replace:
+            # Cross-profile ownership gate (#89315): never signal a live
+            # process we cannot prove belongs to this HERMES_HOME. A poisoned
+            # PID record steering --replace at another profile's gateway is
+            # exactly the restart-loop shape this flow must not allow.
+            if _replace_target_belongs_to_other_profile(existing_pid):
+                from gateway.status import _get_process_hermes_home
+
+                logger.error(
+                    "Refusing --replace: PID %d cannot be proven to belong "
+                    "to this profile's gateway (HERMES_HOME %s). Remove the "
+                    "stale PID record or stop the owning profile explicitly.",
+                    existing_pid,
+                    _get_process_hermes_home(),
+                )
+                return False
+            existing_start_time = get_process_start_time(existing_pid)
+            logger.info(
+                "Replacing existing gateway instance (PID %d) with --replace.",
+                existing_pid,
+            )
+            # Record a takeover marker so the target's shutdown handler
+            # recognises its SIGTERM as a planned takeover and exits 0
+            # (rather than exit 1, which would trigger systemd's
+            # Restart=on-failure and start a flap loop against us).
+            # Best-effort — proceed even if the write fails.
+            try:
+                from gateway.status import write_takeover_marker
+                write_takeover_marker(existing_pid)
+            except Exception as e:
+                logger.debug("Could not write takeover marker: %s", e)
+            # Snapshot the old gateway's child processes BEFORE signalling it:
+            # once it exits, orphans are reparented and can no longer be found
+            # by a parent walk. On POSIX, adapter subprocesses that outlive
+            # the gateway keep holding scoped token locks and block the
+            # replacement (Windows terminate_pid(force=True) already
+            # tree-kills via taskkill /T). Best-effort — [] on any failure.
+            try:
+                from gateway.status import _snapshot_gateway_children
+                _old_gateway_children = _snapshot_gateway_children(existing_pid)
+            except Exception:
+                _old_gateway_children = []
+            try:
+                terminate_pid(existing_pid, force=False)
+            except ProcessLookupError:
+                pass  # Already gone
+            except (PermissionError, OSError):
+                logger.error(
+                    "Permission denied killing PID %d. Cannot replace.",
+                    existing_pid,
+                )
+                # Marker is scoped to a specific target; clean it up on
+                # give-up so it doesn't grief an unrelated future shutdown.
+                try:
+                    from gateway.status import clear_takeover_marker
+                    clear_takeover_marker()
+                except Exception:
+                    pass
+                return False
+            # Wait up to 10 seconds for the old process to exit.
+            # ``os.kill(pid, 0)`` on Windows is NOT a no-op — use the
+            # handle-based existence check instead.
+            from gateway.status import _pid_exists
+            old_gateway_exited = False
+            for _ in range(20):
+                if not _pid_exists(existing_pid):
+                    old_gateway_exited = True
+                    break  # Process is gone
+                # start_gateway is async: a blocking sleep here froze the
+                # event loop (signal handlers, health checks, every other
+                # coroutine) for up to 10s per replacement (#36163).
+                await asyncio.sleep(0.5)
+            else:
+                # Still alive after 10s — force kill
+                logger.warning(
+                    "Old gateway (PID %d) did not exit after SIGTERM, sending SIGKILL.",
+                    existing_pid,
+                )
+                try:
+                    terminate_pid(
+                        existing_pid,
+                        force=True,
+                        expected_start_time=existing_start_time,
+                    )
+                except ProcessLookupError:
+                    old_gateway_exited = True
+                except (PermissionError, OSError):
+                    pass
+                # Confirm the force-kill actually reaped the process before we
+                # clear its PID file / scoped locks. SIGKILL can fail to take
+                # (e.g. an uninterruptible-sleep or zombie-reaping parent), and
+                # if we blindly clear the metadata and start a fresh instance
+                # we end up with two live gateways fighting over the same
+                # token — the duplicate-gateway failure in #19471.
+                if not old_gateway_exited:
+                    for _ in range(20):
+                        if not _pid_exists(existing_pid):
+                            old_gateway_exited = True
+                            break
+                        # Async context — never block the loop (#36163).
+                        await asyncio.sleep(0.25)
+                if not old_gateway_exited:
+                    logger.error(
+                        "Old gateway (PID %d) still appears alive after SIGKILL; "
+                        "aborting replacement to avoid a duplicate gateway.",
+                        existing_pid,
+                    )
+                    try:
+                        from gateway.status import clear_takeover_marker
+                        clear_takeover_marker()
+                    except Exception:
+                        pass
+                    return False
+            # Old gateway confirmed dead — reap any orphaned child processes
+            # it left behind (POSIX; mirrors Windows taskkill /T tree-kill).
+            # Orphaned adapter subprocesses would otherwise keep holding
+            # scoped token locks against us. Best-effort, never raises.
+            try:
+                from gateway.status import reap_gateway_children
+                reap_gateway_children(
+                    _old_gateway_children, parent_pid=existing_pid
+                )
+            except Exception:
+                logger.debug(
+                    "Child reap for replaced gateway PID %d failed",
+                    existing_pid,
+                    exc_info=True,
+                )
+            remove_pid_file()
+            # remove_pid_file() is a no-op when the PID doesn't match.
+            # Force-unlink to cover the old-process-crashed case.
+            try:
+                (get_hermes_home() / "gateway.pid").unlink(missing_ok=True)
+            except Exception:
+                pass
+            # Clean up any takeover marker the old process didn't consume
+            # (e.g. SIGKILL'd before its shutdown handler could read it).
+            try:
+                from gateway.status import clear_takeover_marker
+                clear_takeover_marker()
+            except Exception:
+                pass
+            # Also release all scoped locks left by the old process.
+            # Stopped (Ctrl+Z) processes don't release locks on exit,
+            # leaving stale lock files that block the new gateway from starting.
+            try:
+                from gateway.status import release_all_scoped_locks
+                _released = release_all_scoped_locks(
+                    owner_pid=existing_pid,
+                    owner_start_time=existing_start_time,
+                )
+                if _released:
+                    logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
+            except Exception:
+                pass
+        else:
+            hermes_home = str(get_hermes_home())
+            logger.error(
+                "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
+                "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
+                existing_pid, hermes_home,
+            )
+            print(
+                f"\n❌ Gateway already running (PID {existing_pid}).\n"
+                f"   Use 'hermes gateway restart' to replace it,\n"
+                f"   or 'hermes gateway stop' to kill it first.\n"
+                f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
+            )
+            return False
+
+    # Sync bundled skills on gateway start (fast -- skips unchanged)
     try:
         from gateway.status import clear_takeover_marker
         clear_takeover_marker()
@@ -4913,10 +5142,17 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
 
     _best_effort(_security_audit, "Startup security audit failed (non-fatal): %s")
 
-    # Optional stderr handler from -v/-q: None (quiet) = none; 0 = WARNING; 1 = INFO; 2+ = DEBUG.
+    # Optional stderr handler — level driven by -v/-q flags on the CLI.
+    # verbosity=None (-q/--quiet): no stderr output
+    # verbosity=0    (default):    WARNING and above
+    # verbosity=1    (-v):         INFO and above
+    # verbosity=2+   (-vv/-vvv):   DEBUG
+    # On macOS non-TTY (launchd), cap at CRITICAL so routine WARNING/ERROR does
+    # not fill the unbounded StandardErrorPath (gateway.error.log).
     if verbosity is not None:
-        _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
+        _requested_stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
         _stderr_handler = logging.StreamHandler(_safe_stderr())
+        _stderr_level = _resolve_stderr_level(_requested_stderr_level, _stderr_handler.stream)
         _stderr_handler.setLevel(_stderr_level)
         _stderr_handler.setFormatter(_gateway_stderr_formatter())
         root = logging.getLogger()

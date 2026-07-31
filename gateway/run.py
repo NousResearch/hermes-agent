@@ -476,7 +476,7 @@ def _format_exec_approval_fallback(
     )
 
 
-def _gateway_provider_error_reply(text: str) -> str:
+def _gateway_provider_error_reply(text: str, provider: Optional[str] = None) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
@@ -488,6 +488,15 @@ def _gateway_provider_error_reply(text: str) -> str:
             "⚠️ The model provider rejected the request. I kept the raw provider "
             "error out of chat; check gateway logs for details or try rephrasing."
         )
+    provider_name = str(provider or "").lower()
+    if (
+        ("anthropic" in provider_name or "claude" in provider_name)
+        and _GATEWAY_RATE_LIMIT_RE.search(text)
+    ):
+        return (
+            "⚠️ Claude 사용량 한도에 도달해서 지금은 답변할 수 없어. "
+            "한도가 복구된 뒤 다시 시도해줘. 다른 모델로 전환하면 계속할 수 있어."
+        )
     if _GATEWAY_RATE_LIMIT_RE.search(text):
         return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
     return (
@@ -498,6 +507,8 @@ def _gateway_provider_error_reply(text: str) -> str:
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
+    r"the\s+request\s+failed"
+    r"|"
     r"api\s+(?:call\s+)?failed"
     r"|provider\s+authentication\s+failed"
     r"|non-retryable\s+error"
@@ -534,7 +545,9 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+def _sanitize_gateway_final_response(
+    platform: Any, text: str, provider: Optional[str] = None
+) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
     Every human-facing chat surface (Telegram, WhatsApp, Discord, Slack,
@@ -556,7 +569,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted)
+        return _gateway_provider_error_reply(redacted, provider)
     return redacted
 
 
@@ -5578,6 +5591,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if override and override.system_prompt:
                 return (override.system_prompt or "").strip()
+
+        # A multiplex runner is constructed from the default profile, so its
+        # startup snapshot (self._ephemeral_system_prompt) belongs to that
+        # profile.  Inbound turns are already inside _profile_runtime_scope;
+        # reload the routed profile's prompt here instead of leaking the
+        # default-profile value into every secondary profile.
+        if getattr(config, "multiplex_profiles", False):
+            return self._load_ephemeral_system_prompt()
         return getattr(self, "_ephemeral_system_prompt", None) or ""
 
     @staticmethod
@@ -14274,7 +14295,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
-                response = _sanitize_gateway_final_response(source.platform, response)
+                response = _sanitize_gateway_final_response(
+                    source.platform, response, agent_result.get("provider")
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -22619,7 +22642,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 final_response = _normalize_empty_agent_response(
                     result, final_response or "", history_len=len(agent_history),
                 )
-                final_response = _sanitize_gateway_final_response(source.platform, final_response)
+                final_response = _sanitize_gateway_final_response(
+                    source.platform, final_response, getattr(agent, "provider", None)
+                )
                 if not final_response:
                     final_response = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
@@ -22642,6 +22667,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "provider": getattr(agent, "provider", None),
                     "context_length": _context_length,
                 }
 
@@ -22765,6 +22791,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": getattr(agent, "provider", None),
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),

@@ -271,6 +271,7 @@ export const applyDisplay = (
 
   patchUiState({
     battery: !!d.battery,
+    usageMeter: !!d.usage_meter,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),

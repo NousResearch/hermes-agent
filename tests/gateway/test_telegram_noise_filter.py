@@ -308,6 +308,80 @@ def test_telegram_final_response_redacts_auth_secrets():
     assert "sk-live" not in sanitized
 
 
+def test_anthropic_usage_limit_returns_claude_korean_notice():
+    """Anthropic usage exhaustion gets a safe, actionable Korean reply."""
+    raw = "API call failed after 3 retries: HTTP 429 weekly usage limit reached"
+
+    sanitized = _sanitize_gateway_final_response(
+        Platform.TELEGRAM, raw, provider="anthropic"
+    )
+
+    assert sanitized == (
+        "⚠️ Claude 사용량 한도에 도달해서 지금은 답변할 수 없어. "
+        "한도가 복구된 뒤 다시 시도해줘. 다른 모델로 전환하면 계속할 수 있어."
+    )
+
+
+def test_non_anthropic_429_keeps_generic_rate_limit_reply():
+    """A different provider's 429 must never be labelled as Claude usage."""
+    raw = "API call failed after 3 retries: HTTP 429 rate limit exceeded"
+
+    sanitized = _sanitize_gateway_final_response(
+        Platform.TELEGRAM, raw, provider="openai-codex"
+    )
+
+    assert "rate-limiting" in sanitized.lower()
+    assert "claude" not in sanitized.lower()
+
+
+def test_anthropic_non_limit_error_keeps_existing_general_fallback():
+    """Anthropic errors unrelated to usage still take the ordinary fallback."""
+    raw = "API call failed after 3 retries: HTTP 500 internal server error"
+
+    sanitized = _sanitize_gateway_final_response(
+        Platform.TELEGRAM, raw, provider="anthropic"
+    )
+
+    assert "failed after retries" in sanitized.lower()
+    assert "claude" not in sanitized.lower()
+
+
+def test_empty_recovery_openai_429_hides_raw_detail_without_claude_label():
+    """Empty-recovery envelopes remain generic when no Anthropic provider is set."""
+    raw = "The request failed: HTTP 429 rate limited; request_id=req_openai_429"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw, provider=None)
+
+    assert "rate-limiting" in sanitized.lower()
+    assert "claude" not in sanitized.lower()
+    assert "request_id" not in sanitized
+
+
+def test_empty_recovery_anthropic_auth_and_policy_outrank_limit_notice():
+    """Anthropic auth/policy failures must not be misreported as quota exhaustion."""
+    raw = (
+        "The request failed: HTTP 429 incorrect API key rejected by policy; "
+        "request_id=req_auth_policy"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw, provider="anthropic")
+
+    assert "authentication failed" in sanitized.lower()
+    assert "claude 사용량 한도" not in sanitized.lower()
+    assert "request_id" not in sanitized
+
+
+def test_empty_recovery_anthropic_policy_outranks_limit_notice():
+    """Anthropic policy failures must not be misreported as quota exhaustion."""
+    raw = "The request failed: HTTP 429 request blocked by policy; request_id=req_policy"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw, provider="anthropic")
+
+    assert "provider rejected" in sanitized.lower()
+    assert "claude 사용량 한도" not in sanitized.lower()
+    assert "request_id" not in sanitized
+
+
 def test_telegram_final_response_keeps_normal_answers():
     """Normal assistant content should not be rewritten."""
     answer = "Here is the clean summary you asked for."

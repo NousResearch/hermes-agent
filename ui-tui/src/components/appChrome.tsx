@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import type { BatteryInfo, IndicatorStyle, Notice, UsageMeterInfo } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
@@ -434,6 +434,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 
 export function StatusRule({
   battery,
+  usageMeter,
   focusView,
   cwdLabel,
   cols,
@@ -477,6 +478,13 @@ export function StatusRule({
   const batteryText = showBattery ? batteryLabel(battery!) : ''
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
+
+  const providerUsage = (name: string, provider: UsageMeterInfo['claude']) =>
+    `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : '—'}`
+
+  const usageMeterText = usageMeter
+    ? `${providerUsage('Claude', usageMeter.claude)} · ${providerUsage('Codex', usageMeter.codex)}`
+    : ''
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -570,6 +578,7 @@ export function StatusRule({
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
+  const showUsageMeter = !!usageMeterText && fits(SEP + stringWidth(usageMeterText))
 
   // Focus-view badge. Pinned (not tail-budgeted) on purpose: the whole point of
   // the indicator is that the user can never be in reduced-output mode without
@@ -707,6 +716,12 @@ export function StatusRule({
             {devCreditsText}
           </Text>
         ) : null}
+        {showUsageMeter ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {usageMeterText}
+          </Text>
+        ) : null}
         {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
             renders last — any overflow truncates the HUD itself rather than the
             budgeted segments before it. It self-hides when no delegation runs. */}
@@ -823,6 +838,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 
 interface StatusRuleProps {
   battery?: BatteryInfo | null
+  usageMeter?: UsageMeterInfo | null
   // Focus view (/focus) badge — display-only reduced-output indicator.
   focusView?: boolean
   bgCount: number

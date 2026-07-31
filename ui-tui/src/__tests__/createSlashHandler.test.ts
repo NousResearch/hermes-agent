@@ -570,6 +570,37 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('details: expanded')
   })
 
+  it('toggles the dual-provider usage meter and clears readings when disabled', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/usage-meter on')).toBe(true)
+    expect(getUiState()).toMatchObject({ usageMeter: true })
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'usage_meter',
+      value: 'on'
+    })
+
+    expect(createSlashHandler(ctx)('/usage-meter off')).toBe(true)
+    expect(getUiState()).toMatchObject({ usageMeter: false, usageMeterStatus: null })
+  })
+
+  it('reports both providers for /usage-meter status', async () => {
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        claude: { available: true, windows: [{ label: 'Session', used_percent: 12 }] },
+        codex: { available: false, windows: [] }
+      })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/usage-meter status')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('system.usage_meter', {})
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('usage meter off — Claude 12% · Codex —')
+    })
+  })
+
   it('sets a per-section override and persists it under details_mode.<section>', () => {
     const ctx = buildCtx()
 

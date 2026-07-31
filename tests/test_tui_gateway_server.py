@@ -1115,6 +1115,110 @@ def test_system_battery_fails_open(monkeypatch):
     assert resp["result"]["percent"] is None
 
 
+def test_system_usage_meter_returns_both_providers_when_one_is_unavailable(monkeypatch):
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    calls: list[str] = []
+
+    def fake_fetch(provider):
+        calls.append(provider)
+        if provider == "anthropic":
+            return AccountUsageSnapshot(
+                provider="anthropic",
+                source="test",
+                fetched_at=datetime.now().astimezone(),
+                windows=(
+                    AccountUsageWindow(label="Current session", used_percent=23.4),
+                    AccountUsageWindow(label="Current week", used_percent=61.0),
+                ),
+            )
+        return None
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fake_fetch)
+    monkeypatch.setattr(server, "_usage_meter_cache", None)
+
+    resp = server._methods["system.usage_meter"]("u1", {})
+
+    assert sorted(calls) == ["anthropic", "openai-codex"]
+    assert resp["result"] == {
+        "claude": {
+            "available": True,
+            "windows": [
+                {"label": "Current session", "used_percent": 23},
+                {"label": "Current week", "used_percent": 61},
+            ],
+        },
+        "codex": {"available": False, "windows": []},
+    }
+
+
+def test_system_usage_meter_caches_dual_provider_reading(monkeypatch):
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    calls: list[str] = []
+
+    def fake_fetch(provider):
+        calls.append(provider)
+        return AccountUsageSnapshot(
+            provider=provider,
+            source="test",
+            fetched_at=datetime.now().astimezone(),
+            windows=(AccountUsageWindow(label="Session", used_percent=10),),
+        )
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fake_fetch)
+    monkeypatch.setattr(server, "_usage_meter_cache", None)
+
+    first = server._methods["system.usage_meter"]("u2", {})
+    second = server._methods["system.usage_meter"]("u3", {})
+
+    assert first["result"] == second["result"]
+    assert sorted(calls) == ["anthropic", "openai-codex"]
+
+
+def test_system_usage_meter_discards_malformed_windows(monkeypatch):
+    malformed = types.SimpleNamespace(
+        available=True,
+        windows=(
+            types.SimpleNamespace(label="Session", used_percent=12.5),
+            types.SimpleNamespace(label="Invalid boolean", used_percent=True),
+            types.SimpleNamespace(label=None, used_percent=30),
+            types.SimpleNamespace(label="Not a number", used_percent=float("nan")),
+        ),
+    )
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda _provider: malformed)
+    monkeypatch.setattr(server, "_usage_meter_cache", None)
+
+    resp = server._methods["system.usage_meter"]("u4", {})
+
+    assert resp["result"] == {
+        "claude": {"available": True, "windows": [{"label": "Session", "used_percent": 12}]},
+        "codex": {"available": True, "windows": [{"label": "Session", "used_percent": 12}]},
+    }
+
+
+def test_system_usage_meter_keeps_valid_windows_after_malformed_entry(monkeypatch):
+    mixed = types.SimpleNamespace(
+        available=True,
+        windows=(
+            None,
+            types.SimpleNamespace(label="Session", used_percent=12.5),
+            {"label": "Dictionary", "used_percent": 80},
+        ),
+    )
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda _provider: mixed)
+    monkeypatch.setattr(server, "_usage_meter_cache", None)
+
+    resp = server._methods["system.usage_meter"]("u5", {})
+
+    assert resp["result"] == {
+        "claude": {"available": True, "windows": [{"label": "Session", "used_percent": 12}]},
+        "codex": {"available": True, "windows": [{"label": "Session", "used_percent": 12}]},
+    }
+
+
 def test_config_set_battery_toggles_and_persists(monkeypatch):
     writes: dict[str, object] = {}
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"battery": False}})
@@ -1147,6 +1251,25 @@ def test_config_set_battery_explicit_off(monkeypatch):
 
     assert resp["result"] == {"key": "battery", "value": "off"}
     assert writes == {"display.battery": False}
+
+
+def test_config_set_usage_meter_toggles_and_persists(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"usage_meter": False}})
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {
+            "id": "c3",
+            "method": "config.set",
+            "params": {"key": "usage_meter", "value": "on"},
+        }
+    )
+
+    assert resp["result"] == {"key": "usage_meter", "value": "on"}
+    assert writes == {"display.usage_meter": True}
 
 
 def test_voice_toggle_returns_configured_record_key(monkeypatch):

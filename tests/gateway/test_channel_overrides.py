@@ -184,6 +184,44 @@ class TestGetSystemPromptForChannel:
         prompt = runner._get_system_prompt_for_channel(Platform.DISCORD, "other")
         assert prompt == "Global prompt"
 
+    def test_multiplex_reloads_routed_profile_prompt(self, monkeypatch):
+        """Secondary profiles must not inherit the default runner's prompt."""
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={Platform.DISCORD: PlatformConfig(enabled=True)},
+        )
+        runner._ephemeral_system_prompt = "Default profile prompt"
+        monkeypatch.setattr(
+            runner, "_load_ephemeral_system_prompt", lambda: "Routed profile prompt"
+        )
+
+        prompt = runner._get_system_prompt_for_channel(Platform.DISCORD, "other")
+
+        assert prompt == "Routed profile prompt"
+
+    def test_multiplex_channel_override_beats_routed_profile_prompt(self, monkeypatch):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "chan_1": ChannelOverride(system_prompt="Channel prompt"),
+                    },
+                ),
+            },
+        )
+        runner._ephemeral_system_prompt = "Default profile prompt"
+        monkeypatch.setattr(
+            runner, "_load_ephemeral_system_prompt", lambda: "Routed profile prompt"
+        )
+
+        prompt = runner._get_system_prompt_for_channel(Platform.DISCORD, "chan_1")
+
+        assert prompt == "Channel prompt"
+
 
 class TestResolveSessionAgentRuntimePriority:
     """Model/runtime priority: session /model → channel_overrides → global."""

@@ -148,6 +148,9 @@ _cfg_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
+_usage_meter_cache: tuple[float, dict] | None = None
+_usage_meter_cache_lock = threading.Lock()
+_USAGE_METER_CACHE_SECONDS = 30.0
 _cfg_mtime: float | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
@@ -201,6 +204,7 @@ _LONG_HANDLERS = frozenset(
         "subscription.resume",
         "subscription.upgrade",
         "usage.bars",
+        "system.usage_meter",
         "session.usage",
         "billing.step_up",
         "browser.manage",
@@ -13739,6 +13743,22 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.battery", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
+    if key == "usage_meter":
+        raw = str(value or "").strip().lower()
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        cur_b = bool(d0.get("usage_meter", False))
+        if raw in {"", "toggle"}:
+            nv_b = not cur_b
+        elif raw in {"on", "true", "yes"}:
+            nv_b = True
+        elif raw in {"off", "false", "no"}:
+            nv_b = False
+        else:
+            return _err(rid, 4002, f"unknown usage_meter value: {value}")
+        _write_config_key("display.usage_meter", nv_b)
+        return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
+
     if key == "theme":
         # TUI light/dark mode pin: 'light'/'dark' beat background
         # auto-detection (xterm.js hosts misreport OSC 11); 'auto' trusts it.
@@ -14761,6 +14781,63 @@ def _(rid, params: dict) -> dict:
         )
     except Exception:
         return _ok(rid, {"available": False, "percent": None, "plugged": None, "category": "dim"})
+
+
+@method("system.usage_meter")
+def _(rid, params: dict) -> dict:
+    """Return normalized Claude and Codex account-usage windows."""
+    from concurrent.futures import ThreadPoolExecutor
+    import math
+    import time
+
+    from agent.account_usage import fetch_account_usage
+
+    global _usage_meter_cache
+
+    providers = {"claude": "anthropic", "codex": "openai-codex"}
+
+    def read(provider: str) -> dict:
+        snapshot = fetch_account_usage(provider)
+        if not snapshot or not snapshot.available:
+            return {"available": False, "windows": []}
+
+        windows = []
+        for window in snapshot.windows:
+            try:
+                label = window.label
+                used = window.used_percent
+            except Exception:
+                continue
+            if (
+                not isinstance(label, str)
+                or not isinstance(used, (int, float))
+                or isinstance(used, bool)
+                or not math.isfinite(float(used))
+            ):
+                continue
+            windows.append(
+                {
+                    "label": label,
+                    "used_percent": round(max(0.0, min(100.0, float(used)))),
+                }
+            )
+        return {"available": bool(windows), "windows": windows}
+
+    with _usage_meter_cache_lock:
+        now = time.monotonic()
+        if _usage_meter_cache and now - _usage_meter_cache[0] < _USAGE_METER_CACHE_SECONDS:
+            return _ok(rid, _usage_meter_cache[1])
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {name: pool.submit(read, provider) for name, provider in providers.items()}
+            result = {}
+            for name, future in futures.items():
+                try:
+                    result[name] = future.result()
+                except Exception:
+                    result[name] = {"available": False, "windows": []}
+        _usage_meter_cache = (now, result)
+    return _ok(rid, result)
 
 
 @method("process.stop")

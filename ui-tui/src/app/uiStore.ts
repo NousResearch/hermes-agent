@@ -10,6 +10,8 @@ import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
 const buildUiState = (): UiState => ({
   battery: false,
   batteryStatus: null,
+  usageMeter: false,
+  usageMeterStatus: null,
   bgTasks: new Set(),
   busy: false,
   busyInputMode: 'queue',

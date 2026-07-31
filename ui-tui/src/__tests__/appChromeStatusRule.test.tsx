@@ -399,6 +399,42 @@ describe('StatusRule battery indicator', () => {
   })
 })
 
+describe('StatusRule account usage meters', () => {
+  it('renders compact Claude and Codex percentages while preserving unavailable data', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 180,
+      usageMeter: {
+        claude: {
+          available: true,
+          windows: [
+            { label: 'Current session', usedPercent: 23 },
+            { label: 'Current week', usedPercent: 61 }
+          ]
+        },
+        codex: { available: false, windows: [] }
+      }
+    })
+
+    expect(textContent(element)).toContain('Claude 23%/61% · Codex —')
+  })
+
+  it('drops usage meters before the pinned model and context on a narrow terminal', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 44,
+      usageMeter: {
+        claude: { available: true, windows: [{ label: 'Session', usedPercent: 23 }] },
+        codex: { available: true, windows: [{ label: 'Session', usedPercent: 61 }] }
+      }
+    })
+
+    expect(textContent(element)).toContain('opus 4.8')
+    expect(textContent(element)).toContain('50k tok')
+    expect(textContent(element)).not.toContain('Claude 23%')
+  })
+})
+
 describe('StatusRule idle-since read-out', () => {
   // The IdleSince component uses hooks, so it can't be invoked outside a
   // renderer — assert on the element tree instead (same reason the duration

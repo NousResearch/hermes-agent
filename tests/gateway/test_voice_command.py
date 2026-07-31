@@ -1552,6 +1552,30 @@ class TestAutoTtsEmptyTextGuard:
 class TestStreamTtsToSpeaker:
     """Functional tests for the streaming TTS pipeline."""
 
+    @pytest.fixture(autouse=True)
+    def no_audio_side_effects(self, monkeypatch):
+        """Keep streaming-pipeline tests off real TTS services and speakers."""
+        from tools import tts_tool, voice_mode
+
+        synthesize = MagicMock()
+        play_audio = MagicMock()
+        mkstemp = MagicMock(return_value=(123, "/synthetic/streaming-tts.mp3"))
+        close = MagicMock()
+        isfile = MagicMock(return_value=True)
+        getsize = MagicMock(return_value=1)
+        unlink = MagicMock()
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", synthesize)
+        monkeypatch.setattr(
+            "tools.tts_streaming.resolve_streaming_provider", lambda *_args, **_kwargs: None
+        )
+        monkeypatch.setattr(voice_mode, "play_audio_file", play_audio)
+        monkeypatch.setattr(tts_tool.tempfile, "mkstemp", mkstemp)
+        monkeypatch.setattr(tts_tool.os, "close", close)
+        monkeypatch.setattr(tts_tool.os.path, "isfile", isfile)
+        monkeypatch.setattr(tts_tool.os.path, "getsize", getsize)
+        monkeypatch.setattr(tts_tool.os, "unlink", unlink)
+        return synthesize, play_audio, mkstemp, close, isfile, getsize, unlink
+
     def test_none_sentinel_flushes_buffer(self):
         """None sentinel causes remaining buffer to be spoken."""
         from tools.tts_tool import stream_tts_to_speaker
@@ -1618,8 +1642,8 @@ class TestStreamTtsToSpeaker:
         assert "internal reasoning" not in joined
         assert "Visible" in joined
 
-    def test_sentence_splitting(self):
-        """Sentences are split at boundaries and spoken individually."""
+    def test_sentence_splitting(self, no_audio_side_effects):
+        """Sentences are split at boundaries without live TTS or playback."""
         from tools.tts_tool import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
@@ -1634,6 +1658,37 @@ class TestStreamTtsToSpeaker:
         stream_tts_to_speaker(text_q, stop_evt, done_evt, display_callback=lambda t: spoken.append(t))
         assert done_evt.is_set()
         assert len(spoken) >= 2
+        synthesize, play_audio, *_ = no_audio_side_effects
+        assert [call.kwargs["text"] for call in synthesize.call_args_list] == [
+            "This is the first sentence.",
+            "This is the second sentence.",
+        ]
+        assert play_audio.call_count == 2
+
+    def test_sync_fallback_plays_synthetic_nonempty_output(self, no_audio_side_effects):
+        """The isolated sync path treats the fixture's synthetic audio as playable."""
+        from tools.tts_tool import stream_tts_to_speaker
+        text_q = queue.Queue()
+        stop_evt = threading.Event()
+        done_evt = threading.Event()
+        synthesize, play_audio, mkstemp, close, isfile, getsize, unlink = no_audio_side_effects
+
+        text_q.put("This sentence should reach mocked playback. ")
+        text_q.put(None)
+
+        stream_tts_to_speaker(text_q, stop_evt, done_evt)
+
+        mkstemp.assert_called_once_with(suffix=".mp3")
+        close.assert_called_once_with(123)
+        synthesize.assert_called_once_with(
+            text="This sentence should reach mocked playback.",
+            output_path="/synthetic/streaming-tts.mp3",
+        )
+        isfile.assert_called_once_with("/synthetic/streaming-tts.mp3")
+        getsize.assert_called_once_with("/synthetic/streaming-tts.mp3")
+        play_audio.assert_called_once_with("/synthetic/streaming-tts.mp3")
+        unlink.assert_called_once_with("/synthetic/streaming-tts.mp3")
+        assert done_evt.is_set()
 
     def test_markdown_stripped_in_speech(self):
         """Markdown formatting is removed before display/speech."""

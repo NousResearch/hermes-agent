@@ -47,6 +47,12 @@ describe('applyDisplay', () => {
     expect(s.streaming).toBe(false)
   })
 
+  it('hydrates the usage meter toggle from display config', () => {
+    applyDisplay({ config: { display: { usage_meter: true } } }, vi.fn())
+
+    expect($uiState.get().usageMeter).toBe(true)
+  })
+
   it('coerces legacy true + "on" alias to top', () => {
     const setBell = vi.fn()
 

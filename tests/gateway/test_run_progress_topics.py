@@ -803,6 +803,7 @@ class QueuedFailedEmptyAgent:
 
     def __init__(self, **kwargs):
         self.tools = []
+        self.provider = "anthropic"
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         type(self).calls += 1
@@ -812,7 +813,7 @@ class QueuedFailedEmptyAgent:
                 "messages": [],
                 "api_calls": 1,
                 "failed": True,
-                "error": "provider exploded",
+                "error": "HTTP 429 weekly usage limit reached; request_id=req_queued_429",
             }
         return {
             "final_response": "follow-up processed",
@@ -1318,7 +1319,8 @@ async def test_run_agent_sends_normalized_failure_before_queued_followup(
     sent_texts = [call["content"] for call in adapter.sent]
     assert QueuedFailedEmptyAgent.calls == 2
     assert result["final_response"] == "follow-up processed"
-    assert any("The request failed: provider exploded" in text for text in sent_texts)
+    assert any("Claude 사용량 한도" in text for text in sent_texts)
+    assert all("request_id" not in text for text in sent_texts)
 
 
 @pytest.mark.asyncio

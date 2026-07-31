@@ -49,6 +49,21 @@ export interface BatteryInfo {
   plugged: null | boolean
 }
 
+export interface AccountUsageMeterInfo {
+  available: boolean
+  windows: AccountUsageMeterWindow[]
+}
+
+export interface AccountUsageMeterWindow {
+  label: string
+  usedPercent: number
+}
+
+export interface UsageMeterInfo {
+  claude: AccountUsageMeterInfo
+  codex: AccountUsageMeterInfo
+}
+
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
 export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
@@ -318,6 +333,8 @@ export interface TranscriptRow {
 export interface UiState {
   battery: boolean
   batteryStatus: BatteryInfo | null
+  usageMeter: boolean
+  usageMeterStatus: UsageMeterInfo | null
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode

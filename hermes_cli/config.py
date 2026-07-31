@@ -1978,6 +1978,7 @@ DEFAULT_CONFIG = {
         # Show a color-coded battery read-out as the first status-bar element in
         # the CLI/TUI (off by default). No-op on machines without a battery.
         "battery": False,
+        "usage_meter": False,
         # Focus view (/focus): display-only reduced-output mode. When true the
         # CLI/TUI pins tool_progress to "off" (reusing the existing suppression
         # path), reports a per-turn hidden-line count with a recovery hint, and

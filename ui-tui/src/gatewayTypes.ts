@@ -74,10 +74,26 @@ export type CommandDispatchResponse =
   | { message: string; notice?: string; type: 'send' }
   | { message: string; notice?: string; type: 'prefill' }
 
+export interface SystemUsageMeterProvider {
+  available: boolean
+  windows: SystemUsageMeterWindow[]
+}
+
+export interface SystemUsageMeterResponse {
+  claude: SystemUsageMeterProvider
+  codex: SystemUsageMeterProvider
+}
+
+export interface SystemUsageMeterWindow {
+  label: string
+  used_percent: number
+}
+
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
   battery?: boolean
+  usage_meter?: boolean
   bell_on_complete?: boolean
   busy_input_mode?: string
   details_mode?: string

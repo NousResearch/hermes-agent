@@ -12,7 +12,8 @@ import type {
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse,
-  SystemBatteryResponse
+  SystemBatteryResponse,
+  SystemUsageMeterResponse
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
@@ -21,6 +22,7 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
+import { toUsageMeterInfo } from '../../useUsageMeterPoll.js'
 import type { SlashCommand } from '../types.js'
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
@@ -652,6 +654,45 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`battery indicator ${next ? 'on' : 'off'}`))
+    }
+  },
+
+  {
+    help: 'toggle Claude and Codex account usage meters in the status bar [on|off|status]',
+    name: 'usage-meter',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+
+      if (mode === 'status' || mode === 'show') {
+        const state = ctx.ui.usageMeter ? 'on' : 'off'
+
+        ctx.gateway
+          .rpc<SystemUsageMeterResponse>('system.usage_meter', {})
+          .then(response => {
+            const info = toUsageMeterInfo(response)
+
+            const label = (name: string, provider: NonNullable<typeof info>['claude']) =>
+              `${name} ${provider.available ? provider.windows.map(window => `${window.usedPercent}%`).join('/') : '—'}`
+
+            ctx.transcript.sys(
+              `usage meter ${state} — ${label('Claude', info!.claude)} · ${label('Codex', info!.codex)}`
+            )
+          })
+          .catch(() => ctx.transcript.sys(`usage meter ${state}`))
+
+        return
+      }
+
+      const next = flagFromArg(arg, ctx.ui.usageMeter)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /usage-meter [on|off|status]')
+      }
+
+      patchUiState({ usageMeter: next, ...(next ? {} : { usageMeterStatus: null }) })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'usage_meter', value: next ? 'on' : 'off' }).catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`usage meter ${next ? 'on' : 'off'}`))
     }
   },
 

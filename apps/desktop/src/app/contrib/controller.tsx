@@ -492,6 +492,11 @@ function bindPaneVisibility(
 // the zone to a persistent rail (tab stays) instead of hiding it — the
 // IntelliJ/VS-Code tool-window model. Restore routes back through `open` (rail
 // click / chevron) so ⌃`/the button stay truthful; the tab's ✕ removes it.
+//
+// OPEN uses revealTreePane (not setPaneCollapsed) so a pane dismissed via its
+// tab ✕ (closeCollapsePane) is un-dismissed + re-adopted — setPaneCollapsed
+// is a no-op when the pane isn't in the tree, so the toggle couldn't bring it
+// back after ✕ closed it.
 function bindPaneCollapse(
   paneId: string,
   $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
@@ -500,7 +505,13 @@ function bindPaneCollapse(
 ) {
   markCollapsePane(paneId)
   setPaneCollapsed(paneId, !$open.get())
-  $open.listen(isOpen => setPaneCollapsed(paneId, !isOpen))
+  $open.listen(isOpen => {
+    if (isOpen) {
+      revealTreePane(paneId)
+    } else {
+      setPaneCollapsed(paneId, true)
+    }
+  })
   registerPaneCloser(paneId, close)
   registerPaneOpener(paneId, open)
 }

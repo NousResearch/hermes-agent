@@ -5343,7 +5343,15 @@ def _agent_cbs(sid: str) -> dict:
         ),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        # status_only marks this as the spinner caption, not model reasoning:
+        # thinking_callback only ever carries "<face> <verb>..." or "" (see
+        # agent/conversation_loop.py). Reasoning has its own reasoning.delta
+        # event. Without the marker the TUI cannot tell this apart from a
+        # legacy gateway's reasoning-bearing thinking.delta, and pastes the
+        # spinner caption into the reasoning block (#68600).
+        "thinking_callback": lambda text: _emit(
+            "thinking.delta", sid, {"text": text, "status_only": True}
+        ),
         # Affection reaction (ily / <3 / good bot) → hearts. Core-detected, so
         # the TUI heart and desktop floating hearts share one signal.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),

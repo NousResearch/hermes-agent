@@ -67,6 +67,7 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
     # Module-level unhealthy cache (10-min TTL) leaks between tests;
@@ -3491,16 +3492,6 @@ class TestBuildCallKwargsToolDedup:
         )
         assert kwargs.get("tools") == [] or "tools" not in kwargs
 
-
-
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    """Strip provider env vars so each test starts clean."""
-    for key in (
-        "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
-        "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
-    ):
-        monkeypatch.delenv(key, raising=False)
 
 
 class TestNvidiaBillingHeaders:

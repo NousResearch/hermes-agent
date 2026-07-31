@@ -200,7 +200,7 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { spawnUpdaterProcess } from './updater-process'
+import { resolveStagedUpdaterBinary, spawnUpdaterProcess } from './updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import {
@@ -2602,26 +2602,14 @@ let isQuittingForHandoff = false
 let quitPromptOpen = false
 let quitConfirmedWithActiveWork = false
 
-// Resolve the staged updater binary. The Tauri installer copies itself to
-// HERMES_HOME/hermes-setup.exe on a successful install (see
-// apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
-// ALL repo mutation — running `hermes update` + rebuilding the desktop — so
-// the desktop never touches its own bits while running. Returns null when the
-// updater isn't staged (e.g. a dev/source run that never went through the
-// installer); callers degrade gracefully.
-//
-// hermes-setup is the Tauri Windows-installer self-copy path. On macOS/Linux
-// the drag-and-drop .app uses applyUpdatesPosixInApp instead, so a stale
-// hermes-setup (e.g. from an old macOS install, #74836) must not route the
-// update into the Windows-style handoff.
+// Resolve the staged updater binary the desktop may hand an update to. On
+// Windows that binary owns ALL repo mutation — running `hermes update` +
+// rebuilding the desktop — so the desktop never touches its own bits while
+// running. macOS/Linux stage the same binary but deliberately do not use it;
+// see resolveStagedUpdaterBinary for the policy and for #74836. Returns null
+// whenever no hand-off applies; callers degrade gracefully.
 function resolveUpdaterBinary() {
-  if (!IS_WINDOWS) {
-    return null
-  }
-
-  const candidate = path.join(HERMES_HOME, 'hermes-setup.exe')
-
-  return fileExists(candidate) ? candidate : null
+  return resolveStagedUpdaterBinary(HERMES_HOME, { fileExists, isWindows: IS_WINDOWS })
 }
 
 function repairMacUpdaterHelper(updater) {
@@ -2849,12 +2837,13 @@ async function applyUpdates(opts = {}) {
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
-      // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
-      // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
-      // there's no mandatory file locking here, so the desktop can drive the
-      // whole update itself: `hermes update` (backend) + `hermes desktop
-      // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
-      // with the freshly built one and relaunch.
+      // macOS/Linux: never hand off, staged hermes-setup or not — the resolver
+      // returns null there by policy. Unlike Windows (where a venv-shim file
+      // lock forces the quit→hand-off→rebuild dance), there's no mandatory file
+      // locking here, so the desktop can drive the whole update itself:
+      // `hermes update` (backend) + `hermes desktop --build-only` (OS-aware GUI
+      // rebuild), then swap the running .app bundle with the freshly built one
+      // and relaunch.
       return await applyUpdatesPosixInApp(opts)
     }
 

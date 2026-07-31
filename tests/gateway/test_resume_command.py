@@ -26,6 +26,88 @@ def _make_event(text="/resume", platform=Platform.TELEGRAM,
     return MessageEvent(text=text, source=source)
 
 
+class TestResumeListingSemantics:
+    """F15: gateway /resume + /sessions share the CLI's listing semantics —
+    tool sessions excluded, compression chains projected to their tip, and
+    the numbered picker maps 1:1 to resolve_resume_session_id."""
+
+    @pytest.mark.asyncio
+    async def test_tool_sessions_absent_from_picker(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_user", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("sess_user", "Real Work")
+        db.create_session("sess_tool", "tool")
+        db.set_session_title("sess_tool", "Tool Noise")
+
+        event = _make_event(text="/resume")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Real Work" in result
+        assert "Tool Noise" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_compression_chain_shows_one_numbered_entry(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("chain_root", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("chain_root", "Chain Alpha")
+        db.end_session("chain_root", end_reason="compression")
+        db.create_session(
+            "chain_tip", "telegram", user_id="12345", chat_id="67890",
+            parent_session_id="chain_root",
+        )
+        # Compression copies the title forward onto the continuation, so the
+        # projected tip carries the title in real flows.
+        db.set_session_title("chain_tip", "Chain Alpha")
+
+        event = _make_event(text="/resume")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        # The chain is one logical conversation: one numbered entry, not two.
+        assert result.count("Chain Alpha") == 1
+        assert "1." in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_numbered_selection_maps_to_displayed_session(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("chain_root", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("chain_root", "Chain Alpha")
+        db.end_session("chain_root", end_reason="compression")
+        db.create_session(
+            "chain_tip", "telegram", user_id="12345", chat_id="67890",
+            parent_session_id="chain_root",
+        )
+        # Compression copies the title forward onto the continuation, so the
+        # projected tip carries the title in real flows.
+        db.set_session_title("chain_tip", "Chain Alpha")
+        db.create_session(
+            "current_session_001", "telegram", user_id="12345", chat_id="67890"
+        )
+
+        event = _make_event(text="/resume 1")
+        runner = _make_runner(
+            session_db=db, current_session_id="current_session_001", event=event
+        )
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        # Picking the one displayed entry resumes the chain's live tip —
+        # exactly what resolve_resume_session_id would return for the row.
+        assert call_args[0][1] == "chain_tip"
+        db.close()
+
+
 def _session_key_for_event(event):
     """Get the session key that build_session_key produces for an event."""
     return build_session_key(event.source)

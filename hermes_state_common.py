@@ -521,3 +521,45 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
     );
 END;
 """
+
+
+#: Upper bound for any parent/child lineage walk (compression chains,
+#: delegate trees, preview roots). Compression chains this deep are
+#: pathological — 100 hops is plenty and keeps every walker O(1)-bounded
+#: against malformed/cyclic data.
+COMPRESSION_CHAIN_MAX_HOPS = 100
+
+
+def _chain_token_totals(conn, root_ids) -> "Dict[str, Tuple[Optional[int], Optional[int]]]":
+    """Sum input/output tokens across each compression chain rooted at *root_ids*.
+
+    Walks compression-continuation edges only (a child counts when its
+    parent ended with ``end_reason == 'compression'``), excluding branch,
+    delegate, and tool children — the same edge definition
+    ``get_compression_tip`` uses. Returns ``{root_id: (in, out)}``.
+    """
+    if not root_ids:
+        return {}
+    ph = ",".join("?" for _ in root_ids)
+    rows = conn.execute(
+        f"""
+        WITH RECURSIVE chain(root_id, sid, depth) AS (
+            SELECT id, id, 0 FROM sessions WHERE id IN ({ph})
+            UNION ALL
+            SELECT c.root_id, child.id, c.depth + 1
+            FROM chain c
+            JOIN sessions parent ON parent.id = c.sid AND parent.end_reason = 'compression'
+            JOIN sessions child ON child.parent_session_id = parent.id
+            WHERE c.depth < 100
+              AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
+              AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+              AND COALESCE(child.source, '') != 'tool'
+        )
+        SELECT root_id, SUM(s.input_tokens), SUM(s.output_tokens)
+        FROM chain
+        JOIN sessions s ON s.id = chain.sid
+        GROUP BY root_id
+        """,
+        root_ids,
+    ).fetchall()
+    return {r[0]: (r[1], r[2]) for r in rows}

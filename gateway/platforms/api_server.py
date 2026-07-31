@@ -3097,6 +3097,11 @@ class APIServerAdapter(BasePlatformAdapter):
             include_children=include_children,
             order_by_last_active=True,
         )
+        # Keep tool-internal sessions out of the client-visible picker —
+        # same exclusion the CLI/gateway listing surfaces apply. Applied in
+        # Python (list_sessions_rich has no SQL-level source exclusion) and
+        # cheap at ≤200 rows.
+        sessions = [s for s in sessions if s.get("source") != "tool"]
         return web.json_response({
             "object": "list",
             "data": [self._session_response(s) for s in sessions],

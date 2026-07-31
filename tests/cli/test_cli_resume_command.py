@@ -2,6 +2,8 @@ import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from cli import HermesCLI
 
 
@@ -21,6 +23,117 @@ def _make_cli():
     return cli_obj
 
 
+class TestResumeArmingRealDb:
+    """Real-DB resume arming: bare-number selection after `/resume list
+    <page>` must resolve against the real session store — no MagicMock
+    session-listing fakes (review F7).
+
+    Regression coverage: with offset > 0 the old bounds check compared a
+    global rank against the page length, so every valid selection on
+    page 2+ was rejected.
+    """
+
+    @pytest.fixture
+    def cli_db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        base = 1_700_000_000.0
+        for i in range(15):
+            sid = f"sess_{i:03d}"
+            db.create_session(sid, "cli")
+            db.set_session_title(sid, f"Session {i:02d}")
+            db.append_message(sid, "user", f"opener {i}", timestamp=base + i * 60.0)
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (base + i * 60.0, sid),
+            )
+        db._conn.commit()
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj.session_id = "current_session"
+        cli_obj._resumed = False
+        cli_obj._pending_title = None
+        cli_obj.conversation_history = []
+        cli_obj.agent = None
+        cli_obj._session_db = db
+        cli_obj._pending_resume_sessions = None
+        cli_obj.resume_display = "minimal"
+        yield cli_obj, db
+        db.close()
+
+    def test_bare_number_after_list_page_two_resolves(self, cli_db):
+        cli_obj, db = cli_db
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint"),
+        ):
+            cli_obj._handle_resume_command("/resume list 2")
+            assert cli_obj._pending_resume_offset == 10
+            # Page 2 of 15 sessions = ranks 11..15.
+            assert len(cli_obj._pending_resume_sessions) == 5
+            consumed = cli_obj._consume_pending_resume_selection("12")
+        assert consumed is True
+        # 12th most recent session in the canonical list (sess_014 is #1).
+        assert cli_obj.session_id == "sess_003"
+
+    def test_bare_number_below_page_two_window_out_of_range(self, cli_db):
+        cli_obj, db = cli_db
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            cli_obj._handle_resume_command("/resume list 2")
+            consumed = cli_obj._consume_pending_resume_selection("5")
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert consumed is True
+        assert "out of range" in printed.lower()
+        assert cli_obj.session_id == "current_session"
+
+    def test_bare_number_after_page_one_still_resolves(self, cli_db):
+        cli_obj, db = cli_db
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint"),
+        ):
+            cli_obj._handle_resume_command("/resume")
+            consumed = cli_obj._consume_pending_resume_selection("2")
+        assert consumed is True
+        assert cli_obj.session_id == "sess_013"
+
+    def test_sessions_list_page_two_delegates_and_pages(self, cli_db):
+        """`/sessions list 2` (with a page) falls through to `/resume
+        list 2` — the dead page-parse block never ran — and still pages
+        to ranks 11..15 with a working bare-number selection (F8).
+        """
+        cli_obj, db = cli_db
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint"),
+        ):
+            cli_obj._handle_sessions_command("/sessions list 2")
+            assert cli_obj._pending_resume_offset == 10
+            assert len(cli_obj._pending_resume_sessions) == 5
+            consumed = cli_obj._consume_pending_resume_selection("14")
+        assert consumed is True
+        assert cli_obj.session_id == "sess_001"
+
+    def test_invalid_limit_warns_and_uses_default(self, cli_db):
+        """`--limit abc` must warn instead of failing silently, keep the
+        default page size, and still consume the flag+value tokens (F12)."""
+        cli_obj, db = cli_db
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            cli_obj._handle_resume_command("/resume --limit abc")
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert "Invalid --limit" in printed
+        assert "abc" in printed
+        # Flag consumed; the empty target armed the default page-1 listing.
+        assert cli_obj._pending_resume_limit == 10
+        assert len(cli_obj._pending_resume_sessions) == 10
+
+
 class TestCliResumeCommand:
     def test_show_recent_sessions_includes_indexes_and_resume_hint(self, capsys):
         cli_obj = _make_cli()
@@ -37,7 +150,7 @@ class TestCliResumeCommand:
         assert "2" in output
         assert "Coding" in output
         assert "Research" in output
-        assert "/resume 2" in output
+        assert "Use /resume <number>" in output
         assert "/resume <session title>" in output
 
     def test_show_recent_sessions_uses_prompt_toolkit_safe_print(self):
@@ -218,8 +331,74 @@ class TestPendingResumeNumberedSelection:
         # One-shot: prompt is disarmed after consuming.
         assert cli_obj._pending_resume_sessions is None
 
+    def test_pending_out_of_range_consumed_with_message(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_resume_sessions = [{"id": "sess_002", "title": "Coding"}]
 
+        with patch("cli._cprint") as mock_cprint:
+            consumed = cli_obj._consume_pending_resume_selection("9")
 
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        # An out-of-range number is still consumed (not sent to the agent),
+        # and the prompt is disarmed.
+        assert consumed is True
+        assert "out of range" in printed.lower()
+        assert cli_obj.session_id == "current_session"
+        assert cli_obj._pending_resume_sessions is None
+
+    def test_pending_number_below_paginated_window_is_out_of_range(self):
+        """A bare number not on the displayed window (e.g. `5` while the
+        prompt shows ranks 11..20) is rejected instead of silently resolving
+        to a different window's row. The bounds check is offset-aware so
+        page-2 selections keep working when pagination is active."""
+        cli_obj = _make_cli()
+        sessions = [
+            {"id": f"sess_{11 + i}", "title": f"Session {11 + i}"} for i in range(10)
+        ]
+        cli_obj._pending_resume_sessions = sessions
+        cli_obj._pending_resume_offset = 10
+
+        with patch("cli._cprint") as mock_cprint:
+            consumed = cli_obj._consume_pending_resume_selection("5")
+
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert consumed is True
+        assert "out of range" in printed.lower()
+        assert cli_obj.session_id == "current_session"
+
+    def test_pending_number_above_paginated_window_is_out_of_range(self):
+        """The prompt shows ranks 11..20; `21` is not on screen and must fail."""
+        cli_obj = _make_cli()
+        sessions = [
+            {"id": f"sess_{11 + i}", "title": f"Session {11 + i}"} for i in range(10)
+        ]
+        cli_obj._pending_resume_sessions = sessions
+        cli_obj._pending_resume_offset = 10
+
+        with patch("cli._cprint") as mock_cprint:
+            consumed = cli_obj._consume_pending_resume_selection("21")
+
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert consumed is True
+        assert "out of range" in printed.lower()
+        assert cli_obj.session_id == "current_session"
+
+    def test_pending_non_numeric_falls_through_and_disarms(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_resume_sessions = [{"id": "sess_002", "title": "Coding"}]
+
+        with patch("cli._cprint"):
+            consumed = cli_obj._consume_pending_resume_selection("hello there")
+
+        # Free text is NOT consumed (caller treats it as chat), but the
+        # one-shot prompt is disarmed so a later number isn't hijacked.
+        assert consumed is False
+        assert cli_obj._pending_resume_sessions is None
+
+    def test_no_pending_returns_false(self):
+        cli_obj = _make_cli()
+        assert cli_obj._pending_resume_sessions is None
+        assert cli_obj._consume_pending_resume_selection("3") is False
 
     def test_pending_disarmed_by_other_command(self):
         cli_obj = _make_cli()

@@ -4330,8 +4330,21 @@ class GatewaySlashCommandsMixin:
 
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
-            return [s for s in sessions if s.get("title")][:10]
+            db = getattr(self._session_db, "_db", self._session_db)
+            # Same canonical listing as the CLI surfaces: source-scoped,
+            # tool sessions excluded, compression chains projected to their
+            # tip, unnamed hidden, ordered by original start time — so the
+            # numbered /resume list agrees with `hermes sessions list`.
+            from hermes_cli.session_listing import query_session_listing
+
+            return await asyncio.to_thread(
+                query_session_listing,
+                db,
+                source=user_source,
+                include_unnamed=False,
+                limit=20,
+                exclude_sources=["tool"],
+            )
 
         if not name:
             # List recent titled sessions for this user/platform
@@ -4472,6 +4485,7 @@ class GatewaySlashCommandsMixin:
             format_gateway_session_listing,
             parse_session_listing_args,
             query_session_listing,
+            search_session_listing,
         )
 
         source = event.source
@@ -4484,7 +4498,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.resume.parse_error", error=exc)
 
         if search_query == "":
-            return "Usage: `/sessions search <query>`"
+            return "Usage: `/sessions search <query>` — e.g. `/sessions search deploy`"
 
         if target:
             resume_event = dataclasses.replace(event, text=f"/resume {target}")
@@ -4497,19 +4511,46 @@ class GatewaySlashCommandsMixin:
         # previews / sources — the enumeration half of the /resume IDOR.
         cross_origin = include_all and self._resume_caller_is_admin(source)
         current_entry = await self.async_session_store.get_or_create_session(source)
-        rows = await asyncio.to_thread(
-            query_session_listing,
-            getattr(self._session_db, "_db", self._session_db),
-            source=source.platform.value if source.platform else None,
-            current_session_id=current_entry.session_id,
-            include_all_sources=cross_origin,
-            include_unnamed=include_unnamed,
-            search_query=search_query,
-            # Search filters at SQL level, so over-fetch before the visibility
-            # cut: origin-invisible matches would otherwise consume the page.
-            limit=50 if search_query else 10,
-            exclude_sources=["tool"],
-        )
+        db = getattr(self._session_db, "_db", self._session_db)
+        if search_query:
+            # Content search shares the CLI pipeline (FTS5 over messages,
+            # compression-chain dedup, recency sort, canonical rows) — not
+            # the title/ID LIKE match query_session_listing used before, so
+            # gateway and CLI /sessions search agree on hits and order.
+            try:
+                table_rows, root_preview_cache = await asyncio.to_thread(
+                    search_session_listing,
+                    db,
+                    search_query,
+                    # Candidate pool is larger than the visible page: the
+                    # origin filter below can cut cross-room matches, and a
+                    # 50-row cap could otherwise starve the caller's own
+                    # results out of the first 50 global hits.
+                    limit=200,
+                    exclude_session_id=current_entry.session_id,
+                )
+            except Exception as exc:
+                logger.debug("Gateway /sessions search failed: %s", exc)
+                return t("gateway.resume.list_failed", error=exc)
+            rows = table_rows
+            # Messenger formatting reads row previews directly; surface the
+            # root ancestor's first user message like the CLI does.
+            for row in rows:
+                pv = root_preview_cache.get(row.get("id"))
+                if pv is not None:
+                    row["preview"] = pv
+        else:
+            rows = await asyncio.to_thread(
+                query_session_listing,
+                db,
+                source=source.platform.value if source.platform else None,
+                current_session_id=current_entry.session_id,
+                include_all_sources=cross_origin,
+                include_unnamed=include_unnamed,
+                search_query=None,
+                limit=10,
+                exclude_sources=["tool"],
+            )
         if not cross_origin:
             # Scope the listing to the caller's own origin on every adapter so
             # session ids/previews from other users/rooms aren't enumerable.

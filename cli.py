@@ -4641,6 +4641,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # the next submitted input, whether it's the selection or anything
         # else). See #34584.
         self._pending_resume_sessions = None
+        # Limit/offset used when arming _pending_resume_sessions, so the
+        # bare-number flow re-fetches the same page as what was displayed.
+        # Offset is reset to 0 whenever the pending prompt is disarmed by a
+        # non-session command (see process_command), so a stale page can't
+        # shift later /resume <N> resolution.
+        self._pending_resume_limit = 10
+        self._pending_resume_offset = 0
         # One-shot agent seed set by a slash handler (e.g. /blueprint <name>)
         # that wants its output run as the next agent turn. Consumed and cleared
         # by the interactive loop immediately after process_command() returns.
@@ -7698,52 +7705,74 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print(f"  Config File: {config_path} {config_status}")
         print()
     
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+    def _list_recent_sessions(self, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
+        """Return recent CLI sessions for in-chat browsing/resume affordances.
+
+        Pass ``offset`` to skip past already-shown rows for pagination.
+        """
         if not self._session_db:
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
 
+            # Same query as `hermes sessions list` (all sources except tool,
+            # unnamed included, ordered by original start time) so the #
+            # column everywhere — /sessions, /resume, search results — is a
+            # position in one canonical list and /resume <N> resolves the
+            # number the user sees on screen.
             return query_session_listing(
                 self._session_db,
-                source="cli",
-                current_session_id=self.session_id,
+                source=None,
+                current_session_id=None,
                 include_all_sources=False,
                 include_unnamed=True,
                 limit=limit,
+                offset=offset,
                 exclude_sources=["tool"],
             )
         except Exception:
             return []
 
-    def _show_recent_sessions(self, *, reason: str = "history", limit: int = 10) -> bool:
+    def _show_recent_sessions(
+        self,
+        *,
+        reason: str = "history",
+        limit: int = 10,
+        offset: int = 0,
+        sessions: list[dict] | None = None,
+    ) -> bool:
         """Render recent sessions inline from the active chat TUI.
+
+        When ``sessions`` is provided it is used directly (e.g. search results);
+        otherwise ``_list_recent_sessions(limit, offset)`` is called.
 
         Returns True when something was shown, False if no session list was available.
         """
-        sessions = self._list_recent_sessions(limit=limit)
+        if sessions is None:
+            sessions = self._list_recent_sessions(limit=limit, offset=offset)
+            # Paginated pages render global positions (page 2 = limit+1..2*limit)
+            # so the # column matches the canonical list and /resume <N> works.
+            if offset:
+                for _i, _s in enumerate(sessions, 1):
+                    _s["rank"] = offset + _i
         if not sessions:
             return False
 
-        from hermes_cli.main import _relative_time
+        from hermes_cli.session_listing import render_sessions_table
 
         _cli_visible_print()
         if reason == "history":
             _cli_visible_print("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
+        elif reason and reason.startswith("search:"):
+            _cli_visible_print(f"  Sessions matching \"{reason[7:]}\":")
         else:
             _cli_visible_print("  Recent sessions:")
         _cli_visible_print()
-        _cli_visible_print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
-        for idx, session in enumerate(sessions, start=1):
-            title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
-            last_active = _relative_time(session.get("last_active"))
-            _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+        render_sessions_table(sessions, out=_cli_visible_print, db=self._session_db)
         _cli_visible_print()
-        _cli_visible_print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
-        _cli_visible_print("  Example: /resume 2")
+        from hermes_cli.session_listing import INTERACTIVE_SESSIONS_FOOTER
+        for _line in INTERACTIVE_SESSIONS_FOOTER.rstrip().split("\n"):
+            _cli_visible_print(_line)
         _cli_visible_print()
         return True
 
@@ -8165,11 +8194,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return False
 
         index = int(stripped)
-        if index < 1 or index > len(pending):
+        # The # column shows global positions (page 2 renders offset+1 ..
+        # offset+len(pending)), so a bare number is a global rank. Bound it
+        # against the displayed window — checking against len(pending) alone
+        # rejects every valid selection on a paginated page.
+        offset = getattr(self, "_pending_resume_offset", 0)
+        if index < offset + 1 or index > offset + len(pending):
             _cprint(f"  Resume index {index} is out of range.")
             _cprint("  Use /resume with no arguments to see available sessions.")
             return True
 
+        # Forward the global rank; _handle_resume_command converts it to the
+        # page-local index via the stored offset.
         self._handle_resume_command(f"/resume {index}")
         return True
 
@@ -9581,9 +9617,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # A bare `/resume` prompt is one-shot: any command other than the
         # resume/sessions handlers (which manage the pending state themselves)
         # disarms it so a later number isn't swallowed as a stale selection.
-        # See #34584.
+        # Also reset the stored page/limit so a stale /resume list <page>
+        # can't shift later numbered resolution. See #34584.
         if canonical not in {"resume", "sessions"}:
             self._pending_resume_sessions = None
+            self._pending_resume_limit = 10
+            self._pending_resume_offset = 0
 
         if canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current

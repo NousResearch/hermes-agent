@@ -11821,18 +11821,49 @@ def main():
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
-    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
+    sessions_list = sessions_subparsers.add_parser(
+        "list",
+        help="List recent sessions",
+        epilog=(
+            "examples:\n"
+            "  hermes sessions list                    page 1 (10 sessions)\n"
+            "  hermes sessions list 2                  page 2 (rows 11-20)\n"
+            "  hermes sessions list -l 50              page 1 with 50 rows\n"
+            "  hermes sessions list -l 5 3             page 3 with 5 rows/page (rows 11-15)\n"
+            "  hermes sessions list --source telegram  only telegram sessions\n"
+            "  hermes sessions list --workspace data-collector  sessions in that repo\n"
+            "\n"
+            "The # column is the session's position in the canonical list; the\n"
+            "same numbers are used by /resume <N> inside interactive sessions.\n"
+        ),
+    )
     sessions_list.add_argument(
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
     sessions_list.add_argument(
-        "--limit", type=int, default=20, help="Max sessions to show"
+        "-l", "--limit", type=int, default=10, help="Sessions per page (default 10, max 100)"
+    )
+    sessions_list.add_argument(
+        "page",
+        nargs="?",
+        type=int,
+        default=1,
+        help="Page number; each page holds --limit sessions (e.g. 'sessions list 2' = rows limit+1..2*limit)",
     )
     sessions_list.add_argument(
         "--workspace",
         metavar="NEEDLE",
-        help="Only sessions in one workspace: a git repo root or project dir "
-        "(matched by path substring or basename).",
+        help="Filter by workspace (git repo root basename or path substring)",
+    )
+
+    sessions_search = sessions_subparsers.add_parser(
+        "search", help="Full-text search session messages and titles"
+    )
+    sessions_search.add_argument(
+        "query", nargs="+", help="Search terms (message content, titles, ids)"
+    )
+    sessions_search.add_argument(
+        "-l", "--limit", type=int, default=10, help="Max sessions to show (default: 10)"
     )
 
     def _add_session_filter_args(p, default_older_help):

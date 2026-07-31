@@ -570,11 +570,177 @@ class TestRegistryCheckFnBypass:
         finally:
             platform_registry.unregister("buzz")
 
-    def test_runner_per_agent_create_uses_skip_check_fn(self):
-        import inspect
+
+# ── 8. Runner per-agent startup + reconnect behavior ──────────────────────
+
+
+@pytest.fixture
+def _env_gated_buzz_registry():
+    """Register the real buzz PlatformEntry with its real env-scanning
+    ``check_fn``. Under the clean env (no BUZZ_RELAY_URL / BUZZ_PRIVATE_KEY)
+    that gate REFUSES every no-arg check — so an adapter can only come up if
+    the runner's per-agent path bypasses it for bindings whose config is
+    already proven. No source inspection: if the bypass regresses, these
+    tests fail because no adapter starts."""
+    from gateway.platform_registry import platform_registry, PlatformEntry
+
+    entry = PlatformEntry(
+        name="buzz",
+        label="Buzz",
+        adapter_factory=lambda cfg: _buzz_mod.BuzzAdapter(cfg),
+        check_fn=_buzz_mod.check_requirements,
+        validate_config=_buzz_mod.validate_config,
+        source="test",
+    )
+    platform_registry.register(entry)
+    try:
+        yield
+    finally:
+        platform_registry.unregister("buzz")
+
+
+def _fake_runner(tmp_path):
+    """A GatewayRunner stand-in that drives the REAL startup/reconnect
+    methods (called unbound) with the network layer mocked at the
+    connect-with-timeout seam."""
+    from gateway.run import GatewayRunner
+    from unittest.mock import Mock
+
+    fake = SimpleNamespace(
+        _running=True,
+        _agent_registry={
+            "chip": AgentProfile(
+                id="chip",
+                home_dir=tmp_path / "chip",
+                config_overrides={"buzz": {"nsec_env": "CHIP_TEST_NSEC"}},
+            ),
+        },
+        config=SimpleNamespace(
+            platforms={
+                Platform("buzz"): PlatformConfig(
+                    enabled=True, extra={"relay_url": "https://shared.relay"}
+                )
+            },
+            group_sessions_per_user=True,
+        ),
+        adapters={},
+        _agent_adapters={},
+        _agent_bindings={},
+        _agent_failed_platforms={},
+        # Handler wiring consumed by the real _configure_agent_adapter:
+        _handle_message=AsyncMock(),
+        session_store=object(),
+        _handle_active_session_busy_message=AsyncMock(),
+        _handle_reaction_event=AsyncMock(),
+        _recover_telegram_topic_thread_id=lambda *a, **k: None,
+        _make_adapter_auth_check=lambda p: (lambda *a, **k: True),
+        _busy_text_mode="normal",
+        # Network layer (mocked seam):
+        _connect_initial_adapter_with_timeout=AsyncMock(return_value=True),
+        _connect_adapter_with_timeout=AsyncMock(return_value=True),
+        _safe_adapter_disconnect=AsyncMock(),
+        _schedule_agent_adapter_reconnect=Mock(),
+    )
+    fake._make_agent_fatal_error_handler = (
+        lambda aid, plat: GatewayRunner._make_agent_fatal_error_handler(
+            fake, aid, plat
+        )
+    )
+    fake._configure_agent_adapter = (
+        lambda adapter, aid, plat: GatewayRunner._configure_agent_adapter(
+            fake, adapter, aid, plat
+        )
+    )
+    fake._created_configs = []
+
+    def _create(platform, config, skip_check_fn=False):
+        fake._created_configs.append(config)
+        return GatewayRunner._create_adapter(fake, platform, config, skip_check_fn)
+
+    fake._create_adapter = _create
+    return fake
+
+
+class TestRunnerAgentAdapterLifecycle:
+
+    @pytest.mark.asyncio
+    async def test_startup_builds_and_connects_per_agent_adapter(
+        self, tmp_path, monkeypatch, _env_gated_buzz_registry
+    ):
+        """A registry entry with a buzz binding brings up a per-agent
+        adapter carrying that agent's identity, even though the plugin's
+        process-env check_fn refuses (no shared BUZZ_* config exists)."""
         from gateway.run import GatewayRunner
 
-        src = inspect.getsource(GatewayRunner._start_agent_platform_adapters)
-        assert "skip_check_fn=True" in src
-        src = inspect.getsource(GatewayRunner._run_agent_adapter_reconnect)
-        assert "skip_check_fn=True" in src
+        monkeypatch.setenv("CHIP_TEST_NSEC", "nsec1chipkey")
+        fake = _fake_runner(tmp_path)
+
+        connected = await GatewayRunner._start_agent_platform_adapters(fake)
+
+        assert connected == 1
+        platform = Platform("buzz")
+        adapter = fake._agent_adapters["chip"][platform]
+        assert isinstance(adapter, _buzz_mod.BuzzAdapter)
+        assert adapter.agent_id == "chip"
+        assert adapter.name == "Buzz:chip"
+        # Connection identity IS the routing decision.
+        assert adapter._default_agent_id == "chip"
+        assert adapter._gateway_routes == []
+        assert adapter._message_handler is fake._handle_message
+        # The credential travels by NAME in the binding config.
+        assert adapter.config.extra["private_key_env"] == "CHIP_TEST_NSEC"
+        # The mocked network layer saw exactly this adapter.
+        fake._connect_initial_adapter_with_timeout.assert_awaited_once()
+        call_adapter, call_platform = (
+            fake._connect_initial_adapter_with_timeout.await_args.args
+        )
+        assert call_adapter is adapter and call_platform == platform
+        # The binding is registered so _adapter_for_source fails closed.
+        assert ("chip", platform) in fake._agent_bindings
+
+    @pytest.mark.asyncio
+    async def test_reconnect_after_drop_reuses_same_binding_identity(
+        self, tmp_path, monkeypatch, _env_gated_buzz_registry
+    ):
+        """Connection drop → fatal-error handler frees the slot and asks for
+        a reconnect → the reconnect rebuilds the adapter FROM THE STORED
+        BINDING: same agent identity, same named credential, never the
+        shared key — and again despite the refusing check_fn gate."""
+        import gateway.run as gateway_run_mod
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("CHIP_TEST_NSEC", "nsec1chipkey")
+        # A shared key exists in env; the rebuilt adapter must not use it.
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "nsec1sharedkey")
+        fake = _fake_runner(tmp_path)
+        platform = Platform("buzz")
+
+        assert await GatewayRunner._start_agent_platform_adapters(fake) == 1
+        first = fake._agent_adapters["chip"][platform]
+
+        # Simulate the connection dropping fatally.
+        await GatewayRunner._handle_agent_adapter_fatal_error(
+            fake, "chip", platform, first
+        )
+        assert platform not in fake._agent_adapters.get("chip", {})
+        fake._schedule_agent_adapter_reconnect.assert_called_once_with(
+            "chip", platform
+        )
+
+        # Run the reconnect loop body (backoff collapsed to 0).
+        monkeypatch.setattr(gateway_run_mod, "_reconnect_backoff", lambda n: 0)
+        await GatewayRunner._run_agent_adapter_reconnect(fake, "chip", platform)
+
+        second = fake._agent_adapters["chip"][platform]
+        assert second is not first
+        assert second.agent_id == "chip"
+        assert second._default_agent_id == "chip"
+        # Rebuilt from the SAME stored binding config — same named
+        # credential, no fallback to BUZZ_PRIVATE_KEY.
+        binding = fake._agent_bindings[("chip", platform)]
+        assert fake._created_configs[-1] is binding.config
+        assert second.config.extra["private_key_env"] == "CHIP_TEST_NSEC"
+        fake._connect_adapter_with_timeout.assert_awaited_once()
+        assert fake._connect_adapter_with_timeout.await_args.kwargs.get(
+            "is_reconnect"
+        ) is True

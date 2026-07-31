@@ -107,10 +107,40 @@ def _install_worker(session_entry, worker):
     session_entry["slash_worker"] = worker
 
 
+@pytest.fixture()
+def patched_runtime_provider(monkeypatch):
+    """Replace ``hermes_cli.runtime_provider.resolve_runtime_provider`` with a
+    stub that returns a deterministic runtime dict, so the mirror path can run
+    end-to-end against fake providers without trying to actually reach an LLM.
+    """
+    def fake_resolve(
+        requested=None,
+        target_model=None,
+        explicit_base_url=None,
+        **_kwargs,
+    ):
+        return {
+            "provider": requested or "",
+            "api_mode": "chat_completions",
+            "base_url": explicit_base_url or "",
+            "api_key": "fake-key",
+            "source": "test-stub",
+            "requested_provider": requested or "",
+        }
+
+    import hermes_cli.runtime_provider as _rp_module
+    _rp_module.resolve_runtime_provider = fake_resolve
+    monkeypatch.setattr(
+        _rp_module,
+        "resolve_runtime_provider",
+        fake_resolve,
+    )
+
+
 # ── Scenario 1: Multi-profile A vs B resolution & provider/model ─────
 
 
-def test_multi_profile_resolved_model_mirror(server, hermes_home):
+def test_multi_profile_resolved_model_mirror(server, hermes_home, patched_runtime_provider):
     """Profile A maps /foo -> provider-a/model-a.
     Profile B maps /foo -> provider-b/model-b.
     Executing /foo in B session mirrors provider-b/model-b on B's live agent.
@@ -180,7 +210,7 @@ def test_multi_profile_resolved_model_mirror(server, hermes_home):
 # ── Scenario 2: Concurrent profile interleaving without env tampering ────
 
 
-def test_concurrent_profile_cross_talk_isolation(server, hermes_home):
+def test_concurrent_profile_cross_talk_isolation(server, hermes_home, patched_runtime_provider):
     """Execute Profile A and Profile B mirrors concurrently using a barrier
     to force interleaving. Verify os.environ["HERMES_HOME"] is NEVER modified,
     context overrides remain isolated, and both sessions end up in correct state.
@@ -351,7 +381,7 @@ def test_once_full_lifecycle_restore(server, session_with_agent):
 # ── Scenario 4: Custom provider & No credentials in metadata ────────────
 
 
-def test_custom_provider_metadata_has_no_secrets(server, session_with_agent, hermes_home):
+def test_custom_provider_metadata_has_no_secrets(server, session_with_agent, hermes_home, patched_runtime_provider):
     """Ensure worker metadata contains no api_key/tokens, and custom provider resolves."""
     sid, _, sess, agent = session_with_agent
 
@@ -389,7 +419,7 @@ def test_custom_provider_metadata_has_no_secrets(server, session_with_agent, her
 # ── Scenario 5: --session, --once, --global scope behavior ───────────────
 
 
-def test_scope_session_once_global_behavior(server, session_with_agent, hermes_home):
+def test_scope_session_once_global_behavior(server, session_with_agent, hermes_home, patched_runtime_provider):
     """Test --session, --once, and --global metadata scope handling."""
     sid, _, sess, agent = session_with_agent
     prof_dir = hermes_home / "scope_prof"
@@ -544,3 +574,424 @@ def test_builtin_plugin_skill_collision_no_model_mirror(server, session_with_age
     # Live agent unchanged
     assert agent.model == initial_model
     assert "model_override" not in sess
+
+
+# ── Profile scope fail-closed tests ───────────────────────────────
+
+
+def _session_with_profile(server, profile_home: Path):
+    """Build a session dict wired with a real MagicMock agent."""
+    sid = f"sid-{profile_home.name}"
+    fake_agent = MagicMock(
+        spec=["model", "provider", "base_url", "api_key", "api_mode", "switch_model"]
+    )
+    fake_agent.model = "initial-model"
+    fake_agent.provider = "initial-provider"
+    fake_agent.base_url = "https://initial.api"
+    fake_agent.api_key = "secret-key"
+    fake_agent.api_mode = "chat_completions"
+
+    def fake_switch(new_model="", new_provider="", **kw):
+        fake_agent.model = new_model
+        fake_agent.provider = new_provider
+        if base_url:
+            fake_agent.base_url = base_url
+
+    fake_agent.switch_model = MagicMock(side_effect=fake_switch)
+
+    sess = {
+        "session_key": f"k-{profile_home.name}",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "cols": 120,
+        "agent": fake_agent,
+        "profile_home": str(profile_home),
+    }
+    server._sessions[sid] = sess
+    return sid, sess, fake_agent
+
+
+def test_fail_closed_home_scope_raises(server, hermes_home):
+    """``set_hermes_home_override`` raises -> mirror aborts BEFORE any
+    provider resolution, agent mutation, or model_override write."""
+    prof_dir = hermes_home / "prof_home_fail"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    sid, sess, agent = _session_with_profile(server, prof_dir)
+
+    import hermes_constants
+    real_set = hermes_constants.set_hermes_home_override
+
+    def broken_set(path):
+        raise RuntimeError("scope setup failed")
+
+    hermes_constants.set_hermes_home_override = broken_set
+
+    meta = {
+        "side_effect": "model_switch",
+        "canonical": "model",
+        "scope": "session",
+        "resolved_model": "model-x",
+        "resolved_provider": "provider-x",
+        "raw_args": "x",
+    }
+
+    try:
+        warning = server._mirror_resolved_model_switch(sid, sess, meta)
+    finally:
+        hermes_constants.set_hermes_home_override = real_set
+
+    assert "mirror aborted" in warning
+    # Agent untouched
+    assert agent.model == "initial-model"
+    assert agent.provider == "initial-provider"
+    # No session mutation
+    assert "model_override" not in sess
+    # config.yaml not created on profile_home
+    assert not (prof_dir / "config.yaml").exists()
+
+
+def test_fail_closed_secret_scope_raises(server, hermes_home):
+    """``set_secret_scope`` raises AFTER home_token was established —
+    home_token must be reset (no ContextVar leak) and mirror aborts."""
+    prof_dir = hermes_home / "prof_secret_fail"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    sid, sess, agent = _session_with_profile(server, prof_dir)
+
+    # Track that home override was set and reset
+    home_set_calls = []
+
+    real_set = None
+    real_reset = None
+    import hermes_constants
+
+    try:
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    except ImportError:
+        pytest.skip("hermes_constants unavailable")
+
+    real_set = set_hermes_home_override
+    real_reset = reset_hermes_home_override
+
+    def tracked_set(path):
+        tok = real_set(path)
+        home_set_calls.append(("set", tok))
+        return tok
+
+    def tracked_reset(tok):
+        home_set_calls.append(("reset", tok))
+        return real_reset(tok)
+
+    hermes_constants.set_hermes_home_override = tracked_set
+    hermes_constants.reset_hermes_home_override = tracked_reset
+
+    # Force set_secret_scope to raise
+    import agent.secret_scope as ss_module
+
+    def broken_set_scope(scope):
+        raise RuntimeError("secret scope setup failed")
+
+    original_set_secret_scope = ss_module.set_secret_scope
+    ss_module.set_secret_scope = broken_set_scope
+
+    try:
+        meta = {
+            "side_effect": "model_switch",
+            "canonical": "model",
+            "scope": "session",
+            "resolved_model": "model-x",
+            "resolved_provider": "provider-x",
+            "raw_args": "x",
+        }
+
+        warning = server._mirror_resolved_model_switch(sid, sess, meta)
+    finally:
+        ss_module.set_secret_scope = original_set_secret_scope
+        hermes_constants.set_hermes_home_override = real_set
+        hermes_constants.reset_hermes_home_override = real_reset
+
+    assert "mirror aborted" in warning
+    # home_token was set then reset by ExitStack
+    ops = [op for op, _ in home_set_calls]
+    assert ops.count("set") >= 1
+    assert ops.count("reset") >= 1
+    # Agent untouched, no session mutation
+    assert agent.model == "initial-model"
+    assert "model_override" not in sess
+
+
+def test_fail_closed_provider_resolution_raises(server, hermes_home, monkeypatch):
+    """``resolve_runtime_provider`` raises -> both scope tokens are reset."""
+    prof_dir = hermes_home / "prof_resolve_fail"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    sid, sess, agent = _session_with_profile(server, prof_dir)
+
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "resolve_runtime_provider",
+                       lambda *a, **k: (_ for _ in ()).throw(RuntimeError("resolve broken")))
+
+    meta = {
+        "side_effect": "model_switch",
+        "canonical": "model",
+        "scope": "session",
+        "resolved_model": "model-x",
+        "resolved_provider": "provider-x",
+        "raw_args": "x",
+    }
+
+    warning = server._mirror_resolved_model_switch(sid, sess, meta)
+
+    assert "provider resolution failed" in warning
+    assert agent.model == "initial-model"
+    assert "model_override" not in sess
+
+
+def test_fail_closed_agent_apply_raises(server, hermes_home, patched_runtime_provider):
+    """``agent.switch_model`` raises during apply -> scope tokens are reset."""
+    prof_dir = hermes_home / "prof_apply_fail"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    sid, sess, agent = _session_with_profile(server, prof_dir)
+
+    # Force switch_model to raise on apply
+    def broken_switch(**kw):
+        raise RuntimeError("agent switch failed")
+    agent.switch_model = MagicMock(side_effect=broken_switch)
+
+    meta = {
+        "side_effect": "model_switch",
+        "canonical": "model",
+        "scope": "session",
+        "resolved_model": "model-x",
+        "resolved_provider": "provider-x",
+        "raw_args": "x",
+    }
+
+    warning = server._mirror_resolved_model_switch(sid, sess, meta)
+
+    assert "model mirror failed" in warning
+    # Agent.switch_model did get called (and raised) but agent.model stays initial
+    assert agent.model == "initial-model"
+    # session was not mutated
+    assert "model_override" not in sess
+
+
+def test_fail_closed_secret_scope_init_raises(server, hermes_home):
+    """``build_profile_secret_scope`` raises (during init, before set_secret_scope)
+    — home_token already established; both attempts handled and tokens reset."""
+    prof_dir = hermes_home / "prof_build_secret_fail"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    sid, sess, agent = _session_with_profile(server, prof_dir)
+
+    import hermes_constants
+    import agent.secret_scope as ss_module
+
+    home_resets = []
+
+    real_set = hermes_constants.set_hermes_home_override
+    real_reset = hermes_constants.reset_hermes_home_override
+
+    def tracked_reset(tok):
+        home_resets.append(tok)
+        return real_reset(tok)
+
+    hermes_constants.set_hermes_home_override = real_set
+    hermes_constants.reset_hermes_home_override = tracked_reset
+
+    def broken_build(path):
+        raise RuntimeError("build profile secret scope failed")
+
+    real_build = ss_module.build_profile_secret_scope
+    ss_module.build_profile_secret_scope = broken_build
+
+    try:
+        meta = {
+            "side_effect": "model_switch",
+            "canonical": "model",
+            "scope": "session",
+            "resolved_model": "model-x",
+            "resolved_provider": "provider-x",
+            "raw_args": "x",
+        }
+        warning = server._mirror_resolved_model_switch(sid, sess, meta)
+    finally:
+        ss_module.build_profile_secret_scope = real_build
+        hermes_constants.set_hermes_home_override = real_set
+        hermes_constants.reset_hermes_home_override = real_reset
+
+    assert "mirror aborted" in warning
+    # Agent untouched, no session mutation
+    assert agent.model == "initial-model"
+    assert "model_override" not in sess
+
+
+# ── Real production --once lifecycle integration ─────────────────────
+
+
+def _once_lifecycle_setup(server, hermes_home, patched_runtime_provider):
+    """Prepare a session with all prerequisites for prompt.submit production chain.
+
+    Returns: (sid, sess, agent)
+    """
+    prof_dir = hermes_home / "prof_lifecycle"
+    prof_dir.mkdir(parents=True, exist_ok=True)
+
+    sid = "sid-once-life"
+    agent = MagicMock(
+        spec=["model", "provider", "base_url", "api_key", "api_mode", "switch_model", "run_conversation"]
+    )
+    agent.model = "orig-model"
+    agent.provider = "orig-provider"
+    agent.base_url = "https://orig.api"
+    agent.api_key = "orig-key"
+    agent.api_mode = "chat_completions"
+
+    def fake_switch(new_model="", new_provider="", api_key="", base_url="", api_mode=""):
+        agent.model = new_model
+        agent.provider = new_provider
+        if base_url:
+            agent.base_url = base_url
+
+    agent.switch_model = MagicMock(side_effect=fake_switch)
+
+    sess = {
+        "session_key": "k-once-life",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "cols": 120,
+        "agent": agent,
+        "profile_home": str(prof_dir),
+        # Mark session as not running so prompt.submit runs _run_prompt_submit
+        "agent_ready": threading.Event(),
+    }
+    sess["agent_ready"].set()
+    server._sessions[sid] = sess
+
+    # Worker reports once metadata
+    meta_once = {
+        "side_effect": "model_switch",
+        "canonical": "model",
+        "scope": "once",
+        "resolved_model": "model-once-temp",
+        "resolved_provider": "prov-once-temp",
+        "raw_args": "temp-model --once",
+    }
+    _install_worker(sess, _make_worker_double(slash_meta=meta_once))
+
+    # Phase A: slash.exec applies once via production mirror path
+    res = server._methods["slash.exec"](1, {"command": "/temp-model --once", "session_id": sid})
+    assert "result" in res
+
+    return sid, sess, agent
+
+
+def _wait_turn_threads(sess, timeout=120):
+    """Join both daemon turn threads: the ``prompt.submit``
+    ``run_after_agent_ready`` wrapper and the inner ``_run_prompt_submit``
+    ``run()`` thread that ``_run_prompt_submit`` stores back into
+    ``session["_run_thread"]`` when it starts the real turn body."""
+    first = sess.get("_run_thread")
+    if first is not None:
+        first.join(timeout=timeout)
+    inner = sess.get("_run_thread")
+    if inner is not None and inner is not first:
+        inner.join(timeout=timeout)
+
+
+def test_once_real_turn_chain_success_restores(server, hermes_home, patched_runtime_provider):
+    """Real production turn chain restores --once after successful turn."""
+    sid, sess, agent = _once_lifecycle_setup(server, hermes_home, patched_runtime_provider)
+
+    # Phase 2: live agent temp model after mirror
+    assert agent.model == "model-once-temp"
+    assert sess["one_turn_model_restore"] is not None
+
+    # Mock agent.run_conversation to return successfully without real LLM
+    def fake_run_conversation(*args, **kwargs):
+        return {"messages": [{"role": "assistant", "content": "ok"}]}
+
+    agent.run_conversation = MagicMock(side_effect=fake_run_conversation)
+
+    # Phase 3: real prompt.submit -> _run_prompt_submit -> turn-finally -> restore
+    res = server._methods["prompt.submit"](2, {"session_id": sid, "text": "hi"})
+    assert "result" in res
+
+    # Wait for daemon _run_thread to finish
+    _wait_turn_threads(sess)
+
+    # Phase 4: agent restored to original
+    assert agent.model == "orig-model"
+    assert agent.provider == "orig-provider"
+    # Phase 5: once snapshot consumed by the production turn finally
+    assert "one_turn_model_restore" not in sess
+    # model_override scope remains "once" (production keeps it; the
+    # consumed snapshot is what drives the restore)
+    mo = sess.get("model_override", {})
+    assert mo.get("scope") == "once"
+
+
+def test_once_real_turn_chain_error_restores(server, hermes_home, patched_runtime_provider):
+    """Real production turn chain restores --once even if turn raises."""
+    sid, sess, agent = _once_lifecycle_setup(server, hermes_home, patched_runtime_provider)
+
+    assert agent.model == "model-once-temp"
+
+    # Mock agent.run_conversation to raise an exception
+    def failing_run(*args, **kwargs):
+        raise RuntimeError("model provider rate-limit")
+    agent.run_conversation = MagicMock(side_effect=failing_run)
+
+    # Submit prompt through production chain
+    server._methods["prompt.submit"](2, {"session_id": sid, "text": "hi"})
+
+    _wait_turn_threads(sess)
+
+    # Agent restored despite turn error
+    assert agent.model == "orig-model"
+    assert agent.provider == "orig-provider"
+    # Once snapshot consumed
+    assert "one_turn_model_restore" not in sess
+
+
+def test_once_real_turn_chain_interrupt_restores(server, hermes_home, patched_runtime_provider):
+    """Real production turn chain restores --once when session is interrupted."""
+    sid, sess, agent = _once_lifecycle_setup(server, hermes_home, patched_runtime_provider)
+
+    assert agent.model == "model-once-temp"
+
+    # Mock agent.run_conversation to honor interrupt flag and abort
+    def interruptible_run(*args, **kwargs):
+        # Read interrupt flag under lock to mimic real agent behavior
+        with sess["history_lock"]:
+            cancelled = bool(sess.get("_turn_cancel_requested"))
+        if cancelled:
+            raise RuntimeError("turn interrupted")
+        # Otherwise block; interrupt will set the flag
+        import time as _t
+        for _ in range(50):
+            with sess["history_lock"]:
+                if sess.get("_turn_cancel_requested"):
+                    raise RuntimeError("turn interrupted")
+            _t.sleep(0.1)
+        return {"messages": []}
+
+    agent.run_conversation = MagicMock(side_effect=interruptible_run)
+
+    # Submit prompt through production chain
+    server._methods["prompt.submit"](2, {"session_id": sid, "text": "hi"})
+
+    # Set interrupt flag immediately
+    import time as _t
+    _t.sleep(0.2)
+    with sess["history_lock"]:
+        sess["_turn_cancel_requested"] = True
+
+    _wait_turn_threads(sess)
+
+    # Agent restored despite interrupt
+    assert agent.model == "orig-model"
+    assert "one_turn_model_restore" not in sess

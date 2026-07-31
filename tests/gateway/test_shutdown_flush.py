@@ -238,3 +238,36 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
 def test_flush_overflow_noop_on_empty():
     assert flush_overflow_to_file({}) == 0
     assert flush_overflow_to_file({"k": []}) == 0
+
+
+def test_recover_resolves_session_key_via_resolver(tmp_path, monkeypatch):
+    """Real flush files carry only `text` (MessageEvent has no session_id
+    attribute). Without a resolver they were skipped forever; with one,
+    the message must be recovered and the file cleaned up."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr(
+        "gateway.shutdown_flush._get_flush_dir", lambda: flush_dir
+    )
+    ts = int(time.time())
+    payload = {
+        "session_key": "agent:main:telegram:dm:42",
+        "ts": ts,
+        "data": {"text": "are you there?"},  # what _serialise_value actually produces
+    }
+    flush_file = flush_dir / "pending-test.json"
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    mock_db = MagicMock()
+    count = recover_pending_to_db(
+        mock_db,
+        session_resolver=lambda key: "20260731_abc123" if key == "agent:main:telegram:dm:42" else None,
+    )
+
+    assert count == 1
+    mock_db.append_message.assert_called_once_with(
+        session_id="20260731_abc123",
+        role="user",
+        content="are you there?",
+        timestamp=ts,
+    )
+    assert not flush_file.exists()

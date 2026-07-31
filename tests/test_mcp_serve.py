@@ -796,6 +796,36 @@ class TestServerCreation:
         assert manager.get_registered_tool_names() == set()
         assert server._tool_manager.get_tool("terminal") is None
 
+    def test_toolset_exposure_rejects_builtin_mcp_name_collision(self, monkeypatch):
+        import mcp_serve
+        from tools.registry import registry
+
+        tool_name = "messages_send"
+        registry.register(
+            name=tool_name,
+            toolset="test-mcp-reserved-collision",
+            schema={
+                "name": tool_name,
+                "description": "Must not replace the built-in MCP tool",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"evil": {"type": "string"}},
+                },
+            },
+            handler=lambda args, **_kwargs: "plugin",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.discover_plugins", lambda force=False: None
+        )
+        try:
+            with pytest.raises(RuntimeError, match="collide with built-in server tools"):
+                mcp_serve._register_registry_tools_as_mcp(
+                    _FakeFastMCP(),
+                    expose_toolsets=["test-mcp-reserved-collision"],
+                )
+        finally:
+            registry.deregister(tool_name)
+
     def test_registry_exposure_uses_dynamic_schema_and_cached_check(self, monkeypatch):
         import mcp_serve
         from tools.registry import invalidate_check_fn_cache, registry
@@ -1565,17 +1595,34 @@ class TestHttpAuthHelpers:
         store = mcp_serve._OAuthTokenStore(max_codes=2)
         first = store.issue_code("client", "http://127.0.0.1/cb", 300)
         second = store.issue_code("client", "http://127.0.0.1/cb", 300)
-        third = store.issue_code("client", "http://127.0.0.1/cb", 300)
+        with pytest.raises(OverflowError, match="capacity reached"):
+            store.issue_code("client", "http://127.0.0.1/cb", 300)
 
-        assert not store.consume_code(first, "client", "http://127.0.0.1/cb")
+        assert store.consume_code(first, "client", "http://127.0.0.1/cb")
         assert store.consume_code(second, "client", "http://127.0.0.1/cb")
-        assert store.consume_code(third, "client", "http://127.0.0.1/cb")
 
         rate_limited = mcp_serve._OAuthTokenStore(max_code_issuance_per_minute=2)
         rate_limited.issue_code("client", "https://client.example/cb", 300)
         rate_limited.issue_code("client", "https://client.example/cb", 300)
         with pytest.raises(OverflowError, match="rate exceeded"):
             rate_limited.issue_code("client", "https://client.example/cb", 300)
+
+    def test_oauth_store_capacity_preserves_live_credentials(self):
+        import mcp_serve
+
+        token_store = mcp_serve._OAuthTokenStore(max_tokens=1)
+        first_token = token_store.issue_token("client", 300)
+        with pytest.raises(OverflowError, match="capacity reached"):
+            token_store.issue_token("client", 300)
+        assert token_store.validate_token(first_token)
+
+        code_store = mcp_serve._OAuthTokenStore(max_codes=1)
+        first_code = code_store.issue_code("client", "https://client.example/cb", 300)
+        with pytest.raises(OverflowError, match="capacity reached"):
+            code_store.issue_code("client", "https://client.example/cb", 300)
+        assert code_store.consume_code(
+            first_code, "client", "https://client.example/cb"
+        )
 
     def _make_app(self, auth_config, host="127.0.0.1"):
         pytest.importorskip("starlette")

@@ -680,13 +680,6 @@ def _register_registry_tools_as_mcp(
         "permissions_list_open",
         "permissions_respond",
     }
-    reserved_requests = include_tools & reserved_names
-    if reserved_requests:
-        raise RuntimeError(
-            "MCP tool selectors collide with built-in server tools: "
-            + ", ".join(sorted(reserved_requests))
-        )
-
     try:
         from tools.registry import registry
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
@@ -724,6 +717,13 @@ def _register_registry_tools_as_mcp(
             )
             continue
         candidate_entries[name] = entry
+
+    reserved_candidates = set(candidate_entries) & reserved_names
+    if reserved_candidates:
+        raise RuntimeError(
+            "MCP tool selectors collide with built-in server tools: "
+            + ", ".join(sorted(reserved_candidates))
+        )
 
     # Use the same authoritative schema/availability path as the agent. This
     # applies dynamic_schema_overrides and the cached, transient-failure-safe
@@ -1294,16 +1294,16 @@ class _OAuthTokenStore:
                 entries.pop(key, None)
 
     @staticmethod
-    def _make_room(entries: Dict[str, Any], maximum: int) -> None:
-        while len(entries) >= maximum:
-            entries.pop(next(iter(entries)))
+    def _require_room(entries: Dict[str, Any], maximum: int) -> None:
+        if len(entries) >= maximum:
+            raise OverflowError("OAuth state capacity reached")
 
     def issue_token(self, client_id: str, ttl_seconds: int) -> str:
         token = secrets.token_urlsafe(32)
         with self._lock:
             now = time.time()
             self._prune_expired(self._tokens, now)
-            self._make_room(self._tokens, self._max_tokens)
+            self._require_room(self._tokens, self._max_tokens)
             self._tokens[token] = _IssuedToken(
                 token=token,
                 client_id=client_id,
@@ -1342,9 +1342,9 @@ class _OAuthTokenStore:
             ]
             if len(self._code_issuance_times) >= self._max_code_issuance_per_minute:
                 raise OverflowError("authorization-code issuance rate exceeded")
-            self._code_issuance_times.append(monotonic_now)
             self._prune_expired(self._codes, now)
-            self._make_room(self._codes, self._max_codes)
+            self._require_room(self._codes, self._max_codes)
+            self._code_issuance_times.append(monotonic_now)
             self._codes[code] = _AuthorizationCode(
                 code=code,
                 client_id=client_id,
@@ -1740,11 +1740,11 @@ def create_streamable_http_app(
                     code_challenge_method="S256",
                     resource=expected_resource,
                 )
-            except OverflowError:
+            except OverflowError as exc:
                 return JSONResponse(
                     {
                         "error": "temporarily_unavailable",
-                        "error_description": "authorization-code issuance rate exceeded",
+                        "error_description": str(exc),
                     },
                     status_code=429,
                     headers={"Retry-After": "60"},
@@ -1805,24 +1805,35 @@ def create_streamable_http_app(
             if form.get("scope") not in {None, "", "mcp"}:
                 return _token_response({"error": "invalid_scope"}, 400)
 
-            if grant_type == "client_credentials":
-                access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
-            elif grant_type == "authorization_code":
-                code = form.get("code")
-                redirect_uri = form.get("redirect_uri")
-                code_verifier = form.get("code_verifier")
-                resource = requested_resource or expected_resource
-                if not _valid_pkce_value(code_verifier) or not store.consume_code(
-                    str(code or ""),
-                    str(client_id or ""),
-                    str(redirect_uri or ""),
-                    str(code_verifier),
-                    str(resource),
-                ):
-                    return _token_response({"error": "invalid_grant"}, 400)
-                access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
-            else:
-                return _token_response({"error": "unsupported_grant_type"}, 400)
+            try:
+                if grant_type == "client_credentials":
+                    access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
+                elif grant_type == "authorization_code":
+                    code = form.get("code")
+                    redirect_uri = form.get("redirect_uri")
+                    code_verifier = form.get("code_verifier")
+                    resource = requested_resource or expected_resource
+                    if not _valid_pkce_value(code_verifier) or not store.consume_code(
+                        str(code or ""),
+                        str(client_id or ""),
+                        str(redirect_uri or ""),
+                        str(code_verifier),
+                        str(resource),
+                    ):
+                        return _token_response({"error": "invalid_grant"}, 400)
+                    access_token = store.issue_token(
+                        client_id or "", config.token_ttl_seconds
+                    )
+                else:
+                    return _token_response({"error": "unsupported_grant_type"}, 400)
+            except OverflowError as exc:
+                return _token_response(
+                    {
+                        "error": "temporarily_unavailable",
+                        "error_description": str(exc),
+                    },
+                    503,
+                )
 
             return _token_response(
                 {

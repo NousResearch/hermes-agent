@@ -31,12 +31,7 @@ import {
   type StripSnapshot,
   subZonePosition
 } from '@/components/pane-shell/tree/renderer/drag-session'
-import {
-  $layoutTree,
-  $treeDragging,
-  type DropHint,
-  NEW_SESSION_DRAG
-} from '@/components/pane-shell/tree/store'
+import { $layoutTree, $treeDragging, type DropHint, NEW_SESSION_DRAG } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { translateNow } from '@/i18n'
 import type { TileDock } from '@/store/session-states'

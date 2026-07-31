@@ -63,9 +63,7 @@ vi.mock('@/i18n', () => ({ translateNow: () => 'New session' }))
 
 // A chat zone hosting the workspace pane — the only kind of zone a new session
 // may land in.
-findGroup.mockImplementation((_tree: unknown, groupId: string) =>
-  groupId === 'g1' ? { panes: ['workspace'] } : null
-)
+findGroup.mockImplementation((_tree: unknown, groupId: string) => (groupId === 'g1' ? { panes: ['workspace'] } : null))
 
 const fakePointerEvent = () =>
   ({
@@ -83,7 +81,10 @@ function engage(
   startNewSessionDrag(onCreate, fakePointerEvent(), opts)
   const spec = captured.spec
 
-  if (!spec) {throw new Error('startDragSession was not called')}
+  if (!spec) {
+    throw new Error('startDragSession was not called')
+  }
+
   spec.onEngage(0, 0)
 
   return spec
@@ -177,7 +178,11 @@ describe('startNewSessionDrag', () => {
 
   it('restores the source row opacity on end', () => {
     const event = fakePointerEvent()
-    const source = event.currentTarget as unknown as { style: { opacity: string; setProperty: ReturnType<typeof vi.fn> } }
+
+    const source = event.currentTarget as unknown as {
+      style: { opacity: string; setProperty: ReturnType<typeof vi.fn> }
+    }
+
     startNewSessionDrag(vi.fn(), event)
     const spec = captured.spec!
 

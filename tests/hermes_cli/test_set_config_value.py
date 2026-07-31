@@ -658,3 +658,33 @@ class TestMappingGuard:
         import yaml as _yaml
         parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert parsed["model"] == "claude-opus-4"
+
+
+class TestScalarModelSubKeyPreservation:
+    """#75426: setting model.provider when model is a scalar must not lose the model id."""
+
+    def test_scalar_model_id_preserved_after_provider_write(self, _isolated_hermes_home):
+        """Seed model: gpt-4o, then set model.provider → model.default must survive."""
+        import yaml
+
+        set_config_value("model", "gpt-4o")
+        set_config_value("model.provider", "openai")
+
+        raw = _read_config(_isolated_hermes_home)
+        parsed = yaml.safe_load(raw)
+        model = parsed["model"]
+        assert model["default"] == "gpt-4o", f"model.default lost: {model}"
+        assert model["provider"] == "openai"
+
+    def test_scalar_model_id_preserved_after_api_key_write(self, _isolated_hermes_home):
+        """model.api_key must also preserve the existing scalar model id."""
+        import yaml
+
+        set_config_value("model", "claude-sonnet")
+        # model.api_key is a sub-key (has a dot), so it stays in config.yaml
+        set_config_value("model.api_key", "sk-test")
+
+        raw = _read_config(_isolated_hermes_home)
+        parsed = yaml.safe_load(raw)
+        assert parsed["model"]["default"] == "claude-sonnet"
+        assert parsed["model"]["api_key"] == "sk-test"

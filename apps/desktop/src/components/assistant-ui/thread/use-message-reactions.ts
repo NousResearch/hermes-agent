@@ -1,4 +1,4 @@
-import { useAuiState, useMessageRuntime } from '@assistant-ui/react'
+import { useAui, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MouseEvent, useCallback } from 'react'
 
@@ -106,7 +106,7 @@ export function useTapbackDoubleClick(
   role: ChatMessage['role']
 ): ((event: MouseEvent<HTMLElement>) => void) | undefined {
   const enabled = useStore($reactionsEnabled)
-  const messageRuntime = useMessageRuntime()
+  const messageRuntime = useAui().message
 
   const onDoubleClick = useCallback(
     (event: MouseEvent<HTMLElement>) => {

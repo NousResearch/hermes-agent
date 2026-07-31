@@ -548,6 +548,20 @@ def active_count() -> int:
         )
 
 
+def active_for_session(origin_ui_session_id: str) -> int:
+    """Number of live async delegations owned by one UI session."""
+    if not origin_ui_session_id:
+        return 0
+    with _records_lock:
+        return sum(
+            1
+            for r in _records.values()
+            if r.get("status") in {"running", "stalling", "finalizing"}
+            and str(r.get("origin_ui_session_id") or "")
+            == origin_ui_session_id
+        )
+
+
 def active_task_count() -> int:
     """Number of async delegation TASKS (child subagents) currently running.
 

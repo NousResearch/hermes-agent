@@ -6,11 +6,137 @@ from agent.prompt_caching import (
     _build_marker,
     _can_carry_marker,
     apply_anthropic_cache_control,
+    build_prompt_cache_plan,
     strip_anthropic_cache_control,
+    strip_anthropic_tool_cache_control,
 )
 
 
 MARKER = {"type": "ephemeral"}
+
+
+def _native_marker_indexes(messages):
+    return {
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, dict)
+        and (
+            "cache_control" in message
+            or any(
+                isinstance(part, dict) and "cache_control" in part
+                for part in (message.get("content") if isinstance(message.get("content"), list) else [])
+            )
+        )
+    }
+
+
+def _tool_heavy_native_history():
+    return [
+        {"role": "system", "content": "stable prefix\nvolatile suffix"},
+        {"role": "user", "content": "first request"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "first", "function": {"name": "tool_00", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "first", "content": "first result"},
+        {"role": "user", "content": "second request"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "second", "function": {"name": "tool_01", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "second", "content": "second result"},
+    ]
+
+
+def _tool_heavy_native_tools():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{index:02d}",
+                "description": f"Deterministic tool {index}",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for index in range(28)
+    ]
+
+
+def test_t20880_tool_heavy_native_loop_reproduction():
+    """A 28-tool native loop needs a tool marker and a retained transaction endpoint."""
+    tools = _tool_heavy_native_tools()
+    before_exchange = build_prompt_cache_plan(
+        _tool_heavy_native_history(),
+        tools,
+        native_anthropic=True,
+        static_system_prefix="stable prefix",
+        direct_native_tool_cache=True,
+    )
+    after_exchange = build_prompt_cache_plan(
+        _tool_heavy_native_history() + [
+            {"role": "user", "content": "third request"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "third", "function": {"name": "tool_02", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "third", "content": "third result"},
+        ],
+        tools,
+        native_anthropic=True,
+        static_system_prefix="stable prefix",
+        direct_native_tool_cache=True,
+    )
+
+    before_markers = _native_marker_indexes(before_exchange.messages)
+    after_markers = _native_marker_indexes(after_exchange.messages)
+    final_tool_marked = "cache_control" in after_exchange.tools[-1]
+    shared_transaction_endpoint = bool((before_markers - {0}) & (after_markers - {0}))
+
+    assert final_tool_marked
+    assert shared_transaction_endpoint
+    assert after_exchange.marker_count <= 4
+
+
+class TestPromptCachePlan:
+    def test_copies_sections_and_keeps_canonical_tools_plain(self):
+        import copy
+
+        messages = _tool_heavy_native_history()
+        tools = _tool_heavy_native_tools()
+        original_messages = copy.deepcopy(messages)
+        original_tools = copy.deepcopy(tools)
+
+        plan = build_prompt_cache_plan(
+            messages,
+            tools,
+            native_anthropic=True,
+            static_system_prefix="stable prefix",
+            direct_native_tool_cache=True,
+        )
+
+        assert messages == original_messages
+        assert tools == original_tools
+        assert plan.messages is not messages
+        assert plan.tools is not tools
+        assert "cache_control" not in tools[-1]
+        assert plan.tools[-1]["cache_control"] == MARKER
+        assert plan.marker_count == 4
+
+    def test_unmarkable_endpoint_does_not_consume_a_slot(self):
+        messages = [
+            {"role": "system", "content": "stable prefix\nvolatile"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "pending", "function": {"name": "tool_00", "arguments": "{}"}}]},
+        ]
+        plan = build_prompt_cache_plan(
+            messages,
+            _tool_heavy_native_tools(),
+            native_anthropic=True,
+            static_system_prefix="stable prefix",
+            direct_native_tool_cache=True,
+        )
+
+        assert plan.marker_count == 2
+        assert "cache_control" not in plan.messages[-1]
+
+    def test_tool_strip_is_request_local(self):
+        tools = _tool_heavy_native_tools()
+        tools[-1]["cache_control"] = MARKER
+
+        stripped = strip_anthropic_tool_cache_control(tools)
+
+        assert "cache_control" in tools[-1]
+        assert "cache_control" not in stripped[-1]
 
 
 class TestApplyCacheMarker:
@@ -248,10 +374,9 @@ class TestNormalizationOrdering:
         from agent import conversation_loop
 
         src = inspect.getsource(conversation_loop)
-        # Anchor on the call-block decoration (before the retry loop), not the
-        # mid-failover redecoration helper which also calls apply_*.
-        anchor = src.index("Runs LAST, after every message mutation above")
-        mark = src.index("apply_anthropic_cache_control(\n", anchor)
+        # Anchor on the call-block request plan, not the retry helper.
+        anchor = src.index("Build the request-local cache sections")
+        mark = src.index("build_prompt_cache_plan(\n", anchor)
         for earlier in (
             'am["content"].strip()',              # whitespace normalization
             "_sanitize_api_messages(api_messages)",       # orphan sweep

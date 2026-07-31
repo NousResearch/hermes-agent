@@ -1209,6 +1209,38 @@ class TestBuildApiKwargs:
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
 
+    def test_explicit_request_local_tools_reach_native_transport(self, agent, monkeypatch):
+        from agent.prompt_caching import build_prompt_cache_plan
+
+        canonical_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        plan = build_prompt_cache_plan(
+            [{"role": "system", "content": "stable\nvolatile"}, {"role": "user", "content": "lookup"}],
+            canonical_tools,
+            native_anthropic=True,
+            static_system_prefix="stable",
+            direct_native_tool_cache=True,
+        )
+        transport = MagicMock()
+        transport.build_kwargs.side_effect = lambda **kwargs: kwargs
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        monkeypatch.setattr(agent, "_get_transport", lambda: transport)
+        monkeypatch.setattr(agent, "_prepare_anthropic_messages_for_api", lambda messages: messages)
+
+        kwargs = agent._build_api_kwargs(plan.messages, tools_for_api=plan.tools)
+
+        assert "cache_control" not in canonical_tools[-1]
+        assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
     def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
         """Kimi models should NOT have client-side temperature overrides.
 

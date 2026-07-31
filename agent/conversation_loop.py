@@ -70,8 +70,9 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import (
-    apply_anthropic_cache_control,
+    build_prompt_cache_plan,
     strip_anthropic_cache_control,
+    strip_anthropic_tool_cache_control,
 )
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
@@ -941,7 +942,8 @@ def _redecorate_prompt_cache_for_provider(
     *,
     system_message=None,
     moa_prepared: Optional[Dict[str, Any]] = None,
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    tools_for_api: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]] | tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """Strip and re-apply cache_control for the *current* provider policy.
 
     Decoration runs once per call block before the retry loop for the primary
@@ -951,10 +953,9 @@ def _redecorate_prompt_cache_for_provider(
     by reshaping at the top of each retry attempt.
 
     The source list is the mutated in-flight request (image shrink / ASCII /
-    reasoning_details recoveries already applied) — never a pristine
-    pre-decoration snapshot. MoA guidance is peeled, the base is redecorated,
-    then ``rebase_prepared_request`` re-attaches guidance outside the cached
-    span.
+    reasoning_details recoveries already applied), never a pristine
+    pre-decoration snapshot. MoA guidance is peeled and rebased without
+    decoration; the acting aggregator plans its resolved destination later.
     """
     messages: List[Dict[str, Any]] = [
         dict(m) if isinstance(m, dict) else m for m in (api_messages or [])
@@ -965,6 +966,21 @@ def _redecorate_prompt_cache_for_provider(
         messages = _peel_moa_guidance(messages, guidance)
 
     strip_anthropic_cache_control(messages)
+    planned_tools = strip_anthropic_tool_cache_control(
+        tools_for_api if tools_for_api is not None else getattr(agent, "tools", [])
+    )
+
+    if prepared is not None and getattr(agent, "provider", None) == "moa":
+        # Prepared MoA state is canonical: the synchronous acting-aggregator
+        # sender owns its destination-local cache plan after it resolves the slot.
+        completions = getattr(getattr(agent.client, "chat", None), "completions", None)
+        rebase = getattr(completions, "rebase_prepared_request", None)
+        if callable(rebase):
+            prepared = rebase(prepared, messages)
+            messages = prepared["messages"]
+        if tools_for_api is None:
+            return messages, prepared
+        return messages, prepared, planned_tools
 
     # Direct attribute access matches the call-block decoration site — the
     # flags are unconditionally initialized on AIAgent, and a getattr
@@ -972,31 +988,25 @@ def _redecorate_prompt_cache_for_provider(
     if agent._use_prompt_caching:
         _ensure_cached_system_prompt_static(agent, system_message=system_message)
         static = getattr(agent, "_cached_system_prompt_static", None)
-        messages = apply_anthropic_cache_control(
+        direct_tool_cache = getattr(
+            agent,
+            "_direct_native_anthropic_tool_cache_capability",
+            lambda: False,
+        )()
+        plan = build_prompt_cache_plan(
             messages,
+            planned_tools,
             cache_ttl=agent._cache_ttl,
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
+            direct_native_tool_cache=direct_tool_cache,
         )
+        messages = plan.messages
+        planned_tools = plan.tools
 
-    if (
-        prepared is not None
-        and getattr(agent, "provider", None) == "moa"
-    ):
-        # No `and guidance` here: guidance=None is a real prepared shape
-        # (all-references-failed / silent degraded policy builds the
-        # prepared request without attaching guidance), and the MoA facade
-        # sends prepared["messages"] — not api_kwargs["messages"] — so the
-        # rebase must refresh the prepared object even when there is no
-        # guidance to re-attach. rebase_prepared_request handles falsy
-        # guidance by copying the messages and skipping the attach.
-        completions = getattr(getattr(agent.client, "chat", None), "completions", None)
-        rebase = getattr(completions, "rebase_prepared_request", None)
-        if callable(rebase):
-            prepared = rebase(prepared, messages)
-            messages = prepared["messages"]
-
-    return messages, prepared
+    if tools_for_api is None:
+        return messages, prepared
+    return messages, prepared, planned_tools
 
 
 def _apply_context_engine_selection(
@@ -1748,12 +1758,8 @@ def run_conversation(
         # regardless of ordering (a single-space pad here previously had to
         # be sequenced after normalization to survive, forking the concept).
 
-        # Apply Anthropic prompt caching for Claude models on native
-        # Anthropic, OpenRouter, and third-party Anthropic-compatible
-        # gateways. Auto-detected: if ``_use_prompt_caching`` is set, inject
-        # cache_control breakpoints for the static system prefix, full system
-        # prompt, and last two messages (or the legacy system-and-3 layout
-        # when no static prefix is available).
+        # Build the request-local cache sections only after every transcript
+        # mutation. The canonical tool registry stays undecorated.
         #
         # Runs LAST, after every message mutation above. Marking earlier
         # defeats the prefix stability the mutations exist to create:
@@ -1768,10 +1774,12 @@ def run_conversation(
         # exactly the point the breakpoints were meant to protect. Marking
         # last also keeps breakpoints off messages that the orphan sweep or
         # the thinking-only drop is about to remove or merge away.
-        if agent._use_prompt_caching:
+        tools_for_api = agent.tools
+        if agent._use_prompt_caching and agent.provider != "moa":
             _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
-            api_messages = apply_anthropic_cache_control(
+            _initial_cache_plan = build_prompt_cache_plan(
                 api_messages,
+                tools_for_api,
                 cache_ttl=agent._cache_ttl,
                 native_anthropic=agent._use_native_cache_layout,
                 static_system_prefix=(
@@ -1779,7 +1787,10 @@ def run_conversation(
                     if isinstance(_static_system_prefix, str)
                     else None
                 ),
+                direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
             )
+            api_messages = _initial_cache_plan.messages
+            tools_for_api = _initial_cache_plan.tools
 
         # Build a persistent-MoA request before measuring compression pressure.
         # MoA reference output is injected into the aggregator prompt, but it
@@ -2115,15 +2126,22 @@ def run_conversation(
                 # fallback refreshes the policy flags, but the decorated list
                 # still carries the primary's breakpoints (or none). Strip and
                 # re-render for the current provider before building kwargs.
-                api_messages, _moa_prepared_request = (
+                api_messages, _moa_prepared_request, tools_for_api = (
                     _redecorate_prompt_cache_for_provider(
                         agent,
                         api_messages,
                         system_message=system_message,
                         moa_prepared=_moa_prepared_request,
+                        tools_for_api=tools_for_api,
                     )
                 )
-                api_kwargs = agent._build_api_kwargs(api_messages)
+                if tools_for_api == agent.tools:
+                    api_kwargs = agent._build_api_kwargs(api_messages)
+                else:
+                    api_kwargs = agent._build_api_kwargs(
+                        api_messages,
+                        tools_for_api=tools_for_api,
+                    )
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":

@@ -11,7 +11,17 @@ Pure functions -- no class state, no AIAgent dependency.
 """
 
 import copy
+from dataclasses import dataclass
 from typing import Any, Dict, List
+
+
+@dataclass(frozen=True)
+class PromptCachePlan:
+    """Request-local message and tool sections with their cache markers."""
+
+    messages: List[Dict[str, Any]]
+    tools: List[Dict[str, Any]]
+    marker_count: int
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
@@ -170,6 +180,152 @@ def strip_anthropic_cache_control(
         if decoration_shape:
             msg["content"] = "".join(part["text"] for part in content)
     return api_messages
+
+
+def strip_anthropic_tool_cache_control(tools: List[Dict[str, Any]] | None) -> List[Dict[str, Any]]:
+    """Return copied tools without request-local Anthropic cache markers."""
+    cleaned = copy.deepcopy(tools or [])
+    for tool in cleaned:
+        if isinstance(tool, dict):
+            tool.pop("cache_control", None)
+    return cleaned
+
+
+def _count_cache_markers(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> int:
+    """Count the wire-visible cache markers in a request-local plan."""
+    count = sum(
+        1
+        for message in messages
+        if isinstance(message, dict) and "cache_control" in message
+    )
+    count += sum(
+        1
+        for message in messages
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+        if isinstance(part, dict) and "cache_control" in part
+    )
+    return count + sum(
+        1 for tool in tools if isinstance(tool, dict) and "cache_control" in tool
+    )
+
+
+def _completed_transaction_endpoint_indexes(
+    messages: List[Dict[str, Any]], *, native_anthropic: bool,
+) -> List[int]:
+    """Select legal ends of completed tool runs and ordinary turns."""
+    endpoints: List[int] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") == "system":
+            index += 1
+            continue
+
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            result_start = index + 1
+            result_end = result_start
+            while result_end < len(messages):
+                result = messages[result_end]
+                if not isinstance(result, dict) or result.get("role") != "tool":
+                    break
+                result_end += 1
+            if result_end > result_start:
+                endpoint = result_end - 1
+                if _can_carry_marker(messages[endpoint], native_anthropic):
+                    endpoints.append(endpoint)
+            index = result_end
+            continue
+
+        if message.get("role") == "tool":
+            while index < len(messages):
+                result = messages[index]
+                if not isinstance(result, dict) or result.get("role") != "tool":
+                    break
+                index += 1
+            continue
+
+        if message.get("role") == "user" and index + 1 < len(messages):
+            index += 1
+            continue
+
+        if (
+            message.get("role") == "assistant"
+            and message.get("content") in (None, "")
+        ):
+            index += 1
+            continue
+
+        if _can_carry_marker(message, native_anthropic):
+            endpoints.append(index)
+        index += 1
+    return endpoints
+
+
+def _apply_static_prefix_marker(
+    messages: List[Dict[str, Any]],
+    cache_marker: Dict[str, str],
+    static_system_prefix: str | None,
+) -> None:
+    """Mark only the reusable static system prefix for a tool-cache plan."""
+    if not messages or not isinstance(static_system_prefix, str) or not static_system_prefix:
+        return
+    system = messages[0]
+    if not isinstance(system, dict):
+        return
+    content = system.get("content")
+    if system.get("role") != "system" or not isinstance(content, str):
+        return
+    if not content.startswith(static_system_prefix):
+        return
+    suffix = content[len(static_system_prefix):]
+    system["content"] = [
+        {"type": "text", "text": static_system_prefix, "cache_control": cache_marker},
+        {"type": "text", "text": suffix},
+    ]
+
+
+def build_prompt_cache_plan(
+    api_messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]] | None,
+    *,
+    cache_ttl: str = "5m",
+    native_anthropic: bool = False,
+    static_system_prefix: str | None = None,
+    direct_native_tool_cache: bool = False,
+) -> PromptCachePlan:
+    """Build isolated cache sections for one resolved request destination."""
+    messages = copy.deepcopy(api_messages or [])
+    strip_anthropic_cache_control(messages)
+    planned_tools = strip_anthropic_tool_cache_control(tools)
+
+    if not direct_native_tool_cache or not planned_tools:
+        planned_messages = apply_anthropic_cache_control(
+            messages,
+            cache_ttl=cache_ttl,
+            native_anthropic=native_anthropic,
+            static_system_prefix=static_system_prefix,
+        )
+        return PromptCachePlan(
+            messages=planned_messages,
+            tools=planned_tools,
+            marker_count=_count_cache_markers(planned_messages, planned_tools),
+        )
+
+    marker = _build_marker(cache_ttl)
+    _apply_static_prefix_marker(messages, marker, static_system_prefix)
+    planned_tools[-1]["cache_control"] = dict(marker)
+    for endpoint in _completed_transaction_endpoint_indexes(
+        messages,
+        native_anthropic=True,
+    )[-2:]:
+        _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
+
+    return PromptCachePlan(
+        messages=messages,
+        tools=planned_tools,
+        marker_count=_count_cache_markers(messages, planned_tools),
+    )
 
 
 def apply_anthropic_cache_control(

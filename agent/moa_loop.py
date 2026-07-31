@@ -8,6 +8,7 @@ iteration.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import re
@@ -1657,6 +1658,59 @@ class MoAChatCompletions:
         max_tokens: Any = agg_kwargs.get("max_tokens")
         tools: Any = agg_kwargs.get("tools")
         extra_body: Any = agg_kwargs.get("extra_body")
+        agg_runtime = _slot_runtime(aggregator)
+        try:
+            from types import SimpleNamespace
+
+            from agent.agent_runtime_helpers import (
+                _direct_native_anthropic_tool_cache_capability,
+                anthropic_prompt_cache_policy,
+            )
+            from agent.prompt_caching import (
+                build_prompt_cache_plan,
+                strip_anthropic_cache_control,
+                strip_anthropic_tool_cache_control,
+            )
+
+            guidance = prepared.get("guidance")
+            canonical_messages = copy.deepcopy(agg_messages)
+            if guidance:
+                canonical_messages = peel_reference_guidance(
+                    canonical_messages,
+                    str(guidance),
+                )
+            strip_anthropic_cache_control(canonical_messages)
+            canonical_tools = strip_anthropic_tool_cache_control(tools)
+            cache_stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+            should_cache, native_layout = anthropic_prompt_cache_policy(
+                cache_stub,
+                provider=agg_runtime.get("provider") or "",
+                base_url=agg_runtime.get("base_url") or "",
+                api_mode=agg_runtime.get("api_mode") or "",
+                model=agg_runtime.get("model") or "",
+            )
+            if should_cache:
+                plan = build_prompt_cache_plan(
+                    canonical_messages,
+                    canonical_tools,
+                    native_anthropic=native_layout,
+                    direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
+                        cache_stub,
+                        provider=agg_runtime.get("provider") or "",
+                        base_url=agg_runtime.get("base_url") or "",
+                        api_mode=agg_runtime.get("api_mode") or "",
+                        model=agg_runtime.get("model") or "",
+                    ),
+                )
+                agg_messages = plan.messages
+                tools = plan.tools
+            else:
+                agg_messages = canonical_messages
+                tools = canonical_tools
+            if guidance:
+                _attach_reference_guidance(agg_messages, str(guidance))
+        except Exception as exc:  # pragma: no cover - cache planning must not block MoA
+            logger.debug("MoA aggregator cache plan skipped: %s", exc)
         # Record the exact aggregator INPUT (incl. the injected reference
         # context) into the pending trace so a trace captures what the
         # aggregator actually saw, not a reconstruction. Traces are a
@@ -1697,7 +1751,6 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
-        agg_runtime = _slot_runtime(aggregator)
         # _slot_runtime may carry the provider's request_overrides.extra_body;
         # pop it and merge with the caller's extra_body (caller wins) so the
         # explicit kwarg below never collides with **agg_runtime.

@@ -1840,6 +1840,23 @@ def dump_api_request_debug(
 
 
 
+def _direct_native_anthropic_tool_cache_capability(
+    agent,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    model: Optional[str] = None,
+) -> bool:
+    """Return whether this resolved destination accepts native tool markers."""
+    eff_base_url = base_url if base_url is not None else (agent.base_url or "")
+    eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
+    return (
+        eff_api_mode == "anthropic_messages"
+        and base_url_hostname(eff_base_url) == "api.anthropic.com"
+    )
+
+
 def anthropic_prompt_cache_policy(
     agent,
     *,

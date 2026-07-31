@@ -55,6 +55,7 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
     writer = kb.connect(db_path)
     reader = kb.connect(db_path)
     original_create = kb.create_task
+    original_complete = kb.complete_task
     calls = 0
 
     def observed_create(*args, **kwargs):
@@ -85,6 +86,39 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
             )
         assert writer.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
         assert reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+        monkeypatch.setattr(kb, "create_task", original_create)
+        monkeypatch.setattr(kb, "complete_task", lambda *args, **kwargs: False)
+        with pytest.raises(RuntimeError, match="could not activate"):
+            create_swarm(
+                writer,
+                goal="Fail activation atomically",
+                workers=[
+                    SwarmWorkerSpec(profile="worker-a", title="A", body="A"),
+                ],
+                verifier_assignee="reviewer",
+                synthesizer_assignee="writer",
+            )
+        assert writer.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        assert reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+        hooks: list[tuple[str, bool]] = []
+        monkeypatch.setattr(kb, "complete_task", original_complete)
+        monkeypatch.setattr(
+            kb,
+            "_fire_kanban_lifecycle_hook",
+            lambda event, *_args, **_kwargs: hooks.append(
+                (event, writer.in_transaction)
+            ),
+        )
+        create_swarm(
+            writer,
+            goal="Commit before lifecycle hook",
+            workers=[SwarmWorkerSpec(profile="worker-a", title="A", body="A")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+        )
+        assert hooks == [("kanban_task_completed", False)]
     finally:
         reader.close()
         writer.close()

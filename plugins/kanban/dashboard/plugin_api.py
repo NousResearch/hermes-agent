@@ -1141,16 +1141,19 @@ def _set_status_direct(
             # the dependency gate. Demote those children immediately so the
             # dashboard does not keep advertising stale-ready work.
             for row in conn.execute(
-                "SELECT child_id FROM task_links WHERE parent_id = ? ORDER BY child_id",
+                "SELECT c.id AS child_id, c.status AS child_status "
+                "FROM task_links l JOIN tasks c ON c.id = l.child_id "
+                "WHERE l.parent_id = ? ORDER BY c.id",
                 (task_id,),
             ).fetchall():
                 child_id = row["child_id"]
+                child_status = row["child_status"]
                 demoted = conn.execute(
                     "UPDATE tasks SET status = 'todo' "
-                    "WHERE id = ? AND status = 'ready'",
+                    "WHERE id = ? AND status IN ('ready', 'review')",
                     (child_id,),
                 )
-                if demoted.rowcount == 1:
+                if demoted.rowcount == 1 and child_status in {"ready", "review"}:
                     conn.execute(
                         "INSERT INTO task_events (task_id, kind, payload, created_at) "
                         "VALUES (?, 'status', ?, ?)",
@@ -1161,6 +1164,9 @@ def _set_status_direct(
                                     "status": "todo",
                                     "reason": "parent_reopened",
                                     "parent": task_id,
+                                    "resume_status": (
+                                        "review" if child_status == "review" else "ready"
+                                    ),
                                 }
                             ),
                             int(time.time()),

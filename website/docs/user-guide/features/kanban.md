@@ -269,10 +269,11 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 ```
 
 :::note Where an unblocked task lands
-`unblock` itself only ever moves a task to **`ready`** (all parents `done`) or
-**`todo`** (a parent is still open — the task is dependency-gated and the
-dispatcher auto-promotes it once the parent finishes). It never routes to
-`triage`.
+`unblock` restores the safe source phase: **`review`** for reviewer-origin work
+whose parents are complete, **`ready`** for implementation work whose parents
+are complete, or **`todo`** while any parent remains open. A `todo` task keeps
+its source-phase provenance and returns to `review` or `ready` automatically
+when the dependency gate clears. `unblock` never routes directly to `triage`.
 
 If you unblock a task and it later shows up in **`triage`**, the unblock is not
 what put it there. A subsequent *re-block for the same reason* did: after a task
@@ -306,7 +307,7 @@ parent, missing input, unmet capability) before unblocking, or raise
 | `kanban_attachments` | List a task's attachments. | — |
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
 | `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
-| `kanban_unblock` | (Orchestrators) move a blocked task to `ready` when all parents are done, or `todo` while any parent remains open. | `task_id` |
+| `kanban_unblock` | (Orchestrators) restore a blocked task to its source phase (`review` or `ready`), or `todo` while a parent remains open. | `task_id` |
 
 A typical worker turn looks like:
 

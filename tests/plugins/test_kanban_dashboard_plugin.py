@@ -297,6 +297,81 @@ def test_reopening_parent_demotes_ready_child(client):
     assert child_after_reopen["status"] == "todo"
 
 
+def test_reopening_parent_retracts_review_and_blocks_approval(client):
+    with kb.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent", assignee="planner")
+        assert kb.complete_task(conn, parent_id)
+        child_id = kb.create_task(
+            conn,
+            title="child in review",
+            assignee="reviewer",
+            parents=[parent_id],
+        )
+        grandchild_id = kb.create_task(
+            conn,
+            title="downstream",
+            assignee="writer",
+            parents=[child_id],
+        )
+        implementation = kb.claim_task(conn, child_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            child_id,
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+        active_review = kb.claim_review_task(conn, child_id)
+        assert active_review is not None
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent_id}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        assert child.status == "running"
+        assert not kb.complete_task(
+            conn,
+            child_id,
+            summary="must not approve",
+            expected_run_id=active_review.current_run_id,
+        )
+        assert kb.reclaim_task(conn, child_id, signal_fn=lambda *_args: None)
+        assert kb.claim_review_task(conn, child_id) is None
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        assert child.status == "todo"
+        grandchild = kb.get_task(conn, grandchild_id)
+        assert grandchild is not None
+        assert grandchild.status == "todo"
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent_id}",
+        json={"status": "done"},
+    )
+    assert response.status_code == 200, response.text
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_id)
+        assert child is not None
+        assert child.status == "review"
+        review = kb.claim_review_task(conn, child_id)
+        assert review is not None
+        assert kb.complete_task(
+            conn,
+            child_id,
+            summary="approved after parent stabilized",
+            expected_run_id=review.current_run_id,
+        )
+        grandchild = kb.get_task(conn, grandchild_id)
+        assert grandchild is not None
+        assert grandchild.status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # DELETE /tasks/:id
 # ---------------------------------------------------------------------------

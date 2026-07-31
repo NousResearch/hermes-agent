@@ -4208,7 +4208,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
-        "'unblocked', 'changes_requested', 'review_reopened', 'reclaimed', "
+        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
         "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
         ") ORDER BY id DESC LIMIT 1",
         (task_id,),
@@ -4317,6 +4317,17 @@ def recompute_ready(
 # ---------------------------------------------------------------------------
 # Claim / complete / block
 # ---------------------------------------------------------------------------
+
+def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether every direct parent is terminal for dependency gating."""
+    return conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? "
+        "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        (task_id,),
+    ).fetchone() is None
+
 
 def claim_task(
     conn: sqlite3.Connection,
@@ -4452,9 +4463,8 @@ def claim_review_task(
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``review`` status).
 
-    Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
+    Parent dependencies are re-checked because a previously completed parent
+    may have been reopened while this task waited in review.
 
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
@@ -4463,6 +4473,23 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if not _parents_satisfied(conn, task_id):
+            demoted = conn.execute(
+                "UPDATE tasks SET status = 'todo' "
+                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                (task_id,),
+            )
+            if demoted.rowcount == 1:
+                _append_event(
+                    conn,
+                    task_id,
+                    "dependency_wait",
+                    {
+                        "reason": "parent_reopened",
+                        "source_status": "review",
+                    },
+                )
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -4974,6 +5001,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    fire_lifecycle_hook: bool = True,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
 
@@ -5008,6 +5036,10 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    # Fail before validating cards or staging artifacts; re-check inside the
+    # final write transaction below to close the parent-reopen race.
+    if not _parents_satisfied(conn, task_id):
+        return False
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -5040,6 +5072,11 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     with write_txn(conn):
+        # Parent completion is a hard invariant even for direct human review
+        # approval. A parent may have been reopened after this task entered
+        # ``review`` or ``running``.
+        if not _parents_satisfied(conn, task_id):
+            return False
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -5168,14 +5205,15 @@ def complete_task(
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
-    _fire_kanban_lifecycle_hook(
-        "kanban_task_completed",
-        task_id,
-        board=get_current_board(),
-        assignee=_done_task.assignee if _done_task else None,
-        run_id=run_id,
-        summary=(summary if summary is not None else result),
-    )
+    if fire_lifecycle_hook:
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_completed",
+            task_id,
+            board=get_current_board(),
+            assignee=_done_task.assignee if _done_task else None,
+            run_id=run_id,
+            summary=(summary if summary is not None else result),
+        )
     return True
 
 
@@ -5996,6 +6034,8 @@ def request_review(
     exposed to the review dispatcher.
     """
     with write_txn(conn):
+        if not _parents_satisfied(conn, task_id):
+            return False
         trow = conn.execute(
             "SELECT assignee FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()

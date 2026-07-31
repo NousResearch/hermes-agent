@@ -207,7 +207,7 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 | `kanban_comment` | 向任务线程追加持久化备注。 | `task_id`、`body` |
 | `kanban_create` | （编排器）将任务扇出为带有 `assignee`、可选 `parents`、`skills` 等的子任务。 | `title`、`assignee` |
 | `kanban_link` | （编排器）事后添加 `parent_id → child_id` 依赖边。 | `parent_id`、`child_id` |
-| `kanban_unblock` | （编排器）将被阻塞的任务移回 `ready`。 | `task_id` |
+| `kanban_unblock` | （编排器）将阻塞任务恢复到来源阶段（`review` 或 `ready`）；父任务仍开放时进入 `todo`。 | `task_id` |
 
 典型的 worker 轮次如下所示：
 

@@ -92,6 +92,10 @@ def create_swarm(
     idempotency_key: Optional[str] = None,
 ) -> SwarmCreated:
     """Atomically create a durable, immediately dispatchable Kanban swarm."""
+    activation_summary = (
+        "Swarm topology planned; root remains the shared blackboard."
+    )
+    activated = False
     with kb.write_txn(conn):
         created = _create_swarm_uncommitted(
             conn,
@@ -109,19 +113,32 @@ def create_swarm(
             priority=priority,
             idempotency_key=idempotency_key,
         )
-    root = kb.get_task(conn, created.root_id)
-    if root is not None and root.status == "blocked":
-        if not kb.complete_task(
-            conn,
+        root = kb.get_task(conn, created.root_id)
+        if root is not None and root.status == "blocked":
+            if not kb.complete_task(
+                conn,
+                created.root_id,
+                summary=activation_summary,
+                metadata={
+                    "kind": "kanban_swarm_v1",
+                    "goal": goal.strip(),
+                    "worker_count": len(created.worker_ids),
+                },
+                fire_lifecycle_hook=False,
+            ):
+                raise RuntimeError("could not activate the completed swarm topology")
+            activated = True
+    if activated:
+        root = kb.get_task(conn, created.root_id)
+        run = kb.latest_run(conn, created.root_id)
+        kb._fire_kanban_lifecycle_hook(
+            "kanban_task_completed",
             created.root_id,
-            summary="Swarm topology planned; root remains the shared blackboard.",
-            metadata={
-                "kind": "kanban_swarm_v1",
-                "goal": goal.strip(),
-                "worker_count": len(created.worker_ids),
-            },
-        ):
-            raise RuntimeError("could not activate the completed swarm topology")
+            board=kb.get_current_board(),
+            assignee=root.assignee if root else None,
+            run_id=run.id if run else None,
+            summary=activation_summary,
+        )
     return created
 
 

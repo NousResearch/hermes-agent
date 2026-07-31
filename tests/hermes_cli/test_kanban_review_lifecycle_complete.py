@@ -177,6 +177,37 @@ def test_review_changes_reapply_parent_gate(conn):
     assert regated.status == "todo"
 
 
+def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
+    parent_id = kb.create_task(conn, title="Parent", assignee="planner")
+    assert kb.complete_task(conn, parent_id)
+    task_id = kb.create_task(
+        conn,
+        title="Implementation with reopened parent",
+        assignee="builder",
+        parents=[parent_id],
+    )
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (parent_id,))
+    assert not kb.request_review(
+        conn,
+        task_id,
+        summary="must wait",
+        expected_run_id=implementation.current_run_id,
+    )
+    still_running = kb.get_task(conn, task_id)
+    assert still_running is not None
+    assert still_running.status == "running"
+    assert kb.complete_task(conn, parent_id)
+    assert kb.request_review(
+        conn,
+        task_id,
+        summary="parent stable",
+        expected_run_id=implementation.current_run_id,
+    )
+
+
 def test_request_changes_fails_closed_on_malformed_review_provenance(conn):
     task_id = kb.create_task(conn, title="Malformed handoff", assignee="builder")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")

@@ -168,6 +168,33 @@ _HANDOFF_SKIP_FINAL_RESPONSE = (
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
+# Refund the per-turn compression budget only when the assembled request has
+# dropped this far below threshold_tokens. The gap between this margin and
+# 1.0 is the anti-thrash belt: a compaction that lands barely under threshold
+# keeps its burnt attempt, so borderline shrink/regrow cycles cannot recycle
+# the budget indefinitely.
+_COMPRESSION_BUDGET_REFUND_MARGIN = 0.8
+
+
+def _should_refund_compression_budget(
+    compression_attempts: int,
+    request_pressure_tokens: int,
+    threshold_tokens: int,
+) -> bool:
+    """True when burnt compression attempts should be returned to the turn.
+
+    A compaction that brought the assembled request comfortably back under
+    threshold made real progress, so it must not permanently consume the
+    per-turn overflow-recovery backstop. No-progress passes never get here
+    below the margin, so they still exhaust the budget (#11529).
+    """
+    return bool(
+        compression_attempts
+        and threshold_tokens > 0
+        and request_pressure_tokens
+        < threshold_tokens * _COMPRESSION_BUDGET_REFUND_MARGIN
+    )
+
 # Modules that indicate a deterministic local processing error when they
 # appear in an exception traceback WITHOUT any API-call module. Used by the
 # outer-loop error classifier to avoid retrying bugs that will fail
@@ -2289,6 +2316,31 @@ def run_conversation(
                 f"{_previous_preflight_pressure:,}",
                 f"{request_pressure_tokens:,}",
             )
+        # Refund the shared overflow-recovery budget once the assembled
+        # request is comfortably back under threshold: a compaction that got
+        # us here made real progress, so it must not permanently consume the
+        # per-turn backstop. Without this, a long tool-heavy turn burns all
+        # attempts on *successful* pre-API compactions, the gate below goes
+        # permanently dark, and the context grows unchecked until the
+        # provider rejects the request terminally (root cause of the
+        # max-compression-attempts dead end on marathon turns). The
+        # compressor's own should_compress() must agree the pressure is gone —
+        # when it and the local estimate disagree (#36718 noise, runaway-
+        # compaction stubs), the budget stays burnt and the hard per-turn cap
+        # keeps its original meaning.
+        if _should_refund_compression_budget(
+            compression_attempts, request_pressure_tokens, _preflight_threshold
+        ) and not _compressor.should_compress(request_pressure_tokens):
+            logger.info(
+                "Compression budget refunded: ~%s request tokens < %s%% of "
+                "%s threshold (attempts were %s/%s)",
+                f"{request_pressure_tokens:,}",
+                int(_COMPRESSION_BUDGET_REFUND_MARGIN * 100),
+                f"{_preflight_threshold:,}",
+                compression_attempts,
+                max_compression_attempts,
+            )
+            compression_attempts = 0
         _defer_preflight = getattr(
             _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
         )

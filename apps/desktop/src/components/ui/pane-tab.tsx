@@ -1,5 +1,6 @@
 import * as React from 'react'
 
+import { middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
 
 /** Inset stroke for a vertical tab rail — content-facing edge. */
@@ -60,9 +61,9 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
     active = false,
     dirty = false,
     onClose,
-    onAuxClick,
     onMouseDown,
     onPointerDown,
+    onPointerUp,
     onClickCapture,
     vertical = false,
     side = 'left',
@@ -75,6 +76,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
   // Vertical rails only. Horizontal tabs draw no bottom border — the strip owns
   // that rule, and a per-tab border stacked a second translucent line over it.
   const edge = vertical ? (side === 'right' ? 'border-l' : 'border-r') : undefined
+  const middle = middleClickHandlers(onClose)
 
   return (
     <div
@@ -89,16 +91,6 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       )}
       data-active={active}
       data-vertical={vertical || undefined}
-      onAuxClick={event => {
-        // Middle-click closes (browser/IDE). Swallow mousedown so Chromium
-        // doesn't autoscroll.
-        if (onClose && event.button === 1) {
-          event.preventDefault()
-          onClose()
-        }
-
-        onAuxClick?.(event)
-      }}
       onClickCapture={event => {
         // Sites whose tab activates on the label's own onClick (the preview
         // rail) fire it AFTER our pointerdown close — swallow that stray click
@@ -111,13 +103,12 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         onClickCapture?.(event)
       }}
       onMouseDown={event => {
-        if (onClose && event.button === 1) {
-          event.preventDefault()
-        }
-
+        middle.onMouseDown(event)
         onMouseDown?.(event)
       }}
       onPointerDown={event => {
+        middle.onPointerDown(event)
+
         // ⌘-click closes. Preempt here — the tab strips activate/drag on
         // pointerdown (drag-session onTap), so we must claim the press before
         // the shell's own handler starts a drag, and skip it entirely.
@@ -130,6 +121,10 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         }
 
         onPointerDown?.(event)
+      }}
+      onPointerUp={event => {
+        middle.onPointerUp(event)
+        onPointerUp?.(event)
       }}
       ref={ref}
       {...props}

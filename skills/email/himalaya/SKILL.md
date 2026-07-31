@@ -125,18 +125,22 @@ Or skip SMTP entirely and use the Microsoft Graph REST API backend (`msgraph.aut
 
 ### Fastmail
 
-App password works for IMAP/SMTP. For the native JMAP API, replace both blocks with a single `jmap` one using an API token:
+App password works for IMAP/SMTP. For Fastmail's native **JMAP** API (faster, no SMTP needed), use a single `jmap.*` block instead of `imap.*` + `smtp.*`. JMAP needs an API token, not the regular account password — generate one under *Settings → Privacy & Security → API tokens*.
 
 ```toml
 [accounts.fastmail]
-imap.server = "imaps://imap.fastmail.com"
-imap.sasl.plain.username = "you@fastmail.com"
-imap.sasl.plain.password.command = "pass show fastmail"
+email = "you@fastmail.com"
+default = true
 
-smtp.server = "smtps://smtp.fastmail.com"
-smtp.sasl.plain.username = "you@fastmail.com"
-smtp.sasl.plain.password.command = "pass show fastmail"
+jmap.server = "https://api.fastmail.com/jmap/session"
+jmap.auth.bearer.token.command = "pass show fastmail/jmap-token"
+
+# Optional: pin the sending identity and drafts mailbox when multiple exist
+# jmap.identity-id = "I0123abc"
+# jmap.drafts-mailbox-id = "M0123abc"
 ```
+
+The same `jmap.*` schema applies to any JMAP server (Stalwart, Apache James, etc.) — only the `jmap.server` URL changes.
 
 ### iCloud
 
@@ -159,9 +163,10 @@ mailbox.alias.sent = "Sent Messages"
 ## Hermes integration notes
 
 - **Reading, listing, searching, flagging, copying** — all work directly through the terminal tool.
-- **Composing / replying / forwarding** — use the `message compose` subcommand (flags-only) or chain `mml` for rich MIME / attachments / PGP. The legacy `template send` (pipe a complete RFC 822 message on stdin) still works for scripted sends.
-- For programmatic output (parsing in scripts), pass `--json` for structured envelopes / messages.
-- **Pitfall — clap parser order matters:** search query DSL tokens (`from`, `subject`, `after`, `order by`, etc.) start consuming characters from the next flag too. Always pass `--page-size=20` (with `=`) instead of `--page-size 20`, and put query positional args **last** on the command line. Spaces between a flag like `--page-size 20` get eaten as part of the search query.
+- **Composing / replying / forwarding** — use the `message compose` / `message reply` / `message forward` subcommands (flag-based) or chain `mml` for rich MIME / attachments / PGP. To send a pre-written RFC 822 message, use `message send < message.eml` or pipe via stdin to `message compose --body-file -` / `message compose` with no `--body` (stdin fallback).
+- **Pitfall — `message write` is an alias, not an editor opener.** In v2, `himalaya message write` is a `visible_alias` of `message compose` and behaves identically (flag-based, no `$EDITOR`). The pre-v1.x editor-driven flow no longer exists. Use `mml compose` if you want interactive composition.
+- For programmatic output (parsing in scripts), pass `--json` for structured envelopes / messages. It's a global flag (pass before the subcommand for consistency); v2 also recognizes it after the subcommand for ergonomics.
+- **Pitfall — search query DSL:** the query is a positional `Vec<String>` that captures trailing tokens until end-of-input. Always put the query **last** on the command line. Quote-protect patterns containing `$`, shell metacharacters, or spaces.
 - **Pitfall — Gmail mailbox names:** `[Gmail]/Sent Mail` etc. contain `[`, `]`, and a space. Always quote in the shell.
 - **Pitfall — multiple accounts:** pass `-a <name>` or `--account <name>`. The account flagged `default = true` is used when omitted.
 
@@ -238,20 +243,31 @@ EOF
 ### Reply to a message
 
 ```bash
-# Quick reply with --body
-himalaya message reply 42 --body "Thanks, will do." --send
+# Quick reply with new body
+himalaya message reply 42 --body "Got it, thanks." --send
 
-# Reply-all
-himalaya message reply 42 --all --body "Looping everyone in." --send
+# Strict reply (just to the sender): pass --to with the original From address
+himalaya message reply 42 --to sender@example.com --body "Thanks." --send
 
-# Quote original
-himalaya message reply 42 --quote --body "See below." --send
+# Reply-all: include the original To/Cc recipients with --cc / --to
+himalaya message reply 42 \
+  --to sender@example.com \
+  --cc teammate@example.com \
+  --body "Looping everyone in." --send
+
+# Custom quote headline (default is "On {date}, {from} wrote:")
+himalaya message reply 42 --quote-headline "Replying inline:" --body "..." --send
+
+# Change posting style (top | bottom | inline)
+himalaya message reply 42 --posting-style bottom --body "..." --send
 ```
+
+> **v2 note.** There are no `--all` / `--quote` boolean flags. Reply-all is "include the original recipients via `--cc`/`--to`"; quoting is the default behavior controlled by `--posting-style` and `--quote-headline`.
 
 ### Forward
 
 ```bash
-himalaya message forward 42 --to other@example.com --send
+himalaya message forward 42 --to other@example.com --body "FYI" --send
 ```
 
 ### Move / copy / delete
@@ -259,9 +275,10 @@ himalaya message forward 42 --to other@example.com --send
 ```bash
 himalaya message copy --from INBOX --to Archives 42
 himalaya message move --from INBOX --to Archives 42    # if backend supports move
-himalaya message delete 42                              # sets \Deleted flag
-himalaya message expunge                                 # permanently remove flagged
+himalaya message delete 42                              # trash-move; permanent for in-trash
 ```
+
+> **v2 note.** There is no `message expunge` subcommand in v2. `message delete` already trash-moves; on IMAP servers without UIDPLUS, deleted-from-trash items are flagged `\Deleted` and reclaimed by the next `message delete` on the trash mailbox, or by the server's own expunge policy.
 
 ### Manage flags
 
@@ -275,9 +292,12 @@ The `--flag` argument accepts `seen`, `answered`, `flagged`, `draft`, `recent`. 
 ### Download attachments
 
 ```bash
-himalaya attachment download 42                         # default ~/Downloads
-himalaya attachment download 42 --output-dir /tmp/attach
+himalaya attachment download 42                         # download all; default dir from config
+himalaya attachment download 42 --dir /tmp/attach       # override destination
+himalaya attachment download 42 0 1                     # download only attachments 0 and 1
 ```
+
+> **v2 note.** The destination flag is `--dir` (also `-d`), not `--output-dir`. Default destination is the account's `downloads-dir` config (falling back to the global config, then the platform standard). Run `himalaya attachment download --help` for the full flag list.
 
 ## Multiple accounts
 

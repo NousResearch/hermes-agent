@@ -3713,6 +3713,106 @@ def test_ws_orphan_reap_releases_resume_lock_before_slow_teardown(monkeypatch):
     assert not thread.is_alive()
 
 
+def test_ws_orphan_reap_waits_for_active_delegation_then_reaps(monkeypatch):
+    from tools import async_delegation
+
+    callbacks = []
+    torn_down = []
+    delegation_id = "deleg_ws_orphan_reap_test"
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason="tui_close": torn_down.append(
+            (session, end_reason)
+        ),
+    )
+    server._sessions["delegating-sid"] = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+    )
+    with async_delegation._records_lock:
+        async_delegation._records[delegation_id] = {
+            "status": "running",
+            "origin_ui_session_id": "delegating-sid",
+        }
+
+    try:
+        server._schedule_ws_orphan_reap("delegating-sid")
+        callbacks.pop(0)()
+
+        assert "delegating-sid" in server._sessions
+        assert len(callbacks) == 1
+        assert torn_down == []
+
+        with async_delegation._records_lock:
+            async_delegation._records[delegation_id]["status"] = "completed"
+        callbacks.pop(0)()
+
+        assert "delegating-sid" not in server._sessions
+        assert len(torn_down) == 1
+        assert torn_down[0][1] == "ws_orphan_reap"
+    finally:
+        server._sessions.pop("delegating-sid", None)
+        with async_delegation._records_lock:
+            async_delegation._records.pop(delegation_id, None)
+
+
+def test_ws_orphan_reap_retries_when_delegation_lookup_fails(monkeypatch):
+    from tools import async_delegation
+
+    callbacks = []
+    torn_down = []
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+    def _raise_lookup_error(_origin_ui_session_id):
+        raise RuntimeError("delegation registry unavailable")
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(
+        async_delegation, "active_for_session", _raise_lookup_error
+    )
+    monkeypatch.setattr(
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason="tui_close": torn_down.append(
+            (session, end_reason)
+        ),
+    )
+    server._sessions["lookup-error-sid"] = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+    )
+
+    try:
+        server._schedule_ws_orphan_reap("lookup-error-sid")
+        callbacks.pop(0)()
+
+        assert "lookup-error-sid" in server._sessions
+        assert len(callbacks) == 1
+        assert torn_down == []
+    finally:
+        server._sessions.pop("lookup-error-sid", None)
+
+
 def test_finalize_session_closes_slash_worker(monkeypatch):
     """_finalize_session closes the slash_worker subprocess itself.
 
@@ -14137,7 +14237,7 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
     monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
     monkeypatch.setattr(
         server, "_close_session_by_id",
-        lambda sid, *, end_reason: closed.append((sid, end_reason)),
+        lambda sid, *, end_reason, predicate=None: closed.append((sid, end_reason)),
     )
     now = time.time()
     server._sessions.clear()
@@ -14189,6 +14289,140 @@ def test_reap_idle_sessions_logs_trim_failure(monkeypatch, caplog):
         with caplog.at_level("DEBUG", logger="tui_gateway.server"):
             server._reap_idle_sessions()
         assert "idle reaper memory trim failed: RuntimeError: boom" in caplog.text
+    finally:
+        server._sessions.clear()
+
+
+def test_ttl_reaper_spares_session_with_active_delegation(monkeypatch):
+    from tools import async_delegation
+
+    closed = []
+    delegation_id = "deleg_ttl_reaper_test"
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
+    monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, *, end_reason, predicate=None: closed.append((sid, end_reason)),
+    )
+    now = time.time()
+    server._sessions.clear()
+    server._sessions["delegating-ttl"] = _idle_evictable_session(now)
+    with async_delegation._records_lock:
+        async_delegation._records[delegation_id] = {
+            "status": "running",
+            "origin_ui_session_id": "delegating-ttl",
+        }
+
+    try:
+        server._reap_idle_sessions()
+        assert closed == []
+    finally:
+        server._sessions.clear()
+        with async_delegation._records_lock:
+            async_delegation._records.pop(delegation_id, None)
+
+
+def test_lru_reaper_spares_active_delegation_and_evicts_idle_peer(monkeypatch):
+    from tools import async_delegation
+
+    closed = []
+    delegation_id = "deleg_lru_reaper_test"
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(server, "_max_live_sessions", lambda: 1)
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, *, end_reason, predicate=None: closed.append((sid, end_reason)),
+    )
+    now = time.time()
+    server._sessions.clear()
+    server._sessions["delegating-lru"] = _idle_evictable_session(now) | {
+        "last_active": now - 20 * 3600
+    }
+    server._sessions["idle-peer"] = _idle_evictable_session(now)
+    with async_delegation._records_lock:
+        async_delegation._records[delegation_id] = {
+            "status": "running",
+            "origin_ui_session_id": "delegating-lru",
+        }
+
+    try:
+        server._enforce_session_cap()
+        assert closed == [("idle-peer", "lru_evict")]
+    finally:
+        server._sessions.clear()
+        with async_delegation._records_lock:
+            async_delegation._records.pop(delegation_id, None)
+
+
+def test_ttl_reaper_revalidates_session_before_teardown(monkeypatch):
+    closed = []
+    calls = {"count": 0}
+    live_transport = type("T", (), {"_closed": False})()
+    original_is_evictable = server._session_is_evictable
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(server, "_enforce_session_cap", lambda: None)
+    monkeypatch.setattr(server, "_reclaim_orphaned_leases", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason: closed.append((session, end_reason)),
+    )
+
+    def _reattach_after_scan(sid, session, now):
+        calls["count"] += 1
+        evictable = original_is_evictable(sid, session, now)
+        if calls["count"] == 1:
+            session["transport"] = live_transport
+        return evictable
+
+    monkeypatch.setattr(server, "_session_is_evictable", _reattach_after_scan)
+    now = time.time()
+    server._sessions.clear()
+    server._sessions["ttl-race"] = _idle_evictable_session(now)
+
+    try:
+        server._reap_idle_sessions()
+        assert server._sessions["ttl-race"]["transport"] is live_transport
+        assert calls["count"] == 2
+        assert closed == []
+    finally:
+        server._sessions.clear()
+
+
+def test_lru_reaper_revalidates_and_tries_next_candidate(monkeypatch):
+    closed = []
+    live_transport = type("T", (), {"_closed": False})()
+    original_is_evictable = server._session_is_lru_evictable
+    monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
+    monkeypatch.setattr(server, "_max_live_sessions", lambda: 1)
+    monkeypatch.setattr(
+        server,
+        "_teardown_session",
+        lambda session, *, end_reason: closed.append((session, end_reason)),
+    )
+
+    def _reattach_oldest_after_scan(sid, session):
+        evictable = original_is_evictable(sid, session)
+        if sid == "lru-race" and session.get("transport") is server._detached_ws_transport:
+            session["transport"] = live_transport
+        return evictable
+
+    monkeypatch.setattr(server, "_session_is_lru_evictable", _reattach_oldest_after_scan)
+    now = time.time()
+    server._sessions.clear()
+    server._sessions["lru-race"] = _idle_evictable_session(now) | {
+        "last_active": now - 20 * 3600
+    }
+    server._sessions["idle-peer"] = _idle_evictable_session(now)
+
+    try:
+        server._enforce_session_cap()
+        assert server._sessions["lru-race"]["transport"] is live_transport
+        assert "idle-peer" not in server._sessions
+        assert [reason for _session, reason in closed] == ["lru_evict"]
     finally:
         server._sessions.clear()
 

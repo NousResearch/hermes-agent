@@ -16,7 +16,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from agent.secret_scope import (
     build_profile_secret_scope,
@@ -903,17 +903,33 @@ def _teardown_popped_session(
     return True
 
 
-def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+def _close_session_by_id(
+    sid: str,
+    *,
+    end_reason: str = "tui_close",
+    predicate: Callable[[dict], bool] | None = None,
+) -> bool:
     """Single idempotent teardown funnel for callers needing no resume race.
 
     Resume-sensitive callers first pop under ``_session_resume_lock`` and then
     call ``_teardown_popped_session`` after releasing it.  Other reapers can use
     this convenience wrapper directly.  The pop remains the single atomic
     ownership claim, so concurrent/repeat close attempts stay harmless.
+
+    Automatic reapers can pass ``predicate`` to revalidate under
+    ``_sessions_lock`` immediately before the ownership claim. This prevents a
+    stale scan result from closing a session that reattached or gained active
+    delegated work before teardown.
     """
-    return _teardown_popped_session(
-        _pop_session_by_id(sid), end_reason=end_reason
-    )
+    if predicate is None:
+        session = _pop_session_by_id(sid)
+    else:
+        with _sessions_lock:
+            current = _sessions.get(sid)
+            if current is None or not predicate(current):
+                return False
+            session = _pop_session_by_id(sid)
+    return _teardown_popped_session(session, end_reason=end_reason)
 
 
 def _ws_session_is_orphaned(session: dict | None) -> bool:
@@ -928,6 +944,26 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     if session.get("running"):
         return False
     return session.get("transport") is _detached_ws_transport
+
+
+def _session_has_active_delegations(sid: str) -> bool:
+    """True when UI session ``sid`` still owns live background work."""
+    if not sid:
+        return False
+    try:
+        from tools.async_delegation import active_for_session
+
+        return active_for_session(sid) > 0
+    except Exception:
+        logger.debug(
+            "Failed to query active delegations for UI session %s",
+            sid,
+            exc_info=True,
+        )
+        # A transient registry/import failure must not turn into destructive
+        # cleanup. Conservatively keep the detached session and let the next
+        # orphan timer retry the lookup.
+        return True
 
 
 def _schedule_ws_orphan_reap(sid: str) -> None:
@@ -951,10 +987,19 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         # mutual exclusion against _init_session / _close_session_by_id, which
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
         # ordering is always resume_lock -> sessions_lock, so nesting is safe.
+        reschedule = False
+        session = None
         with _session_resume_lock:
-            if not _ws_session_is_orphaned(_sessions.get(sid)):
+            current = _sessions.get(sid)
+            if not _ws_session_is_orphaned(current):
                 return
-            session = _pop_session_by_id(sid)
+            if _session_has_active_delegations(sid):
+                reschedule = True
+            else:
+                session = _pop_session_by_id(sid)
+        if reschedule:
+            _schedule_ws_orphan_reap(sid)
+            return
         _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
@@ -1034,6 +1079,8 @@ def _transport_is_dead(transport) -> bool:
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     if session.get("running") or _session_pending_kind(sid):
         return False
+    if _session_has_active_delegations(sid):
+        return False
     ready = session.get("agent_ready")
     # Lazy watch sessions (subagent spectator windows) never start a build,
     # so their forever-unset agent_ready must not make them immortal.
@@ -1051,7 +1098,13 @@ def _reap_idle_sessions() -> None:
     with _sessions_lock:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
-        _close_session_by_id(sid, end_reason="idle_timeout")
+        _close_session_by_id(
+            sid,
+            end_reason="idle_timeout",
+            predicate=lambda session, victim_sid=sid: _session_is_evictable(
+                victim_sid, session, time.time()
+            ),
+        )
     _enforce_session_cap()
     _reclaim_orphaned_leases()
     # Periodic heap release for long-lived gateway processes.  Even when no
@@ -1114,9 +1167,12 @@ def _max_live_sessions() -> int:
 
 def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     # Same hard exemptions as the TTL reaper (never evict a session mid-turn,
-    # awaiting input, or still building), but WITHOUT the hours-scale age gate:
-    # a detached session is eligible the moment it loses its client.
+    # awaiting input, still building, or owning active delegated work), but
+    # WITHOUT the hours-scale age gate: a detached session is eligible the
+    # moment it loses its client.
     if session.get("running") or _session_pending_kind(sid):
+        return False
+    if _session_has_active_delegations(sid):
         return False
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):
@@ -1138,9 +1194,17 @@ def _enforce_session_cap() -> None:
     # Oldest-touched first; only evict down to the cap (live/focused sessions on
     # a live transport are never eligible, so we may stop short of the cap).
     evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
-    overflow = total - cap
-    for sid, _s in evictable[:overflow]:
-        _close_session_by_id(sid, end_reason="lru_evict")
+    for sid, _s in evictable:
+        with _sessions_lock:
+            if len(_sessions) <= cap:
+                break
+        _close_session_by_id(
+            sid,
+            end_reason="lru_evict",
+            predicate=lambda session, victim_sid=sid: _session_is_lru_evictable(
+                victim_sid, session
+            ),
+        )
 
 
 def _schedule_session_cap_enforcement() -> None:

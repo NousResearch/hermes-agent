@@ -2060,12 +2060,22 @@ def register_gateway_notify(session_key: str, cb) -> None:
 def unregister_gateway_notify(session_key: str) -> None:
     """Unregister the per-session gateway approval callback.
 
-    Signals ALL blocked threads for this session so they don't hang forever
-    (e.g. when the agent run finishes or is interrupted).
+    Signals blocked agent-turn threads for this session so they don't hang
+    forever (e.g. when the run finishes or is interrupted). Managed-process
+    approvals have their own gateway-lifetime notifier and survive turn end.
     """
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
+        queue = _gateway_queues.get(session_key, [])
+        entries = [
+            entry for entry in queue
+            if entry.data.get("approval_lifetime") != "process"
+        ]
+        survivors = [entry for entry in queue if entry not in entries]
+        if survivors:
+            _gateway_queues[session_key] = survivors
+        else:
+            _gateway_queues.pop(session_key, None)
     for entry in entries:
         entry.event.set()
 
@@ -2106,10 +2116,53 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
+def cancel_gateway_approvals(
+    session_key: str,
+    *,
+    source: str,
+    source_id: str,
+) -> int:
+    """Deny pending approvals owned by one managed background process.
+
+    Unlike :func:`resolve_gateway_approval`, this is an internal lifecycle
+    operation rather than a user choice.  Matching both source fields keeps a
+    killed PTY from cancelling an unrelated tool approval in the same chat.
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        targets = [
+            entry for entry in queue
+            if entry.data.get("approval_source") == source
+            and entry.data.get("approval_source_id") == source_id
+        ]
+        for entry in targets:
+            queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+    for entry in targets:
+        entry.result = "deny"
+        entry.event.set()
+    return len(targets)
+
+
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
         return bool(_gateway_queues.get(session_key))
+
+
+def await_managed_process_approval(
+    session_key: str,
+    notify_cb,
+    approval_data: dict,
+) -> dict:
+    """Queue a managed-process approval on the normal gateway FIFO."""
+    return _await_gateway_decision(
+        session_key,
+        notify_cb,
+        approval_data,
+        surface="managed_codex_tui",
+    )
 
 
 def submit_pending(session_key: str, approval: dict):

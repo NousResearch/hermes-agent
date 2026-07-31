@@ -137,6 +137,9 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    managed_codex_tui: bool = False              # Hermes-owned native Codex approval bridge
+    _codex_approval_detector: Any = field(default=None, repr=False)
+    _codex_approval_pending: bool = field(default=False, repr=False)
 
 
 class ProcessRegistry:
@@ -212,6 +215,9 @@ class ProcessRegistry:
         # terminal tab. Distinct from kill — the process keeps running; only the
         # UI view is dropped (the user can reopen it from the status stack).
         self.on_close = None
+        # Managed native-Codex approval sink set by the messaging gateway.
+        # Called from a PTY reader thread with (session, approval_data).
+        self.on_approval = None
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -717,6 +723,19 @@ class ProcessRegistry:
         if use_pty:
             # Try PTY mode for interactive CLI tools
             try:
+                from tools.codex_tui_approval import (
+                    CodexTuiApprovalDetector,
+                    prepare_managed_codex_tui_command,
+                )
+
+                pty_command, bridge_enabled = prepare_managed_codex_tui_command(
+                    command,
+                    session_key,
+                    approval_sink_available=callable(self.on_approval),
+                )
+                if bridge_enabled:
+                    session.managed_codex_tui = True
+                    session._codex_approval_detector = CodexTuiApprovalDetector()
                 if _IS_WINDOWS:
                     from winpty import PtyProcess as _PtyProcessCls
                 else:
@@ -725,7 +744,7 @@ class ProcessRegistry:
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
                 pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                    [user_shell, "-lic", f"set +m; {pty_command}"],
                     cwd=session.cwd,
                     env=pty_env,
                     dimensions=(30, 120),
@@ -1052,6 +1071,7 @@ class ProcessRegistry:
                                 session.output_buffer = session.output_buffer[-session.max_output_chars:]
                         self._check_watch_patterns(session, text)
                         self._emit_output(session, text)
+                        self._check_codex_tui_approval(session, text)
                 except EOFError:
                     break
                 except Exception:
@@ -1069,6 +1089,64 @@ class ProcessRegistry:
             session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
             session.completion_reason = "exited"
         self._move_to_finished(session)
+
+    def _check_codex_tui_approval(self, session: ProcessSession, chunk: str) -> None:
+        """Block an owned Codex PTY on the gateway's exact session queue."""
+        detector = session._codex_approval_detector
+        if not session.managed_codex_tui or detector is None:
+            return
+        prompt = detector.feed(chunk)
+        if prompt is None:
+            return
+
+        from tools.approval import await_managed_process_approval
+        from tools.codex_tui_approval import key_for_choice
+
+        approval_data = {
+            "command": prompt.command,
+            "description": f"{prompt.description} (process {session.id})",
+            "pattern_key": f"codex-pty:{session.id}",
+            "pattern_keys": [f"codex-pty:{session.id}"],
+            "allow_permanent": False,
+            "allow_session": True,
+            "approval_source": "managed_codex_tui",
+            "approval_source_id": session.id,
+            "approval_lifetime": "process",
+        }
+
+        with session._lock:
+            session._codex_approval_pending = True
+        try:
+            def _notify(data: dict) -> None:
+                sink = self.on_approval
+                if sink is None:
+                    raise RuntimeError("gateway approval sink is unavailable")
+                sink(session, data)
+
+            decision = await_managed_process_approval(
+                session.session_key,
+                _notify,
+                approval_data,
+            )
+            key = key_for_choice(
+                decision.get("choice") if decision.get("resolved") else None
+            )
+            self._write_managed_codex_choice(session, key)
+        finally:
+            with session._lock:
+                session._codex_approval_pending = False
+            detector.mark_resolved()
+
+    @staticmethod
+    def _write_managed_codex_choice(session: ProcessSession, key: str) -> None:
+        """Write one injected approval shortcut, bypassing the public guard."""
+        try:
+            if _IS_WINDOWS:
+                session._pty.write(key)
+            else:
+                session._pty.write(key.encode("utf-8"))
+        except Exception as exc:
+            logger.debug("Could not write Codex PTY approval choice: %s", exc)
 
     def _move_to_finished(self, session: ProcessSession):
         """Move a session from running to finished.
@@ -1533,6 +1611,21 @@ class ProcessRegistry:
                 self._completion_consumed.add(session_id)
             return result
 
+        if session.managed_codex_tui:
+            # Wake only this process's approval waiter before tearing down its
+            # PTY.  Other approvals in the originating Discord session remain
+            # untouched.
+            try:
+                from tools.approval import cancel_gateway_approvals
+
+                cancel_gateway_approvals(
+                    session.session_key,
+                    source="managed_codex_tui",
+                    source_id=session.id,
+                )
+            except Exception as exc:
+                logger.debug("Could not cancel Codex PTY approval during kill: %s", exc)
+
         # Kill via PTY, Popen (local), or env execute (non-local)
         try:
             if session._pty:
@@ -1606,6 +1699,15 @@ class ProcessRegistry:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
+
+        if session.managed_codex_tui and session._codex_approval_pending:
+            return {
+                "status": "approval_pending",
+                "error": (
+                    "This Codex PTY is waiting for its originating Discord "
+                    "session to use /approve or /deny"
+                ),
+            }
 
         # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:

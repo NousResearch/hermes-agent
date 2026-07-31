@@ -3163,6 +3163,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._managed_codex_approval_sink = None
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
         self._exit_with_failure = False
@@ -7978,6 +7979,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running = True
         self._update_runtime_status("running")
 
+        # Native Codex approvals can outlive the agent turn that launched the
+        # PTY, so they use a process-lifetime sink rather than the per-turn
+        # register_gateway_notify callback below. Install it only after startup
+        # succeeds so an aborted start cannot leave a stale global callback.
+        from tools.process_registry import process_registry
+
+        def _managed_codex_sink(session, approval_data) -> None:
+            self._notify_managed_codex_approval_sync(session, approval_data)
+
+        self._managed_codex_approval_sink = _managed_codex_sink
+        process_registry.on_approval = _managed_codex_sink
+
         # Loop-liveness heartbeat (#66892): an asyncio task so a frozen loop
         # stops refreshing ``state/gateway.heartbeat``. Cancelled with the
         # other background tasks during stop(). Best-effort — a liveness probe
@@ -8947,6 +8960,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         async def _stop_impl() -> None:
+            # Stop accepting new PTY approval prompts before subprocess
+            # teardown. kill_all() below denies any already-pending request.
+            try:
+                from tools.process_registry import process_registry
+
+                if process_registry.on_approval is self._managed_codex_approval_sink:
+                    process_registry.on_approval = None
+            except Exception as _e:
+                logger.debug("Codex PTY approval sink cleanup error: %s", _e)
+
             def _kill_tool_subprocesses(phase: str) -> None:
                 """Kill tool subprocesses + tear down terminal envs + browsers.
 
@@ -16927,6 +16950,80 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as trans_exc:
             logger.warning("%s transcription failed: %s", log_context, trans_exc)
             return text, []
+
+    def _notify_managed_codex_approval_sync(self, session, approval_data: dict) -> None:
+        """Bridge a PTY reader thread onto the gateway event loop."""
+        loop = self._gateway_loop
+        future = safe_schedule_threadsafe(
+            self._send_managed_codex_approval(session, approval_data),
+            loop,
+            logger=logger,
+            log_message="managed Codex PTY approval scheduling error",
+        )
+        if future is None:
+            raise RuntimeError("gateway event loop is unavailable")
+        sent = future.result(timeout=15)
+        if not sent:
+            raise RuntimeError("Discord approval prompt could not be delivered")
+
+    async def _send_managed_codex_approval(self, session, approval_data: dict) -> bool:
+        """Send an owned Codex PTY approval to its exact Discord origin."""
+        evt = {
+            "type": "managed_codex_approval",
+            "session_id": session.id,
+            "session_key": session.session_key,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "thread_id": session.watcher_thread_id,
+            "user_id": session.watcher_user_id,
+            "user_name": session.watcher_user_name,
+        }
+        source = self._build_process_event_source(evt)
+        if source is None or _gateway_platform_value(source.platform) != "discord":
+            logger.warning(
+                "Managed Codex PTY %s has no resolvable Discord origin",
+                session.id,
+            )
+            return False
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return False
+
+        adapter.pause_typing_for_chat(source.chat_id)
+        command = _redact_approval_command(approval_data.get("command", ""))
+        description = approval_data.get(
+            "description", "Native Codex TUI approval"
+        )
+        metadata = self._thread_metadata_for_source(source)
+        if getattr(type(adapter), "send_exec_approval", None) is not None:
+            try:
+                result = await adapter.send_exec_approval(
+                    chat_id=source.chat_id,
+                    command=command,
+                    session_key=session.session_key,
+                    description=description,
+                    metadata=metadata,
+                    allow_permanent=False,
+                    allow_session=True,
+                    smart_denied=False,
+                )
+                if result and result.success:
+                    return True
+            except Exception as exc:
+                logger.warning(
+                    "Managed Codex button approval failed; using text: %s", exc
+                )
+
+        prefix = getattr(adapter, "typed_command_prefix", "/")
+        message = _format_exec_approval_fallback(
+            command,
+            description,
+            prefix,
+            allow_permanent=False,
+            allow_session=True,
+        )
+        result = await adapter.send(source.chat_id, message, metadata=metadata)
+        return bool(result and result.success)
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.

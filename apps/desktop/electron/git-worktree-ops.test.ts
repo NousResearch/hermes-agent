@@ -94,6 +94,31 @@ test('switchBranch: switches a normal checkout branch', async () => {
   }
 })
 
+test('switchBranch: no-ops on a project folder that is not a repo', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-plain-'))
+
+  try {
+    // The sidebar switches before starting a session; a plain folder has no
+    // branch to leave, so this must not fail the session creation behind it.
+    assert.deepEqual(await switchBranch(dir, 'main', 'git'), { branch: 'main' })
+    assert.equal(fs.existsSync(path.join(dir, '.git')), false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('switchBranch: a real repo still reports a failed switch', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-missing-'))
+
+  try {
+    await ensureGitRepo('git', dir)
+
+    await assert.rejects(() => switchBranch(dir, 'no-such-branch', 'git'))
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('listBranches: lists locals and flags the checked-out branch', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-'))
 

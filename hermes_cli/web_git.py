@@ -677,6 +677,12 @@ def branch_switch(cwd: str, branch: str) -> dict:
     target = _sanitize_branch(branch)
     if not target:
         raise RuntimeError("Branch name is required.")
+    # A project folder that isn't a repo has no branch to leave, so there is
+    # nothing to switch — succeed quietly rather than failing the caller's real
+    # work (the sidebar switches before starting a session). Never init a repo
+    # here: creating one behind the user's back is not a branch switch.
+    if _git_out(cwd, ["rev-parse", "--is-inside-work-tree"]).strip() != "true":
+        return {"branch": target}
     _git_ok(cwd, ["switch", target])
     return {"branch": target}
 

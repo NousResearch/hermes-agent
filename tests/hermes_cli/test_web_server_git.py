@@ -98,6 +98,28 @@ def test_worktree_add_initializes_plain_folder(client, tmp_path):
 
 
 
+def test_branch_switch_no_ops_on_a_plain_folder(client, tmp_path):
+    folder = tmp_path / "plain-project"
+    folder.mkdir()
+
+    # The sidebar switches to a lane's branch before starting a session there. A
+    # folder that is not a repo has no branch to leave, so this must succeed
+    # quietly instead of failing the session behind it — and must not init a repo.
+    assert client.post(
+        "/api/git/branch/switch", json={"path": str(folder), "branch": "main"}
+    ).json() == {"branch": "main"}
+    assert not (folder / ".git").exists()
+
+
+def test_branch_switch_still_switches_a_real_repo(client, repo):
+    _git(repo, "branch", "feature")
+
+    assert client.post(
+        "/api/git/branch/switch", json={"path": str(repo), "branch": "feature"}
+    ).json() == {"branch": "feature"}
+    assert client.get("/api/git/status", params={"path": str(repo)}).json()["branch"] == "feature"
+
+
 def test_git_endpoints_require_auth(repo):
     unauth = TestClient(web_server.app)
 

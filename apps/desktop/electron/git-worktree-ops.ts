@@ -435,6 +435,17 @@ async function listBranches(repoPath, gitBin) {
   }
 }
 
+// True when `dir` sits inside a git work tree. A plain project folder answers
+// "no" — as does a missing/broken git binary, which degrades the same way every
+// other op in this module does.
+async function isInsideWorkTree(gitBin, dir) {
+  try {
+    return (await runGit(gitBin, ['rev-parse', '--is-inside-work-tree'], dir)).trim() === 'true'
+  } catch {
+    return false
+  }
+}
+
 async function switchBranch(repoPath, branch, gitBin) {
   const resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Branch switch' })
 
@@ -460,6 +471,15 @@ async function switchBranch(repoPath, branch, gitBin) {
 
   if (!target) {
     throw new Error('Branch name is required.')
+  }
+
+  // A project folder that isn't a repo has no branch to leave, so there is
+  // nothing to switch — succeed quietly rather than failing the caller's real
+  // work (the sidebar switches before starting a session). Never `git init`
+  // here: creating a repo behind the user's back is not a branch switch.
+  // Matches the rest of this module, which degrades to empty on a non-repo.
+  if (!(await isInsideWorkTree(gitBin, resolved))) {
+    return { branch: target }
   }
 
   await runGit(gitBin, ['switch', target], resolved)

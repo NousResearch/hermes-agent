@@ -6,7 +6,7 @@ import type { SetTitlebarToolGroup, TitlebarTool } from '@/app/shell/titlebar-co
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
-import { Bug } from '@/lib/icons'
+import { Bug, Pin } from '@/lib/icons'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -23,6 +23,7 @@ import {
 } from './preview-console'
 import { type ConsoleEntry, createPreviewConsoleState } from './preview-console-state'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
+import { AnnotationLayer } from './annotation/annotation-layer'
 
 type PreviewWebview = HTMLElement & {
   closeDevTools?: () => void
@@ -147,12 +148,14 @@ export function PreviewPane({
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
+  const [annotating, setAnnotating] = useState(false)
 
   // Artifacts have no URL to load — they render from the registry, never in a
   // webview.
   const isWebPreview =
     target.kind !== 'artifact' &&
     (target.kind === 'url' || (target.previewKind === 'html' && target.renderMode !== 'source'))
+  const isImagePreview = !isWebPreview && target.previewKind === 'image'
 
   const currentLabel = compactUrl(currentUrl)
 
@@ -643,6 +646,16 @@ export function PreviewPane({
           className="pointer-events-auto relative min-h-0 flex-1 overflow-hidden bg-transparent"
           ref={previewContentRef}
         >
+          {(isWebPreview || isImagePreview) && !annotating && (
+            <button
+              className="pointer-events-auto absolute bottom-4 right-4 z-20 flex items-center gap-1.5 rounded-full bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 shadow-lg backdrop-blur-md transition-all hover:bg-red-500/20 hover:text-red-300"
+              onClick={() => setAnnotating(true)}
+              type="button"
+            >
+              <Pin className="h-3.5 w-3.5" />
+              {copy.annotation.start}
+            </button>
+          )}
           <div
             className={cn(
               'absolute inset-0 flex bg-transparent',
@@ -654,7 +667,12 @@ export function PreviewPane({
             (target.kind === 'artifact' ? (
               <ArtifactPreview target={target} />
             ) : (
-              <LocalFilePreview reloadKey={localReloadKey} target={target} />
+              <LocalFilePreview
+                annotating={annotating && isImagePreview}
+                onExitAnnotation={() => setAnnotating(false)}
+                reloadKey={localReloadKey}
+                target={target}
+              />
             ))}
           {loadError && (
             <PreviewLoadError
@@ -672,6 +690,18 @@ export function PreviewPane({
               consoleShouldStickRef={consoleShouldStickRef}
               consoleState={consoleState}
               startConsoleResize={startConsoleResize}
+            />
+          )}
+          {annotating && isWebPreview && (
+            <AnnotationLayer
+              onExit={() => setAnnotating(false)}
+              webview={webviewRef.current}
+            />
+          )}
+          {annotating && isImagePreview && (
+            <AnnotationLayer
+              onExit={() => setAnnotating(false)}
+              webview={null}
             />
           )}
         </div>

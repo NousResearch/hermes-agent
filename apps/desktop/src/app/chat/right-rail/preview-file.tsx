@@ -575,7 +575,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
 
 export type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
-export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
+export function LocalFilePreview({ reloadKey, target, annotating, onExitAnnotation }: { reloadKey: number; target: PreviewTarget; annotating?: boolean; onExitAnnotation?: () => void }) {
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)

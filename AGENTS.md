@@ -1135,11 +1135,12 @@ kanban task.
 - **CLI:** `hermes_cli/kanban.py` wires `hermes kanban` with verbs
   `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
   `unlink`, `comment`, `attach`, `attachments`, `attach-rm`, `complete`,
-  `request-review`, `reopen-review`, `block`, `unblock`, `archive`,
+  `request-review`, `request-changes`, `reopen-review`, `block`, `unblock`, `archive`,
   `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
   `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
 - **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
-  `kanban_show`, `kanban_complete`, `kanban_request_review`, `kanban_block`,
+  `kanban_show`, `kanban_complete`, `kanban_request_review`,
+  `kanban_request_changes`, `kanban_block`,
   `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`,
   `kanban_attach`, `kanban_attach_url`, `kanban_attachments`; profiles that
   explicitly enable the `kanban` toolset outside a dispatcher-spawned

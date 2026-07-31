@@ -2341,6 +2341,10 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        # Automatically claim tasks in the first-class review column and spawn
+        # the assigned profile with the bundled sdlc-review skill. Disable for
+        # boards where every review is performed manually from the dashboard.
+        "review_dispatch": True,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,

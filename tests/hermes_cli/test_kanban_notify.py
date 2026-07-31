@@ -65,6 +65,60 @@ def _assert_inherited_notify_sub(subs: list[dict]) -> None:
 
 
 @pytest.mark.asyncio
+async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_home):
+    from gateway.config import Platform
+    from gateway.run import GatewayRunner
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="review handoff", assignee="builder")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="chat1",
+        )
+        task = kb.claim_task(conn, task_id, claimer="builder:1")
+        assert task is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="Implementation and tests ready.",
+            reviewer="reviewer",
+            expected_run_id=task.current_run_id,
+        )
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    delivered: list[str] = []
+
+    async def _send(chat_id, message, metadata=None):
+        delivered.append(message)
+        runner._running = False
+
+    adapter = MagicMock()
+    adapter.name = "telegram"
+    adapter.send = AsyncMock(side_effect=_send)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_seconds):
+        await real_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    assert any("ready for review" in message for message in delivered)
+    assert any("Implementation and tests ready" in message for message in delivered)
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn), "review is non-final; subscription must survive"
+
+
+@pytest.mark.asyncio
 async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     """`/kanban --board <slug> create ...` must subscribe on that board.
 

@@ -224,6 +224,40 @@ def test_task_detail_includes_links_and_events(client):
 # ---------------------------------------------------------------------------
 
 
+def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "review me", "assignee": "builder"},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "review",
+            "summary": "Implementation ready.",
+            "metadata": {"tests_run": 4},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "review"
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, task["id"])
+        assert run is not None
+        assert run.outcome == "review_requested"
+        assert run.metadata == {"tests_run": 4}
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "ready"
+    with kb.connect() as conn:
+        assert any(
+            event.kind == "review_reopened"
+            for event in kb.list_events(conn, task["id"])
+        )
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 

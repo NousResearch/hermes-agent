@@ -487,8 +487,8 @@ class GatewayKanbanWatchersMixin:
                                 new_status = str(ev.payload["status"])
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
                         elif kind == "review_requested":
-                            # Implementation complete; task moved to 'review'
-                            # and awaits a human. Wake the origin thread.
+                            # Implementation complete; task moved to the
+                            # first-class review lane. Wake the origin thread.
                             handoff = ""
                             if ev.payload and ev.payload.get("summary"):
                                 handoff = f"\n{str(ev.payload['summary'])[:200]}"

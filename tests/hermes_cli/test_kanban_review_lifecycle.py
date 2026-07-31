@@ -423,20 +423,18 @@ def test_request_review_on_unclaimed_ready_synthesizes_run(kanban_home: Path) ->
         assert evs[0][1]["summary"] == "done without a claim"
 
 
-def test_reviewer_is_informational_and_does_not_reassign(kanban_home: Path) -> None:
-    """``reviewer`` is recorded on the event but must NOT reassign the task —
-    in the human-review model the task stays attributed to the implementer."""
+def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
+    """An explicit reviewer routes the review run while preserving implementer provenance."""
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="keep assignee", assignee="worker")
-        kb.claim_task(conn, tid)
+        tid = kb.create_task(conn, title="route reviewer", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
         ok = kb.request_review(
             conn, tid, summary="v1", reviewer="lead-reviewer",
-            expected_run_id=kb.get_task(conn, tid).current_run_id,
+            expected_run_id=claimed.current_run_id,
         )
         assert ok is True
-        # Assignee unchanged.
-        assert kb.get_task(conn, tid).assignee == "worker"
-        # Reviewer captured on the event payload for downstream context.
+        assert kb.get_task(conn, tid).assignee == "lead-reviewer"
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"

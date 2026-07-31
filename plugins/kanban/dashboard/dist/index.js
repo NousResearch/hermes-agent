@@ -107,7 +107,7 @@
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
-    review: "Implementation complete — awaiting human review",
+    review: "Implementation complete — awaiting review",
     done: "Completed",
     archived: "Archived",
   };

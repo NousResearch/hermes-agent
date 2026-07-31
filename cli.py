@@ -18294,7 +18294,17 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         c = _kb.connect()
         try:
             t = _kb.get_task(c, task_id)
-            return t.status if t is not None else None
+            if t is None:
+                return None
+            # ``request_changes`` deliberately lands back in ready/todo. For a
+            # goal-mode reviewer that is nevertheless a terminal outcome for
+            # this process; otherwise the review agent would keep consuming
+            # implementation turns after it released its claim.
+            if t.status in {"ready", "todo"}:
+                events = _kb.list_events(c, task_id)
+                if events and events[-1].kind == "changes_requested":
+                    return "changes_requested"
+            return t.status
         finally:
             try:
                 c.close()

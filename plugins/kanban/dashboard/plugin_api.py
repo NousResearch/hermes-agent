@@ -299,6 +299,7 @@ def _compute_task_diagnostics(
     ).fetchall():
         runs_by_task.setdefault(run_row["task_id"], []).append(run_row)
 
+    graph_by_task = kanban_db.task_graph_contexts(conn, row_ids)
     out: dict[str, list[dict]] = {}
     for r in rows:
         tid = r["id"]
@@ -307,6 +308,7 @@ def _compute_task_diagnostics(
             events_by_task.get(tid, []),
             runs_by_task.get(tid, []),
             config=diag_config,
+            graph=graph_by_task.get(tid),
         )
         if diags:
             out[tid] = [d.to_dict() for d in diags]
@@ -900,12 +902,13 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             elif s == "scheduled":
                 ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
             elif s == "review":
-                # Manual "request review" from the board: implementation done,
-                # awaiting a human. Routes through request_review so it is NOT a
+                # Manual "request review" from the board. Routes through
+                # request_review so it is NOT a
                 # block (never trips unblock-loop detection). Only valid from
                 # running/ready — a False return becomes the 409 toast below.
                 ok = kanban_db.request_review(
                     conn, task_id, summary=payload.summary,
+                    metadata=payload.metadata,
                 )
             elif s == "ready":
                 # Re-open a blocked/scheduled/review task, or just an explicit
@@ -1295,6 +1298,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         # Non-block review handoff (mirror of PATCH /tasks/{id}).
                         ok = kanban_db.request_review(
                             conn, tid, summary=payload.summary,
+                            metadata=payload.metadata,
                         )
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)

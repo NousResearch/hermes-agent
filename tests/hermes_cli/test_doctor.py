@@ -270,7 +270,22 @@ class TestDoctorMemoryProviderSection:
         # Should NOT mention Honcho or Mem0 errors
         assert "Honcho API key" not in out
         assert "Mem0" not in out
+        assert "plugin not found" not in out
 
+    def test_builtin_provider_shows_ok_not_plugin_missing(self, monkeypatch, tmp_path):
+        """memory.provider: builtin is the default, not a missing plugin (#75647)."""
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="builtin")
+        assert "Memory Provider" in out
+        assert "Built-in memory active" in out
+        assert "builtin plugin not found" not in out
+        assert "plugin not found" not in out
+        assert "hermes memory setup" not in out
+
+    @pytest.mark.parametrize("provider", ["default", "none", "BUILTIN", " None "])
+    def test_builtin_aliases_show_ok(self, monkeypatch, tmp_path, provider):
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider=provider)
+        assert "Built-in memory active" in out
+        assert "plugin not found" not in out
 
     def test_mem0_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
         # Make mem0 import fail

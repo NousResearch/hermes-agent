@@ -2617,8 +2617,18 @@ def run_doctor(args):
     except Exception:
         pass
 
-    if not _active_memory_provider:
-        check_ok("Built-in memory active", "(no external provider configured — this is fine)")
+    # ``builtin`` / ``default`` / ``none`` are first-class values for the
+    # built-in MEMORY.md provider — not plugin names. Falling through to
+    # load_memory_provider("builtin") always fails (no plugins/memory/builtin/)
+    # and prints a false "plugin not found" warning (#75647).
+    _builtin_aliases = {"", "builtin", "default", "none"}
+    if str(_active_memory_provider).strip().lower() in _builtin_aliases:
+        check_ok(
+            "Built-in memory active",
+            "(builtin provider configured — this is fine)"
+            if str(_active_memory_provider).strip()
+            else "(no external provider configured — this is fine)",
+        )
     elif _active_memory_provider == "honcho":
         try:
             from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path

@@ -4,20 +4,25 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List, Optional
+from unittest.mock import MagicMock
 
 import pytest
 
 
 def _make_supervisor() -> Any:
+    import threading
     from tools.browser_supervisor import CDPSupervisor
 
     sup = object.__new__(CDPSupervisor)
     sup.task_id = "session-A"
     sup.cdp_url = "ws://example.test/cdp"
+    sup._state_lock = threading.Lock()
+    sup._active = False
     sup._page_session_id = None
     sup._page_target_id = None
     sup._owns_page_target = False
     sup._child_sessions = {}
+    sup._loop = None
     return sup
 
 
@@ -182,3 +187,178 @@ async def test_reconnect_reuses_owned_page_target():
     assert methods.count("Target.getTargets") == 1
     assert sup._page_target_id == "OWNED-TAB"
     assert sup._page_session_id == "SID-REUSE"
+
+
+def test_navigate_page_uses_owned_session_and_activates_target(monkeypatch):
+    """Public navigation must hit the dedicated page session (#69727 review)."""
+    sup = _make_supervisor()
+    sup._active = True
+    sup._page_session_id = "SID-NAV"
+    sup._page_target_id = "TAB-NAV"
+    sup._owns_page_target = True
+    methods: List[tuple] = []
+
+    async def fake_cdp(
+        method: str,
+        params: Optional[dict] = None,
+        session_id: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> dict:
+        methods.append((method, params, session_id))
+        if method == "Page.navigate":
+            return {"result": {"frameId": "frame-1", "loaderId": "load-1"}}
+        return {"result": {}}
+
+    class _Loop:
+        def is_running(self) -> bool:
+            return True
+
+    class _Fut:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self, timeout=None):
+            return self._value
+
+    def schedule(coro, loop):
+        # Run the coroutine on a private loop to completion.
+        loop_local = asyncio.new_event_loop()
+        try:
+            return _Fut(loop_local.run_until_complete(coro))
+        finally:
+            loop_local.close()
+
+    monkeypatch.setattr(
+        "agent.async_utils.safe_schedule_threadsafe", schedule
+    )
+    sup._loop = _Loop()  # type: ignore[assignment]
+    sup._cdp = fake_cdp  # type: ignore[method-assign]
+
+    result = sup.navigate_page("https://example.com/search")
+
+    assert result["ok"] is True
+    assert result["target_id"] == "TAB-NAV"
+    assert ("Target.activateTarget", {"targetId": "TAB-NAV"}, None) in methods
+    assert any(
+        m[0] == "Page.navigate"
+        and m[1] == {"url": "https://example.com/search"}
+        and m[2] == "SID-NAV"
+        for m in methods
+    )
+
+
+def test_browser_navigate_cdp_uses_supervisor_page(monkeypatch):
+    """browser_navigate on a CDP session must not fall through to unbound CLI."""
+    import json
+    import tools.browser_tool as bt
+    import tools.browser_supervisor as bsup
+
+    session = {
+        "session_name": "cdp_test",
+        "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
+        "page_target_id": "TASK-TAB",
+        "_first_nav": True,
+    }
+
+    class _Sup:
+        def page_target_id(self):
+            return "TASK-TAB"
+
+        def navigate_page(self, url, timeout=30.0):
+            return {
+                "ok": True,
+                "target_id": "TASK-TAB",
+                "frame_id": "f1",
+                "loader_id": "l1",
+            }
+
+    class _Reg:
+        def get(self, task_id):
+            return _Sup()
+
+    monkeypatch.setattr(bt, "_get_session_info", lambda key: session)
+    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr(bt, "_bind_session_page_target", lambda tid, info: None)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(bt, "_allow_private_urls", lambda: True)
+    monkeypatch.setattr(bt, "_is_always_blocked_url", lambda url: False)
+    monkeypatch.setattr(bt, "check_website_access", lambda url: None)
+    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(bt, "_maybe_start_recording", lambda key: None)
+    monkeypatch.setattr(bt, "_sensitive_query_param_name", lambda url: None)
+    monkeypatch.setattr(bt, "_normalize_url_for_request", lambda url: url)
+    monkeypatch.setattr(bsup, "SUPERVISOR_REGISTRY", _Reg())
+
+    def _fail_cli(*a, **k):
+        raise AssertionError("must not call agent-browser CLI for CDP navigate")
+
+    monkeypatch.setattr(bt, "_run_browser_command", _fail_cli)
+
+    out = json.loads(bt.browser_navigate("https://www.baidu.com", task_id="sess-A"))
+    assert out["success"] is True
+    assert out["page_target_id"] == "TASK-TAB"
+    assert out["via"] == "cdp_supervisor"
+
+
+def test_two_task_navigate_paths_keep_distinct_targets(monkeypatch):
+    """Two task_ids must route navigate to different page targets."""
+    import json
+    import tools.browser_tool as bt
+    import tools.browser_supervisor as bsup
+
+    sessions = {
+        "sess-A": {
+            "session_name": "cdp_a",
+            "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
+            "_first_nav": True,
+        },
+        "sess-B": {
+            "session_name": "cdp_b",
+            "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
+            "_first_nav": True,
+        },
+    }
+    seen: Dict[str, str] = {}
+
+    class _Sup:
+        def __init__(self, tid: str, tab: str):
+            self.tid = tid
+            self.tab = tab
+
+        def page_target_id(self):
+            return self.tab
+
+        def navigate_page(self, url, timeout=30.0):
+            seen[self.tid] = self.tab
+            return {"ok": True, "target_id": self.tab, "frame_id": "f"}
+
+    class _Reg:
+        def get(self, task_id):
+            tab = "TAB-A" if task_id == "sess-A" else "TAB-B"
+            return _Sup(task_id, tab)
+
+    monkeypatch.setattr(bt, "_get_session_info", lambda key: sessions[key])
+    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr(bt, "_bind_session_page_target", lambda tid, info: None)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(bt, "_allow_private_urls", lambda: True)
+    monkeypatch.setattr(bt, "_is_always_blocked_url", lambda url: False)
+    monkeypatch.setattr(bt, "check_website_access", lambda url: None)
+    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(bt, "_maybe_start_recording", lambda key: None)
+    monkeypatch.setattr(bt, "_sensitive_query_param_name", lambda url: None)
+    monkeypatch.setattr(bt, "_normalize_url_for_request", lambda url: url)
+    monkeypatch.setattr(bsup, "SUPERVISOR_REGISTRY", _Reg())
+    monkeypatch.setattr(
+        bt,
+        "_run_browser_command",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no CLI")),
+    )
+
+    a = json.loads(bt.browser_navigate("https://www.baidu.com", task_id="sess-A"))
+    b = json.loads(bt.browser_navigate("https://www.sina.com.cn", task_id="sess-B"))
+    assert a["page_target_id"] == "TAB-A"
+    assert b["page_target_id"] == "TAB-B"
+    assert seen == {"sess-A": "TAB-A", "sess-B": "TAB-B"}

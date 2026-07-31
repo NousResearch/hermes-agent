@@ -2278,8 +2278,94 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # Skip for local sidecars — they have no CDP URL.
     if not force_local:
         _ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
 
     return session_info
+
+
+def _bind_session_page_target(task_id: str, session_info: Dict[str, Any]) -> None:
+    """Copy the supervisor's dedicated page target onto session_info.
+
+    Multi-session CDP isolation requires the public browser path (navigate /
+    click / …) to know which page this task_id owns (#69727).
+    """
+    if not session_info.get("cdp_url") and not _get_cdp_override_raw():
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return
+        target_id = supervisor.page_target_id()
+        if target_id:
+            session_info["page_target_id"] = target_id
+    except Exception as exc:
+        logger.debug(
+            "Could not bind page_target_id for task=%s: %s", task_id, exc
+        )
+
+
+def _activate_session_page_target(task_id: str, session_info: Dict[str, Any]) -> None:
+    """Focus this task's dedicated CDP page before agent-browser CLI work."""
+    if not session_info.get("cdp_url") and not session_info.get("page_target_id"):
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return
+        result = supervisor.activate_owned_page()
+        if not result.get("ok"):
+            logger.debug(
+                "activate_owned_page failed for task=%s: %s",
+                task_id,
+                result.get("error"),
+            )
+    except Exception as exc:
+        logger.debug("activate_owned_page error for task=%s: %s", task_id, exc)
+
+
+def _navigate_via_supervisor_page(
+    task_id: str, url: str, session_info: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Navigate using the supervisor's dedicated page when on CDP.
+
+    Returns a result dict on success/handled-failure, or ``None`` to fall
+    through to the agent-browser CLI path (local sessions, no supervisor).
+    """
+    if not session_info.get("cdp_url"):
+        return None
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        _ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None or not supervisor.page_target_id():
+            return None
+        nav = supervisor.navigate_page(url)
+        if not nav.get("ok"):
+            return {
+                "success": False,
+                "error": nav.get("error") or "supervisor Page.navigate failed",
+                "page_target_id": session_info.get("page_target_id"),
+            }
+        return {
+            "success": True,
+            "url": url,
+            "page_target_id": nav.get("target_id") or session_info.get("page_target_id"),
+            "frame_id": nav.get("frame_id"),
+            "via": "cdp_supervisor",
+        }
+    except Exception as exc:
+        logger.debug(
+            "supervisor navigate failed for task=%s, falling back to CLI: %s",
+            task_id,
+            exc,
+        )
+        return None
 
 
 
@@ -2516,7 +2602,11 @@ def _run_browser_command(
     # Local mode: --session <name> launches a local headless Chromium.
     # The rest of the command (--json, command, args) is identical.
     if session_info.get("cdp_url"):
-        # Cloud mode — connect to remote Browserbase browser via CDP
+        # Cloud / user CDP — connect via CDP. Focus this task's dedicated page
+        # first so multi-session headed browsers do not race on one tab (#69727).
+        _ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
+        _activate_session_page_target(task_id, session_info)
         # IMPORTANT: Do NOT use --session with --cdp. In agent-browser >=0.13,
         # --session creates a local browser instance and silently ignores --cdp.
         backend_args = ["--cdp", session_info["cdp_url"]]
@@ -3057,6 +3147,16 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if is_first_nav:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
+
+    # CDP multi-session: navigate on the supervisor-owned page, not whichever
+    # tab agent-browser considers active (#69727).
+    supervisor_result = _navigate_via_supervisor_page(
+        nav_session_key, url, session_info
+    )
+    if supervisor_result is not None:
+        if is_first_nav and session_info.get("features"):
+            supervisor_result["stealth"] = session_info.get("features")
+        return json.dumps(supervisor_result)
 
     result = _run_browser_command(
         nav_session_key,

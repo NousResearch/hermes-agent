@@ -516,6 +516,107 @@ class CDPSupervisor:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         return {"ok": True, "dialog": snapshot_copy.to_dict()}
 
+    def page_target_id(self) -> Optional[str]:
+        """Return the dedicated page target for this task, if attached."""
+        return self._page_target_id
+
+    def activate_owned_page(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """Bring this supervisor's dedicated page to the front (shared CDP).
+
+        Required before agent-browser CLI commands against a multi-session
+        headed browser so navigate/click hit our tab, not another session's.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            target_id = self._page_target_id
+        if not target_id:
+            return {"ok": False, "error": "supervisor has no dedicated page target"}
+
+        async def _do_activate() -> None:
+            await self._cdp(
+                "Target.activateTarget",
+                {"targetId": target_id},
+                timeout=timeout,
+            )
+
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+
+            fut = safe_schedule_threadsafe(_do_activate(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
+            fut.result(timeout=timeout + 1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "target_id": target_id}
+
+    def navigate_page(self, url: str, timeout: float = 30.0) -> Dict[str, Any]:
+        """Navigate this supervisor's dedicated page via live CDP Page.navigate.
+
+        Bypasses agent-browser so multi-session CDP sessions do not race on
+        whichever tab agent-browser considers active.
+        """
+        if not isinstance(url, str) or not url.strip():
+            return {"ok": False, "error": "url must be a non-empty string"}
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            session_id = self._page_session_id
+            target_id = self._page_target_id
+        if not session_id:
+            return {"ok": False, "error": "supervisor has no attached page session"}
+
+        async def _do_nav() -> Dict[str, Any]:
+            if target_id:
+                try:
+                    await self._cdp(
+                        "Target.activateTarget",
+                        {"targetId": target_id},
+                        timeout=min(timeout, 5.0),
+                    )
+                except Exception:
+                    pass
+            return await self._cdp(
+                "Page.navigate",
+                {"url": url.strip()},
+                session_id=session_id,
+                timeout=timeout,
+            )
+
+        try:
+            from agent.async_utils import safe_schedule_threadsafe
+
+            fut = safe_schedule_threadsafe(_do_nav(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
+            response = fut.result(timeout=timeout + 1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        result = response.get("result") if isinstance(response, dict) else None
+        error_text = None
+        if isinstance(result, dict):
+            error_text = result.get("errorText")
+        if error_text:
+            return {
+                "ok": False,
+                "error": str(error_text),
+                "target_id": target_id,
+            }
+        return {
+            "ok": True,
+            "target_id": target_id,
+            "frame_id": (result or {}).get("frameId") if isinstance(result, dict) else None,
+            "loader_id": (result or {}).get("loaderId") if isinstance(result, dict) else None,
+        }
+
     def evaluate_runtime(
         self,
         expression: str,

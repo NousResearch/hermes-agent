@@ -23,6 +23,7 @@ import {
   relativeSessionAge,
   resumableHistory,
   selectedSessionRowStyle,
+  sessionListRequestParams,
   sessionRowKindAt,
   sessionsCountLabel
 } from '../components/activeSessionSwitcher.js'
@@ -175,6 +176,11 @@ describe('session orchestrator helpers', () => {
 })
 
 describe('unified Sessions overlay helpers', () => {
+  it('requests cron sessions only when the resume checkbox is enabled', () => {
+    expect(sessionListRequestParams(false)).toEqual({ include_cron: false, limit: 200 })
+    expect(sessionListRequestParams(true)).toEqual({ include_cron: true, limit: 200 })
+  })
+
   it('orders rows as [new][live…][history…]', () => {
     // 2 live sessions, any number of history rows after them.
     expect(sessionRowKindAt(0, 2)).toBe('new')

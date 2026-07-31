@@ -169,28 +169,26 @@ def _(rid, params: dict) -> dict:
             # user-facing surface — CLI, TUI, all gateway platforms (including new
             # ones not enumerated here), ACP adapter clients, webhook sessions,
             # custom `HERMES_SESSION_SOURCE` values, and older installs with
-            # different source labels. We deny-list only the noisy internal
-            # sources (``tool`` sub-agent runs and ``kanban`` dispatcher
-            # workers) rather than allow-listing a fixed set of platform names
-            # that goes stale whenever a new platform is added or a user names
-            # their own source.
-            deny = frozenset({"kanban", "tool"})
+            # different source labels. We always deny-list the noisy internal
+            # sources (``tool`` sub-agent runs and ``kanban`` dispatcher workers),
+            # and let the TUI opt out of cron history without allow-listing a fixed
+            # set of platform names that goes stale whenever a new platform is
+            # added or a user names their own source.
+            include_cron = params.get("include_cron", True)
+            if not isinstance(include_cron, bool):
+                raise ValueError("include_cron must be a boolean")
 
+            exclude_sources = ["kanban", "tool"]
+            if not include_cron:
+                exclude_sources.append("cron")
             limit = int(params.get("limit", 200) or 200)
-            # Over-fetch modestly so per-source filtering doesn't leave us
-            # short; the compression-tip projection in ``list_sessions_rich``
-            # can also merge rows.
-            fetch_limit = max(limit * 2, 200)
-            rows = [
-                s
-                for s in db.list_sessions_rich(
-                    source=None,
-                    limit=fetch_limit,
-                    order_by_last_active=True,
-                    compact_rows=True,
-                )
-                if (s.get("source") or "").strip().lower() not in deny
-            ][:limit]
+            rows = db.list_sessions_rich(
+                source=None,
+                exclude_sources=exclude_sources,
+                limit=limit,
+                order_by_last_active=True,
+                compact_rows=True,
+            )
             return _ok(
                 rid,
                 {
@@ -207,6 +205,8 @@ def _(rid, params: dict) -> dict:
                     ]
                 },
             )
+        except ValueError as e:
+            return _err(rid, 4006, str(e))
         except Exception as e:
             return _err(rid, 5006, str(e))
 

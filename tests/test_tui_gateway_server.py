@@ -11066,6 +11066,74 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
 
 
+def test_session_list_can_exclude_cron(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    for session_id, source in (
+        ("cli-1", "cli"),
+        ("tui-1", "tui"),
+        ("chat-1", "telegram"),
+        ("cron-1", " CRON "),
+        ("kanban-1", " Kanban "),
+        ("tool-1", " Tool "),
+    ):
+        db.create_session(session_id=session_id, source=source)
+        db.append_message(session_id, role="user", content=session_id)
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        without_cron = server.handle_request(
+            {
+                "id": "without-cron",
+                "method": "session.list",
+                "params": {"include_cron": False},
+            }
+        )
+        assert {row["id"] for row in without_cron["result"]["sessions"]} == {
+            "cli-1",
+            "tui-1",
+            "chat-1",
+        }
+
+        with_cron = server.handle_request(
+            {
+                "id": "with-cron",
+                "method": "session.list",
+                "params": {"include_cron": True},
+            }
+        )
+        assert {row["id"] for row in with_cron["result"]["sessions"]} == {
+            "chat-1",
+            "cli-1",
+            "cron-1",
+            "tui-1",
+        }
+    finally:
+        db.close()
+
+
+def test_session_list_without_include_cron_preserves_existing_policy(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, **kwargs):
+            assert kwargs["exclude_sources"] == ["kanban", "tool"]
+            return [
+                {"id": "human-1", "source": "tui", "title": "Human"},
+                {"id": "cron-1", "source": "cron", "title": "Cron"},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    response = server.handle_request(
+        {"id": "legacy", "method": "session.list", "params": {}}
+    )
+
+    assert [row["id"] for row in response["result"]["sessions"]] == [
+        "human-1",
+        "cron-1",
+    ]
+
+
 # --------------------------------------------------------------------------
 # session.delete — TUI resume picker `d` key
 # --------------------------------------------------------------------------

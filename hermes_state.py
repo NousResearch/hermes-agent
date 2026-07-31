@@ -5545,9 +5545,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 active_lock is not None
                 and active_lock["holder"] != compression_lock_holder
             ):
-                raise CompressionSessionBusyError(
-                    f"Session {session_id!r} is being compressed by another writer"
-                )
+                # A compressor that self-restarted (or was killed) without
+                # releasing its lease otherwise blocks every append for the
+                # rest of the TTL, surfacing to the user as a misleading
+                # "session storage could not be written" turn failure.
+                # Mirror try_acquire_compression_lock's reclaim-first check:
+                # only a kernel-confirmed-dead holder PID is reclaimed here,
+                # so a live compressor is never interrupted.
+                if _compression_lock_holder_process_is_dead(active_lock["holder"]):
+                    conn.execute(
+                        "DELETE FROM compression_locks "
+                        "WHERE session_id = ? AND holder = ?",
+                        (session_id, active_lock["holder"]),
+                    )
+                else:
+                    raise CompressionSessionBusyError(
+                        f"Session {session_id!r} is being compressed by another writer"
+                    )
             session = conn.execute(
                 "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
                 (session_id,),

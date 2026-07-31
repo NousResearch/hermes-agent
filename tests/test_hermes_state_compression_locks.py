@@ -153,6 +153,54 @@ def test_non_expired_lock_from_live_pid_is_not_reclaimed(db: SessionDB) -> None:
 
 
 
+def test_append_message_reclaims_lock_from_dead_pid(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer must not be blocked for the full TTL by a lease whose
+    holder process is confirmed gone (#session_persistence_failed).
+
+    Regression for a gateway self-restart mid-compression: the old
+    process's lease outlived it, and every append to that session raised
+    ``CompressionSessionBusyError`` — surfaced to the user as a bogus
+    "session storage could not be written" failure — until the TTL
+    (minutes) elapsed on its own.
+    """
+    monkeypatch.setattr(hermes_state.os, "name", "posix")
+    db.create_session("sess1", "cli")
+    dead_holder = "pid=424242:tid=1:agent=abc:nonce=deadbeef"
+    assert db.try_acquire_compression_lock(
+        "sess1", dead_holder, ttl_seconds=300
+    ) is True
+
+    monkeypatch.setattr(
+        hermes_state, "psutil", SimpleNamespace(pid_exists=lambda _pid: False)
+    )
+
+    # Appending as a different holder must reclaim the dead lease rather
+    # than raise, and the stale row must be gone afterwards.
+    msg_id = db.append_message(
+        "sess1", "user", content="hello", compression_lock_holder="someone-else"
+    )
+    assert isinstance(msg_id, int)
+    assert db.get_compression_lock_holder("sess1") is None
+
+
+def test_append_message_still_blocked_by_live_holder(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live compressor's lease must still block concurrent appends."""
+    db.create_session("sess1", "cli")
+    live_holder = f"pid={os.getpid()}:tid=1:agent=abc:nonce=live"
+    assert db.try_acquire_compression_lock(
+        "sess1", live_holder, ttl_seconds=300
+    ) is True
+
+    with pytest.raises(hermes_state.CompressionSessionBusyError):
+        db.append_message(
+            "sess1", "user", content="hello", compression_lock_holder="someone-else"
+        )
+
+
 def test_unstructured_holder_waits_for_ttl(
     db: SessionDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -243,6 +243,30 @@ def test_failed_assistant_persist_blocks_ui_projection_and_tool_side_effects():
     assert result["turn_exit_reason"] == "session_persistence_failed"
 
 
+def test_failed_assistant_persist_from_compression_busy_gets_distinct_reason():
+    """A still-live compressor's lease must not be reported as a disk/
+    permission failure (#session_persistence_failed): the turn-exit reason
+    carries a ``:lock_busy`` suffix so the user sees an accurate, actionable
+    message instead of being told to check disk space for a healthy DB.
+    """
+    agent = _make_agent()
+    tool_call = _mock_tool_call(call_id="must-not-run")
+    agent.client.chat.completions.create.return_value = _mock_response(
+        content="I'll inspect the repository now.",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+    agent._flush_messages_to_session_db = MagicMock(return_value=False)
+    agent._last_flush_was_compression_busy = True
+    agent.interim_assistant_callback = MagicMock()
+    agent._execute_tool_calls = MagicMock()
+
+    result = agent.run_conversation("inspect the repository")
+
+    assert result["failed"] is True
+    assert result["turn_exit_reason"] == "session_persistence_failed:lock_busy"
+
+
 # ---------------------------------------------------------------------------
 # Contract 2: the SEQUENTIAL path flushes each tool result immediately, BEFORE
 # the next tool dispatches.  Dispatch goes through run_agent.handle_function_call

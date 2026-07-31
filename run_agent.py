@@ -2191,6 +2191,14 @@ class AIAgent:
             # leaves messages with mixed dispositions.
             self._db_flush_scan_prefix = None
             logger.warning("Session DB append_message failed: %s", e)
+            # Let the turn-exit-reason formatter distinguish a live writer
+            # holding the compression lease (transient, self-resolves within
+            # the lease TTL) from an actual disk/permission failure, instead
+            # of blaming disk space for both (#session_persistence_failed).
+            from hermes_state import CompressionSessionBusyError
+            self._last_flush_was_compression_busy = isinstance(
+                e, CompressionSessionBusyError
+            )
             return False
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
@@ -3509,6 +3517,14 @@ class AIAgent:
                 + "the turn stopped while a tool result was still pending and "
                 "the model produced no follow-up text. Send `continue` to "
                 "let it summarize."
+            )
+        if reason == "session_persistence_failed:lock_busy":
+            return (
+                prefix
+                + "the turn was stopped because another Hermes process is "
+                "still compressing this session's history (its lease "
+                "expires within a few minutes). This resolves on its own — "
+                "wait a moment, then send your message again."
             )
         if reason == "session_persistence_failed":
             return (

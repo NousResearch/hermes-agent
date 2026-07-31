@@ -81,6 +81,25 @@ def test_explanation_quiet_for_empty_reason():
 
 
 
+def test_explanation_distinguishes_lock_busy_from_disk_permission_failure():
+    """``session_persistence_failed:lock_busy`` must not blame disk space.
+
+    A live compressor holding the lease is a transient, self-resolving
+    condition — the message must say so instead of pointing the user at
+    disk/permission checks for a database that isn't actually broken.
+    """
+    generic = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed"
+    )
+    assert "disk space" in generic.lower()
+
+    lock_busy = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed:lock_busy"
+    )
+    assert "disk space" not in lock_busy.lower()
+    assert "compress" in lock_busy.lower()
+
+
 def test_explanation_for_max_iterations_reached_prefix_match():
     """``max_iterations_reached(...)`` carries a parenthetical suffix."""
     out = AIAgent._format_turn_completion_explanation(

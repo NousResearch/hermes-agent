@@ -233,6 +233,119 @@ class TestClearResumePending:
         assert store.clear_resume_pending(entry.session_key) is False
 
 
+class TestDowngradeUntrustedExactResumePending:
+    @pytest.mark.asyncio
+    async def test_unclean_exact_marker_cannot_reenable_after_later_clean_boot(
+        self, tmp_path
+    ):
+        store = _make_store(tmp_path)
+        source = _make_source(chat_id="ambiguous")
+        entry = store.get_or_create_session(source)
+        assert store.mark_resume_pending(entry.session_key, "shutdown_timeout") is True
+
+        assert store.downgrade_untrusted_exact_resume_pending() == 1
+        assert entry.resume_reason == "restart_interrupted"
+
+        # Simulate a later, unrelated clean predecessor: the downgrade is
+        # persistent state, so clean proof cannot make this marker exact again.
+        runner, adapter = make_restart_runner()
+        runner._previous_shutdown_clean = True
+        runner.session_store = store
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        adapter.handle_message = AsyncMock()
+
+        assert runner._schedule_resume_pending_sessions() == 0
+        await asyncio.sleep(0)
+        adapter.handle_message.assert_not_called()
+        assert entry.resume_pending is True
+        assert entry.resume_reason == "restart_interrupted"
+
+    def test_db_failure_propagates_even_when_json_mirror_succeeds(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source(chat_id="ambiguous-db")
+        entry = store.get_or_create_session(source)
+        assert store.mark_resume_pending(entry.session_key, "restart_timeout") is True
+
+        store._db.replace_gateway_routing_entries = MagicMock(
+            side_effect=OSError("db write blocked")
+        )
+
+        with pytest.raises(
+            RuntimeError, match="authoritative state.db routing save failed"
+        ):
+            store.downgrade_untrusted_exact_resume_pending()
+
+        assert entry.resume_reason == "restart_interrupted"
+
+        # A reboot still loads the stale exact reason from authoritative state.db,
+        # not the successfully updated JSON mirror. The propagated failure is what
+        # lets gateway startup taint this lifecycle and suppress new clean proof.
+        reloaded_store = _make_store(tmp_path)
+        reloaded = next(
+            candidate
+            for candidate in reloaded_store.list_sessions()
+            if candidate.session_key == entry.session_key
+        )
+        assert reloaded.resume_reason == "restart_timeout"
+
+    def test_missing_authoritative_db_fails_exact_downgrade(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source(chat_id="ambiguous-no-db")
+        entry = store.get_or_create_session(source)
+        assert store.mark_resume_pending(entry.session_key, "shutdown_timeout") is True
+        store._db = None
+
+        with pytest.raises(
+            RuntimeError, match="authoritative state.db routing save failed"
+        ):
+            store.downgrade_untrusted_exact_resume_pending()
+
+    def test_exact_mark_db_failure_propagates_and_db_remains_unmarked(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source(chat_id="exact-mark-db")
+        entry = store.get_or_create_session(source)
+        store._db.replace_gateway_routing_entries = MagicMock(
+            side_effect=OSError("db write blocked")
+        )
+
+        with pytest.raises(
+            RuntimeError, match="authoritative state.db routing save failed"
+        ):
+            store.mark_resume_pending(entry.session_key, "restart_timeout")
+
+        reloaded_store = _make_store(tmp_path)
+        reloaded = next(
+            candidate
+            for candidate in reloaded_store.list_sessions()
+            if candidate.session_key == entry.session_key
+        )
+        assert reloaded.resume_pending is False
+        assert reloaded.resume_reason is None
+
+    def test_exact_clear_db_failure_propagates_and_db_retains_marker(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source(chat_id="exact-clear-db")
+        entry = store.get_or_create_session(source)
+        assert store.mark_resume_pending(entry.session_key, "restart_timeout") is True
+        store._db.replace_gateway_routing_entries = MagicMock(
+            side_effect=OSError("db write blocked")
+        )
+
+        with pytest.raises(
+            RuntimeError, match="authoritative state.db routing save failed"
+        ):
+            store.clear_resume_pending(entry.session_key)
+
+        reloaded_store = _make_store(tmp_path)
+        reloaded = next(
+            candidate
+            for candidate in reloaded_store.list_sessions()
+            if candidate.session_key == entry.session_key
+        )
+        assert reloaded.resume_pending is True
+        assert reloaded.resume_reason == "restart_timeout"
+
+
 # ---------------------------------------------------------------------------
 # SessionStore.get_or_create_session resume_pending behaviour
 # ---------------------------------------------------------------------------
@@ -570,8 +683,8 @@ async def test_drain_timeout_marks_resume_pending(tmp_path, monkeypatch):
     assert marked == {session_key_one, session_key_two}
     for args in calls:
         assert args[0][1] == "shutdown_timeout"
-    assert not (tmp_path / ".clean_shutdown").exists(), (
-        "interrupted chats rely on exact markers, not a clean-shutdown claim"
+    assert (tmp_path / ".clean_shutdown").exists(), (
+        "complete exact markers must suppress broad recent-session inference"
     )
 
 
@@ -634,6 +747,126 @@ async def test_completed_drain_clears_old_marker_when_pre_mark_raises(
     )
     async_store.clear_resume_pending.assert_awaited_once_with(session_key)
     assert session_key not in runner._shutdown_resume_pending_keys
+
+
+@pytest.mark.asyncio
+async def test_completed_drain_clear_failure_keeps_crash_fallback(
+    tmp_path, monkeypatch
+):
+    """Uncertain cleanup must not make a stale exact marker auto-dispatchable."""
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    session_key = "agent:main:telegram:dm:A"
+    runner._running_agents = {session_key: MagicMock()}
+
+    async_store = MagicMock()
+    async_store._store = runner.session_store
+    async_store.mark_resume_pending = AsyncMock(return_value=True)
+    async_store.clear_resume_pending = AsyncMock(
+        side_effect=OSError("clear blocked")
+    )
+    runner._async_session_store = async_store
+
+    async def finish_during_drain(_timeout):
+        runner._running_agents.pop(session_key)
+        return {}, False
+
+    with patch(
+        "gateway.run.GatewayRunner._drain_active_agents",
+        side_effect=finish_during_drain,
+    ), patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    async_store.clear_resume_pending.assert_awaited_once_with(session_key)
+    assert not (tmp_path / ".clean_shutdown").exists(), (
+        "without clean proof, startup heuristics defer stale exact recovery "
+        "until a real inbound message"
+    )
+
+    source = make_restart_source(chat_id="A")
+    pending_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="shutdown_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {session_key: pending_entry}
+    runner._previous_shutdown_clean = False
+    adapter.handle_message = AsyncMock()
+
+    assert runner._schedule_resume_pending_sessions() == 0
+    await asyncio.sleep(0)
+    adapter.handle_message.assert_not_called()
+    assert pending_entry.resume_pending is True
+
+
+@pytest.mark.asyncio
+async def test_turn_finishing_during_timeout_remark_is_cleared(
+    tmp_path, monkeypatch
+):
+    """A turn finishing during the final mark must not retain exact recovery."""
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    session_key = "agent:main:telegram:dm:A"
+    running_agent = MagicMock()
+    runner._running_agents = {session_key: running_agent}
+
+    mark_calls = 0
+
+    async def mark_then_finish(key: str, reason: str) -> bool:
+        nonlocal mark_calls
+        assert key == session_key
+        assert reason == "shutdown_timeout"
+        mark_calls += 1
+        if mark_calls == 2:
+            runner._running_agents.pop(session_key)
+        return True
+
+    async_store = MagicMock()
+    async_store._store = runner.session_store
+    async_store.mark_resume_pending = AsyncMock(side_effect=mark_then_finish)
+    async_store.clear_resume_pending = AsyncMock(return_value=True)
+    runner._async_session_store = async_store
+
+    with patch(
+        "gateway.run.GatewayRunner._drain_active_agents",
+        new_callable=AsyncMock,
+        return_value=({session_key: running_agent}, True),
+    ), patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    assert mark_calls == 2
+    async_store.clear_resume_pending.assert_awaited_once_with(session_key)
+    assert session_key not in runner._shutdown_resume_pending_keys
+    assert (tmp_path / ".clean_shutdown").exists()
+
+
+@pytest.mark.asyncio
+async def test_runtime_exact_clear_failure_blocks_future_clean_proof():
+    runner, _adapter = make_restart_runner()
+    session_key = "agent:main:telegram:dm:A"
+    async_store = MagicMock()
+    async_store._store = runner.session_store
+    async_store.clear_resume_pending = AsyncMock(
+        side_effect=RuntimeError("authoritative state.db routing save failed")
+    )
+    runner._async_session_store = async_store
+
+    await runner._clear_resume_pending_after_success(session_key)
+
+    assert runner._clean_shutdown_marker_blocked is True
 
 
 @pytest.mark.asyncio

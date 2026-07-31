@@ -3042,6 +3042,13 @@ class ContextCompressor(ContextEngine):
         self._last_aux_call_provider: str = ""
         self._last_aux_call_model: str = ""
         self._last_aux_call_base_url: str = ""
+        # Per-attempt failure classification ("auth" | "network" | "other" |
+        # None). Unlike _last_summary_auth_failure / _last_summary_network_failure,
+        # which are intentionally sticky across compress() calls to preserve
+        # the cooldown guard (see compress()), this field is reset at the top
+        # of every _generate_summary attempt so the abort diagnostic reflects
+        # the CURRENT attempt's failure mode, not a stale prior one (#72636).
+        self._last_attempt_failure_class: Optional[str] = None
         self._last_compression_telemetry: Optional[Dict[str, Any]] = None
         self._active_compression_telemetry: Optional[Dict[str, Any]] = None
         self._compression_telemetry_seed: Optional[Dict[str, Any]] = None
@@ -4638,6 +4645,12 @@ FOCUS TOPIC: "{focus_topic}"
 This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
         try:
+            # Per-attempt reset: this attempt's failure classification must
+            # reflect THIS attempt's outcome, not a sticky prior one (#72636).
+            # _last_summary_auth_failure / _last_summary_network_failure stay
+            # sticky for the cooldown guard (see compress()); this field is the
+            # authoritative "what went wrong this attempt" for the abort path.
+            self._last_attempt_failure_class = None
             call_kwargs = {
                 "task": "compression",
                 "main_runtime": {
@@ -4841,6 +4854,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Keep the established field name for caller compatibility;
                 # it now represents the broader terminal access/quota class.
                 self._last_summary_auth_failure = True
+                self._last_attempt_failure_class = "auth"
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
                 logger.error(
                     "Context compression failed: auxiliary LLM returned a "
@@ -4935,6 +4949,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             # the auth-failure carve-out; independent of abort_on_summary_failure.
             if _is_streaming_closed:
                 self._last_summary_network_failure = True
+                self._last_attempt_failure_class = "network"
+            elif self._last_attempt_failure_class is None:
+                # Any other transient failure (timeout, JSON decode, 5xx, ...)
+                # that reached this branch — not auth, not a network stream
+                # close. Classified so the abort diagnostic does not inherit a
+                # stale "auth" verdict from a prior attempt (#72636).
+                self._last_attempt_failure_class = "other"
             logger.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",

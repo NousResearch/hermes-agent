@@ -2233,7 +2233,7 @@ def finalize_context_engine_compression_notification(
 
 def _emit_compression_auth_hint(agent: Any) -> None:
     """Surface the compression auxiliary's own provider/model/endpoint when
-    compression aborted on an auxiliary auth/quota failure (#72636).
+    compression aborted on the auxiliary summary call (#72636).
 
     The identity actually used on the wire for the summary call is
     resolved from ``auxiliary.compression`` config by
@@ -2256,14 +2256,28 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     are populated before the summary ``call_llm`` fires, so they are
     fresh at this call site.
 
-    Silent when no compressor is attached or the abort was not an auth
-    failure (the gate is ``_last_summary_auth_failure``). Falls back to
-    the main-model identity when no separate auxiliary was resolved
-    (``auxiliary.compression`` unset / ``auto``) and says so explicitly,
-    rather than silently reporting a wrong endpoint.
+    The gate is the per-attempt ``_last_attempt_failure_class`` (reset at
+    the top of every ``_generate_summary`` attempt), NOT the sticky
+    ``_last_summary_auth_failure`` — that flag intentionally persists
+    across compress() calls to protect the cooldown guard, so a 401
+    followed by a forced retry that fails with a 500 would otherwise be
+    mis-attributed as an auth failure (#72636).
+
+    Falls back to the main-model identity when no separate auxiliary was
+    resolved (``auxiliary.compression`` unset / ``auto``) and says so
+    explicitly, rather than silently reporting a wrong endpoint.
+
+    Wording is chosen to pass the gateway noise filter
+    (``_TELEGRAM_NOISY_STATUS_RE``) — it must NOT match
+    ``auxiliary\\s+.+\\s+failed`` / ``compression\\s+summary\\s+failed``
+    patterns, otherwise messaging platforms (Telegram/Discord/Slack)
+    silently swallow the diagnostic and the user never sees it.
     """
     _ctx_comp = getattr(agent, "context_compressor", None)
-    if _ctx_comp is None or not getattr(_ctx_comp, "_last_summary_auth_failure", False):
+    if _ctx_comp is None:
+        return
+    _cls = getattr(_ctx_comp, "_last_attempt_failure_class", None)
+    if _cls not in ("auth", "network", "other"):
         return
 
     _aux_provider = (getattr(_ctx_comp, "_last_aux_call_provider", "") or "").strip()
@@ -2281,9 +2295,22 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     else:
         _note = ""
 
+    # Per-class guidance. Wording avoids the gateway noise-filter patterns
+    # (notably "auxiliary ... failed" and "compression summary failed") so
+    # the message reaches Telegram/Discord/Slack, not just local/CLI.
+    if _cls == "auth":
+        _guidance = (
+            "auth/permission error — check the credential and "
+            "auxiliary.compression in config.yaml"
+        )
+    elif _cls == "network":
+        _guidance = "network/connection error — this is usually transient"
+    else:
+        _guidance = "error — see agent.log for detail"
+
     agent._emit_warning(
-        f"⚠ Auxiliary compression model failed with an auth/permission "
-        f"error — check auxiliary.compression in config.yaml. "
+        f"⚠ Compression auxiliary endpoint could not be reached "
+        f"({_guidance}). "
         f"🔌 Provider: {_aux_provider}  Model: {_aux_model}  "
         f"🌐 Endpoint: {_aux_base}{_note}"
     )
@@ -3201,11 +3228,10 @@ def compress_context(
                         "No messages were dropped — conversation continues unchanged. "
                         "Run /compress to retry, or /new to start a fresh session."
                     )
-                # When the abort was caused by an auxiliary compression-model
-                # auth/quota failure, point at the *compression* endpoint —
-                # agent.provider/model/base_url are the main model's, which is
-                # the wrong thing to chase (#72636). The flag is set during
-                # summary generation, so it is fresh at this call site.
+                # Point at the *compression* endpoint that failed, not the
+                # main model's identity (agent.provider/model/base_url are the
+                # main model's). The helper gates on the per-attempt failure
+                # class and is silent when no useful attribution applies (#72636).
                 _emit_compression_auth_hint(agent)
                 _existing_sp = getattr(agent, "_cached_system_prompt", None)
                 if not _existing_sp:

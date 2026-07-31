@@ -618,9 +618,10 @@ class InProcessCronScheduler(CronScheduler):
         ``_profile_runtime_scope`` scopes the multiplexed inbound path and
         ``web_server.py`` scopes per-profile cron API calls.
 
-        Failures are isolated per profile: a tick that raises for one profile
-        neither skips the profiles after it in ``profile_homes`` nor marks them
-        as failing in their own heartbeats.
+        Failures are isolated per profile, at startup and in steady state:
+        neither a recovery error nor a tick that raises for one profile skips
+        the profiles after it in ``profile_homes``, prevents the tick loop from
+        starting, or marks the other profiles as failing in their heartbeats.
         """
         import logging
         from cron.scheduler import tick as cron_tick
@@ -639,7 +640,18 @@ class InProcessCronScheduler(CronScheduler):
             [p[0] if isinstance(p, tuple) else p for p in profile_homes],
         )
 
-        # Recovery + initial heartbeat for every profile.
+        # Recovery + initial heartbeat for every profile, isolated per profile
+        # for the same reason the tick loop below is — and with a wider blast
+        # radius if it is not: this pass runs BEFORE the loop is entered.
+        # recover_interrupted() opens a transaction against that profile's own
+        # ledger (cron/executions.py::recover_interrupted_executions), and
+        # neither it nor _transaction() has a catch-all, so an unreadable or
+        # locked store raises straight out of start(). The gateway runs
+        # start() as a bare thread target (gateway/run.py::start_gateway) with
+        # nothing above it but threading's excepthook, so that kills the ticker
+        # thread outright: the loop below never runs a single cycle and EVERY
+        # profile stops firing — including the ones whose recovery succeeded —
+        # until the gateway is restarted.
         for entry in profile_homes:
             home = entry[1] if isinstance(entry, tuple) else entry
             home_token = set_hermes_home_override(str(home))
@@ -653,6 +665,27 @@ class InProcessCronScheduler(CronScheduler):
                             home,
                         )
                     record_ticker_heartbeat()
+            except BaseException as e:
+                # BaseException for the same reason as the tick loop (#32612).
+                # The profile stays in profile_homes: a ledger that cannot be
+                # recovered may still tick, and if it cannot, the per-profile
+                # handler below records that on its own terms.
+                logger.error(
+                    "Cron startup recovery failed (profile at %s); continuing "
+                    "with the remaining profiles: %s",
+                    home, e, exc_info=True,
+                )
+                try:
+                    with use_cron_store(home):
+                        record_ticker_error(f"{type(e).__name__}: {e}")
+                except BaseException:
+                    # Best-effort: the store is exactly what may be
+                    # unreachable, and letting the report of a failure raise
+                    # would reintroduce the failure it is reporting.
+                    logger.debug(
+                        "Could not record startup recovery error for profile at %s",
+                        home, exc_info=True,
+                    )
             finally:
                 reset_hermes_home_override(home_token)
 

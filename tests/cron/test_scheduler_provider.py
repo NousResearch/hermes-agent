@@ -751,3 +751,71 @@ def test_multiplex_heartbeat_success_is_per_profile(tmp_path, monkeypatch):
     assert ("beta", False) not in beats, (
         f"clean profile marked failing because another profile raised: {beats}"
     )
+
+
+def test_multiplex_startup_recovery_error_does_not_stop_other_profiles(tmp_path):
+    """A recovery failure at startup must not stop any profile from ticking.
+
+    The recovery pass runs BEFORE the tick loop is entered, so an unhandled
+    raise there does not merely skip the profiles after it — it propagates out
+    of ``start()``, which the gateway runs as a bare thread target
+    (``gateway/run.py::start_gateway``). The ticker thread dies before the loop
+    runs a single cycle, so every profile stops firing, including the ones
+    whose own recovery succeeded.
+
+    ``recover_interrupted_executions()`` opens a SQLite transaction against the
+    profile's own ledger and has no catch-all, so an unreadable or locked store
+    is enough to trigger this.
+    """
+    import sqlite3
+
+    from cron.scheduler_provider import InProcessCronScheduler
+    from cron import jobs as cron_jobs
+
+    profile_homes = []
+    for name in ("alpha", "beta", "gamma"):
+        d = tmp_path / name
+        (d / "cron").mkdir(parents=True)
+        profile_homes.append((name, d))
+
+    def _current_profile():
+        return cron_jobs._current_cron_store().cron_dir.parent.name
+
+    def _recover(self):
+        if _current_profile() == "alpha":
+            raise sqlite3.OperationalError("unable to open database file")
+        return 0
+
+    ticked: list[str] = []
+
+    def _tick(*args, **kwargs):
+        ticked.append(_current_profile())
+        return 0
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    with patch.object(InProcessCronScheduler, "recover_interrupted", _recover), \
+         patch("cron.scheduler.tick", side_effect=_tick), \
+         patch("cron.jobs.record_ticker_heartbeat", lambda *a, **kw: None), \
+         patch("cron.jobs.record_ticker_error", lambda *a, **kw: None), \
+         patch("cron.jobs.clear_ticker_error", lambda *a, **kw: None):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={"interval": 0, "profile_homes": profile_homes},
+            daemon=True,
+        )
+        t.start()
+        _wait_until(lambda: {"alpha", "beta", "gamma"}.issubset(set(ticked)))
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    # gamma is ordered after the failing profile; alpha is the failing profile
+    # itself, which stays in the rotation because a ledger that cannot be
+    # recovered may still hold tickable jobs.
+    assert {"alpha", "beta", "gamma"}.issubset(set(ticked)), (
+        "a startup recovery failure stopped the tick loop; "
+        f"ticked={sorted(set(ticked))}"
+    )

@@ -409,6 +409,52 @@ class TestPrompt:
         assert isinstance(resp, PromptResponse)
         assert resp.stop_reason == "refusal"
 
+    @pytest.mark.asyncio
+    async def test_prompt_setup_exception_still_releases_session(self, agent):
+        """An exception in the pre-executor SETUP region (after
+        ``is_running = True`` but before the executor try) must not leave
+        the session marked running — that bricks it permanently: every
+        later message queues into a session whose queue is never drained."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        # One of the callback factories prompt() calls in the setup region,
+        # after is_running=True but before the protected executor call.
+        with patch(
+            "acp_adapter.server.make_message_cb",
+            side_effect=RuntimeError("callback wiring broke"),
+        ):
+            with pytest.raises(RuntimeError):
+                await agent.prompt(
+                    prompt=[TextContentBlock(type="text", text="hi")],
+                    session_id=new_resp.session_id,
+                )
+
+        assert state.is_running is False, (
+            "setup exception left is_running=True — session bricked"
+        )
+        assert state.current_prompt_text == ""
+
+        # A follow-up prompt must RUN, not queue into a dead session.
+        ran = []
+
+        def mock_run_ok(*args, **kwargs):
+            ran.append(True)
+            return {"final_response": "done", "messages": []}
+
+        state.agent.run_conversation = mock_run_ok
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="follow up")],
+            session_id=new_resp.session_id,
+        )
+        assert resp.stop_reason == "end_turn"
+        assert ran, "follow-up prompt was queued instead of running"
+        assert state.queued_prompts == []
+
 
 
 

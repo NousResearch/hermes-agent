@@ -458,3 +458,63 @@ class TestSubscriptionIncludedNotes:
         assert result.amount_usd == Decimal("0")
         assert len(result.notes) > 0
         assert any("subscription" in note.lower() for note in result.notes)
+
+
+def test_normalize_usage_reads_kimi_top_level_cached_tokens():
+    """Kimi/Moonshot's native API reports context-cache hits as a top-level
+    usage.cached_tokens, not OpenAI's nested
+    prompt_tokens_details.cached_tokens and not DeepSeek's
+    prompt_cache_hit_tokens. Neither existing fallback matches that name, so
+    direct Kimi sessions normalized to cache_read_tokens=0 — the hits were
+    invisible in accounting and billed at the full input rate (#65722)."""
+    usage = SimpleNamespace(
+        prompt_tokens=3000,
+        completion_tokens=250,
+        cached_tokens=1800,
+    )
+
+    normalized = normalize_usage(usage, provider="kimi", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 1800
+    # prompt_tokens includes the cached prefix: 3000 - 1800 = fresh input
+    assert normalized.input_tokens == 1200
+    assert normalized.output_tokens == 250
+
+
+def test_kimi_fallback_does_not_override_the_nested_openai_shape():
+    """A provider that reports BOTH shapes must keep the nested value.
+
+    The new branch is last in the chain, so it only fills a genuine zero.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=400),
+        cached_tokens=999,  # must be ignored
+    )
+
+    normalized = normalize_usage(usage, provider="kimi", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 400
+
+
+def test_kimi_fallback_does_not_override_deepseek_hit_tokens():
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=100,
+        prompt_cache_hit_tokens=1500,
+        cached_tokens=999,  # must be ignored
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 1500
+
+
+def test_usage_without_any_cache_fields_still_normalizes():
+    usage = SimpleNamespace(prompt_tokens=500, completion_tokens=50)
+
+    normalized = normalize_usage(usage, provider="kimi", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 0
+    assert normalized.input_tokens == 500

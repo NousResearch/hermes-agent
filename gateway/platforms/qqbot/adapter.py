@@ -1458,6 +1458,27 @@ class QQAdapter(BasePlatformAdapter):
                 exc,
             )
 
+    def _discard_prior_group_observation(self, event: MessageEvent) -> bool:
+        """Remove a passive copy before dispatching the same message as addressed."""
+        if not event.message_id:
+            return True
+        store = getattr(self, "_session_store", None)
+        discard = getattr(store, "discard_observed_platform_message", None)
+        if not store or not callable(discard):
+            return True
+        try:
+            session_entry = store.get_or_create_session(event.source)
+            return bool(discard(session_entry.session_id, str(event.message_id)))
+        except Exception:
+            logger.warning(
+                "[%s] Failed to discard prior QQ group observation: chat=%s msg=%s",
+                self._log_tag,
+                event.source.chat_id,
+                event.message_id,
+                exc_info=True,
+            )
+            return False
+
     async def _handle_group_message(
             self,
             d: Dict[str, Any],
@@ -1532,6 +1553,8 @@ class QQAdapter(BasePlatformAdapter):
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         if addressed:
+            if not self._discard_prior_group_observation(event):
+                return
             await self.handle_message(event)
         else:
             self._observe_group_message(event)

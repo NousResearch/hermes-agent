@@ -3196,6 +3196,53 @@ class SessionStore:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
 
+    def discard_observed_platform_message(
+        self, session_id: str, platform_message_id: str
+    ) -> bool:
+        """Discard a passive copy before the platform dispatches it as addressed.
+
+        Uses the same drain lock as transcript appends so an observed row cannot
+        race from the retry queue into SQLite after the delete transaction.
+        """
+        if not self._db or not platform_message_id:
+            return True
+        drain_lock = getattr(self, "_transcript_drain_lock", None)
+        if drain_lock is None:
+            drain_lock = threading.RLock()
+            self._transcript_drain_lock = drain_lock
+        with drain_lock:
+            with self._transcript_retry_lock:
+                pending = self._dirty_transcripts.get(session_id, [])
+                if pending:
+                    self._dirty_transcripts[session_id] = [
+                        message
+                        for message in pending
+                        if not (
+                            bool(message.get("observed"))
+                            and str(
+                                message.get("platform_message_id")
+                                or message.get("message_id")
+                                or ""
+                            )
+                            == str(platform_message_id)
+                        )
+                    ]
+                    if not self._dirty_transcripts[session_id]:
+                        self._dirty_transcripts.pop(session_id, None)
+                        self._transcript_append_failures.pop(session_id, None)
+            try:
+                return self._db.discard_observed_platform_message(
+                    session_id, str(platform_message_id)
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to discard observed platform message %s from %s",
+                    platform_message_id,
+                    session_id,
+                    exc_info=True,
+                )
+                return False
+
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
         """Replace the entire transcript for a session with new messages.
 

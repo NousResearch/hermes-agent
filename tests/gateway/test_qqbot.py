@@ -8,7 +8,7 @@ from unittest import mock
 import httpx
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +266,64 @@ class TestQQFullGroupMessages:
         adapter.handle_message.assert_not_awaited()
         assert len(adapter._session_store.entries) == 1
         assert adapter._session_store.entries[0][1]["observed"] is True
+
+    @pytest.mark.asyncio
+    async def test_observed_event_is_replaced_before_addressed_dispatch_with_real_store(
+        self, tmp_path
+    ):
+        from gateway.session import SessionStore
+        from hermes_state import SessionDB
+
+        adapter = self._make(tmp_path)
+        db = SessionDB(tmp_path / "state.db")
+        with mock.patch("hermes_state.SessionDB", return_value=db):
+            store = SessionStore(
+                sessions_dir=tmp_path / "sessions",
+                config=GatewayConfig(
+                    platforms={
+                        Platform.QQBOT: PlatformConfig(
+                            enabled=True,
+                            extra={"group_sessions_per_user": False},
+                        )
+                    }
+                ),
+            )
+        adapter._session_store = store
+
+        async def persist_addressed(event):
+            session = store.get_or_create_session(event.source)
+            store.append_to_transcript(
+                session.session_id,
+                {
+                    "role": "user",
+                    "content": event.text,
+                    "message_id": event.message_id,
+                    "observed": False,
+                },
+            )
+
+        adapter.handle_message = mock.AsyncMock(side_effect=persist_addressed)
+        payload = self._payload(msg_id="msg-upgrade")
+
+        await adapter._on_message("GROUP_MESSAGE_CREATE", payload)
+        session = next(iter(store._entries.values()))
+        observed = store.load_transcript(session.session_id)
+        assert len(observed) == 1
+        assert observed[0]["observed"] is True
+
+        await adapter._on_message("GROUP_AT_MESSAGE_CREATE", payload)
+
+        adapter.handle_message.assert_awaited_once()
+        transcript = store.load_transcript(session.session_id)
+        matching = [
+            row
+            for row in transcript
+            if row.get("message_id") == "msg-upgrade"
+        ]
+        assert len(matching) == 1
+        assert matching[0].get("observed", False) is False
+        assert db.get_session(session.session_id)["message_count"] == 1
+        db.close()
 
     def test_addressed_duplicate_upgrades_prior_observation(self, tmp_path):
         adapter = self._make(tmp_path)

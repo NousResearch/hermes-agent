@@ -7,6 +7,7 @@ Connect Hermes to QQ via the **Official QQ Bot API (v2)** — supporting private
 The QQ Bot adapter uses the [Official QQ Bot API](https://bot.q.qq.com/wiki/develop/api-v2/) to:
 
 - Receive messages via a persistent **WebSocket** connection to the QQ Gateway
+- Optionally retain unmentioned group messages as context without replying to them
 - Send text and markdown replies via the **REST API**
 - Download and process images, voice messages, and file attachments
 - Transcribe voice messages using Tencent's built-in ASR or a configurable STT provider
@@ -15,7 +16,7 @@ The QQ Bot adapter uses the [Official QQ Bot API](https://bot.q.qq.com/wiki/deve
 
 1. **QQ Bot Application** — Register at [q.qq.com](https://q.qq.com):
    - Create a new application and note your **App ID** and **App Secret**
-   - Enable the required intents: C2C messages, Group @-messages, Guild messages
+   - Enable the required intents: C2C messages, Group messages, Guild messages
    - Configure your bot in sandbox mode for testing, or publish for production
 
 2. **Dependencies** — The adapter requires `aiohttp` and `httpx`:
@@ -73,15 +74,40 @@ platforms:
       dm_policy: "open"          # open | allowlist | disabled
       allow_from:
         - "user_openid_1"
-      group_policy: "open"       # open | allowlist | disabled
+      group_policy: "allowlist"  # open | allowlist | disabled
       group_allow_from:
         - "group_openid_1"
+      group_sessions_per_user: false
+      observe_unmentioned_group_messages: true
       stt:
         provider: "zai"          # zai (GLM-ASR), openai (Whisper), etc.
         baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
         apiKey: "your-stt-key"
         model: "glm-asr"
 ```
+
+### Full group context (opt-in)
+
+By default, QQ group traffic still requires an explicit `@bot` mention. To let
+Hermes retain ordinary group conversation as context, enable both sides:
+
+1. Set `platforms.qqbot.extra.observe_unmentioned_group_messages: true` in
+   `~/.hermes/config.yaml`. Use `group_policy: allowlist` with exact group
+   OpenIDs so passive traffic is stored only for trusted groups.
+2. In the mobile QQ client, open the target group's settings, select the bot,
+   and set **the group-message range visible to the bot** to **all group
+   messages**. The exact label varies by QQ client version.
+
+With both settings enabled:
+
+- messages without an explicit bot mention are stored with `observed=true`;
+- observed messages do **not** invoke the agent and receive no reply;
+- an explicit `@bot` message invokes the agent and can use earlier observed
+  rows as context-only data.
+
+`group_sessions_per_user: false` gives all members of an allowlisted group the
+same conversation context. Stable member OpenIDs are still preserved for
+sender attribution and authorization.
 
 ## Voice Messages (STT)
 
@@ -113,7 +139,10 @@ This usually means:
 
 - Verify the bot's **intents** are enabled at q.qq.com
 - Check `QQ_ALLOWED_USERS` if DM access is restricted
-- For group messages, ensure the bot is **@mentioned** (group policy may require allowlisting)
+- For addressed group messages, ensure the bot is **@mentioned** (group policy may require allowlisting)
+- If full group context is enabled but ordinary messages are missing, verify
+  both `observe_unmentioned_group_messages: true` and the mobile QQ group's
+  bot-visible message range setting
 - Check `QQBOT_HOME_CHANNEL` for cron/notification delivery
 
 ### Connection errors

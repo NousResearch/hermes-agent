@@ -400,7 +400,13 @@ def test_package_schema_matches_the_client_resource_contract():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     resource = schema["properties"]["resource"]
 
-    # Every v2 package records the complete bounded client resource.\n    assert set(resource["required"]) == {\n        "architecture",\n        "hermes_version",\n        "install_method",\n        "os_family",\n    }
+    # Every v2 package records the complete bounded client resource.
+    assert set(resource["required"]) == {
+        "architecture",
+        "hermes_version",
+        "install_method",
+        "os_family",
+    }
     assert set(resource["properties"]) == {
         "architecture",
         "hermes_version",

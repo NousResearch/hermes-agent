@@ -155,5 +155,28 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
 
     const secondRowsRef = mockVirtualListPropsHistory[1].rows
     expect(secondRowsRef).not.toBe(firstRowsRef)
+
+    // Change sessions array identity
+    const updatedSessions = generateSessions(VIRTUALIZE_THRESHOLD + 4)
+    rerender(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        dateGrouped={true}
+        emptyState={<div>Empty</div>}
+        label="Sessions"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        open={true}
+        pinned={false}
+        sessions={updatedSessions}
+        workingSessionIdSet={new Set()}
+      />
+    )
+
+    const thirdRowsRef = mockVirtualListPropsHistory[2].rows
+    expect(thirdRowsRef).not.toBe(secondRowsRef)
   })
 })

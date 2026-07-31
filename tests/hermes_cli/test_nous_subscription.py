@@ -127,6 +127,73 @@ def test_keyless_tavily_search_backend_without_shared_backend(monkeypatch):
     assert features.web.current_provider == "tavily"
 
 
+def test_get_nous_subscription_features_recognizes_direct_brave_search_backend(
+    monkeypatch,
+):
+    env = {"BRAVE_SEARCH_API_KEY": "brave-test"}
+
+    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features(
+        {"web": {"search_backend": "brave-free"}}
+    )
+
+    assert features.web.available is True
+    assert features.web.active is True
+    assert features.web.managed_by_nous is False
+    assert features.web.direct_override is True
+    assert features.web.current_provider == "brave-free"
+
+
+def test_web_use_gateway_suppresses_direct_brave_override(monkeypatch):
+    env = {"BRAVE_SEARCH_API_KEY": "brave-test"}
+
+    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features(
+        {"web": {"backend": "brave-free", "use_gateway": True}}
+    )
+
+    assert features.web.available is False
+    assert features.web.active is False
+    assert features.web.direct_override is False
+
+
+def test_web_use_gateway_suppresses_direct_searxng_override(monkeypatch):
+    env = {"SEARXNG_URL": "https://search.example.test"}
+
+    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
+    monkeypatch.setattr(
+        ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
+    )
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+    features = ns.get_nous_subscription_features(
+        {"web": {"backend": "searxng", "use_gateway": True}}
+    )
+
+    assert features.web.available is False
+    assert features.web.active is False
+    assert features.web.direct_override is False
+
+
 def test_unconfigured_web_without_keys_is_unavailable(monkeypatch):
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
     monkeypatch.setattr(

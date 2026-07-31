@@ -135,6 +135,25 @@ class TestSignalSharedAccountConnectionPolicy:
         adapter._acquire_platform_lock.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_normal_mode_lock_exception_still_checks_daemon(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._acquire_signal_routing_locks = MagicMock(
+            side_effect=OSError("lock storage unavailable")
+        )
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=503))
+        mock_client.aclose = AsyncMock()
+
+        with patch(
+            "gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client
+        ):
+            result = await adapter.connect()
+
+        assert result is False
+        mock_client.get.assert_awaited_once()
+        mock_client.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_failed_connect_releases_shared_group_claims(
         self, tmp_path, monkeypatch
     ):

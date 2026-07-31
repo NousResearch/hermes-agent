@@ -592,8 +592,10 @@ class SignalAdapter(BasePlatformAdapter):
                 return False
             lock_acquired = True
         except Exception as e:
-            logger.error("Signal: could not acquire routing locks: %s", e)
-            return False
+            if self.shared_account_group_only:
+                logger.error("Signal: could not acquire routing locks: %s", e)
+                return False
+            logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
         # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
         from gateway.platforms._http_client_limits import platform_httpx_limits

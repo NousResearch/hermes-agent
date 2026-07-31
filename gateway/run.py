@@ -30101,6 +30101,17 @@ def _gateway_stderr_formatter() -> logging.Formatter:
     return RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def _resolve_stderr_level(requested: int, stream: Any) -> int:
+    """Cap macOS non-TTY stderr without changing foreground or other-platform logging."""
+    try:
+        is_tty = stream.isatty()
+    except Exception:
+        is_tty = False
+    if sys.platform == "darwin" and not is_tty:
+        return max(requested, logging.CRITICAL)
+    return requested
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -30329,9 +30340,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # verbosity=0    (default):    WARNING and above
     # verbosity=1    (-v):         INFO and above
     # verbosity=2+   (-vv/-vvv):   DEBUG
+    # On macOS non-TTY (launchd), cap at CRITICAL so routine WARNING/ERROR does
+    # not fill the unbounded StandardErrorPath (gateway.error.log).
     if verbosity is not None:
-        _stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
+        _requested_stderr_level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
         _stderr_handler = logging.StreamHandler(_safe_stderr())
+        _stderr_level = _resolve_stderr_level(_requested_stderr_level, _stderr_handler.stream)
         _stderr_handler.setLevel(_stderr_level)
         _stderr_handler.setFormatter(_gateway_stderr_formatter())
         logging.getLogger().addHandler(_stderr_handler)

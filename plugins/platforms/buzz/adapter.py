@@ -97,6 +97,10 @@ _SEEN_CAP = 500
 # an evicted entry only degrades buzz-CLI-shaped replies (parent reference
 # without a root marker) to keying on their immediate parent.
 _THREAD_ROOTS_CAP = 2000
+# Longest parent-message snippet cached per event for reply-context
+# injection.  The gateway truncates ``reply_to_text`` to 500 chars before
+# it reaches the agent (gateway/run.py), so caching more is dead weight.
+_THREAD_TEXT_SNIPPET_CHARS = 500
 # Re-run DM discovery (``dms list`` plus the channels-list fallback) every
 # N poll sweeps to pick up conversations opened mid-run.
 _DM_DISCOVERY_EVERY = 5
@@ -299,10 +303,19 @@ def parse_thread_root(tags: Any) -> Optional[str]:
 
 
 def _parse_thread_parent(tags: Any) -> Optional[str]:
-    """Return an unambiguous immediate parent when the tag shape exposes one."""
-    _roots, replies, positional = _parse_thread_refs(tags)
+    """Return an unambiguous immediate parent when the tag shape exposes one.
+
+    A ``reply`` marker names the parent outright.  A marked direct reply to
+    the root (``root`` marker with no ``reply`` marker) exposes the root AS
+    its parent.  A single positional ref is the parent under the deprecated
+    scheme.  Ambiguous shapes (conflicting markers, multiple positional
+    refs) return None.
+    """
+    roots, replies, positional = _parse_thread_refs(tags)
     if replies:
         return _one_unambiguous(replies)
+    if roots:
+        return _one_unambiguous(roots)
     if len(positional) == 1:
         return positional[0]
     return None
@@ -557,7 +570,8 @@ class BuzzAdapter(BasePlatformAdapter):
         self._membership_since = 0
         self._lock_key: Optional[str] = None
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None],
-        #                "roots": OrderedDict[event_id, thread_root_id]}
+        #                "roots": OrderedDict[event_id, thread_root_id],
+        #                "texts": OrderedDict[event_id, (pubkey, snippet)]}
         self._channel_state: Dict[str, dict] = {}
         self._channel_names: Dict[str, str] = {}
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel
@@ -757,6 +771,7 @@ class BuzzAdapter(BasePlatformAdapter):
             # Belt-and-braces echo suppression: the poll loop already skips
             # our own pubkey, but marking the id seen makes de-dupe explicit.
             self._mark_seen(str(chat_id), str(event_id))
+            self._record_outbound_text(str(chat_id), str(event_id), content)
             if reply_target:
                 self._record_outbound_thread(str(chat_id), str(event_id), reply_target)
         return SendResult(
@@ -824,6 +839,8 @@ class BuzzAdapter(BasePlatformAdapter):
             event_id = data.get("event_id")
             if event_id:
                 self._mark_seen(str(chat_id), str(event_id))
+                if caption:
+                    self._record_outbound_text(str(chat_id), str(event_id), caption)
                 if reply_to:
                     self._record_outbound_thread(str(chat_id), str(event_id), reply_to)
             return SendResult(
@@ -1075,8 +1092,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 state["seen"][str(event_id)] = None
             state["last_ts"] = max(state["last_ts"], created_at)
             # History is never dispatched, but it still primes the
-            # event→thread-root map so the first post-restart reply keys on
-            # the true root...
+            # event→thread-root map and the parent-text cache so the first
+            # post-restart reply keys on the true root and quotes its
+            # actual parent...
             if int(event.get("kind") or 0) == _CHAT_KIND:
                 self._register_thread_event(state, event)
             # ...and it still classifies: a DM that leaked in via
@@ -1195,6 +1213,15 @@ class BuzzAdapter(BasePlatformAdapter):
         # strip applies to both chat types.
         dispatch_text = self._strip_mention(content)
 
+        # Threaded messages quote their ACTUAL immediate parent as reply
+        # context: a first reply hangs directly off the root, so the fresh
+        # thread session starts with the root's content; nested replies
+        # quote the message they answered (see the reply-context policy
+        # note in the thread-scoped sessions section).  The canonical root
+        # only scopes the session via thread_id.
+        parent_ref = _parse_thread_parent(event.get("tags")) if thread_root else None
+        parent_context = self._thread_parent_context(state, parent_ref, event_id)
+
         await self._dispatch_message(
             text=dispatch_text,
             chat_id=channel_id,
@@ -1204,6 +1231,12 @@ class BuzzAdapter(BasePlatformAdapter):
             message_id=event_id,
             created_at=created_at,
             thread_id=thread_root,
+            reply_to_message_id=parent_ref if parent_context else None,
+            reply_to_text=parent_context[1] if parent_context else None,
+            reply_to_author_id=parent_context[0] if parent_context else None,
+            reply_to_is_own_message=bool(
+                parent_context and parent_context[0] == self._self_pubkey
+            ),
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1297,6 +1330,21 @@ class BuzzAdapter(BasePlatformAdapter):
     # referenced event itself, never to state from another channel.  The
     # root only keys the session; outbound replies still target the
     # triggering event (send()'s ``reply_to`` wins over metadata thread_id).
+    #
+    # Reply-context policy: the root message intentionally stays in the
+    # ordinary channel/user session, so a fresh thread session would start
+    # blind to the message the thread hangs off.  Every dispatched threaded
+    # event therefore carries its ACTUAL immediate parent's author + text
+    # as ``reply_to_*`` context, which gateway.run folds into the
+    # triggering user message.  A first reply's parent IS the root, so the
+    # fresh thread session starts with the root's content before the agent
+    # processes it; nested replies quote the message they actually
+    # answered, preserving the gateway's reply-disambiguation contract
+    # instead of re-injecting stale root text on every turn.  No history is
+    # rewritten and no synthetic message is injected.  Parent text comes
+    # from the per-channel ``texts`` map (event_id -> (pubkey, snippet));
+    # an unobserved parent fails open to no context rather than blocking
+    # dispatch.
 
     @staticmethod
     def _thread_roots(state: dict) -> OrderedDict:
@@ -1310,9 +1358,51 @@ class BuzzAdapter(BasePlatformAdapter):
         while len(roots) > _THREAD_ROOTS_CAP:
             roots.popitem(last=False)
 
+    @staticmethod
+    def _thread_texts(state: dict) -> OrderedDict:
+        texts = state.get("texts")
+        if texts is None:
+            texts = state["texts"] = OrderedDict()
+        return texts
+
+    def _record_thread_text(self, state: dict, event_id: Any, pubkey: Any, content: Any) -> None:
+        """Cache a kind-9 event's author + text snippet so a later reply can
+        carry its immediate parent's content as ``reply_to_*`` context."""
+        event_id = str(event_id or "").strip().lower()
+        if not _EVENT_ID_RE.fullmatch(event_id):
+            return
+        if not isinstance(content, str) or not content.strip():
+            return
+        texts = self._thread_texts(state)
+        texts[event_id] = (
+            str(pubkey or "").strip().lower(),
+            content.strip()[:_THREAD_TEXT_SNIPPET_CHARS],
+        )
+        texts.move_to_end(event_id)
+        while len(texts) > _THREAD_ROOTS_CAP:
+            texts.popitem(last=False)
+
+    def _thread_parent_context(
+        self, state: dict, parent_ref: Optional[str], event_id: str
+    ) -> Optional[Tuple[str, str]]:
+        """Return ``(author_pubkey, snippet)`` for a reply's immediate parent.
+
+        None when the parent was never observed (fail open — the reply still
+        dispatches, just without quoted context) and when the parent ref IS
+        the dispatching event itself (self-referential tag garbage; quoting
+        itself would be nonsense).
+        """
+        if not parent_ref or parent_ref == str(event_id or "").strip().lower():
+            return None
+        texts = self._thread_texts(state)
+        context = texts.get(parent_ref)
+        if context is not None:
+            texts.move_to_end(parent_ref)  # keep live threads' parents cached
+        return context
+
     def _register_thread_event(self, state: dict, event: dict) -> Optional[str]:
-        """Record a kind-9 event in the channel's event→root map and return
-        its thread scope (None for top-level messages).
+        """Record a kind-9 event in the channel's event→root and event→text
+        maps and return its thread scope (None for top-level messages).
 
         Reply-only events can arrive before their parent over WebSocket. Once
         an unknown parent is used as a provisional scope, latch that choice:
@@ -1322,6 +1412,9 @@ class BuzzAdapter(BasePlatformAdapter):
         canonically whenever they are known before the first child dispatch.
         """
         event_id = str(event.get("id") or "").strip().lower()
+        # Any observed event can turn out to be a later reply's scope root, so
+        # cache every author + snippet — un-mentioned chatter included.
+        self._record_thread_text(state, event_id, event.get("pubkey"), event.get("content"))
         tags = event.get("tags")
         parsed = parse_thread_root(tags)
         parent = _parse_thread_parent(tags)
@@ -1384,6 +1477,14 @@ class BuzzAdapter(BasePlatformAdapter):
         roots = self._thread_roots(state)
         roots[event_id] = roots.get(ref, ref)
         self._trim_roots(roots)
+
+    def _record_outbound_text(self, channel_id: str, event_id: Any, content: str) -> None:
+        """Cache our own outbound message text: users reply to the agent's
+        posts (top-level or in-thread), and (like the roots map) the inbound
+        paths never see our sends — send() pre-marks their ids as seen."""
+        state = self._channel_state.get(str(channel_id))
+        if state is not None:
+            self._record_thread_text(state, event_id, self._self_pubkey, content)
 
     def _is_mentioned(self, content: str) -> bool:
         """True when the message addresses this agent (npub, hex, or name)."""
@@ -1469,12 +1570,19 @@ class BuzzAdapter(BasePlatformAdapter):
         message_id: str,
         created_at: int,
         thread_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
+        reply_to_text: Optional[str] = None,
+        reply_to_author_id: Optional[str] = None,
+        reply_to_is_own_message: bool = False,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler.
 
         ``thread_id`` is the canonical thread ROOT event id (None for
         top-level messages): it scopes the session key, while replies still
-        target the triggering event via ``message_id``.
+        target the triggering event via ``message_id``.  The ``reply_to_*``
+        fields carry the immediate PARENT's author + text — for a first
+        reply that parent is the root, so gateway.run seeds the fresh
+        thread session with root context on the triggering turn.
         """
         if not self._message_handler:
             return
@@ -1493,6 +1601,10 @@ class BuzzAdapter(BasePlatformAdapter):
             message_type=MessageType.TEXT,
             source=source,
             message_id=message_id,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_is_own_message=reply_to_is_own_message,
             timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
         )
 

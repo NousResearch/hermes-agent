@@ -20,6 +20,7 @@ import {
   nativeRefreshUrl,
   nativeTokenUrl,
   parseLoopbackCallback,
+  parseStoredTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
   statusSupportsNativeFlow,
@@ -174,6 +175,42 @@ test('parseTokenResponse tolerates an absent refresh token / expiry', () => {
 
   assert.equal(t.refreshToken, '')
   assert.equal(t.expiresAt, 0)
+})
+
+test('parseStoredTokenSet maps the encrypted on-disk camelCase shape', () => {
+  const t = parseStoredTokenSet({
+    accessToken: 'AT-stored',
+    refreshToken: 'RT-stored',
+    expiresAt: 1893456000,
+    provider: 'self-hosted',
+    userId: 'u-stored'
+  })
+
+  assert.equal(t.accessToken, 'AT-stored')
+  assert.equal(t.refreshToken, 'RT-stored')
+  assert.equal(t.expiresAt, 1893456000)
+  assert.equal(t.provider, 'self-hosted')
+  assert.equal(t.userId, 'u-stored')
+})
+
+test('parseTokenResponse cannot read a persisted set (the reload bug #73271)', () => {
+  // Guards against regressing to the wrong parser on the reload path: a
+  // persisted camelCase set has no snake_case access_token, so the raw-response
+  // parser throws — which is exactly why the stored path must use
+  // parseStoredTokenSet instead.
+  const persisted = JSON.parse(
+    JSON.stringify({ accessToken: 'AT', refreshToken: 'RT', expiresAt: 1, provider: 'nous', userId: 'u' })
+  )
+
+  assert.throws(() => parseTokenResponse(persisted), /missing access_token/i)
+  assert.equal(parseStoredTokenSet(persisted).accessToken, 'AT')
+})
+
+test('parseStoredTokenSet rejects a non-normalized server response', () => {
+  assert.throws(
+    () => parseStoredTokenSet({ access_token: 'AT-server' }),
+    /missing accessToken/i
+  )
 })
 
 // --- refresh timing ---

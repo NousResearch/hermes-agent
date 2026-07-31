@@ -1188,15 +1188,22 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except asyncio.TimeoutError:
             # wait_for only cancels the local await — kill and reap the child
             # so we don't leak an orphaned ffmpeg process and its pipe fd.
+            # communicate() (not wait()) also drains the stderr pipe: a dead-
+            # locked ffmpeg that filled the ~64KB buffer would otherwise keep
+            # the fd pinned and block reaping the killed child.
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
-            await proc.wait()
+            try:
+                _, stderr_tail = await proc.communicate()
+            except Exception:  # pragma: no cover - defensive: child already reaped
+                stderr_tail = b""
             logger.warning(
-                "[%s] ffmpeg conversion timed out for %s",
+                "[%s] ffmpeg conversion timed out for %s: %s",
                 self._log_tag,
                 Path(src_path).name,
+                (stderr_tail or b"")[:200].decode(errors="replace"),
             )
             return None
         if proc.returncode != 0:

@@ -1417,16 +1417,23 @@ class TestConvertFfmpegToWav:
     @pytest.mark.asyncio
     async def test_timeout_kills_child_and_returns_none(self, monkeypatch):
         # A hung/verbose ffmpeg must be killed on timeout, not left orphaned.
-        killed = {"v": False}
+        # Post-kill the handler must drain the stderr pipe (communicate, not
+        # wait) so a buffer-full ffmpeg cannot pin the fd or block reaping.
+        state = {"killed": False, "communicated_after_kill": False}
 
         class _FakeProc:
             returncode = None
 
             async def communicate(self):
-                await asyncio.sleep(3600)  # never resolves within the timeout
+                if state["killed"]:
+                    # drain path: a killed child's remaining pipe output.
+                    state["communicated_after_kill"] = True
+                    return b"", b""
+                # main path: hang so wait_for raises TimeoutError.
+                await asyncio.sleep(3600)
 
             def kill(self):
-                killed["v"] = True
+                state["killed"] = True
 
             async def wait(self):
                 return 0
@@ -1444,7 +1451,8 @@ class TestConvertFfmpegToWav:
 
         result = await self._adapter()._convert_ffmpeg_to_wav("in.amr", "out.wav")
         assert result is None
-        assert killed["v"] is True
+        assert state["killed"] is True
+        assert state["communicated_after_kill"] is True
 
     @pytest.mark.asyncio
     async def test_missing_ffmpeg_binary_returns_none(self, monkeypatch):

@@ -281,3 +281,16 @@ def test_gateway_goal_resume_fifo_separates_multiplexed_slot_and_state_keys():
     assert runner._promote_queued_event(state_key, adapter, None) is continuation_event
     assert runner._promote_queued_event(default_state_key, adapter, None) is None
     assert adapter._pending_messages == {}
+
+    adapter._pending_messages[adapter_key] = continuation_event
+    runner._session_state(state_key).conversation.queued_events.extend(
+        [user_event, continuation_event]
+    )
+    removed = runner._clear_goal_pending_continuations(
+        state_key,
+        adapter,
+        adapter_session_key=adapter_key,
+    )
+    assert removed == 2
+    assert adapter._pending_messages == {}
+    assert runner._session_state(state_key).conversation.queued_events == [user_event]

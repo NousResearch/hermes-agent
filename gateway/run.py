@@ -7870,7 +7870,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         text = getattr(event_or_text, "text", event_or_text) or ""
         return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
 
-    def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
+    def _clear_goal_pending_continuations(
+        self,
+        session_key: str,
+        adapter: Any,
+        *,
+        adapter_session_key: Optional[str] = None,
+    ) -> int:
         """Remove queued synthetic /goal continuations for one session.
 
         User-issued /goal pause/clear can race with a continuation already
@@ -7880,9 +7886,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         removed = 0
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if isinstance(pending_slot, dict):
-            pending_event = pending_slot.get(session_key)
+            slot_key = adapter_session_key or session_key
+            pending_event = pending_slot.get(slot_key)
             if self._is_goal_continuation_event(pending_event):
-                pending_slot.pop(session_key, None)
+                pending_slot.pop(slot_key, None)
                 removed += 1
 
         _q_state = self._peek_session_state(session_key)
@@ -19280,8 +19287,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # flight preempts the continuation naturally.
         try:
             adapter = self._adapter_for_source(source)
-            _quick_key = self._session_key_for_source(source)
-            if adapter and _quick_key:
+            state_key = self._session_key_for_source(source)
+            adapter_key_for_source = getattr(
+                adapter, "session_key_for_source", None
+            )
+            adapter_key = state_key
+            if callable(adapter_key_for_source):
+                resolved_adapter_key = adapter_key_for_source(source)
+                if isinstance(resolved_adapter_key, str) and resolved_adapter_key:
+                    adapter_key = resolved_adapter_key
+            if adapter and state_key and adapter_key:
                 cont_event = MessageEvent(
                     text=prompt,
                     message_type=MessageType.TEXT,
@@ -19289,7 +19304,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_id=None,
                     channel_prompt=None,
                 )
-                self._enqueue_fifo(_quick_key, cont_event, adapter)
+                self._enqueue_fifo(
+                    state_key,
+                    cont_event,
+                    adapter,
+                    adapter_session_key=adapter_key,
+                )
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 

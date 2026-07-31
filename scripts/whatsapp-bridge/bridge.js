@@ -203,7 +203,13 @@ function trackSentMessageId(sent) {
 
 function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  // Baileys JIDs can carry a device suffix before the domain, e.g.
+  // "447397235771:12@s.whatsapp.net". A naive colon->@ swap produces a
+  // second "@" ("447397235771@12@s.whatsapp.net") that never matches the
+  // plain "447397235771@s.whatsapp.net" form used elsewhere (quotedParticipant,
+  // botIds), silently breaking reply-to-bot detection. Strip the whole
+  // ":<device>" segment instead, keeping only the bare id + domain.
+  return String(value).replace(/:[^@]*@/, '@');
 }
 
 function redactWhatsAppId(value) {

@@ -6480,6 +6480,10 @@ class AIAgent:
             "qwen/qwen3",
             "tencent/hy3",
             "xiaomi/",
+            # Nemotron models default reasoning ON and accept OpenRouter's
+            # reasoning {"enabled": false} toggle — without this prefix,
+            # `reasoning_effort: none` could not disable it (#75386).
+            "nvidia/",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
 

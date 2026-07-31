@@ -283,16 +283,23 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
 # ---------------------------------------------------------------------------
 
 
-def _fake_psutil_tree(tree, venv_exe, worker_exe):
+def _fake_psutil_tree(tree, venv_exe, worker_exe, dead=None):
     """Build a psutil stand-in where ``tree`` maps worker pid -> parent pid.
 
     Parents whose pid is even are venv-side (``venv_exe``); odd parents are
-    unrelated ancestors (``worker_exe``) that must NOT be returned.
+    unrelated ancestors (``worker_exe``) that must NOT be returned. Pids in
+    ``dead`` (a live reference — later additions count) are uninspectable:
+    construction raises, exactly like psutil.NoSuchProcess for an exited
+    process.
     """
+
+    dead_set = dead if dead is not None else set()
 
     class FakeProc:
         def __init__(self, pid):
             self.pid = pid
+            if pid in dead_set:
+                raise ValueError(f"process {pid} has exited")
             if pid not in tree and pid not in tree.values():
                 raise ValueError(f"no such pid {pid}")
 
@@ -375,13 +382,26 @@ def test_pause_kill_set_covers_venv_guard_abort_set(
         gateway_mod, "find_profile_gateway_processes", lambda **_k: [profile_proc]
     )
     monkeypatch.setattr(gateway_mod, "_get_restart_drain_timeout", lambda: 0.1)
-    # Graceful drain succeeds: the worker exits, leaving zero survivors. This is
+    # Graceful drain succeeds: the worker exits, leaving zero survivors — and
+    # an exited worker is UNINSPECTABLE afterwards, exactly like the real
+    # process table. Resolving the launcher after this point is impossible,
+    # so the pause must snapshot launcher ancestors before draining. This is
     # precisely the case that used to leave the launcher alive and abort.
+    drained_dead: set[int] = set()
+
+    def _drain_marks_workers_dead(pids, *, timeout):
+        drained_dead.update(int(p) for p in pids)
+        return set()
+
     monkeypatch.setattr(
-        cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, *, timeout: set()
+        cli_main,
+        "_wait_for_windows_update_gateway_exit",
+        _drain_marks_workers_dead,
     )
 
-    fake = _fake_psutil_tree({worker_pid: launcher_pid}, venv_exe, worker_exe)
+    fake = _fake_psutil_tree(
+        {worker_pid: launcher_pid}, venv_exe, worker_exe, dead=drained_dead
+    )
     monkeypatch.setitem(sys.modules, "psutil", fake)
 
     terminated = []

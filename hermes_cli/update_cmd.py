@@ -2869,6 +2869,20 @@ def _pause_windows_gateways_for_update() -> dict | None:
         mapped_pids.append(int(pid))
         _write_update_planned_stop_marker(Path(proc.path), int(pid))
 
+    # Resolve each mapped worker's venv-side launcher BEFORE draining: the
+    # drain stops tracking a PID exactly when it dies, so a gracefully
+    # drained worker is gone by the time the wait returns — and a dead pid's
+    # parent cannot be recovered (psutil raises NoSuchProcess). The snapshot
+    # is stopped after the drain alongside the survivors.
+    #
+    # Why launchers matter: the drain targets the PID that wrote the PID
+    # file (the uv-side worker). On Windows that worker's parent is usually
+    # the venv-side ``python.exe`` launcher, which keeps venv ``.pyd`` files
+    # mapped and is what ``_detect_venv_python_processes()`` reports
+    # downstream. Left alive, it trips the venv-holder guard and aborts the
+    # update even though the gateway itself is stopped.
+    launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
+
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     try:
         drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
@@ -2895,16 +2909,11 @@ def _pause_windows_gateways_for_update() -> dict | None:
             logger.debug("Could not capture argv for unmapped gateway %s: %s", pid, exc)
         unmapped.append({"pid": int(pid), "argv": argv})
 
-    # A gateway's graceful drain above targets the PID that wrote the PID file
-    # (the uv-side worker). On Windows that worker's parent is usually the
-    # venv-side ``python.exe`` launcher, which keeps venv ``.pyd`` files mapped
-    # and is what ``_detect_venv_python_processes()`` reports downstream. Left
-    # alive, it trips the venv-holder guard and aborts the update even though
-    # the gateway itself is stopped. Force-kill those launchers alongside the
-    # survivors; ``terminate_pid(force=True)`` is a tree kill, so a launcher
-    # that outlived its worker takes any stragglers with it.
-    launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
-
+    # Stop drain survivors, unmapped gateways, and the pre-drain launcher
+    # snapshot. ``terminate_pid(force=True)`` is a tree kill, so a launcher
+    # that outlived its worker takes any stragglers with it; a launcher that
+    # already exited with its drained worker raises ProcessLookupError below
+    # and is skipped.
     force_killed = []
     for pid in sorted(set(survivors).union(unmapped_pids).union(launcher_pids)):
         try:

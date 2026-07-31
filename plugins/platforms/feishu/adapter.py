@@ -4939,18 +4939,10 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         self._ws_future.add_done_callback(self._on_ws_thread_exit)
 
-    def _on_ws_thread_exit(self, future: asyncio.Future) -> None:
-        """Done callback for _ws_future. Detects unexpected WS thread death.
-
-        Clean disconnect: disconnect() sets _running=False and
-        _disable_websocket_auto_reconnect() clears _ws_client — both gates trip,
-        callback no-ops.
-        Unexpected death: the lark-oapi SDK exited mid-stream without a clean
-        disconnect. Schedule recovery on the adapter's event loop via
-        call_soon_threadsafe.
-        """
+    def _on_ws_thread_exit(self, future):
+        """Done callback: detect unexpected WS thread death vs clean disconnect."""
         if not self._running or self._ws_client is None:
-            return  # Clean disconnect — nothing to do
+            return
         try:
             self._loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._handle_ws_unexpected_exit())
@@ -4958,17 +4950,14 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
-    async def _handle_ws_unexpected_exit(self) -> None:
-        """Handle unexpected WS thread exit by notifying the gateway's per-platform
-        reconnect watcher. Does NOT implement its own retry loop — the gateway's
-        existing watcher owns retry/backoff policy (ref: PR #31367 review)."""
+    async def _handle_ws_unexpected_exit(self):
+        """Notify gateway reconnect watcher; no custom retry loop."""
         if not self._running or self._ws_client is None:
-            return  # Already handled or racing with disconnect
+            return
         logger.warning(
             "[Feishu] WebSocket thread exited unexpectedly — notifying gateway "
             "reconnect watcher instead of escalating to full gateway restart."
         )
-        # Wipe dead refs so a subsequent connect() can rebuild cleanly
         self._ws_future = None
         self._ws_thread_loop = None
         self._ws_client = None

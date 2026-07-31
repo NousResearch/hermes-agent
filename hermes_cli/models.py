@@ -65,6 +65,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # DeepSeek
     ("deepseek/deepseek-v4-pro",               ""),
     ("deepseek/deepseek-v4-flash",             ""),
+    ("deepseek/deepseek-v4-flash-0731",        "dated snapshot of v4-flash"),
     # Qwen
     ("qwen/qwen3.7-max",                       ""),
     # MoonshotAI
@@ -236,6 +237,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         # DeepSeek
         "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-flash-0731",
         # Qwen
         "qwen/qwen3.7-max",
         # MoonshotAI

@@ -309,13 +309,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   )
 
   const handleTextPaste = useCallback(
-    ({
-      bracketed,
-      cursor,
-      hotkey,
-      text,
-      value
-    }: PasteEvent): MaybePromise<ComposerPasteResult | null> => {
+    ({ bracketed, cursor, hotkey, text, value }: PasteEvent): MaybePromise<ComposerPasteResult | null> => {
       if (hotkey) {
         const preferOsc52 = isRemoteShellSession(process.env)
 

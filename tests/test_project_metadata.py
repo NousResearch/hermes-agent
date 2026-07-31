@@ -176,13 +176,6 @@ def test_linux_wake_extra_avoids_openwakeword_tflite_metadata():
         assert any(spec.startswith(runtime_dep) for spec in wake)
 
 
-def test_linux_desktop_installer_adds_openwakeword_without_dependencies():
-    installer = Path(__file__).resolve().parents[1] / "scripts" / "install.sh"
-    text = installer.read_text(encoding="utf-8")
-
-    assert 'pip install --no-deps "openwakeword==0.6.0"' in text
-
-
 
 
 

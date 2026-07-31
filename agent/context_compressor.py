@@ -749,14 +749,19 @@ def _serialized_length_for_budget(value: Any) -> int:
 
 
 # Provider replay/metadata fields that ride the wire on every request but are
-# invisible to ``msg["content"]``/``msg["tool_calls"]`` accounting.  Codex
-# Responses sessions in particular carry ``codex_reasoning_items`` blobs of
-# ``encrypted_content`` that can dominate the serialized session (a measured
+# invisible to msg["content"]/msg["tool_calls"] accounting.  Codex
+# Responses sessions in particular carry codex_reasoning_items blobs of
+# encrypted_content that can dominate the serialized session (a measured
 # 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+#
+# Reasoning fields (reasoning, reasoning_content,
+# reasoning_details) are intentionally excluded here.  The Anthropic
+# adapter strips reasoning from all but the newest assistant turn; the
+# Bedrock adapter never sends it.  Charging these fields on every message
+# inflated the tail budget by 19-24% with tokens that were provably stripped
+# before the request was sent (#73624).  codex_reasoning_items stays
+# because the Codex adapter *does* replay them on every assistant turn.
 _REPLAY_BUDGET_KEYS = (
-    "reasoning",
-    "reasoning_content",
-    "reasoning_details",
     "codex_reasoning_items",
     "codex_message_items",
 )
@@ -781,6 +786,14 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     the post-compression session stays near the context limit, and
     compaction re-fires continuously (#55572).  Accounting-only: replay
     fields are never mutated or pruned here.
+
+    Reasoning fields (``reasoning``, ``reasoning_content``,
+    ``reasoning_details``) are **not** counted — they are only replayed for
+    the newest assistant turn (Anthropic) or never (Bedrock).  Charging them
+    on every message inflated the tail budget by 19-24% with tokens that were
+    provably stripped before the request was sent (#73624).  The newest
+    assistant message is unconditionally protected, so excluding its reasoning
+    from the budget walk does not change the cut point.
     """
     content = msg.get("content") or ""
     if isinstance(content, str):

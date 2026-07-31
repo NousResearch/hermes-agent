@@ -4626,6 +4626,16 @@ class AIAgent:
             return False
         if msg.get("tool_calls"):
             return False
+        # A prefill stub is thinking-only by construction: the loop only sets
+        # ``_thinking_prefill`` on a turn that had reasoning and no visible
+        # text. It has to be checked ahead of the content inspection below,
+        # because both things this function would otherwise key on are gone by
+        # the time the drop pass runs. The reasoning fields are stripped from
+        # the API copy for providers that don't echo them back, and
+        # ``repair_empty_non_final_messages`` rewrites a non-final stub's empty
+        # content to a placeholder, which would read here as real output.
+        if msg.get("_thinking_prefill"):
+            return True
         # Does it have any actual output?
         content = msg.get("content")
         if isinstance(content, str):
@@ -4649,13 +4659,6 @@ class AIAgent:
                 return False
         elif content is not None and content != "":
             return False
-        # Content is empty-ish. A prefill stub is thinking-only by construction:
-        # the loop only sets ``_thinking_prefill`` on a turn that had reasoning
-        # and no visible text. Check it first, because the per-call copy has its
-        # reasoning fields stripped for providers that don't echo them back,
-        # which would otherwise leave nothing here to key on.
-        if msg.get("_thinking_prefill"):
-            return True
         reasoning = msg.get("reasoning_content") or msg.get("reasoning")
         if isinstance(reasoning, str) and reasoning.strip():
             return True

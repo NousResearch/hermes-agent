@@ -52,8 +52,25 @@ class TestIsThinkingOnlyAssistant:
         on_wire = {"role": "assistant", "content": "", "_thinking_prefill": True}
         assert AIAgent._is_thinking_only_assistant(on_wire)
 
-    def test_prefill_marker_does_not_override_visible_content(self):
-        msg = {"role": "assistant", "content": "real text", "_thinking_prefill": True}
+    def test_healed_prefill_stub_is_still_detected(self):
+        # repair_empty_non_final_messages runs before the drop pass and rewrites
+        # a non-final stub's empty content to a placeholder. The marker has to
+        # outrank that, or the healed stub survives and the request still ends
+        # on a model turn.
+        healed = {
+            "role": "assistant",
+            "content": "[response interrupted]",
+            "_thinking_prefill": True,
+        }
+        assert AIAgent._is_thinking_only_assistant(healed)
+
+    def test_prefill_marker_does_not_override_tool_calls(self):
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
+            "_thinking_prefill": True,
+        }
         assert not AIAgent._is_thinking_only_assistant(msg)
 
 

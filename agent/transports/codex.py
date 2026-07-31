@@ -116,13 +116,27 @@ _OPENAI_RESPONSES_REASONING_NONE_PREFIXES = (
 )
 
 
-def _openai_responses_supports_reasoning_none(model: Any) -> bool:
+def _openai_responses_supports_reasoning_none(
+    model: Any,
+    *,
+    issuer_kind: str,
+    base_url: Any,
+) -> bool:
+    from utils import base_url_hostname
+
     normalized = str(model or "").strip().lower()
     if "/" in normalized:
         normalized = normalized.rsplit("/", 1)[-1]
-    return any(
+    model_supports_none = any(
         normalized == prefix or normalized.startswith(f"{prefix}-")
         for prefix in _OPENAI_RESPONSES_REASONING_NONE_PREFIXES
+    )
+    if not model_supports_none:
+        return False
+
+    return (
+        issuer_kind == "codex_backend"
+        or base_url_hostname(str(base_url or "")) == "api.openai.com"
     )
 
 
@@ -328,7 +342,11 @@ class ResponsesApiTransport(ProviderTransport):
         if explicit_reasoning_none and (
             is_xai_responses
             or is_github_responses
-            or not _openai_responses_supports_reasoning_none(model)
+            or not _openai_responses_supports_reasoning_none(
+                model,
+                issuer_kind=issuer_kind,
+                base_url=params.get("base_url"),
+            )
         ):
             raise ValueError(
                 f"Model {model!r} does not support reasoning_effort 'none' "

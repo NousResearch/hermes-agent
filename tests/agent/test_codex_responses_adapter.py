@@ -267,10 +267,34 @@ def test_responses_transport_preserves_explicit_reasoning_none_for_gpt56():
         model="gpt-5.6-sol",
         messages=[{"role": "user", "content": "hi"}],
         reasoning_config={"enabled": False},
+        base_url="https://api.openai.com/v1",
     )
 
     assert kwargs["reasoning"] == {"effort": "none"}
     assert "include" not in kwargs
+
+
+def test_responses_transport_preserves_explicit_reasoning_none_for_codex_backend():
+    kwargs = ResponsesApiTransport().build_kwargs(
+        model="gpt-5.6-sol",
+        messages=[{"role": "user", "content": "hi"}],
+        reasoning_config={"enabled": False},
+        base_url="https://chatgpt.com/backend-api/codex",
+        is_codex_backend=True,
+    )
+
+    assert kwargs["reasoning"] == {"effort": "none"}
+    assert "include" not in kwargs
+
+
+def test_responses_transport_rejects_reasoning_none_for_unknown_endpoint():
+    with pytest.raises(ValueError, match="does not support reasoning_effort 'none'"):
+        ResponsesApiTransport().build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": False},
+            base_url="https://responses-relay.example/v1",
+        )
 
 
 def test_responses_transport_rejects_reasoning_none_for_unknown_support():

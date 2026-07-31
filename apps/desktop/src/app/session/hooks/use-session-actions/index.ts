@@ -854,6 +854,11 @@ export function useSessionActions({
                 Boolean(sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.busy)
               )
 
+              const activatedTurnStartedAt =
+                typeof activated.turn_started_at === 'number' && activated.turn_started_at > 0
+                  ? activated.turn_started_at * 1000
+                  : null
+
               // The persisted REST transcript is the display authority: a live
               // runtime may carry only the agent's compressed context projection,
               // which is intentionally smaller than the user-visible conversation.
@@ -927,7 +932,8 @@ export function useSessionActions({
                   // Adopting someone else's turn: we'll stream its reply
                   // without ever having received its prompt, so the settle
                   // path must not take the "I saw it all" shortcut.
-                  adoptedRunningTurn: state.adoptedRunningTurn || running
+                  adoptedRunningTurn: state.adoptedRunningTurn || running,
+                  turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null
                 }),
                 storedSessionId
               )
@@ -1195,6 +1201,14 @@ export function useSessionActions({
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
+        // Preserve the turn-elapsed timer across cold resume: the gateway
+        // reports when the in-flight turn started so the desktop can restore
+        // the clock instead of resetting it to 0:00.
+        const resumedTurnStartedAt =
+          typeof resumed.turn_started_at === 'number' && resumed.turn_started_at > 0
+            ? resumed.turn_started_at * 1000
+            : null
+
         updateSessionState(
           resumed.session_id,
           state => ({
@@ -1214,10 +1228,13 @@ export function useSessionActions({
                   // still mid-turn; a settled recovery keeps the stream idle.
                   streamId: resumedRunning ? inFlightRecovery.streamId : null,
                   turnStartedAt: resumedRunning
-                    ? (inFlightRecovery.turnStartedAt ?? state.turnStartedAt ?? Date.now())
-                    : state.turnStartedAt
+                    ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt)
+                    : null
                 }
-              : {})
+              : {
+                  turnStartedAt:
+                    resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
+                })
           }),
           storedSessionId
         )

@@ -1005,7 +1005,16 @@ class ShellFileOperations(FileOperations):
         #  - `chmod --reference` is GNU-only, so we read the octal mode with
         #    `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly;
         #    silent best-effort — a perms-copy failure must not abort the
-        #    write, the file still lands with default umask perms.
+        #    write (the file then lands at mktemp's 0600, same as pre-fix).
+        #  - brand-new targets get `chmod "=rw"` — the POSIX who-less
+        #    symbolic form, which sets rw minus the process umask (e.g.
+        #    0644 under umask 022) instead of mktemp's hardcoded 0600
+        #    (#70856).  Deliberately NOT shell arithmetic on `$(umask)`:
+        #    zsh (reachable via _find_bash's $SHELL fallback) parses
+        #    leading-zero constants as decimal and silently computes a
+        #    garbage mode, while `chmod "=rw"` is spec-identical in
+        #    bash/dash/ash/zsh and degrades to 0600 (pre-fix behavior)
+        #    if an exotic chmod rejects it.
         #  - `trap ... EXIT` guarantees the temp is removed on every error
         #    path (cat failure, mv failure, signal) but NOT after a
         #    successful mv (the temp no longer exists by then).
@@ -1022,11 +1031,12 @@ class ShellFileOperations(FileOperations):
             'if [ -e "$t" ]; then '
             'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
-            # new file: apply umask-computed default instead of mktemp's 0600
-            'else '
-            'u="$(umask)"; chmod $(printf '"'"'%04o'"'"' $((0666 & ~0$u))) "$tmp" 2>/dev/null || true; '
             "fi; "
             'cat > "$tmp"; '
+            # new file: umask-default perms instead of mktemp's 0600 (#70856).
+            # Runs AFTER cat so a write-masking umask can't EACCES the stream;
+            # quoted "=rw" so zsh doesn't =word-expand it.
+            'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
             'mv -f "$tmp" "$t"; '
             "trap - EXIT"
         )

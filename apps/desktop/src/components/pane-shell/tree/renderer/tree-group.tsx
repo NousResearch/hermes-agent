@@ -31,6 +31,7 @@ import {
   $hiddenTreePanes,
   $narrowViewport,
   $newSessionTabAction,
+  $panesWithCloser,
   $treeDragging,
   activateTreePane,
   closeAllTreeTabs,
@@ -177,6 +178,7 @@ export function TreeGroup({
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
   const newSessionTabAction = useStore($newSessionTabAction)
+  const panesWithCloser = useStore($panesWithCloser)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -290,6 +292,11 @@ export function TreeGroup({
   // closes the session, a store-bound pane collapses).
   const closeTab = (paneId: string) => (isCollapsePane(paneId) ? dismissTreePane(paneId) : closeTreePane(paneId))
 
+  // A pane whose store owns Close keeps the gesture even when the pane itself
+  // is uncloseable — the workspace tab empties to a fresh draft rather than
+  // leaving the tree.
+  const closeableTab = (paneId: string) => !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
+
   // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
   // chevron + tap gesture, routed so ⌃`/the titlebar toggle stay truthful.
   const toggleCollapse = () => (node.minimized ? restoreTreePane(activeId) : collapseTreePane(activeId))
@@ -347,7 +354,7 @@ export function TreeGroup({
               role="tablist"
             >
               {shown.map(paneId => {
-                const closeable = !paneChrome(paneFor(paneId)).uncloseable
+                const closeable = closeableTab(paneId)
                 const title = paneFor(paneId)?.title ?? paneId
 
                 return (
@@ -414,7 +421,7 @@ export function TreeGroup({
               {shown.map(paneId => {
                 const isActive = paneId === activeId && !node.minimized
                 const chrome = paneChrome(paneFor(paneId))
-                const closeable = !chrome.uncloseable
+                const closeable = closeableTab(paneId)
                 const title = paneFor(paneId)?.title ?? paneId
 
                 const tab = (

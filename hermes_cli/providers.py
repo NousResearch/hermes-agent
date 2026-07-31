@@ -708,14 +708,36 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     )
 
 
-def custom_provider_slug(display_name: str) -> str:
-    """Build a canonical slug for a custom_providers entry.
+def custom_provider_slug(display_name: str, provider_key: str = "") -> str:
+    """Build the stable ``custom:`` identity for a configured provider.
 
-    Matches the convention used by runtime_provider and credential_pool
-    (``custom:<normalized-name>``).  Centralised here so all call-sites
-    produce identical slugs.
+    Keyed ``providers:`` entries keep their config key as the durable
+    identity even when their display name changes. Legacy
+    ``custom_providers:`` entries have no key, so their normalized display
+    name remains the identity.
     """
-    return "custom:" + display_name.strip().lower().replace(" ", "-")
+    identity = str(provider_key or "").strip() or str(display_name or "").strip()
+    normalized = identity.lower().replace(" ", "-")
+    return normalized if normalized.startswith("custom:") else f"custom:{normalized}"
+
+
+def custom_provider_aliases(
+    display_name: str,
+    provider_key: str = "",
+) -> frozenset[str]:
+    """Return every current and legacy identity accepted for one endpoint."""
+    aliases: set[str] = set()
+    for value in (display_name, provider_key):
+        raw = str(value or "").strip().lower()
+        if not raw:
+            continue
+        normalized = raw.replace(" ", "-")
+        aliases.update({raw, normalized, custom_provider_slug(normalized)})
+        if normalized.startswith("custom:"):
+            suffix = normalized.split(":", 1)[1]
+            if suffix:
+                aliases.update({suffix, f"custom:{normalized}"})
+    return frozenset(aliases)
 
 
 def resolve_custom_provider(
@@ -734,7 +756,7 @@ def resolve_custom_provider(
     # from a prior model-switch bug), fall back to the first custom
     # provider entry so existing configs self-heal.  (GH #17478)
     bare_custom_fallback = requested == "custom"
-    first_valid: Optional[Tuple[str, str, Tuple[str, ...]]] = None
+    first_valid: Optional[Tuple[str, str, Tuple[str, ...], str]] = None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -751,16 +773,22 @@ def resolve_custom_provider(
             continue
 
         key_env = (entry.get("key_env") or "").strip()
+        provider_key = (entry.get("provider_key") or "").strip()
         env_vars: List[str] = []
         if key_env:
             env_vars.append(key_env)
 
         # Stash the first valid entry for bare-"custom" fallback
         if first_valid is None:
-            first_valid = (display_name, api_url, tuple(env_vars))
+            first_valid = (
+                display_name,
+                api_url,
+                tuple(env_vars),
+                custom_provider_slug(display_name, provider_key),
+            )
 
-        slug = custom_provider_slug(display_name)
-        if requested not in {display_name.lower(), slug}:
+        slug = custom_provider_slug(display_name, provider_key)
+        if requested not in custom_provider_aliases(display_name, provider_key):
             continue
 
         return ProviderDef(
@@ -776,8 +804,7 @@ def resolve_custom_provider(
 
     # Self-heal: bare "custom" matched nothing — return first valid entry
     if bare_custom_fallback and first_valid:
-        dname, aurl, denv = first_valid
-        slug = custom_provider_slug(dname)
+        dname, aurl, denv, slug = first_valid
         return ProviderDef(
             id=slug,
             name=dname,

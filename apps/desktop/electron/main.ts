@@ -183,6 +183,7 @@ import {
   redactSecrets,
   SshConnection
 } from './ssh-connection'
+import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
@@ -421,18 +422,24 @@ if (IS_WINDOWS) {
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
-// Keep the renderer running at full speed while the window is in the background
-// or occluded. The chat transcript streams to screen through a bounded timer
-// flush; Chromium clamps timers for backgrounded/occluded renderers, so without
-// these the live answer stalls
-// whenever the window loses focus (switching to your editor mid-turn, detached
-// devtools, another window covering it) and only paints on refocus or refresh.
-// `backgroundThrottling: false` on the BrowserWindow covers the blurred case;
-// these process-level switches additionally stop Chromium from backgrounding or
-// occlusion-throttling the renderer. Must run before app `ready`.
+// Keep the renderer's PROCESS priority normal while its windows are hidden —
+// a deprioritized renderer streams a live answer visibly slower once the
+// window is minimized. This switch only affects scheduling priority; it does
+// not exempt timers from throttling and costs nothing at idle.
+//
+// The timer/rAF throttling story is deliberately NOT handled here anymore.
+// The old process-wide `disable-background-timer-throttling` /
+// `disable-backgrounding-occluded-windows` switches (plus a static
+// `backgroundThrottling: false` on every chat window) pinned every renderer's
+// `document.visibilityState` to 'visible' forever — which silently turned all
+// the renderer's visibility-gated backstop polls and clock ticks into
+// always-on timers. A completely idle, minimized Hermes burned ~20% CPU
+// around the clock. Throttling is now a runtime dial scoped to streaming:
+// see createStreamThrottle() — chat windows are unthrottled while any turn is
+// in flight (so a live answer keeps painting while blurred, occluded, or
+// minimized, exactly as before) and return to Chromium's default throttling
+// once the work settles.
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
-app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
-app.commandLine.appendSwitch('disable-background-timer-throttling')
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
@@ -5188,6 +5195,31 @@ function sendPowerResume() {
 
 let powerResumeRegistered = false
 
+// Mirror of powerMonitor's AC/battery state, broadcast to every window so
+// renderer backstop polls can slow down on battery (see store/power.ts).
+// `null` until the first powerMonitor read after app ready.
+let onBatteryPower: boolean | null = null
+
+// Renderer-side battery gating seeds from this and stays current via the
+// 'hermes:power-battery' push below.
+ipcMain.handle('hermes:power-battery:get', () => onBatteryPower === true)
+
+function broadcastBatteryState(next: boolean) {
+  if (onBatteryPower === next) {
+    return
+  }
+
+  onBatteryPower = next
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    const { webContents } = win
+
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('hermes:power-battery', next)
+    }
+  }
+}
+
 function registerPowerResumeListeners() {
   if (powerResumeRegistered) {
     return
@@ -5200,6 +5232,9 @@ function registerPowerResumeListeners() {
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('unlock-screen', sendPowerResume)
+    powerMonitor.on('on-battery', () => broadcastBatteryState(true))
+    powerMonitor.on('on-ac', () => broadcastBatteryState(false))
+    onBatteryPower = powerMonitor.isOnBatteryPower()
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.
@@ -8697,6 +8732,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
   win.on('enter-full-screen', () => sendWindowStateChanged(true))
   win.on('leave-full-screen', () => sendWindowStateChanged(false))
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   loadWindowUrl(
@@ -8739,7 +8775,7 @@ function nextInstanceBounds() {
 }
 
 // Open a new full-chrome instance window. Mirrors createWindow()'s window
-// options (shared chatWindowWebPreferences keeps backgroundThrottling:false so a
+// options (shared chatWindowWebPreferences + streamThrottle registration so a
 // streamed answer never stalls in the background) but is a peer, not the
 // primary: it never overwrites the mainWindow global, doesn't start the backend
 // (the renderer's getConnection() joins the already-running one), and loads the
@@ -8780,6 +8816,7 @@ function createInstanceWindow() {
   win.on('enter-full-screen', () => sendWindowStateChanged(true, win))
   win.on('leave-full-screen', () => sendWindowStateChanged(false, win))
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   win.on('closed', () => {
@@ -9162,10 +9199,11 @@ function createWindow() {
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    // Shared with the secondary session windows (chatWindowWebPreferences) so
-    // both keep `backgroundThrottling: false` — the chat transcript uses a
-    // bounded timer flush that Chromium clamps for blurred windows, stalling
-    // the live answer until refocus. See session-windows.ts.
+    // Shared with the secondary session windows (chatWindowWebPreferences);
+    // stream-aware throttling is applied per-window via streamThrottle so a
+    // live answer keeps painting while the window is blurred or minimized,
+    // without pinning visibilityState to 'visible' at idle. See
+    // session-windows.ts and stream-throttle.ts.
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -9258,6 +9296,7 @@ function createWindow() {
     }
   })
 
+  streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
@@ -10427,14 +10466,27 @@ ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWat
 // merged picture. Keyed by webContents id so a closed window stops counting.
 const activeWorkByWebContents = new Map<number, ActiveWork>()
 
+// The same merged picture drives background throttling: chat windows run
+// unthrottled while any turn is in flight (streaming must paint while hidden)
+// and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
+const streamThrottle = createStreamThrottle()
+
+function updateStreamThrottleFromActiveWork() {
+  streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)
+}
+
 ipcMain.on('hermes:active-work', (event, payload) => {
   const id = event.sender.id
 
   if (!activeWorkByWebContents.has(id)) {
-    event.sender.once('destroyed', () => activeWorkByWebContents.delete(id))
+    event.sender.once('destroyed', () => {
+      activeWorkByWebContents.delete(id)
+      updateStreamThrottleFromActiveWork()
+    })
   }
 
   activeWorkByWebContents.set(id, normalizeActiveWork(payload))
+  updateStreamThrottleFromActiveWork()
 })
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {

@@ -7,7 +7,6 @@ import type {
   BillingCardInfo,
   BillingMutationResponse,
   BillingStateResponse,
-  ImageAttachResponse,
   SessionCloseResponse,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,
@@ -364,6 +363,10 @@ export interface ComposerPasteResult {
 export type MaybePromise<T> = Promise<T> | T
 
 export interface ComposerActions {
+  /** Pull an image off the system clipboard in as a token. */
+  attachClipboardImage: () => void
+  /** Attach an image by path in as a token. */
+  attachImagePath: (path: string) => void
   clearIn: () => void
   dequeue: () => string | undefined
   enqueue: (text: string) => void
@@ -373,12 +376,14 @@ export interface ComposerActions {
   removeQueue: (index: number) => void
   replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
+  setComposerTokens: StateSetter<ComposerToken[]>
   setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
-  setPasteSnips: StateSetter<PasteSnippet[]>
   setQueueEdit: (index: null | number) => void
   syncQueue: () => void
+  /** Reconcile attached payloads against tokens still present in the text. */
+  syncTokens: (value: string) => void
 }
 
 export interface ComposerRefs {
@@ -387,6 +392,7 @@ export interface ComposerRefs {
   queueEditRef: MutableRefObject<null | number>
   queueRef: MutableRefObject<string[]>
   submitRef: MutableRefObject<(value: string) => void>
+  tokensRef: MutableRefObject<ComposerToken[]>
 }
 
 export interface ComposerState {
@@ -396,16 +402,15 @@ export interface ComposerState {
   historyIdx: null | number
   input: string
   inputBuf: string[]
-  pasteSnips: PasteSnippet[]
   queueEditIdx: null | number
   queuedDisplay: string[]
+  tokens: ComposerToken[]
 }
 
 export interface UseComposerStateOptions {
   gw: GatewayClient
-  onClipboardPaste: (quiet?: boolean) => Promise<void> | void
-  onImageAttached?: (info: ImageAttachResponse) => void
   submitRef: MutableRefObject<(value: string) => void>
+  sys: (text: string) => void
 }
 
 export interface UseComposerStateResult {
@@ -495,10 +500,11 @@ export interface GatewayEventHandlerContext {
 
 export interface SlashHandlerContext {
   composer: {
+    attachClipboardImage: () => void
+    attachImagePath: (path: string) => void
     enqueue: (text: string) => void
     hasSelection: boolean
     openEditor: () => Promise<void>
-    paste: (quiet?: boolean) => void
     queueRef: MutableRefObject<string[]>
     selection: SelectionApi
     setInput: StateSetter<string>
@@ -618,8 +624,14 @@ export interface AppOverlaysProps {
   pagerPageSize: number
 }
 
-export interface PasteSnippet {
-  label: string
-  path?: string
-  text: string
-}
+/**
+ * A `[[ … ]]` token sitting in the composer text, plus the payload it stands
+ * for. `paste` tokens expand back into their text at submit; `image` tokens
+ * are a receipt for a file the gateway already holds, and expand to nothing.
+ *
+ * `index` is the user-facing number in `[[ Image 2 ]]`; `path` is the gateway
+ * path, used to detach the image when its token is deleted.
+ */
+export type ComposerToken =
+  | { index: number; kind: 'image'; label: string; path: string; text?: undefined }
+  | { index?: undefined; kind: 'paste'; label: string; path?: string; text: string }

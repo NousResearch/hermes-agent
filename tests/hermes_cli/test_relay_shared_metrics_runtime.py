@@ -32,6 +32,7 @@ class _Relay:
         self._starts: dict[Any, dict[str, Any]] = {}
         self._scope_starts: dict[Any, dict[str, Any]] = {}
         self._scope = contextvars.ContextVar("relay_scope", default=None)
+        self._scope_stack = contextvars.ContextVar("relay_scope_stack", default=None)
         self._scope_serial = 0
         self.ScopeType = SimpleNamespace(Agent="agent", Function="function")
         self.LLMRequest = _Request
@@ -51,6 +52,11 @@ class _Relay:
     def _scope_push(self, name: str, scope_type: Any, **kwargs: Any) -> Any:
         self._scope_serial += 1
         handle = ("scope", name, self._scope_serial)
+        stack = self._scope_stack.get()
+        if stack is None:
+            stack = []
+            self._scope_stack.set(stack)
+        stack.append(handle)
         self._scope.set(handle)
         self.events.append(("scope.push", name, scope_type, kwargs))
         if scope_type == self.ScopeType.Function:
@@ -69,6 +75,13 @@ class _Relay:
         return handle
 
     def _scope_pop(self, handle: Any, **kwargs: Any) -> None:
+        stack = self._scope_stack.get()
+        if not stack or stack[-1] != handle:
+            current = stack[-1] if stack else None
+            self.events.append(("scope.pop.rejected", handle, current))
+            raise RuntimeError("scope handle is not at the top of the stack")
+        stack.pop()
+        self._scope.set(stack[-1] if stack else None)
         self.events.append(("scope.pop", handle, kwargs))
         start = self._scope_starts.pop(handle, None)
         if start is not None:
@@ -91,7 +104,9 @@ class _Relay:
         self.events.append(("scope.event", name, kwargs))
 
     def _get_scope_stack(self) -> Any:
-        current = self._scope.get()
+        stack = self._scope_stack.get()
+        current = stack[-1] if stack else None
+        self._scope.set(current)
         self.events.append(("scope.sync", current))
         return current
 
@@ -792,6 +807,32 @@ def test_sync_session_runner_releases_lock_before_callback(direct_runtime):
     assert contender.is_alive() is False
 
 
+def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "lifo-contract"})
+    assert session is not None
+
+    first = runtime.run_in_session(
+        session,
+        direct_runtime.scope.push,
+        "first",
+        direct_runtime.ScopeType.Function,
+    )
+    second = runtime.run_in_session(
+        session,
+        direct_runtime.scope.push,
+        "second",
+        direct_runtime.ScopeType.Function,
+    )
+
+    with pytest.raises(RuntimeError, match="not at the top"):
+        runtime.run_in_session(session, direct_runtime.scope.pop, first)
+
+    runtime.run_in_session(session, direct_runtime.scope.pop, second)
+    runtime.run_in_session(session, direct_runtime.scope.pop, first)
+
+
 def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
     direct_runtime,
 ):
@@ -833,6 +874,11 @@ def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
         if event[0] == "scope.pop" and event[1] == first.handle
     ]
     assert len(turn_closes) == 1
+    assert not [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop.rejected"
+    ]
 
 
 def test_concurrent_turn_skips_shared_metrics_scope_creation(direct_runtime):
@@ -1047,8 +1093,6 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert metrics["hermes.task_run.finished"]["value"] == 2
     assert flush_attempts == 2
     assert "Hermes shared-metrics task flush failed" in caplog.text
-
-
 
 
 

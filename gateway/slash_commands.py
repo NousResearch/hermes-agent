@@ -513,18 +513,18 @@ class GatewaySlashCommandsMixin:
                     choices.append(
                         {"value": name, "label": name, "is_current": name == profile_name}
                     )
-                    # Escape hatch — selecting Cancel leaves the current profile
-                    # untouched (parity with the /model cost-confirm cancel).
-                    choices.append(
-                        {"value": "cancel", "label": "❌ Cancel", "is_current": False}
-                    )
+                # Escape hatch — selecting Cancel leaves the current profile
+                # untouched (parity with the /model cost-confirm cancel).
+                choices.append(
+                    {"value": "cancel", "label": "❌ Cancel", "is_current": False}
+                )
 
-                    async def _on_profile_selected(_chat_id: str, value: str) -> str:
-                        if value == "cancel":
-                            return (
-                                f"🟡 Profile switch cancelled. Current profile unchanged "
-                                f"({profile_name or 'unknown'})."
-                            )
+                async def _on_profile_selected(_chat_id: str, value: str) -> str:
+                    if value == "cancel":
+                        return (
+                            f"🟡 Profile switch cancelled. Current profile unchanged "
+                            f"({profile_name or 'unknown'})."
+                        )
                     if not self._profile_mutation_allowed(source):
                         return "Only gateway admins can change the persistent profile pin."
                     canon = normalize_profile_name(value)

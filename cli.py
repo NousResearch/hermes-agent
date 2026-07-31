@@ -9986,6 +9986,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
+            payload = self._expand_paste_references(payload)
             if not payload:
                 _cprint("  Usage: /queue <prompt>")
             else:

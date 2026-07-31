@@ -135,10 +135,10 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     queueEditIdx,
     enqueue,
     dequeue,
+    prependQ,
     removeQ,
-    replaceQ,
     setQueueEdit,
-    syncQueue
+    takeQ
   } = useQueue()
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
@@ -435,16 +435,16 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       enqueue,
       handleTextPaste,
       openEditor,
+      prependQueue: prependQ,
       pushHistory,
       removeQueue: removeQ,
-      replaceQueue: replaceQ,
       setCompIdx,
       setComposerTokens,
       setHistoryIdx,
       setInput,
       setInputBuf,
       setQueueEdit,
-      syncQueue,
+      takeQueue: takeQ,
       syncTokens
     }),
     [
@@ -455,15 +455,15 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       enqueue,
       handleTextPaste,
       openEditor,
+      prependQ,
       pushHistory,
       removeQ,
-      replaceQ,
       setCompIdx,
       setComposerTokens,
       setHistoryIdx,
       setInput,
       setQueueEdit,
-      syncQueue,
+      takeQ,
       syncTokens
     ]
   )

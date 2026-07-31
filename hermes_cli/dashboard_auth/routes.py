@@ -135,8 +135,11 @@ def _refresh_native_session_sync(
 ) -> Tuple[Session | None, str | None]:
     """Single-flight native refresh for one old rotating refresh token.
 
-    Returns ``(session, None)`` on success/cache hit, or
-    ``(None, unavailable_provider)`` when no provider refreshed it.
+    Returns ``(session, None)`` on success or a positive cache hit.
+    Returns ``(None, None)`` when every provider definitively rejects the
+    token, including a negative-cache hit. Returns ``(None,
+    unreachable_provider)`` when no provider succeeds and at least one
+    provider was unreachable.
     """
     cache_key = _native_refresh_cache_key(refresh_token, provider_hint, client_ip)
 

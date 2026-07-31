@@ -152,12 +152,27 @@ class _TrackingMixin:
     _hermes_tracked_path: str | None = None
 
     def close(self) -> None:  # type: ignore[misc]
-        with _live_lock:
-            path = getattr(self, "_hermes_tracked_path", None)
-            if path is not None:
-                self._hermes_tracked_path = None
-                untrack_connection(path)
+        path = getattr(self, "_hermes_tracked_path", None)
+        if path is None:
+            # Nothing tracked (already closed, or an untracked connection
+            # wearing the mixin): nothing to unregister.
             super().close()  # type: ignore[misc]
+            return
+        with _live_lock:
+            # Untrack only AFTER the underlying close SUCCEEDS. The old
+            # order (untrack-then-close) let a failed close leave a live fd
+            # whose registry entry was already removed — a byte probe would
+            # then run against an open database and cancel its advisory
+            # locks, the exact failure this module exists to prevent.
+            # Keeping the entry when close fails is the safe direction: a
+            # retried close untracks, and probes stay blocked while the
+            # descriptor is (possibly) live. Normal closes are unaffected —
+            # the entry is removed exactly once, under the lock, so the
+            # probe can never observe "no live connection" while this
+            # descriptor is still open.
+            super().close()  # type: ignore[misc]
+            self._hermes_tracked_path = None
+            untrack_connection(path)
 
 
 class TrackedConnection(_TrackingMixin, sqlite3.Connection):

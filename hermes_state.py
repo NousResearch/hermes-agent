@@ -1807,6 +1807,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # lock so a reader that finishes opening after the drain finds the
         # shutdown in progress and closes its own connection immediately.
         self._read_conns_closed = False
+        # Generation counter for the bounded read-connection cache. When the
+        # strong _read_conns set exceeds _MAX_READ_CONNS we evict the whole
+        # current generation and bump this counter; the evicting thread
+        # closes every evicted connection under its per-connection lock (see
+        # _close_read_conn), and threads holding a stale per-thread
+        # connection detect the mismatch on their next read and discard it.
+        # Without the bound, every distinct worker thread that ever ran a
+        # read on a process-lifetime SessionDB handle (the dashboard's
+        # global _get_db(), the gateway runner's SessionDB) leaves a
+        # permanent main+wal+shm connection behind — the process eventually
+        # pins against RLIMIT_NOFILE and unrelated opens fail with
+        # EMFILE/Errno 24 (observed: ~80 leaked state.db connections on the
+        # dashboard backend after ~10h uptime).
+        self._read_gen = 0
         self._wal_active = False
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
@@ -2006,6 +2020,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     # ── Read-path split ──
 
+    # Bound on the per-thread read-only connection cache. Long-lived
+    # SessionDB handles (dashboard global _get_db(), gateway runner) are
+    # never closed for the process lifetime; without a bound, every unique
+    # worker thread that ever reads leaves a permanent main+wal+shm
+    # connection in _read_conns, eventually exhausting RLIMIT_NOFILE and
+    # breaking unrelated opens (EMFILE / Errno 24).
+    #
+    # Eviction protocol (owner-safe): on overflow the registering thread
+    # bumps _read_gen and closes every evicted connection through
+    # _close_read_conn, which (a) takes the connection's per-conn RLock so
+    # it can never close a connection mid-read, (b) only removes a
+    # connection from _read_conns after close() has SUCCEEDED — a failed
+    # close is re-registered so close() at shutdown retries it — and
+    # (c) never closes the same connection twice (conn._hermes_read_closed),
+    # which sqlite3 does not tolerate when racing. Threads whose connection
+    # was evicted detect the generation bump on their next read and reopen
+    # lazily — the churn cost is one connect per thread per eviction,
+    # negligible compared to pinning the process against its fd limit.
+    _MAX_READ_CONNS = 32
+    # How long the evictor waits for an in-flight read on a connection
+    # before giving up on closing it (it then stays registered for the
+    # shutdown drain, which retries).
+    _READ_CONN_CLOSE_TIMEOUT = 2.0
+
     def _get_read_conn(self) -> Optional[sqlite3.Connection]:
         """Per-thread read-only connection, or None when unavailable.
 
@@ -2023,7 +2061,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return None
         conn = getattr(self._read_local, "conn", None)
         if conn is not None:
-            return conn
+            # A cached connection from a previous generation was evicted by
+            # the cache bound; close it and fall through to reopen (the
+            # thread-local may outlive the eviction for threads that read
+            # rarely).
+            if getattr(self._read_local, "gen", 0) != self._read_gen:
+                self._close_read_conn(conn)
+                # If our close (or the evictor's, racing us) succeeded, drop
+                # the closed connection from the registry so _read_conns only
+                # holds live connections. When our close failed, leave it
+                # registered — the evictor re-registers failed closes and
+                # close() at shutdown retries them.
+                if getattr(conn, "_hermes_read_closed", False):
+                    with self._read_conns_lock:
+                        self._read_conns.discard(conn)
+                self._read_local.conn = None
+                self._read_local.gen = 0
+                conn = None
+            else:
+                return conn
         if getattr(self._read_local, "failed", False):
             return None
         try:
@@ -2033,19 +2089,61 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 uri=True,
                 timeout=5.0,
                 isolation_level=None,
+                # Cross-thread close is deliberate: the evictor closes this
+                # connection from the registering thread under the per-conn
+                # RLock below. check_same_thread=False makes that legal;
+                # _read_ctx serializes every query on that RLock, so no
+                # statement ever runs concurrently with a close.
+                check_same_thread=False,
             )
             conn.row_factory = sqlite3.Row
+            # Per-connection lock guarding close vs in-flight reads, plus a
+            # closed-state flag so the evictor and the owning thread can
+            # never close the same connection concurrently. Attached as
+            # instance attributes (sqlite3.Connection is a C type; runtime
+            # attrs work, the type checker just can't see them).
+            setattr(conn, "_hermes_read_lock", threading.RLock())  # type: ignore[attr-defined]
+            setattr(conn, "_hermes_read_closed", False)  # type: ignore[attr-defined]
             # Load the CJK tokenizer extension on this connection so
             # messages_fts_cjk queries work on the read path. The .so
             # registers the tokenizer in the connection's in-memory
             # registry, not the database file, so mode=ro is fine.
             if self._fts_cjk_loaded:
                 load_fts5_cjk_extension(conn)
+            evicted: list = []
             with self._read_conns_lock:
                 if self._read_conns_closed:
                     # close() already drained — don't register; close
                     # immediately so no tracked fd leaks.
-                    conn.close()
+                    self._close_read_conn(conn)
+                    self._read_local.failed = True
+                    return None
+                overflow = len(self._read_conns) >= self._MAX_READ_CONNS
+                if overflow:
+                    # Cache overflow on a long-lived handle: evict the whole
+                    # generation. Each evicted connection is closed under its
+                    # own lock so fds are released without racing an in-flight
+                    # read; the next read on any thread reopens lazily under a
+                    # fresh generation.
+                    self._read_gen += 1
+                    evicted = list(self._read_conns)
+                    self._read_conns.clear()
+            if overflow:
+                # Close outside the registry lock: each close may wait up to
+                # _READ_CONN_CLOSE_TIMEOUT for an in-flight read.
+                for old_conn in evicted:
+                    if not self._close_read_conn(old_conn):
+                        # Close failed (or the conn was busy): it may still
+                        # be live, so keep it reachable for the shutdown
+                        # drain, which retries the close.
+                        with self._read_conns_lock:
+                            if not getattr(old_conn, "_hermes_read_closed", False):
+                                self._read_conns.add(old_conn)
+            with self._read_conns_lock:
+                if self._read_conns_closed:
+                    # A concurrent close() drained between our eviction loop
+                    # and here; don't register the fresh connection.
+                    self._close_read_conn(conn)
                     self._read_local.failed = True
                     return None
                 self._read_conns.add(conn)
@@ -2056,7 +2154,58 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
             return None
         self._read_local.conn = conn
+        self._read_local.gen = self._read_gen
         return conn
+
+    def _close_read_conn(self, conn) -> bool:
+        """Close one read connection safely; True when the fd is released.
+
+        Owner-safe close protocol for the bounded read-conn cache:
+
+          * every query on *conn* runs under ``conn._hermes_read_lock``
+            (see _read_ctx), so acquiring that lock here guarantees no
+            statement is in flight while we close — the evictor can never
+            yank a connection out from under a running read;
+          * a close is attempted at most once per connection (guarded by
+            ``conn._hermes_read_closed``), so the evictor and the owning
+            thread can never race two concurrent closes of the same
+            connection, which sqlite3 does not tolerate;
+          * callers only remove a connection from _read_conns after this
+            returns True — a live fd is never dropped from the registry it
+            is reachable through.
+
+        Returns True when the connection is closed (or was already closed),
+        False when close() failed or the connection was busy and the fd may
+        still be live.
+        """
+        lock = getattr(conn, "_hermes_read_lock", None)
+        if lock is not None:
+            acquired = lock.acquire(timeout=self._READ_CONN_CLOSE_TIMEOUT)
+            if not acquired:
+                # An in-flight read is wedged; keep the connection reachable
+                # so the shutdown drain retries the close.
+                logger.warning(
+                    "read connection to %s busy for %.1fs; deferring close",
+                    self.db_path,
+                    self._READ_CONN_CLOSE_TIMEOUT,
+                )
+                return False
+        try:
+            if getattr(conn, "_hermes_read_closed", False):
+                return True
+            try:
+                conn.close()
+            except Exception as exc:
+                logger.warning(
+                    "close of read connection to %s failed: %s",
+                    self.db_path, exc,
+                )
+                return False
+            conn._hermes_read_closed = True
+            return True
+        finally:
+            if lock is not None:
+                lock.release()
 
     @contextmanager
     def _read_ctx(self):
@@ -2067,11 +2216,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         across every agent, so this lock was a global choke point).
         Non-WAL or read-conn failure: the shared writer connection under
         self._lock, byte-for-byte the legacy behavior.
+
+        The per-connection RLock is held for the whole yielded block so a
+        cache eviction on another thread — which closes under the same lock —
+        can never close a connection mid-statement. After acquiring the lock
+        we re-verify the connection is still the current generation: the
+        evictor may have closed it between _get_read_conn returning it and
+        this acquisition, and a query must never run on a closed connection.
+        On eviction mid-handoff we reopen and retry (bounded; under
+        pathological eviction churn we fall back to the locked writer path).
         """
-        conn = self._get_read_conn()
-        if conn is not None:
-            yield conn
-            return
+        for _ in range(3):
+            conn = self._get_read_conn()
+            if conn is None:
+                break
+            lock = getattr(conn, "_hermes_read_lock", None)
+            if lock is None:
+                yield conn
+                return
+            with lock:
+                if (
+                    getattr(self._read_local, "conn", None) is conn
+                    and getattr(self._read_local, "gen", 0) == self._read_gen
+                ):
+                    yield conn
+                    return
+                # Evicted between the return above and this acquisition;
+                # reopen under a fresh generation and retry.
+                continue
         with self._lock:
             yield self._conn
 
@@ -2531,11 +2703,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             read_conns = list(self._read_conns)
             self._read_conns.clear()
         for conn in read_conns:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            self._close_read_conn(conn)
         self._read_local.conn = None
+        self._read_local.gen = 0
         with self._lock:
             if self._conn:
                 try:

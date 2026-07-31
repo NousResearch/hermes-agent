@@ -74,7 +74,7 @@ class TestApiModeAccepted:
 
     def test_kanban_network_access_loads_from_model_config(self):
         with patch(
-            "hermes_cli.config.load_config",
+            "hermes_cli.config.load_config_readonly",
             return_value={
                 "model": {"codex_app_server_kanban_network_access": True}
             },

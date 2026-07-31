@@ -191,6 +191,28 @@ class TestLifecycle:
 
         assert captured["kanban_network_access"] is True
 
+    def test_legacy_client_factory_keeps_historical_call_shape(self):
+        client = FakeClient()
+        captured = {}
+
+        def factory(*, codex_bin, codex_home):
+            captured.update(codex_bin=codex_bin, codex_home=codex_home)
+            return client
+
+        session = CodexAppServerSession(
+            cwd="/tmp",
+            codex_bin="legacy-codex",
+            codex_home="/tmp/legacy-home",
+            kanban_network_access=True,
+            client_factory=factory,
+        )
+        session.ensure_started()
+
+        assert captured == {
+            "codex_bin": "legacy-codex",
+            "codex_home": "/tmp/legacy-home",
+        }
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)
@@ -912,4 +934,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-

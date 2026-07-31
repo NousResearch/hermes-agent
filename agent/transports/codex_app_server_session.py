@@ -24,6 +24,7 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import threading
@@ -321,11 +322,24 @@ class CodexAppServerSession:
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
-            self._client = self._client_factory(
-                codex_bin=self._codex_bin,
-                codex_home=self._codex_home,
-                kanban_network_access=self._kanban_network_access,
-            )
+            client_kwargs = {
+                "codex_bin": self._codex_bin,
+                "codex_home": self._codex_home,
+            }
+            try:
+                factory_parameters = inspect.signature(
+                    self._client_factory
+                ).parameters
+            except (TypeError, ValueError):
+                factory_parameters = {}
+            if "kanban_network_access" in factory_parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in factory_parameters.values()
+            ):
+                client_kwargs["kanban_network_access"] = (
+                    self._kanban_network_access
+                )
+            self._client = self._client_factory(**client_kwargs)
         self._client.initialize(
             client_name="hermes",
             client_title="Hermes Agent",

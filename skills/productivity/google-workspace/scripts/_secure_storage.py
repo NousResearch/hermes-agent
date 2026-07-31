@@ -4,33 +4,37 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import stat
 from pathlib import Path
 from typing import Any
 
 
 def write_private_json(path: Path, data: Any) -> None:
-    """Write JSON with owner-only permissions, including over existing files."""
+    """Atomically write JSON with owner-only permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(
-        str(path),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
+    tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
         with os.fdopen(fd, "w", encoding="utf-8") as file:
-            fd = -1  # fdopen owns the descriptor from here.
             json.dump(data, file, indent=2)
             file.flush()
             os.fsync(file.fileno())
-    finally:
-        if fd >= 0:
-            os.close(fd)
+        os.replace(tmp_path, path)
 
-    # Windows does not expose fchmod. This is also a final best-effort repair
-    # if a platform altered the mode while closing the descriptor.
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+        # Windows does not enforce the creation mode in the same way as
+        # POSIX. This also repairs the final mode if a platform altered it
+        # during replacement.
+        try:
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass

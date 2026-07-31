@@ -93,6 +93,30 @@ def test_auth_code_exchange_repairs_existing_token_permissions(setup_module):
     assert setup_module.TOKEN_PATH.stat().st_mode & 0o777 == 0o600
 
 
+def test_interrupted_serialization_preserves_existing_token(
+    setup_module,
+    monkeypatch,
+):
+    original = '{"token": "existing-refresh-token"}'
+    setup_module.TOKEN_PATH.write_text(original, encoding="utf-8")
+    storage_module = sys.modules[setup_module.write_private_json.__module__]
+
+    def fail_during_dump(data, file, indent):
+        file.write('{"token":')
+        raise RuntimeError("simulated interruption")
+
+    monkeypatch.setattr(storage_module.json, "dump", fail_during_dump)
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        setup_module.write_private_json(
+            setup_module.TOKEN_PATH,
+            {"token": "replacement"},
+        )
+
+    assert setup_module.TOKEN_PATH.read_text(encoding="utf-8") == original
+    assert list(setup_module.TOKEN_PATH.parent.glob("google_token.tmp.*")) == []
+
+
 def test_setup_refresh_repairs_existing_token_permissions(
     setup_module,
     monkeypatch,

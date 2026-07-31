@@ -209,6 +209,9 @@ gateway:
   profile:
     header:                "👤 **الملف الشخصي:** `{profile}`"
     home:                  "📂 **المجلد الرئيسي:** `{home}`"
+    picker_title:           "👤 **الملف الشخصي:** `{current}`
+
+اختر الملف الشخصي لهذه المحادثة/الموضوع:"
 
   reasoning:
     level_default:             "medium (افتراضي)"

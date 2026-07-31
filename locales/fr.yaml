@@ -186,6 +186,9 @@ gateway:
   profile:
     header:                "👤 **Profil :** `{profile}`"
     home:                  "📂 **Dossier personnel :** `{home}`"
+    picker_title:           "👤 **Profil :** `{current}`
+
+Choisissez le profil pour ce chat/fil :"
 
   reasoning:
     level_default:             "medium (par défaut)"

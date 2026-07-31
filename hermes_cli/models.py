@@ -4900,6 +4900,20 @@ def _lmstudio_entry_identifiers(entry: dict) -> set[str]:
     return identifiers
 
 
+def _lmstudio_preferred_identifier(entry: dict) -> str:
+    """Return the single identifier discovery should advertise ``entry`` under.
+
+    ``key`` wins over ``id`` so an entry is offered once, but only once both
+    have been normalized: precedence is between *usable* identifiers, never
+    between raw values. Choosing on the raw values instead would let a
+    whitespace-only ``key`` — truthy before it is stripped, empty after — hide
+    a perfectly good ``id``, dropping from discovery an entry that
+    ``_lmstudio_entry_identifiers`` still resolves through that ``id``.
+    Returns ``""`` when the entry has no usable identifier at all.
+    """
+    return _lmstudio_identifier(entry.get("key")) or _lmstudio_identifier(entry.get("id"))
+
+
 def probe_lmstudio_models(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -4925,10 +4939,10 @@ def probe_lmstudio_models(
             continue
         if _lmstudio_entry_is_embedding(raw):
             continue
-        # ``key`` wins over ``id`` when both are present, so an entry is offered
-        # under a single identifier; both remain valid aliases when looking the
-        # entry back up (see ``_lmstudio_entry_identifiers``).
-        key = _lmstudio_identifier(raw.get("key") or raw.get("id"))
+        # A usable ``key`` wins over ``id``, so an entry is offered under a
+        # single identifier; both remain valid aliases when looking the entry
+        # back up (see ``_lmstudio_entry_identifiers``).
+        key = _lmstudio_preferred_identifier(raw)
         if key and key not in keys:
             keys.append(key)
     return keys

@@ -2992,19 +2992,35 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
       ``content`` at every API-bound build site, so exactly one of the two is
       ever sent. Counting both double-counts any message whose sidecar differs
       from its clean stored content (2.00x on a 40KB sidecar).
+
+      The substitution mirrors that helper's guard exactly: only a non-empty
+      STRING sidecar on a ``user``/``assistant`` row displaces ``content``.
+      Any other sidecar shape is popped and discarded on the wire without
+      touching ``content``, so a shadow that substituted unconditionally
+      would UNDERcount those rows — the dangerous direction, since it makes
+      compaction fire too late and the turn dies on a hard context error.
     * Base64 image payloads are replaced with a placeholder; they are charged
       separately at a flat rate by ``_count_image_tokens``, and counting their
       raw chars here would massively overestimate usage.
     """
+    sidecar = msg.get("api_content")
+    sidecar_wins = (
+        isinstance(sidecar, str)
+        and bool(sidecar)
+        and msg.get("role") in ("user", "assistant")
+    )
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
         if k == "_anthropic_content_blocks":
             continue
         if k == "api_content":
-            shadow["content"] = v
+            # Always popped before the request is built; only counted when it
+            # actually replaces ``content``.
+            if sidecar_wins:
+                shadow["content"] = v
             continue
         if k == "content":
-            if "api_content" in msg:
+            if sidecar_wins:
                 # The sidecar wins on the wire; skip the clean copy so the
                 # same logical content is not counted twice.
                 continue

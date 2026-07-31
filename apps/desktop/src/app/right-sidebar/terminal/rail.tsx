@@ -11,6 +11,7 @@ import {
 import { Tip, TipHintLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
+import { middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
 import { $bindings } from '@/store/keybinds'
 
@@ -130,18 +131,8 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
                   ? 'bg-(--chrome-action-hover) text-foreground'
                   : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
               )}
-              onAuxClick={event => {
-                if (event.button === 1) {
-                  event.preventDefault()
-                  closeTerminal(term.id)
-                }
-              }}
+              {...middleClickHandlers(() => closeTerminal(term.id))}
               onClick={() => selectTerminal(term.id)}
-              onMouseDown={event => {
-                if (event.button === 1) {
-                  event.preventDefault()
-                }
-              }}
               role="tab"
               type="button"
             >

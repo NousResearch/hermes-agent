@@ -72,6 +72,39 @@ export class RemoteRevalidationCoordinator {
   }
 }
 
+type ProbeFn<TConnection> = (connection: TConnection, path: string, options: { timeoutMs: number }) => Promise<unknown>
+
+/**
+ * Liveness probe for a remote backend: cheap `/api/health`, falling back to
+ * `/api/status` only for a remote old enough not to serve it.
+ *
+ * `/api/status` does real work per request (gateway liveness resolution, a
+ * state.db session count), which makes it the endpoint concurrent session load
+ * starves first. Probing it means a healthy but busy backend fails its own
+ * liveness check and the app tears down a working connection, which is a
+ * self-inflicted disconnect loop under exactly the load that needs the
+ * connection most. A genuinely wedged event loop fails `/api/health` too, so
+ * nothing is lost.
+ */
+async function probeLiveness<TConnection>(
+  probe: ProbeFn<TConnection>,
+  connection: TConnection,
+  timeoutMs: number
+): Promise<void> {
+  try {
+    await probe(connection, '/api/health', { timeoutMs })
+  } catch (healthError) {
+    // A remote that predates /api/health would otherwise 404 every probe,
+    // retire the tunnel and reconnect forever; the boot probe falls back the
+    // same way (backend-health.ts).
+    if (!isMissingHealthEndpointError(healthError)) {
+      throw healthError
+    }
+
+    await probe(connection, '/api/status', { timeoutMs })
+  }
+}
+
 interface EnsureHealthyPooledRemoteBackendForDispatchOptions<TConnection extends RemoteConnectionDescriptor> {
   connectionPromise: Promise<TConnection>
   currentConnectionPromise: () => null | Promise<TConnection>
@@ -104,22 +137,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
-    try {
-      await probe(connection, '/api/health', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-      })
-    } catch (healthError) {
-      // A remote that predates /api/health would otherwise 404 every dispatch,
-      // retire the tunnel and reconnect forever; the boot probe falls back the
-      // same way (backend-health.ts).
-      if (!isMissingHealthEndpointError(healthError)) {
-        throw healthError
-      }
-
-      await probe(connection, '/api/status', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-      })
-    }
+    await probeLiveness(probe, connection, POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS)
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {
       await retire(error)
@@ -234,7 +252,7 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
         }
 
         const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probeLiveness(probe, connection, REMOTE_LIVENESS_TIMEOUT_MS)
         tracker.recordSuccess(baseUrl)
       } catch {
         const failure = tracker.recordFailure(baseUrl)
@@ -309,7 +327,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
         }
 
         const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probeLiveness(probe, connection, REMOTE_LIVENESS_TIMEOUT_MS)
         tracker.recordSuccess(baseUrl)
 
         return
@@ -443,7 +461,7 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
   const baseUrl = connection.baseUrl.replace(/\/+$/, '')
 
   try {
-    await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+    await probeLiveness(probe, connection, REMOTE_LIVENESS_TIMEOUT_MS)
 
     if (currentConnectionPromise() !== connectionPromise) {
       return { ok: true, rebuilt: false }

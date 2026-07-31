@@ -178,16 +178,34 @@ describe('revalidateRemoteConnection', () => {
     }
   }
 
-  it('probes the normalized status URL with the production timeout', async () => {
+  it('probes the normalized health URL with the production timeout', async () => {
     const test = harness()
 
     await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
     expect(test.probe).toHaveBeenCalledWith(
       expect.objectContaining({ baseUrl: 'https://gateway.example.com/' }),
-      '/api/status',
+      '/api/health',
       {
         timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
       }
+    )
+    expect(test.resetConnection).not.toHaveBeenCalled()
+  })
+
+  it('falls back to /api/status when /api/health returns 404 on older backends', async () => {
+    const test = harness({
+      probe: vi.fn(async (_connection: unknown, path: string) => {
+        if (path === '/api/health') {
+          throw new Error('404: Not Found')
+        }
+      })
+    })
+
+    await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
+    expect(test.options.probe).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: 'https://gateway.example.com/' }),
+      '/api/status',
+      { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS }
     )
     expect(test.resetConnection).not.toHaveBeenCalled()
   })
@@ -417,7 +435,7 @@ describe('revalidatePooledRemoteBackends', () => {
     expect(pool.probe).toHaveBeenCalledTimes(1)
     expect(pool.probe).toHaveBeenCalledWith(
       expect.objectContaining({ remoteBaseUrl: 'https://remote.example.com' }),
-      '/api/status',
+      '/api/health',
       { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS }
     )
     expect(pool.stopBackend).not.toHaveBeenCalled()
@@ -434,7 +452,7 @@ describe('revalidatePooledRemoteBackends', () => {
 
     await pool.run(new RemoteLivenessTracker())
 
-    expect(pool.probe).toHaveBeenCalledWith(expect.objectContaining({ authMode: 'oauth' }), '/api/status', {
+    expect(pool.probe).toHaveBeenCalledWith(expect.objectContaining({ authMode: 'oauth' }), '/api/health', {
       timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
     })
     expect(pool.stopBackend).not.toHaveBeenCalled()

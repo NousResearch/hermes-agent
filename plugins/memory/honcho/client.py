@@ -489,7 +489,16 @@ class HonchoClientConfig:
         """Create config from environment variables (fallback)."""
         resolved_host = host or resolve_active_host()
         api_key = get_secret("HONCHO_API_KEY")
-        base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
+        # HONCHO_URL is the SDK's own env var (honcho.client resolves it when
+        # no environment is passed); accept it here so the fallback path
+        # behaves the same as from_global_config() when no config file exists.
+        # Read straight from os.environ, matching HONCHO_BASE_URL: a base URL
+        # is a deployment setting, not a profile-scoped credential.
+        base_url = (
+            os.environ.get("HONCHO_BASE_URL", "").strip()
+            or os.environ.get("HONCHO_URL", "").strip()
+            or None
+        )
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
         _resolved_path = resolve_config_path()
         return cls(
@@ -555,10 +564,22 @@ class HonchoClientConfig:
             or raw.get("environment", "production")
         )
 
+        # The Honcho SDK's native config format — and what Claude Desktop
+        # writes — nests the URL at endpoint.baseUrl. Read it first: a user
+        # who has that block set almost certainly means it, and the flat
+        # baseUrl / base_url keys below are the Hermes-specific spelling.
+        endpoint_block = raw.get("endpoint")
+        native_base_url = (
+            endpoint_block.get("baseUrl")
+            if isinstance(endpoint_block, dict)
+            else None
+        )
         base_url = (
-            raw.get("baseUrl")
+            native_base_url
+            or raw.get("baseUrl")
             or raw.get("base_url")
             or os.environ.get("HONCHO_BASE_URL", "").strip()
+            or os.environ.get("HONCHO_URL", "").strip()
             or None
         )
         # Host config wins over flat/global config and environment.
@@ -1243,7 +1264,16 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_base_url:
             logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
         else:
-            logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
+            # No base_url resolved, so the SDK falls back to its own
+            # ENVIRONMENTS map (honcho.client: local -> http://localhost:8000,
+            # production -> https://api.honcho.dev). Name the target at INFO:
+            # a self-hosted user whose config wasn't picked up otherwise sees
+            # a healthy-looking startup and silently talks to the public cloud.
+            logger.info(
+                "Initializing Honcho client (host: %s, workspace: %s, "
+                "base_url unset — SDK will resolve from environment=%s)",
+                config.host, config.workspace_id, config.environment,
+            )
 
         # Local Honcho instances don't require an API key, but the SDK
         # expects a non-empty string.  Use a placeholder for local URLs.

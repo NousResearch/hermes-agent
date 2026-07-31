@@ -564,3 +564,82 @@ class TestDisplaySkinTouch:
 
         set_config_value("display.skin", "neon")
         assert (skins / "neon.yaml").read_text() == body
+
+
+# ---------------------------------------------------------------------------
+# Mapping guard — regression tests for #74995
+# ---------------------------------------------------------------------------
+
+class TestMappingGuard:
+    """``hermes config set <section> <scalar>`` must not silently destroy an
+    existing mapping.  Bare ``model`` is a documented shorthand — redirect to
+    ``model.default``.  All other mapping sections are refused without --force.
+    """
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.dump(data))
+
+    def test_bare_model_shorthand_preserves_siblings(self, _isolated_hermes_home):
+        """hermes config set model <id> → model.default, siblings survive."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+                "context_length": 128_000,
+                "base_url": "https://api.example.com/v1",
+            }
+        })
+        set_config_value("model", "claude-sonnet-4-20250514")
+        config_text = _read_config(_isolated_hermes_home)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(config_text)
+        assert parsed["model"]["default"] == "claude-sonnet-4-20250514"
+        assert parsed["model"]["provider"] == "openai-api"
+        assert parsed["model"]["context_length"] == 128_000
+        assert parsed["model"]["base_url"] == "https://api.example.com/v1"
+
+    def test_bare_model_shorthand_creates_default_when_none(self, _isolated_hermes_home):
+        """Bare model shorthand still works when config is empty (legacy behaviour)."""
+        set_config_value("model", "gpt-5.6-sol")
+        assert "gpt-5.6-sol" in _read_config(_isolated_hermes_home)
+
+    def test_non_model_mapping_is_refused(self, _isolated_hermes_home):
+        """hermes config set terminal bash → refuse, terminal has sub-keys."""
+        self._write_config(_isolated_hermes_home, {
+            "terminal": {
+                "backend": "docker",
+                "docker_image": "python:3.12",
+                "shell": "bash",
+            }
+        })
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("terminal", "zsh")
+        assert exc.value.code == 1
+
+    def test_non_model_mapping_force_overwrites(self, _isolated_hermes_home):
+        """hermes config set --force terminal bash → proceed, section wiped."""
+        self._write_config(_isolated_hermes_home, {
+            "terminal": {
+                "backend": "docker",
+                "shell": "bash",
+            }
+        })
+        set_config_value("terminal", "zsh", force=True)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["terminal"] == "zsh"
+
+    def test_model_default_dotted_path_is_not_guarded(self, _isolated_hermes_home):
+        """model.default is already a dotted path — guard must not fire."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+            }
+        })
+        set_config_value("model.default", "claude-opus-4")
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["model"]["default"] == "claude-opus-4"
+        assert parsed["model"]["provider"] == "openai-api"

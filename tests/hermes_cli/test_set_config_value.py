@@ -67,7 +67,7 @@ class TestExplicitAllowlist:
 # ---------------------------------------------------------------------------
 
 class TestCatchAllPatterns:
-    """Any key ending in _API_KEY or _TOKEN should route to .env."""
+    """Any key ending in _API_KEY, _TOKEN, or _SECRET should route to .env."""
 
     @pytest.mark.parametrize("key", [
         "DAYTONA_API_KEY",
@@ -75,6 +75,7 @@ class TestCatchAllPatterns:
         "SOME_FUTURE_SERVICE_API_KEY",
         "MY_CUSTOM_TOKEN",
         "WHATSAPP_BOT_TOKEN",
+        "CLIENT_SECRET",
     ])
     def test_api_key_suffix_routes_to_env(self, key, _isolated_hermes_home):
         set_config_value(key, "secret-456")

@@ -474,16 +474,28 @@ async def handle(event_type: str, context: Dict[str, Any]) -> Optional[Dict[str,
         target_session_id = sessions.get(target_role, "")
 
         if not target_session_id:
-            # No existing session for this role — let the gateway create a new
-            # one by updating our bookkeeping to reflect the impending role
-            # change without redirecting (the gateway's normal session-creation
-            # path runs).  The NEXT message will find this role in meta.yaml
-            # and, once a session_id is established, route correctly.
+            # KNOWN LIMITATION — first-turn isolation gap:
+            # When the classifier picks a new role that has no saved session_id
+            # yet, we cannot redirect this turn because there is no destination
+            # session to switch to.  We write the target_role to meta.yaml so
+            # the gateway's normal session-creation path runs under the new
+            # role label, and the NEXT turn will find a session_id here and
+            # route correctly.  The current (first) turn therefore stays in
+            # the existing inbound session — isolation only begins from the
+            # second message onward.  This is a deliberate trade-off: creating
+            # a new session preemptively and then redirecting would require an
+            # extra round-trip and risks orphaned sessions if the user does not
+            # follow up.  Hooks that need true first-turn isolation should
+            # pre-register a session_id for each role in meta.yaml during
+            # installation (see README.md § "Pre-seeding sessions").
             meta["current_role"] = target_role
             _save_meta(meta)
             logger.info(
-                "[multi-role-router] New role '%s' — no prior session, gateway will create one.",
+                "[multi-role-router] Role switch to '%s' detected but no prior session exists "
+                "(first-turn isolation gap): current turn stays in session '%s'. "
+                "Target role written to meta.yaml — isolation begins on the next turn.",
                 target_role,
+                current_session_id,
             )
             return None
 

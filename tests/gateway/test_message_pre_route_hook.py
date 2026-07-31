@@ -82,7 +82,7 @@ def _make_session_entry(
 # ---------------------------------------------------------------------------
 # Thin async replica of the pre_route block from _handle_message_with_agent.
 #
-# Mirrors gateway/run.py lines 13339-13365 exactly.  When that block is
+# Mirrors gateway/run.py pre_route block exactly.  When that block is
 # refactored the tests here will need a parallel update.
 # ---------------------------------------------------------------------------
 
@@ -92,11 +92,16 @@ async def _run_pre_route_block(
     event: MessageEvent,
     source: SessionSource,
     session_entry: SessionEntry,
+    evict_cached_agent=None,
 ) -> SessionEntry:
     """Execute only the message:pre_route hook dispatch block.
 
     Returns the (possibly switched) session_entry, mirroring the in-place
     reassignment that production code performs.
+
+    ``evict_cached_agent`` is an optional callable(session_key) that mirrors
+    the gateway's ``self._evict_cached_agent`` call.  Pass a MagicMock to
+    assert it was called after a successful session swap.
     """
     session_key = session_entry.session_key
 
@@ -127,6 +132,11 @@ async def _run_pre_route_block(
                 )
                 if _switched:
                     session_entry = _switched
+                    # Evict the cached agent so the next turn starts with a
+                    # clean context bound to the new session_id — mirrors
+                    # /resume (slash_commands.py:4430-4442).
+                    if evict_cached_agent is not None:
+                        evict_cached_agent(session_key)
             break
 
     return session_entry
@@ -331,3 +341,66 @@ class TestPreRouteHookEmit:
         async_store.switch_session.assert_awaited_once()
         # Entry should remain the original because switch returned None
         assert result.session_id == "sess-current"
+
+    @pytest.mark.asyncio
+    async def test_agent_cache_evicted_after_successful_session_switch(self):
+        """_evict_cached_agent is called with the session_key after a successful switch."""
+        target_entry = _make_session_entry(session_id="sess-target")
+        hooks = SimpleNamespace(
+            emit_collect=AsyncMock(
+                return_value=[{"decision": "switch_session", "session_id": "sess-target"}]
+            )
+        )
+        async_store = MagicMock()
+        async_store.switch_session = AsyncMock(return_value=target_entry)
+        evict_mock = MagicMock()
+
+        source = _make_source()
+        entry = _make_session_entry(session_id="sess-current", source=source)
+
+        await _run_pre_route_block(
+            hooks, async_store, _make_event(source=source), source, entry,
+            evict_cached_agent=evict_mock,
+        )
+
+        evict_mock.assert_called_once_with(entry.session_key)
+
+    @pytest.mark.asyncio
+    async def test_agent_cache_not_evicted_when_switch_session_returns_none(self):
+        """_evict_cached_agent is NOT called when switch_session returns None (rejected)."""
+        hooks = SimpleNamespace(
+            emit_collect=AsyncMock(
+                return_value=[{"decision": "switch_session", "session_id": "sess-target"}]
+            )
+        )
+        async_store = MagicMock()
+        async_store.switch_session = AsyncMock(return_value=None)
+        evict_mock = MagicMock()
+
+        source = _make_source()
+        entry = _make_session_entry(session_id="sess-current", source=source)
+
+        await _run_pre_route_block(
+            hooks, async_store, _make_event(source=source), source, entry,
+            evict_cached_agent=evict_mock,
+        )
+
+        evict_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_cache_not_evicted_when_hook_returns_none(self):
+        """_evict_cached_agent is NOT called when hook returns None (no switch)."""
+        hooks = SimpleNamespace(emit_collect=AsyncMock(return_value=[None]))
+        async_store = MagicMock()
+        async_store.switch_session = AsyncMock()
+        evict_mock = MagicMock()
+
+        source = _make_source()
+        entry = _make_session_entry(session_id="sess-1", source=source)
+
+        await _run_pre_route_block(
+            hooks, async_store, _make_event(source=source), source, entry,
+            evict_cached_agent=evict_mock,
+        )
+
+        evict_mock.assert_not_called()

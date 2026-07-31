@@ -21605,30 +21605,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     if _switched:
                         session_entry = _switched
+                        # Evict the cached agent for this session key so the
+                        # next turn starts with a clean agent context bound to
+                        # the new session_id — mirrors /resume behaviour at
+                        # slash_commands.py:4430-4442.  Without this the
+                        # cached AIAgent (and its memory provider, which
+                        # cached the old _session_id during initialize())
+                        # would continue writing into the wrong session's
+                        # transcript record.  See #6672 for the same bug
+                        # class on /branch and /reset.
+                        self._evict_cached_agent(session_key)
                 break
 
-        # ── Agent-cache isolation limitation (pre-route hooks) ────────
+        # ── Agent-cache isolation note (pre-route hooks) ──────────────
         # NOTE: build_session_context() and _set_session_env() (above, at
         # the "Build session context" block) run BEFORE this pre-route hook
         # fires, so the session context and tool-session environment are
         # already stamped with the *original* session_entry.  Swapping
         # session_entry here via switch_session updates the session for
-        # history loading and transcript writes but does NOT evict the
-        # cached AIAgent from _agent_cache — the agent carries the old
-        # session's system-prompt and context_prompt, and will be reused
-        # on the next turn for the new session key.
-        #
-        # For comparison, /resume (slash_commands.py:4430-4442) calls
-        # switch_session *then* immediately builds a fresh turn context,
-        # so it never reuses a stale cached agent.
-        #
-        # Full agent-cache isolation for hook-driven switches would require
-        # moving this emit_collect block (or the build_session_context call)
-        # to an earlier point in the flow, which is a larger gateway
-        # restructuring out of scope for this PR.  Hooks that need true
-        # session isolation (separate system prompts per worker profile)
-        # should use separate routing keys so each key gets its own cache
-        # slot, rather than relying on same-key session swaps.
+        # history loading and transcript writes.  The _evict_cached_agent
+        # call (inside the _switched block above) ensures the next turn
+        # rebuilds a fresh AIAgent bound to the new session_id, mirroring
+        # the pattern used by /resume (slash_commands.py:4430-4442).
+        # The session context / tool-session environment stamps for the
+        # *current* turn still reference the original session; those are
+        # already in-flight and cannot be rewound.  This is acceptable:
+        # the current turn's output is written to the correct (new) session
+        # because session_entry.session_id has been updated in-place, and
+        # future turns start with the correct cached agent.
 
         # ── Turn lease (#64934) ────────────────────────────────────────
         # Session resolution is FINAL here (get_or_create → async-delegation

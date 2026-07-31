@@ -2201,9 +2201,26 @@ def _reconcile_deferred_build_overrides(
         changed = True
 
     reasoning = session.get("create_reasoning_override")
-    if reasoning is not None and reasoning != before.get("reasoning"):
-        agent.reasoning_config = reasoning
-        changed = True
+    before_reasoning = before.get("reasoning")
+    if reasoning is not None:
+        if reasoning != before_reasoning:
+            agent.reasoning_config = reasoning
+            changed = True
+    elif before_reasoning is not None:
+        # The session pin was *cleared* during the build: `config.set reasoning`
+        # with scope=global writes agent.reasoning_effort and pops the session
+        # key, then applies it live only when an agent already exists.  A
+        # removal is just as much a reconciled transition as a write — without
+        # this the freshly installed agent keeps the stale snapshotted effort
+        # even though the user moved the setting globally.
+        from hermes_constants import parse_reasoning_effort
+
+        cfg = _load_cfg()
+        agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+        global_reasoning = parse_reasoning_effort(agent_cfg.get("reasoning_effort"))
+        if global_reasoning is not None:
+            agent.reasoning_config = global_reasoning
+            changed = True
 
     if changed:
         _persist_live_session_runtime(session)

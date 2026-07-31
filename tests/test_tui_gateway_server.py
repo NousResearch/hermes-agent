@@ -16544,6 +16544,54 @@ def test_reasoning_pick_during_agent_build_reaches_installed_agent(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_global_reasoning_clear_during_agent_build_reaches_installed_agent(
+    tmp_path, monkeypatch
+):
+    """A *cleared* override is a reconciled transition too.
+
+    config.set reasoning with scope=global writes agent.reasoning_effort and
+    pops create_reasoning_override, applying it live only when an agent already
+    exists. During the build window neither happens, so the installed agent
+    would otherwise keep the effort the build snapshotted.
+    """
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  reasoning_effort: medium\n", encoding="utf-8"
+    )
+
+    sid, session, agent, release = _park_agent_build(
+        monkeypatch,
+        create_reasoning_override={"enabled": True, "effort": "low"},
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": sid,
+                    "key": "reasoning",
+                    "value": "high",
+                    "scope": "global",
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        # The session pin is gone and the agent does not exist yet.
+        assert "create_reasoning_override" not in session
+        assert session.get("agent") is None, "build must still be in flight"
+
+        _finish_build(session, release)
+
+        assert agent.reasoning_config == {"enabled": True, "effort": "high"}, (
+            "a global reasoning change during the build window left the agent "
+            "on the stale snapshotted effort"
+        )
+    finally:
+        release.set()
+        server._sessions.pop(sid, None)
+
+
 def test_explicit_provider_model_switch_during_agent_build_reaches_agent(monkeypatch):
     """config.set model with an explicit provider skips the initialization wait.
 

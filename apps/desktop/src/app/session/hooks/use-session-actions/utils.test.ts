@@ -5,7 +5,16 @@ import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/c
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $currentBranch, $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
+import {
+  $currentBranch,
+  $currentCwd,
+  $currentModel,
+  $currentProvider,
+  setCurrentBranch,
+  setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -86,19 +95,35 @@ describe('applyRuntimeInfo foreground scoping', () => {
   beforeEach(() => {
     setCurrentCwd('/main-repo')
     setCurrentBranch('main')
+    setCurrentModel('manual-model')
+    setCurrentProvider('manual-provider')
   })
 
   afterEach(() => {
     setCurrentCwd('')
     setCurrentBranch('')
+    setCurrentModel('')
+    setCurrentProvider('')
   })
 
-  it('publishes a foreground runtime into the composer atoms', () => {
-    const patch = applyRuntimeInfo({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+  it('publishes session-scoped runtime fields without replacing the sticky composer model', () => {
+    const patch = applyRuntimeInfo({
+      branch: 'bb/feature',
+      cwd: '/main-repo/worktree',
+      model: 'fallback-model',
+      provider: 'fallback-provider'
+    })
 
     expect($currentCwd.get()).toBe('/main-repo/worktree')
     expect($currentBranch.get()).toBe('bb/feature')
-    expect(patch).toMatchObject({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+    expect($currentModel.get()).toBe('manual-model')
+    expect($currentProvider.get()).toBe('manual-provider')
+    expect(patch).toMatchObject({
+      branch: 'bb/feature',
+      cwd: '/main-repo/worktree',
+      model: 'fallback-model',
+      provider: 'fallback-provider'
+    })
   })
 
   it('keeps a background runtime out of the composer atoms but still returns its patch', () => {

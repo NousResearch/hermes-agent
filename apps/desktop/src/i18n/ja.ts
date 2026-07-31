@@ -1937,7 +1937,7 @@ export const ja = defineLocale({
       ageMin: '分'
     },
     dateDivider: {
-      today: '今日の早い時間',
+      today: '今日',
       yesterday: '昨日',
       thisWeek: '今週',
       lastWeek: '先週',

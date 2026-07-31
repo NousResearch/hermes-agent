@@ -66,16 +66,39 @@ export function SidebarDateDivider({
   action,
   className,
   label,
+  toggle,
   ...props
-}: React.ComponentProps<'div'> & { action?: React.ReactNode; label: string }) {
+}: React.ComponentProps<'div'> & {
+  action?: React.ReactNode
+  label: string
+  toggle?: { ariaLabel: string; onToggle: () => void; open: boolean }
+}) {
   return (
     // group/workspace: a divider heads a group the same way a repo header does,
     // so it borrows the header's hover-revealed "+" verbatim.
     <div className={cn('group/workspace flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
-      <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
-        {label}
-      </span>
-      <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+      {toggle ? (
+        <button
+          aria-expanded={toggle.open}
+          aria-label={toggle.ariaLabel}
+          className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent text-left"
+          onClick={toggle.onToggle}
+          type="button"
+        >
+          <DisclosureCaret className="shrink-0 text-(--ui-text-tertiary)" open={toggle.open} />
+          <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
+            {label}
+          </span>
+          <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+        </button>
+      ) : (
+        <>
+          <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
+            {label}
+          </span>
+          <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+        </>
+      )}
       {action}
     </div>
   )

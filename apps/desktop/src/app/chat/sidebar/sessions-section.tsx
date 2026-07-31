@@ -11,6 +11,7 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
 import {
+  filterCollapsedDateGroupRows,
   groupEntriesByRecency,
   groupEntriesByStatus,
   type SidebarListRow,
@@ -19,6 +20,7 @@ import {
 import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
+import { $collapsedSessionDateGroups, setSessionDateGroupCollapsed } from '@/store/session-date-group-collapse'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
@@ -169,6 +171,9 @@ interface SidebarSessionsSectionProps {
   // grouping is active — the flat recents list opts in; dense tree surfaces
   // (pinned, projects, messaging) keep the one-line row.
   card?: boolean
+  // Persistent collapse state is isolated by backend and effective profile.
+  // Omit outside the primary chronological sessions surface.
+  dateGroupScope?: string
 }
 
 export function SidebarSessionsSection({
@@ -212,12 +217,37 @@ export function SidebarSessionsSection({
   dndSensors,
   showProfileTags = false,
   grouping = 'none',
-  card = false
+  card = false,
+  dateGroupScope
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
+  const collapsedGroupsByScope = useStore($collapsedSessionDateGroups)
+
+  const collapsedDateGroupKeys = useMemo(
+    () => new Set(dateGroupScope ? (collapsedGroupsByScope[dateGroupScope] ?? []) : []),
+    [collapsedGroupsByScope, dateGroupScope]
+  )
+
+  const toggleDateGroup = useCallback(
+    (key: string) => {
+      if (!dateGroupScope) {
+        return
+      }
+
+      setSessionDateGroupCollapsed(dateGroupScope, key, !collapsedDateGroupKeys.has(key))
+    },
+    [collapsedDateGroupKeys, dateGroupScope]
+  )
+
+  const visibleDateRows = useCallback(
+    (rows: readonly SidebarListRow[]) =>
+      grouping === 'date' && dateGroupScope ? filterCollapsedDateGroupRows(rows, collapsedDateGroupKeys) : [...rows],
+    [collapsedDateGroupKeys, dateGroupScope, grouping]
+  )
+
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   // A defined project list is itself content (even an empty project should
@@ -237,7 +267,7 @@ export function SidebarSessionsSection({
 
   // The flat recents/pinned list is the only place sessions reorder by hand;
   // grouped/tree views always sort by creation date and never drag.
-  const sessionsDraggable = sortable && !!onReorderSessions
+  const sessionsDraggable = sortable && !!onReorderSessions && !(grouping === 'date' && collapsedDateGroupKeys.size > 0)
 
   // Only Pinned arrives pre-ordered as a flat sequence. Recents keeps its
   // recency sort — the drag order is layered on per date group below, so the
@@ -301,15 +331,36 @@ export function SidebarSessionsSection({
         return renderRow(row.entry.session, draggable, row.entry.branchStem)
       }
 
+      const label = 'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)
+      const open = !collapsedDateGroupKeys.has(row.key)
+
       return (
         <SidebarDateDivider
           action={action}
-          key={row.key}
-          label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
+          key={row.rowKey ?? row.key}
+          label={label}
+          toggle={
+            grouping === 'date' && dateGroupScope
+              ? {
+                  ariaLabel: `${open ? t.common.collapse : t.common.expand} ${label}`,
+                  onToggle: () => toggleDateGroup(row.key),
+                  open
+                }
+              : undefined
+          }
         />
       )
     },
-    [dividerLabels, renderRow]
+    [
+      collapsedDateGroupKeys,
+      dateGroupScope,
+      dividerLabels,
+      grouping,
+      renderRow,
+      t.common.collapse,
+      t.common.expand,
+      toggleDateGroup
+    ]
   )
 
   // Sessions inside repos/worktrees are date-ordered and static.
@@ -326,11 +377,11 @@ export function SidebarSessionsSection({
     (items: SessionInfo[]) => {
       const entries = flattenSessionsWithBranches(items)
 
-      return (grouping === 'date' ? groupEntriesByRecency(entries) : toSessionRows(entries)).map(row =>
-        renderListRow(row, false)
-      )
+      const rows = grouping === 'date' ? groupEntriesByRecency(entries) : toSessionRows(entries)
+
+      return visibleDateRows(rows).map(row => renderListRow(row, false))
     },
-    [grouping, renderListRow]
+    [grouping, renderListRow, visibleDateRows]
   )
 
   // Flat recents as list rows: grouped by recency when enabled, plain otherwise.
@@ -349,8 +400,10 @@ export function SidebarSessionsSection({
             )
           : toSessionRows(displayEntries)
 
-    return manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
-  }, [grouping, displayEntries, dotStates, manualOrderIds, statusDividerLabels])
+    const orderedRows = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
+
+    return visibleDateRows(orderedRows)
+  }, [grouping, displayEntries, dotStates, manualOrderIds, statusDividerLabels, visibleDateRows])
 
   // dnd-kit must see exactly the ids it renders, in render order: the sortable
   // set is derived from the rows, not from `sessions`. Feeding it the unrendered
@@ -450,7 +503,7 @@ export function SidebarSessionsSection({
         group={group}
         key={group.id}
         onNewSession={onNewSessionInWorkspace}
-        renderRows={renderRows}
+        renderRows={grouping === 'date' ? renderRowsDated : renderRows}
       />
     ))
   } else if (flatVirtualized) {
@@ -459,11 +512,14 @@ export function SidebarSessionsSection({
         activeSessionId={activeSessionId}
         card={card}
         className={contentClassName}
+        collapsedDateGroupKeys={collapsedDateGroupKeys}
+        dateGroupToggleLabel={(label, expanded) => `${expanded ? t.common.collapse : t.common.expand} ${label}`}
         dividerAction={dividerAction}
         onArchiveSession={onArchiveSession}
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
+        onToggleDateGroup={grouping === 'date' && dateGroupScope ? toggleDateGroup : undefined}
         onTogglePin={onTogglePin}
         onToggleUnread={onToggleUnread}
         pinned={pinned}

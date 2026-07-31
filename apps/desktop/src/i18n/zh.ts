@@ -2419,7 +2419,7 @@ export const zh: Translations = {
       ageMin: '分'
     },
     dateDivider: {
-      today: '今天早些时候',
+      today: '今天',
       yesterday: '昨天',
       thisWeek: '本周',
       lastWeek: '上周',

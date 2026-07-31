@@ -1521,6 +1521,24 @@ class AIAgent:
         from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
         return anthropic_prompt_cache_policy(self, provider=provider, base_url=base_url, api_mode=api_mode, model=model)
 
+    def _direct_native_anthropic_tool_cache_capability(
+        self,
+        *,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> bool:
+        """Forwarder for the request-local native Anthropic tool capability."""
+        from agent.agent_runtime_helpers import _direct_native_anthropic_tool_cache_capability
+        return _direct_native_anthropic_tool_cache_capability(
+            self,
+            provider=provider,
+            base_url=base_url,
+            api_mode=api_mode,
+            model=model,
+        )
+
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
         """Return True for models that require the Responses API path.
@@ -6551,10 +6569,10 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
-    def _build_api_kwargs(self, api_messages: list) -> dict:
+    def _build_api_kwargs(self, api_messages: list, tools_for_api: Optional[list] = None) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
         from agent.chat_completion_helpers import build_api_kwargs
-        return build_api_kwargs(self, api_messages)
+        return build_api_kwargs(self, api_messages, tools_for_api=tools_for_api)
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.

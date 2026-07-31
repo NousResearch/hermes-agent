@@ -42,6 +42,7 @@ Payment / credit exhaustion fallback:
 
 import contextlib
 import contextvars
+import copy
 import functools
 import hashlib
 import inspect
@@ -54,7 +55,7 @@ import time
 import uuid
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
@@ -4214,6 +4215,133 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     return None
 
 
+def _fallback_provider_from_label(label: str) -> str:
+    """Recover the provider identifier from a fallback display label."""
+    match = re.match(r"(?:fallback_chain\[\d+\]|main-agent)\(([^)]+)\)$", label or "")
+    return match.group(1).strip() if match else str(label or "").strip()
+
+
+class _FallbackDestination(NamedTuple):
+    provider: str
+    base_url: str
+    api_mode: Optional[str]
+    model: Optional[str]
+
+
+def _complete_fallback_destination(
+    provider: str,
+    base_url: str,
+    api_mode: Optional[str],
+    model: Optional[str],
+) -> _FallbackDestination:
+    if not api_mode:
+        if _endpoint_speaks_anthropic_messages(base_url):
+            api_mode = "anthropic_messages"
+        else:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(
+                    requested=provider,
+                    explicit_base_url=base_url or None,
+                    target_model=model or "",
+                )
+                api_mode = str(runtime.get("api_mode") or "").strip() or None
+            except Exception:
+                pass
+    return _FallbackDestination(provider, base_url, api_mode, model)
+
+
+def _fallback_destination_from_entry(
+    entry: Dict[str, Any],
+    fb_client: Any,
+    fb_model: Optional[str],
+) -> _FallbackDestination:
+    provider = str(entry.get("provider") or "").strip()
+    base_url = str(
+        entry.get("base_url") or getattr(fb_client, "base_url", "") or ""
+    ).strip()
+    api_mode = str(
+        entry.get("api_mode") or entry.get("transport") or ""
+    ).strip() or None
+    model = fb_model or str(entry.get("model") or "").strip() or None
+    return _complete_fallback_destination(provider, base_url, api_mode, model)
+
+
+def _fallback_destination(
+    task: Optional[str],
+    fb_client: Any,
+    fb_model: Optional[str],
+    fb_label: str,
+) -> _FallbackDestination:
+    """Return the resolved route identity used by a fallback request."""
+    attached = getattr(fb_client, "_hermes_fallback_destination", None)
+    if isinstance(attached, _FallbackDestination):
+        return attached
+
+    provider = _fallback_provider_from_label(fb_label)
+    base_url = str(getattr(fb_client, "base_url", "") or "")
+    api_mode = None
+    model = fb_model
+
+    match = re.match(r"fallback_chain\[(\d+)\]", fb_label or "")
+    if match and task:
+        try:
+            chain = _get_auxiliary_task_config(task).get("fallback_chain")
+            entry = chain[int(match.group(1))] if isinstance(chain, list) else None
+        except Exception:
+            entry = None
+        if isinstance(entry, dict):
+            return _fallback_destination_from_entry(entry, fb_client, fb_model)
+
+    return _complete_fallback_destination(provider, base_url, api_mode, model)
+
+
+def _replan_synchronous_cache_sections(
+    messages: list,
+    tools: Optional[list],
+    *,
+    destination: _FallbackDestination,
+) -> tuple[list, list]:
+    """Strip source decoration and plan one synchronous destination locally."""
+    from agent.agent_runtime_helpers import (
+        _direct_native_anthropic_tool_cache_capability,
+        anthropic_prompt_cache_policy,
+    )
+    from agent.prompt_caching import (
+        build_prompt_cache_plan,
+        strip_anthropic_cache_control,
+        strip_anthropic_tool_cache_control,
+    )
+
+    canonical_messages = copy.deepcopy(messages or [])
+    strip_anthropic_cache_control(canonical_messages)
+    canonical_tools = strip_anthropic_tool_cache_control(tools)
+    stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+    should_cache, native_layout = anthropic_prompt_cache_policy(
+        stub,
+        provider=destination.provider,
+        base_url=destination.base_url,
+        api_mode=destination.api_mode or "",
+        model=destination.model or "",
+    )
+    if not should_cache:
+        return canonical_messages, canonical_tools
+    plan = build_prompt_cache_plan(
+        canonical_messages,
+        canonical_tools,
+        native_anthropic=native_layout,
+        direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
+            stub,
+            provider=destination.provider,
+            base_url=destination.base_url,
+            api_mode=destination.api_mode or "",
+            model=destination.model or "",
+        ),
+    )
+    return plan.messages, plan.tools
+
+
 def _call_fallback_candidate_sync(
     fb_client: Any,
     fb_model: Optional[str],
@@ -4256,36 +4384,70 @@ def _call_fallback_candidate_sync(
             task or "call", fb_label, fb_timeout, effective_timeout,
         )
         effective_timeout = fb_timeout
-    fb_base = str(getattr(fb_client, "base_url", "") or "")
+    destination = _fallback_destination(task, fb_client, fb_model, fb_label)
+    fallback_messages, fallback_tools = _replan_synchronous_cache_sections(
+        messages,
+        tools,
+        destination=destination,
+    )
     fb_kwargs = _build_call_kwargs(
-        fb_label, fb_model, messages,
+        destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout,
+        tools=fallback_tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=fb_base, task=task)
+        base_url=destination.base_url, task=task)
     try:
         return _validate_llm_response(
-            _relay_sync_completion(fb_client, fb_kwargs, provider=fb_label), task)
+            _relay_sync_completion(
+                fb_client,
+                fb_kwargs,
+                provider=destination.provider,
+                api_mode=destination.api_mode,
+            ),
+            task,
+        )
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
-        fb_provider = _auth_refresh_provider_for_route(fb_label, fb_base)
+        fb_provider = _auth_refresh_provider_for_route(
+            destination.provider, destination.base_url
+        )
         if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
-            retry_client, retry_model = _get_cached_client(fb_provider, fb_model)
+            retry_client, retry_model = _get_cached_client(
+                fb_provider,
+                destination.model,
+                base_url=destination.base_url or None,
+                api_mode=destination.api_mode,
+            )
             if retry_client is not None:
+                retry_destination = _FallbackDestination(
+                    fb_provider,
+                    destination.base_url
+                    or str(getattr(retry_client, "base_url", "") or ""),
+                    destination.api_mode,
+                    retry_model or destination.model,
+                )
+                retry_messages, retry_tools = _replan_synchronous_cache_sections(
+                    messages,
+                    tools,
+                    destination=retry_destination,
+                )
                 retry_kwargs = _build_call_kwargs(
-                    fb_provider, retry_model or fb_model, messages,
+                    retry_destination.provider,
+                    retry_destination.model,
+                    retry_messages,
                     temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, timeout=effective_timeout,
+                    tools=retry_tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
-                    base_url=str(getattr(retry_client, "base_url", "") or fb_base), task=task)
+                    base_url=retry_destination.base_url, task=task)
                 try:
                     return _validate_llm_response(
                         _relay_sync_completion(
                             retry_client,
                             retry_kwargs,
-                            provider=fb_provider,
+                            provider=retry_destination.provider,
+                            api_mode=retry_destination.api_mode,
                         ),
                         task,
                     )
@@ -4761,13 +4923,21 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
     base_url = str(entry.get("base_url") or "").strip() or None
     api_key = _fallback_entry_api_key(entry)
     api_mode = str(entry.get("api_mode") or entry.get("transport") or "").strip() or None
-    return resolve_provider_client(
+    client, resolved_model = resolve_provider_client(
         provider,
         model=model,
         explicit_base_url=base_url,
         explicit_api_key=api_key,
         api_mode=api_mode,
     )
+    if client is not None:
+        try:
+            client._hermes_fallback_destination = _fallback_destination_from_entry(
+                entry, client, resolved_model
+            )
+        except Exception:
+            pass
+    return client, resolved_model
 
 
 def _try_main_fallback_chain(

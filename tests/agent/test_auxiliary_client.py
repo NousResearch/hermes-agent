@@ -4120,3 +4120,96 @@ class TestMoaAggregatorStreamingBypass:
         assert result is completed
         direct_create.assert_called_once()
         relay_stream.assert_not_called()
+
+
+class TestSynchronousFallbackCachePlans:
+    @staticmethod
+    def _run_configured_fallback(monkeypatch, entry):
+        from agent.auxiliary_client import (
+            _call_fallback_candidate_sync,
+            _try_configured_fallback_chain,
+        )
+
+        client = MagicMock()
+        client.base_url = entry["base_url"]
+        client.chat.completions.create.return_value = _DummyResponse()
+        resolved_calls = []
+
+        def resolve(provider, model=None, **kwargs):
+            resolved_calls.append((provider, model, kwargs))
+            return client, model
+
+        monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", resolve)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": [entry]},
+        )
+        fallback_client, fallback_model, label = _try_configured_fallback_chain(
+            task="moa_aggregator",
+            failed_provider="primary",
+        )
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        _call_fallback_candidate_sync(
+            fallback_client,
+            fallback_model,
+            label,
+            task="moa_aggregator",
+            messages=[
+                {"role": "system", "content": "stable prefix"},
+                {"role": "user", "content": "lookup"},
+            ],
+            temperature=None,
+            max_tokens=None,
+            tools=tools,
+            effective_timeout=30.0,
+            effective_extra_body={},
+            reasoning_config=None,
+        )
+        return client, resolved_calls, tools
+
+    def test_direct_anthropic_fallback_uses_entry_destination_for_tool_marker(self, monkeypatch):
+        client, resolved_calls, tools = self._run_configured_fallback(monkeypatch, {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        })
+
+        assert resolved_calls == [(
+            "anthropic",
+            "claude-sonnet-4-6",
+            {
+                "explicit_base_url": "https://api.anthropic.com",
+                "explicit_api_key": None,
+                "api_mode": "anthropic_messages",
+            },
+        )]
+        wire_tools = client.chat.completions.create.call_args.kwargs["tools"]
+        assert "cache_control" in wire_tools[-1]
+        assert "cache_control" not in tools[-1]
+
+    def test_third_party_anthropic_fallback_keeps_message_markers_without_tool_marker(self, monkeypatch):
+        client, resolved_calls, tools = self._run_configured_fallback(monkeypatch, {
+            "provider": "custom",
+            "model": "claude-sonnet-4-6",
+            "base_url": "https://api.minimax.io/anthropic",
+            "api_mode": "anthropic_messages",
+        })
+
+        assert resolved_calls[0][2]["explicit_base_url"] == "https://api.minimax.io/anthropic"
+        assert resolved_calls[0][2]["api_mode"] == "anthropic_messages"
+        wire_request = client.chat.completions.create.call_args.kwargs
+        assert "cache_control" not in wire_request["tools"][-1]
+        assert "cache_control" not in tools[-1]
+        assert any(
+            isinstance(part, dict) and "cache_control" in part
+            for message in wire_request["messages"]
+            for part in (message.get("content") if isinstance(message.get("content"), list) else [])
+        )
+

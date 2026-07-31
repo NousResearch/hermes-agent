@@ -1,30 +1,49 @@
-# Fork Adjustments
+# Fork Adjustments Registry
 
-This fork follows `NousResearch/hermes-agent` by default. The convergence tree
-is based on upstream commit
-`98105f31f46d3de58a8f69a2a439cee3f7a5e389` and intentionally differs only in
-the four paths listed below.
+Tracks divergence from NousResearch/hermes-agent upstream.
+Each entry: what changed, why, upstream PR status, how to verify removal is safe.
 
-| Path | Retained behavior | Removal condition |
-|---|---|---|
-| `.github/workflows/hermes-pr-tag-listener.yml` | Calls the organization-owned `@hermes` listener using an immutable reusable-workflow revision and only the permissions it requires. | Remove if the listener is no longer used by this repository. |
-| `.gitignore` | Excludes AO-managed `.claude` settings and metadata files that are machine-local and may contain credentials. | Remove individual patterns only when the corresponding files can no longer contain machine-local secrets. |
-| `.coderabbit.yaml` | Enables automatic CodeRabbit review without fork-specific approval or merge gates. | Remove if review automation moves to organization-level configuration. |
-| `FORK_ADJUSTMENTS.md` | Records the complete intentional divergence from upstream. | Keep while this repository remains a fork. |
+## Active adjustments
 
-No fork-only application Python, bundled user plugins, Green Gate, Skeptic, or
-merge-train files are retained in this tree.
+### 1. `tools/file_operations.py` + `tests/tools/test_file_operations.py` — portable `chmod =rw` for new files
 
-The following historical changes are not carried forward. Each requires a
-current-upstream reproduction and a separate minimal change before it can be
-reintroduced:
+| Field | Value |
+|-------|-------|
+| Files | `tools/file_operations.py`, `tests/tools/test_file_operations.py` |
+| Commit | `98105f31f` |
+| Category | bug-fix / portability |
+| Upstream PR | jleechanorg/hermes-agent#7 (needs to be filed to NousResearch/hermes-agent) |
+| Removable when | upstream merges the NousResearch PR |
 
-- cross-workspace Slack channel-name disambiguation (`4485fc71f`);
-- outbound destination binding (`95213093e`), which must be proven superseded
-  or replaced before production convergence;
-- bounded memory rendering (`b5240afe1`);
-- RTK rewriting as a supported user-installed plugin only (`d49d54c9e`); and
-- Python 3.14 daemon-pool compatibility from the superseded fork PR.
+**Root cause:** The `$((0666 & ~0$u))` shell arithmetic for new-file permissions breaks on zsh
+(leading-zero constants parsed as decimal, not octal → silently wrong mode). Replaced with
+POSIX symbolic `chmod "=rw"` which is identical across bash/dash/ash/busybox/zsh.
 
-Historical fork baseline:
-`047662e56e5510378adf1fe9da3a684c4784571d`.
+**Verify safe to remove:** `grep '=rw' tools/file_operations.py` — if upstream has this, patch is redundant.
+
+---
+
+## Previously active — now confirmed upstream-merged
+
+| Entry | Was | Status |
+|-------|-----|--------|
+| `tools/memory_tool.py` render-time truncation | Active | ✅ Upstream has `_char_limit()` + `memory_char_limit` in `_render_block()` |
+| `gateway/platforms/slack.py` loop prevention | Active | ✅ Upstream has `SLACK_FREE_RESPONSE_CHANNELS` + `SLACK_REQUIRE_MENTION` |
+| `gateway/status.py` macOS `_get_process_start_time` | Active (PR #16) | ✅ Upstream has full psutil + `/proc` fallback |
+
+---
+
+## Local-only (never upstream)
+
+| Item | Reason |
+|------|--------|
+| `.github/workflows/hermes-pr-tag-listener.yml` | Fork's PR tagging workflow |
+| `.coderabbit.yaml` | Fork's CR config |
+| `.gitignore` additions | AO session files — harmless upstream but unnecessary |
+| `FORK_ADJUSTMENTS.md` | This file |
+
+## How to use this file
+
+- Before rebasing on upstream: check each Active adjustment against the new upstream diff
+- Before filing a PR: copy the entry's commit range into the PR body as "addresses FORK_ADJUSTMENTS entry N"
+- After upstream merge: move entry from Active to "Previously active — now confirmed upstream-merged"

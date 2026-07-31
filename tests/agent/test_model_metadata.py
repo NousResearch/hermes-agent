@@ -134,6 +134,42 @@ class TestEstimateRequestTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_nvidia_deepseek_v4_pro_context_is_endpoint_scoped(self):
+        """NVIDIA's 262K NIM window must not lower DeepSeek V4 globally."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            accepted_urls = (
+                "https://integrate.api.nvidia.com/v1",
+                "https://INTEGRATE.API.NVIDIA.COM/v1/",
+                "https://integrate.api.nvidia.com:443/v1",
+            )
+            rejected_urls = (
+                "http://integrate.api.nvidia.com/v1",
+                "https://integrate.api.nvidia.com:8443/v1",
+                "https://integrate.api.nvidia.com/v1/other",
+                "https://integrate.api.nvidia.com/v1?route=other",
+                "https://example.invalid/v1",
+                "https://api.deepseek.com/v1",
+                "https://openrouter.ai/api/v1",
+            )
+
+            for base_url in accepted_urls:
+                assert get_model_context_length(
+                    "deepseek-ai/deepseek-v4-pro",
+                    provider="nvidia",
+                    base_url=base_url,
+                ) == 262_144
+
+            for base_url in rejected_urls:
+                assert get_model_context_length(
+                    "deepseek-ai/deepseek-v4-pro",
+                    provider="nvidia",
+                    base_url=base_url,
+                ) == 1_000_000
+
     def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
         """The bare ``k3`` slug's 1 Mi context must not leak to unverified endpoints.
 
@@ -1076,4 +1112,3 @@ class TestMoAContextLength:
         assert compressor.context_length == configured_context
         assert compressor.threshold_tokens == configured_context // 2
         endpoint_probe.assert_not_called()
-

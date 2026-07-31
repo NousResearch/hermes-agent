@@ -634,12 +634,17 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 
 
 def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
-    """Return metadata confirmed only for the Kimi Coding endpoint.
+    """Return context metadata confirmed for one provider endpoint.
 
     Kimi Coding serves K3 under the bare slug ``k3``, but users may also
     configure or select the public-facing aliases ``kimi-k3`` and
     ``kimi-k3-cot``. Only canonical ``https://api.kimi.com/coding`` endpoints
     (legacy Moonshot keys do not serve K3) get the 1 Mi context window.
+
+    NVIDIA NIM serves ``deepseek-ai/deepseek-v4-pro`` with a 262,144-token
+    window even though DeepSeek's native endpoint serves the V4 family with a
+    1M window. Keep the lower limit scoped to NVIDIA instead of weakening the
+    global model-family metadata.
     """
     normalized = _normalize_base_url(base_url)
     try:
@@ -659,6 +664,18 @@ def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
         and model.strip().lower() in {"k3", "kimi-k3", "kimi-k3-cot"}
     ):
         return 1_048_576
+    if (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == "integrate.api.nvidia.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") == "/v1"
+        and not parsed.query
+        and not parsed.fragment
+        and model.strip().lower() == "deepseek-ai/deepseek-v4-pro"
+    ):
+        return 262_144
     return None
 
 

@@ -4746,6 +4746,13 @@ def run_conversation(
                             provider=agent.provider,
                             api_mode=agent.api_mode,
                         )
+                        # Persist an explicit provider-reported limit before
+                        # compression/retry. The next request can be rate
+                        # limited, omit usage, or the process can restart; none
+                        # of those should discard metadata the provider already
+                        # confirmed. Keep the probe flags as a best-effort
+                        # post-success retry if this write cannot complete.
+                        save_context_length(agent.model, agent.base_url, new_ctx)
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).  This
                         # value came from the provider, so it is safe to cache.

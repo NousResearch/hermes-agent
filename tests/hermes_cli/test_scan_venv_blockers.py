@@ -118,6 +118,12 @@ def test_redact_short_flags_not_redacted() -> None:
         "  -m hermes_cli.main gateway run --replace",
         # profile-scoped gateway
         "python.exe -m hermes_cli.main --profile work gateway run",
+        # a profile literally NAMED "gateway" — the profile value must not
+        # shadow the subcommand token (the hand-rolled matcher regressed this)
+        "python.exe -m hermes_cli.main --profile gateway gateway run",
+        "python.exe -m hermes_cli.main -p gateway gateway run",
+        # bare `gateway` defaults to `run` (mirrors the canonical matcher)
+        "python.exe -m hermes_cli.main gateway",
         # case variations survive
         "PYTHON.EXE -m hermes_cli.main GATEWAY RUN",
     ],
@@ -138,8 +144,6 @@ def test_is_pausable_gateway_accepts_gateway_run_chains(cmdline: str) -> None:
         # operator REPL / stray script
         "python.exe",
         "python.exe myscript.py gateway run",  # not a hermes_cli.main invocation
-        # 'gateway' as a trailing word with nothing after it
-        "python.exe -m hermes_cli.main gateway",
         "",
     ],
 )

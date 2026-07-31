@@ -716,3 +716,305 @@ def test_invalid_explicit_context_is_refused(monkeypatch, bad_context):
         )
         is None
     )
+
+
+# --------------------------------------------------------------------------
+# Identifier normalization — discovery and loading read `key`/`id` alike
+#
+# LM Studio has been seen to publish padded ``key``/``id`` values. Discovery
+# strips them, so every identifier ``probe_lmstudio_models`` hands a caller
+# must resolve back to the entry it came from when that caller asks for the
+# model to be loaded. If loading compared the raw values instead, the target
+# would either not be found at all, or its resident instance would look like a
+# competing LLM and be evicted and reloaded for nothing.
+# --------------------------------------------------------------------------
+
+
+def _identified_entry(
+    *,
+    key: str | None = None,
+    identifier: str | None = None,
+    loaded: tuple[tuple[str, int], ...] = (),
+    maximum: int = 262_144,
+) -> dict:
+    """Catalog entry carrying exactly the raw ``key``/``id`` values given.
+
+    Unlike ``_entry`` this never invents an ``id``, so an entry can publish a
+    padded ``key`` only, a padded ``id`` only, or neither.
+    """
+    entry: dict = {
+        "type": "llm",
+        "max_context_length": maximum,
+        "loaded_instances": [
+            {"id": instance_id, "config": {"context_length": context}}
+            for instance_id, context in loaded
+        ],
+    }
+    if key is not None:
+        entry["key"] = key
+    if identifier is not None:
+        entry["id"] = identifier
+    return entry
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["key", "identifier"],
+    ids=["padded-key", "padded-id"],
+)
+def test_discovered_identifier_from_a_padded_field_finds_the_target(monkeypatch, field):
+    """Discovery strips the padding; the stripped name still finds the entry."""
+    catalog = [_identified_entry(**{field: f"  {TARGET}\t"})]
+    _catalogs(monkeypatch, catalog)
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 131_072}})
+
+    discovered = models.probe_lmstudio_models(base_url=BASE_URL)
+    assert discovered == [TARGET]
+
+    loaded = models.ensure_lmstudio_model_loaded(
+        discovered[0], BASE_URL, api_key="lm-secret", target_context_length=None
+    )
+
+    assert loaded == 131_072
+    # The caller's identifier is what LM Studio is asked to load — the padded
+    # catalog value is a matching rule, not a new payload rule.
+    assert [(call["url"], call["body"]) for call in requests] == [
+        (LOAD_URL, {"model": TARGET, "echo_load_config": True}),
+    ]
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["key", "identifier"],
+    ids=["padded-key", "padded-id"],
+)
+def test_single_loaded_target_with_a_padded_identifier_is_a_noop(monkeypatch, field):
+    """A lone resident target is clean state however its identifier is padded."""
+    catalog = [
+        _identified_entry(
+            **{field: f"  {TARGET}  "},
+            loaded=(("target-instance", 131_072),),
+        )
+    ]
+    _catalogs(monkeypatch, catalog)
+    _forbid_requests(monkeypatch)
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=64_000,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 131_072
+    assert result.load_attempted is False
+    assert result.rejected is False
+
+
+def test_padded_alias_of_the_target_is_not_treated_as_a_competitor(monkeypatch):
+    """The resident instance hangs off a padded publication of the target.
+
+    LM Studio can publish the same model under a padded identifier alongside
+    the canonical one. Both normalize to the requested model, so the resident
+    instance is the target — not a competing LLM to evict and reload.
+    """
+    _catalogs(
+        monkeypatch,
+        [
+            _identified_entry(key=TARGET),
+            _identified_entry(
+                key=f"  {TARGET}  ",
+                loaded=(("target-instance", 131_072),),
+            ),
+        ],
+    )
+    _forbid_requests(monkeypatch)
+
+    loaded = models.ensure_lmstudio_model_loaded(
+        TARGET, BASE_URL, api_key="lm-secret", target_context_length=64_000
+    )
+
+    assert loaded == 131_072
+
+
+def test_padded_competitor_is_evicted_before_the_padded_target_reloads(monkeypatch):
+    """A genuinely different padded model is still a competitor."""
+    _catalogs(
+        monkeypatch,
+        [
+            _identified_entry(
+                key=f" {TARGET} ",
+                loaded=(("target-instance", 131_072),),
+            ),
+            _identified_entry(
+                key=f"\t{COMPETITOR}\n",
+                loaded=(("competing-instance", 131_072),),
+            ),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 64_000}})
+
+    discovered = models.probe_lmstudio_models(base_url=BASE_URL)
+    assert discovered == [TARGET, COMPETITOR]
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=64_000,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 64_000
+    assert result.load_attempted is True
+    assert result.rejected is False
+    assert [(call["url"], call["body"]) for call in requests] == [
+        (UNLOAD_URL, {"instance_id": "target-instance"}),
+        (UNLOAD_URL, {"instance_id": "competing-instance"}),
+        (
+            LOAD_URL,
+            {"model": TARGET, "echo_load_config": True, "context_length": 64_000},
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "blank",
+    ["", "   ", "\t\n"],
+    ids=["empty", "spaces", "tab-newline"],
+)
+def test_whitespace_only_identifiers_are_not_identifiers(monkeypatch, blank):
+    """A blank ``key``/``id`` names nothing — for discovery and for loading.
+
+    The entry is still a chat-capable resident LLM, so it is a competitor to
+    evict; what it must never be is the requested target.
+    """
+    _catalogs(
+        monkeypatch,
+        [
+            _identified_entry(
+                key=blank,
+                identifier=blank,
+                loaded=(("blank-instance", 131_072),),
+            ),
+            _identified_entry(key=TARGET),
+        ],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 131_072}})
+
+    assert models.probe_lmstudio_models(base_url=BASE_URL) == [TARGET]
+
+    loaded = models.ensure_lmstudio_model_loaded(
+        TARGET, BASE_URL, api_key="lm-secret", target_context_length=None
+    )
+
+    assert loaded == 131_072
+    assert _unloaded_instance_ids(requests) == ["blank-instance"]
+
+
+@pytest.mark.parametrize(
+    "blank",
+    ["   ", "\t\n"],
+    ids=["spaces", "tab-newline"],
+)
+def test_a_blank_requested_model_matches_no_entry(monkeypatch, blank):
+    _catalogs(monkeypatch, [_identified_entry(key=blank, identifier=blank)])
+    _forbid_requests(monkeypatch)
+
+    result = models.ensure_lmstudio_model_loaded(
+        blank,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=None,
+        return_load_result=True,
+    )
+
+    assert result.context_length is None
+    assert result.load_attempted is False
+    assert result.rejected is False
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [TARGET, f"{TARGET}@q4"],
+    ids=["padded-key-alias", "canonical-id-alias"],
+)
+def test_key_and_id_aliases_both_resolve_when_only_one_is_padded(monkeypatch, requested):
+    """Either alias names the entry, whichever of the two carries padding."""
+    _catalogs(
+        monkeypatch,
+        [
+            _identified_entry(
+                key=f"  {TARGET}  ",
+                identifier=f"{TARGET}@q4",
+                loaded=(("target-instance", 131_072),),
+            )
+        ],
+    )
+    _forbid_requests(monkeypatch)
+
+    loaded = models.ensure_lmstudio_model_loaded(
+        requested, BASE_URL, api_key="lm-secret", target_context_length=64_000
+    )
+
+    assert loaded == 131_072
+
+
+_PADDING_CASES = [
+    ({"key": f"  {TARGET}  "}, "padded-key-only"),
+    ({"identifier": f"\t{TARGET}\n"}, "padded-id-only"),
+    ({"key": f" {TARGET} ", "identifier": f"{TARGET} "}, "both-padded"),
+    ({"key": f" {TARGET} ", "identifier": f"{TARGET}@q4"}, "padded-key-canonical-id"),
+    ({"key": TARGET, "identifier": f"  {TARGET}@q4  "}, "canonical-key-padded-id"),
+]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [case for case, _ in _PADDING_CASES],
+    ids=[name for _, name in _PADDING_CASES],
+)
+def test_discovery_and_loading_agree_on_the_same_padded_catalog(monkeypatch, fields):
+    """Whatever discovery advertises, loading accepts — same catalog, same rule.
+
+    This is the contract the two halves must keep: a model name a user can only
+    have obtained from ``probe_lmstudio_models`` (the model picker, ``hermes
+    status``) has to be loadable, not silently unfindable.
+    """
+    catalog = [_identified_entry(**fields)]
+    _catalogs(monkeypatch, catalog)
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 131_072}})
+
+    discovered = models.probe_lmstudio_models(base_url=BASE_URL)
+    assert discovered == [TARGET]
+
+    for name in discovered:
+        result = models.ensure_lmstudio_model_loaded(
+            name,
+            BASE_URL,
+            api_key="lm-secret",
+            target_context_length=None,
+            return_load_result=True,
+        )
+        assert result.context_length == 131_072
+        assert result.load_attempted is True
+        assert result.rejected is False
+        assert requests[-1]["url"] == LOAD_URL
+        assert requests[-1]["body"] == {"model": name, "echo_load_config": True}
+
+
+def test_reasoning_options_accept_a_discovered_padded_identifier(monkeypatch):
+    """The sibling catalog reader resolves identifiers the same way.
+
+    ``lmstudio_model_reasoning_options`` is fed the same model name discovery
+    advertises, so it has to normalize ``key``/``id`` the same way or it
+    reports no reasoning support for a model that publishes it.
+    """
+    entry = _identified_entry(key=f"  {TARGET}  ")
+    entry["capabilities"] = {"reasoning": {"allowed_options": ["low", " HIGH "]}}
+    _catalogs(monkeypatch, [entry])
+
+    discovered = models.probe_lmstudio_models(base_url=BASE_URL)
+    assert discovered == [TARGET]
+    assert models.lmstudio_model_reasoning_options(discovered[0], BASE_URL) == ["low", "high"]

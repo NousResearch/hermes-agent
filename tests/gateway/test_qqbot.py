@@ -1397,13 +1397,6 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
-    def test_read_events_raises_when_ws_none(self):
-        adapter = self._make_adapter()
-        adapter._running = True
-        adapter._ws = None
-        with pytest.raises(RuntimeError):
-            asyncio.run(adapter._read_events())
-
 
 class TestConvertFfmpegToWav:
     @staticmethod

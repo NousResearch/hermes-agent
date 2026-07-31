@@ -3,7 +3,8 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
-import { TYPING_IDLE_MS } from '../config/timing.js'
+import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
+import { applyCompletion } from '../domain/slash.js'
 import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
@@ -14,14 +15,15 @@ import type {
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
+import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type {
-  GatewayRpc,
-  InputHandlerActions,
-  InputHandlerContext,
-  InputHandlerResult,
-  OverlayState
+import {
+  type GatewayRpc,
+  type InputHandlerActions,
+  type InputHandlerContext,
+  type InputHandlerResult,
+  type OverlayState
 } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
@@ -127,6 +129,8 @@ export function dismissSensitivePrompt(
   }
 }
 
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -217,6 +221,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.journey) {
       return patchOverlayState({ journey: false })
+    }
+
+    if (overlay.widget) {
+      return closeWidget()
     }
   }
 
@@ -312,8 +320,32 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
   }
 
+  // Double-Esc discards the draft, matching Claude Code / Gemini CLI. It
+  // sits above the isBlocked early-return on purpose: Ctrl+C interrupts a
+  // running turn rather than clearing, so while the agent streams there is
+  // otherwise no way to throw away a half-typed prompt. The draft is pushed
+  // to history first so Up recalls it.
+  const lastEscRef = useRef(0)
+
   useInput((ch, key) => {
     const live = getUiState()
+
+    if (key.escape) {
+      const now = Date.now()
+      const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
+
+      lastEscRef.current = isDouble ? 0 : now
+
+      if (isDouble && (cState.input || cState.inputBuf.length)) {
+        if (cState.input.trim()) {
+          cActions.pushHistory(cState.input)
+        }
+
+        cActions.clearIn()
+
+        return
+      }
+    }
 
     if (isBlocked) {
       // When approval/clarify/confirm overlays are active, their own useInput
@@ -398,6 +430,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           })
         }
 
+        return
+      }
+
+      // Widget apps (SDK): the active app owns every key while open. This
+      // supersedes the demo-only handleStackedModalInput routing from #68999
+      // — grid-test/dialog are now widget apps, so the topmost-modal-owns-
+      // input contract is enforced structurally by the single active widget.
+      if (overlay.widget && dispatchWidgetInput({ ch, key })) {
         return
       }
 
@@ -545,6 +585,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ sessions: true })
     }
 
+    // Ctrl+O opens the model picker without disturbing a typed draft — the
+    // same overlay `/model` opens, but reachable without clearing what you've
+    // typed to run the command. Works mid-stream: picking a model writes the
+    // session model (config.set), which the next turn reads while the in-flight
+    // turn keeps streaming.
+    if (isCtrl(key, ch, 'o')) {
+      return patchOverlayState({ modelPicker: true })
+    }
+
     if (key.ctrl && ch.toLowerCase() === 'c') {
       if (live.busy && live.sid) {
         return turnController.interruptTurn({
@@ -625,12 +674,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const row = cState.completions[cState.compIdx]
 
       if (row?.text) {
-        const text =
-          cState.input.startsWith('/') && row.text.startsWith('/') && cState.compReplace > 0
-            ? row.text.slice(1)
-            : row.text
-
-        cActions.setInput(cState.input.slice(0, cState.compReplace) + text)
+        cActions.setInput(applyCompletion(cState.input, row.text, cState.compReplace))
       }
 
       return

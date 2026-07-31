@@ -21,8 +21,15 @@ import {
 import reconciler from '../reconciler.js'
 import { clearSelection, finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
-import { decrqm, TerminalQuerier, xtversion } from '../terminal-querier.js'
-import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
+import { decrqm, oscColor, TerminalQuerier, xtversion } from '../terminal-querier.js'
+import {
+  isXtermJs,
+  parseOscColor,
+  setTerminalBackgroundHex,
+  setTerminalForegroundHex,
+  setXtversionName,
+  supportsExtendedKeys
+} from '../terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -336,12 +343,41 @@ export default class App extends PureComponent<Props, State> {
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
-          void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
+          // OSC 11 + OSC 10 ride the same batch: the terminal's actual
+          // background drives light/dark theme detection where env heuristics
+          // (COLORFGBG, TERM_PROGRAM) are blind — notably xterm.js hosts. The
+          // FOREGROUND is the polarity tiebreaker for transparent profiles:
+          // those report the unset-default background (pure black) but the
+          // theme's real foreground, whose luminance reveals the pole.
+          void Promise.all([
+            this.querier.send(xtversion()),
+            this.querier.send(oscColor(11)),
+            this.querier.send(oscColor(10)),
+            this.querier.flush()
+          ]).then(([r, bg, fg]) => {
             if (r) {
               setXtversionName(r.name)
               logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)
             } else {
               logForDebugging('XTVERSION: no reply (terminal ignored query)')
+            }
+
+            const bgHex = bg ? parseOscColor(bg.data) : undefined
+            const fgHex = fg ? parseOscColor(fg.data) : undefined
+
+            // Background first: a trusted OSC-11 answer settles polarity
+            // outright, so the foreground listener (the transparent-profile
+            // tiebreaker) sees it already resolved and stays silent.
+            if (bgHex) {
+              setTerminalBackgroundHex(bgHex)
+              logForDebugging(`OSC11: terminal background is ${bgHex}`)
+            } else {
+              logForDebugging('OSC11: no reply (terminal ignored query)')
+            }
+
+            if (fgHex) {
+              setTerminalForegroundHex(fgHex)
+              logForDebugging(`OSC10: terminal foreground is ${fgHex}`)
             }
           })
         })

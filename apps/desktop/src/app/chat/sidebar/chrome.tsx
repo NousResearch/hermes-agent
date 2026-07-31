@@ -8,13 +8,9 @@ import { cn } from '@/lib/utils'
 // sections and the project/workspace tree, so it lives outside either to keep
 // imports one-directional (no index <-> projects cycle).
 
-/** `loaded/total` when there's more on the server, else just the loaded count. */
-export const countLabel = (loaded: number, total: number): string =>
-  total > loaded ? `${loaded}/${total}` : String(loaded)
-
-/** The muted count chip next to a section/workspace label. */
-export function SidebarCount({ children }: { children: React.ReactNode }) {
-  return <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
+/** The muted slot beside a section label (loading glyph, status hint). */
+export function SidebarSectionMeta({ children }: { children: React.ReactNode }) {
+  return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
 // ── Row geometry (session row is canonical — everything composes these) ─────
@@ -41,6 +37,22 @@ export function SidebarRowStack({ className, ...props }: React.ComponentProps<'d
 /** Nested rows (session previews, worktree bodies). */
 export function SidebarRowNest({ className, ...props }: React.ComponentProps<'div'>) {
   return <SidebarRowStack className={cn('pb-1 pl-4', className)} {...props} />
+}
+
+/**
+ * Chronological date-bucket separator ("Yesterday" / "Last week" / "June") for
+ * the session list. One flat row — a small caption plus a hairline rule — so it
+ * groups sessions by recency without adding a level of indentation.
+ */
+export function SidebarDateDivider({ className, label, ...props }: React.ComponentProps<'div'> & { label: string }) {
+  return (
+    <div className={cn('flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
+      <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
+        {label}
+      </span>
+      <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+    </div>
+  )
 }
 
 /** Outer grid — sole owner of row height. */

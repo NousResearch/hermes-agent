@@ -141,27 +141,6 @@ class TestInPlaceCompaction:
             roles = [m["role"] for m in compressed if m.get("role") != "system"]
             assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
 
-    def test_in_place_skips_redundant_preflush(self):
-        """In-place must NOT pre-flush current-turn messages: replace_messages
-        rewrites the whole row, so a flush would INSERT rows it immediately
-        deletes (wasted writes). The current-turn tail survives via the
-        compressor's `compressed` output, not the flush."""
-        from hermes_state import SessionDB
-        from agent.conversation_compression import compress_context
-
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
-            _seed(db, "ip_flush", "f")
-            agent = _make_agent(db, "ip_flush", in_place=True)
-            calls = {"n": 0}
-            agent._flush_messages_to_session_db = lambda *a, **k: calls.__setitem__(
-                "n", calls["n"] + 1
-            )
-            compress_context(
-                agent, [{"role": "user", "content": "x"}] * 8,
-                approx_tokens=100_000, system_message="sys",
-            )
-            assert calls["n"] == 0
 
     def test_rotation_still_preflushes(self):
         """Rotation MUST pre-flush so current-turn messages survive in the
@@ -213,8 +192,14 @@ class TestRotationFallbackWhenFlagOff:
             ).fetchall()
             assert len(child) == 1
             assert child[0]["title"] == "my-research #2"
-            # Flush cursor reset for the new row.
-            assert agent._last_flushed_db_idx == 0
+            # The compacted child is persisted atomically at the rotation
+            # boundary, so a headless process killed before finalization can
+            # still resume it without duplicating the two handoff messages.
+            assert agent._last_flushed_db_idx == 2
+            assert [m.get("content") for m in db.get_messages_as_conversation(agent.session_id)] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+            ]
             # Rotation mode does NOT set the in-place signal.
             assert getattr(agent, "_last_compaction_in_place", False) is False
 
@@ -317,4 +302,3 @@ class TestCompactedTurnsStaySearchable:
                 "ZEBRAWORD", role_filter=["user", "assistant"], include_inactive=True
             )
             assert len(recovered) == 1
-

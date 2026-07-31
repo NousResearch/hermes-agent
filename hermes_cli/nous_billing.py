@@ -1,4 +1,4 @@
-"""Nous Portal terminal-billing HTTP client (Phase 2b).
+"""Nous Portal Remote Spending HTTP client (Phase 2b).
 
 Thin, fail-loud client for the four ``/api/billing/*`` endpoints the terminal
 billing screens drive. Companion to ``hermes_cli/nous_account.py`` (which owns
@@ -90,8 +90,8 @@ class BillingScopeRequired(BillingError):
     """``403 insufficient_scope`` — the held token lacks ``billing:manage``.
 
     The lazy step-up trigger: catching this kicks off a fresh device-connect that
-    requests ``billing:manage`` (and tells the user an ADMIN must tick "Allow
-    terminal billing"). Also fires mid-session if the scope is stripped on refresh
+    requests ``billing:manage`` (and tells the user an ADMIN must select "Allow
+    Remote Spending"). Also fires mid-session if the scope is stripped on refresh
     after the user loses ADMIN.
     """
 
@@ -296,19 +296,15 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
 
 
 def _retry_after_seconds(headers: Any) -> Optional[int]:
-    """Parse a ``Retry-After`` header (integer seconds) — None if absent/bad."""
-    if headers is None:
-        return None
-    try:
-        raw = headers.get("Retry-After")
-    except Exception:
-        raw = None
-    if raw is None:
-        return None
-    try:
-        return int(str(raw).strip())
-    except (TypeError, ValueError):
-        return None
+    """Parse a ``Retry-After`` header (integer seconds) — None if absent/bad.
+
+    Thin wrapper around :func:`agent.retry_utils.parse_retry_after_seconds`
+    (the shared parser also handles HTTP-date forms and clamps negatives).
+    """
+    from agent.retry_utils import parse_retry_after_seconds
+
+    seconds = parse_retry_after_seconds(headers)
+    return None if seconds is None else int(seconds)
 
 
 def _raise_for_error(
@@ -363,11 +359,11 @@ def _raise_for_error(
             )
         raise BillingAuthError(message or "Authentication required.", **common)
     if status == 403:
-        # This terminal's spending was revoked (NOT the same as never having the
-        # scope). Disable spend UI immediately; recovery is reconnect.
+        # Remote spending was stopped for this terminal (NOT the same as never
+        # having the scope). Disable spend UI immediately; recovery is reconnect.
         if error == "remote_spending_revoked":
             raise BillingRemoteSpendingRevoked(
-                message or "Remote Spending was revoked for this terminal.", **common
+                message or "Remote spending was stopped for this terminal.", **common
             )
         if error == "insufficient_scope":
             raise BillingScopeRequired(
@@ -461,6 +457,13 @@ def _request(
     except urllib.error.URLError as exc:
         raise BillingError(
             f"Could not reach Nous Portal: {exc.reason}", error="network_error"
+        ) from exc
+    except TimeoutError as exc:
+        # urlopen() wraps CONNECT-phase timeouts in URLError, but a timeout
+        # during resp.read() surfaces as a bare TimeoutError — normalize it so
+        # transport failures always honor the typed-BillingError contract.
+        raise BillingError(
+            "Could not reach Nous Portal: timed out", error="network_error"
         ) from exc
 
 

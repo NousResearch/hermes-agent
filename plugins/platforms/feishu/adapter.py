@@ -152,11 +152,24 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    # Pipe table: any header line + separator line both starting with '|'.
+    r"(^\|.*\|\s*\n\|[-:|\s]+\|)"
+    # Headings, lists, code, bold/italic/strike/underline, links, blockquotes.
+    r"|(^#{1,6}\s)"
+    r"|(^\s*[-*]\s)"
+    r"|(^\s*\d+\.\s)"
+    r"|(^\s*---+\s*$)"
+    r"|(```)"
+    r"|(`[^`\n]+`)"
+    r"|(\*\*[^*\n].+?\*\*)"
+    r"|(~~[^~\n].+?~~)"
+    r"|(<u>.+?</u>)"
+    r"|(\*[^*\n]+\*)"
+    r"|(\[[^\]]+\]\([^)]+\))"
+    r"|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Backwards-compatible alias retained because external callers reference it.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -1897,11 +1910,21 @@ class FeishuAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        # When chunking splits a long markdown response, an individual chunk
+        # can end up as plain prose that doesn't match the per-chunk hint
+        # regex — so it would be sent as ``msg_type=text`` and the user would
+        # see literal ``**bold``/``## heading``/code fences in the Feishu
+        # client while other chunks render correctly. Lock the markdown
+        # decision at the whole-message level so every chunk consistently
+        # uses ``post``. See #26841.
+        prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
         last_response = None
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                msg_type, payload = self._build_outbound_payload(
+                    chunk, prefer_post=prefer_post,
+                )
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1976,11 +1999,19 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    # Template attrs for the shared _format_exec_approval core. The card
+    # header carries the title, so the text core starts at the code fence.
+    _EA_HEADER = ""
+    _EA_REASON_LABEL = "**Reason:** "
+    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+    _EA_CMD_BUDGET = 3000
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
@@ -1994,7 +2025,6 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             approval_id = next(self._approval_counter)
-            cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
                 return {
@@ -2005,12 +2035,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 }
 
             actions = [_btn("✅ Allow Once", "approve_once", "primary")]
-            if not smart_denied:
+            if not smart_denied and allow_session:
                 actions.append(_btn("✅ Session", "approve_session"))
                 if allow_permanent:
                     actions.append(_btn("✅ Always", "approve_always"))
             actions.append(_btn("❌ Deny", "deny", "danger"))
-            scope_note = "\n\n**Smart DENY:** owner override applies to this one operation only." if smart_denied else ""
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
@@ -2020,7 +2049,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}{scope_note}",
+                        "content": self._format_exec_approval(command, description, smart_denied),
                     },
                     {
                         "tag": "action",
@@ -2156,7 +2185,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def _write_update_prompt_response(answer: str) -> None:
         response_path = get_hermes_home() / ".update_response"
         tmp_path = response_path.with_suffix(".tmp")
-        tmp_path.write_text(answer)
+        tmp_path.write_text(answer, encoding="utf-8")
         tmp_path.replace(response_path)
 
     async def send_voice(
@@ -2849,6 +2878,22 @@ class FeishuAdapter(BasePlatformAdapter):
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,
             )
+            if not count and choice != "deny":
+                # The card was already updated synchronously to "Approved" by
+                # the callback response, but nothing was waiting — the wait
+                # already timed out (fail-closed deny) or was resolved via
+                # /approve. Correct the record so the user doesn't believe
+                # the command ran.
+                _chat = str(state.get("chat_id", "") or chat_id or "")
+                if _chat:
+                    try:
+                        await self.send(
+                            _chat,
+                            "⌛ That approval had already expired — the command "
+                            "was not run (it timed out or was resolved elsewhere).",
+                        )
+                    except Exception:
+                        logger.debug("[Feishu] expired-approval notice failed", exc_info=True)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
@@ -3406,13 +3451,17 @@ class FeishuAdapter(BasePlatformAdapter):
         default_ext: str,
         preferred_name: str,
     ) -> tuple[str, str]:
-        from tools.url_safety import is_safe_url
+        from gateway.platforms.base import _ssrf_redirect_guard
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
 
-        import httpx
-
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with create_ssrf_safe_async_client(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
             response = await client.get(
                 file_url,
                 headers={
@@ -3830,7 +3879,15 @@ class FeishuAdapter(BasePlatformAdapter):
         if preferred == "photo":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.PHOTO)
         if preferred == "audio":
-            return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.AUDIO)
+            # Lark's native "audio" msg_type is an in-app voice recording, not
+            # an uploaded audio file (those arrive as "file"/"media" and are
+            # normalized to "document"). Classify it as VOICE so the gateway
+            # auto-transcribes it (Opus → STT) the same way
+            # Discord/DingTalk/Telegram/etc. do — otherwise a Feishu voice note
+            # reaches the agent as an untranscribable AUDIO attachment and is
+            # silently ignored. Follow-up to #28993, which added native
+            # voice-note transcription for Discord + DingTalk.
+            return MessageType.VOICE
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT
@@ -4532,17 +4589,59 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+    def _build_outbound_payload(
+        self, content: str, *, prefer_post: bool = False,
+    ) -> tuple[str, str]:
+        # Empirically (issue #52786), current Feishu clients render markdown
+        # tables inside ``post``-type ``md`` elements natively. The previous
+        # table-downgrade branch forced any table-containing message to
+        # ``text``, which left Feishu readers seeing the raw pipe-and-dash
+        # source instead of a rendered table. Trust the common markdown path
+        # for table content too.
+        #
+        # ``prefer_post`` lets ``send`` treat the chunk as part of a larger
+        # markdown document: when a long markdown reply is split at
+        # MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise
+        # mis-classify a plain-prose chunk as ``text``. See #26841.
+        if prefer_post or _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    @staticmethod
+    def _get_audio_duration_ms(file_path: str) -> int:
+        """Extract OGG/Opus audio duration in milliseconds (pure Python, no deps).
+
+        Parses the OGG container to find the last granule position and divides
+        by the Opus sample rate (48000 Hz). Returns 0 for non-OGG files or on error.
+        """
+        import struct
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            pos = 0
+            last_granule = 0
+            while pos < len(data) - 27:
+                idx = data.find(b"OggS", pos)
+                if idx == -1:
+                    break
+                pos = idx
+                if pos + 27 > len(data):
+                    break
+                granule = struct.unpack_from("<q", data, pos + 6)[0]
+                num_segments = data[pos + 26]
+                if granule > 0:
+                    last_granule = granule
+                segment_end = pos + 27 + num_segments
+                if segment_end > len(data):
+                    break
+                page_size = num_segments
+                for i in range(num_segments):
+                    page_size += data[pos + 27 + i]
+                pos += page_size
+            return int(last_granule / 48000 * 1000) if last_granule > 0 else 0
+        except Exception:
+            return 0
 
     async def _send_uploaded_file_message(
         self,
@@ -4566,11 +4665,15 @@ class FeishuAdapter(BasePlatformAdapter):
             requested_message_type=outbound_message_type,
         )
         try:
+            duration_ms = 0
+            if upload_file_type == "opus":
+                duration_ms = self._get_audio_duration_ms(file_path)
             with open(file_path, "rb") as file_obj:
                 body = self._build_file_upload_body(
                     file_type=upload_file_type,
                     file_name=display_name,
                     file=file_obj,
+                    duration=duration_ms,
                 )
                 request = self._build_file_upload_request(body)
                 upload_response = await self._run_blocking(self._client.im.v1.file.create, request)
@@ -4603,10 +4706,62 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=reply_to,
                     metadata=metadata,
                 )
+                # Audio messages may fail with 99992402 when using thread_id routing.
+                # Try replying to the last message in the thread, then fall back to chat_id.
+                if (not self._response_succeeded(message_response)
+                        and getattr(message_response, "code", None) == 99992402
+                        and resolved_message_type == "audio"
+                        and (metadata or {}).get("thread_id")):
+                    # Try reply API with thread_id as reply anchor
+                    thread_msg_id = (metadata or {}).get("reply_to_message_id")
+                    if not thread_msg_id:
+                        thread_msg_id = await self._fetch_last_message_in_thread(
+                            (metadata or {}).get("thread_id")
+                        )
+                    if thread_msg_id:
+                        logger.info("[Feishu] Audio: retrying via reply API in thread")
+                        message_response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=resolved_message_type,
+                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                            reply_to=thread_msg_id,
+                            metadata=metadata,
+                        )
+                    if not self._response_succeeded(message_response):
+                        logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                        message_response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=resolved_message_type,
+                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                            reply_to=None,
+                            metadata=None,
+                        )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _fetch_last_message_in_thread(self, thread_id: str) -> Optional[str]:
+        """Fetch the last message_id in a thread for reply-based routing."""
+        if not self._client or not thread_id:
+            return None
+        try:
+            from lark_oapi.api.im.v1 import ListMessageRequest
+            request = (
+                ListMessageRequest.builder()
+                .container_id_type("thread")
+                .container_id(thread_id)
+                .page_size(1)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message.list, request)
+            if response and getattr(response, "success", lambda: False)():
+                items = getattr(getattr(response, "data", None), "items", None)
+                if items and len(items) > 0:
+                    return getattr(items[0], "message_id", None)
+        except Exception as exc:
+            logger.debug("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc)
+        return None
 
     async def _send_raw_message(
         self,
@@ -4999,16 +5154,18 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(request_body=request_body)
 
     @staticmethod
-    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any) -> Any:
+    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any, duration: int = 0) -> Any:
         if "CreateFileRequestBody" in globals():
-            return (
+            builder = (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
                 .file_name(file_name)
                 .file(file)
-                .build()
             )
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+            if duration > 0:
+                builder = builder.duration(duration)
+            return builder.build()
+        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file, duration=duration)
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:
@@ -5396,7 +5553,7 @@ def _qr_register_inner(
 # ──────────────────────────────────────────────────────────────────────────
 
 _MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-_MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
+_MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _MIGRATION_VOICE_EXTS = {".ogg", ".opus"}
 
@@ -5418,7 +5575,7 @@ async def _standalone_send(
     (images, video, voice, documents). Replaces the legacy _send_feishu helper.
     """
     if not FEISHU_AVAILABLE:
-        return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+        return {"error": "Feishu dependencies not installed. Run `hermes setup` to install Feishu support."}
 
     media_files = media_files or []
     try:
@@ -5469,7 +5626,7 @@ def interactive_setup() -> None:
     Replaces the central _setup_feishu in hermes_cli/gateway.py and the static
     _PLATFORMS["feishu"] dict. CLI helpers are lazy-imported.
     """
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
     from hermes_cli.cli_output import (
         prompt,
@@ -5620,10 +5777,17 @@ def interactive_setup() -> None:
         save_env_value("FEISHU_GROUP_POLICY", "disabled")
         print_info("Group chats disabled.")
 
-    home_channel = prompt("Home chat ID (optional, for cron/notifications)", password=False)
+    print_info(
+        "Leave blank to clear a previously saved home channel "
+        "(cron / notifications)."
+    )
+    home_channel = prompt("Home chat ID (optional, for cron/notifications)", password=False).strip()
     if home_channel:
         save_env_value("FEISHU_HOME_CHANNEL", home_channel)
         print_success(f"Home channel set to {home_channel}")
+    else:
+        if remove_env_value("FEISHU_HOME_CHANNEL"):
+            print_info("Home channel cleared.")
 
     print_success("🪽 Feishu / Lark configured!")
     print_info(f"App ID: {app_id}")
@@ -5666,7 +5830,7 @@ def register(ctx) -> None:
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
-        install_hint="pip install 'hermes-agent[feishu]'",
+        install_hint="Run `hermes setup` to install Feishu support.",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="FEISHU_ALLOWED_USERS",

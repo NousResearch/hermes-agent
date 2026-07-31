@@ -9,7 +9,9 @@
 import { useStore } from '@nanostores/react'
 import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
 
+import { beginSashDrag, endSashDrag } from '@/components/pane-shell/geometry'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
@@ -233,10 +235,34 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
+      // Suppress :root geometry-var writes for the gesture (see geometry.ts —
+      // each one restyles the whole document; they republish on release).
+      beginSashDrag()
 
-      const onMove = (ev: PointerEvent) => {
-        const shiftPx = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
-
+      // pointermove outpaces 60fps and each write relayouts the whole pane tree,
+      // so coalesce to one apply per frame (rafCoalesce commits on cleanup).
+      //
+      // During the gesture the store is NOT written. setTreeSplitWeights /
+      // setPaneWidthOverride each mint a new tree/pane-state object, and the
+      // resulting commit walks every mounted pane — measured live on a real
+      // 2-session layout: 31 commits across a 58-frame drag, 20.7fps, with
+      // TreeNode at 490ms and Block/Ct re-parsing markdown for 620ms. The
+      // store is written ONCE on release; during the drag the seam is
+      // previewed with inline styles on the same wrappers React sizes.
+      //
+      // Preview rules (learned the hard way — a wrong shape here left a
+      // phantom gap where a hidden sidebar lived):
+      //  - a FIXED side gets ONLY a flex-basis override. Its wrapper renders
+      //    as `flex: 0 1 <track>`, so basis is the whole difference; grow and
+      //    shrink stay React's. Crucially the flex partner is left untouched,
+      //    so it keeps absorbing the remainder and no leftover gap can open.
+      //  - a flex-vs-flex seam pins both sides to `0 1 <px>`. Their combined
+      //    px is constant, so sibling flex tracks see the same leftover.
+      //  - cleanup: a real drag commits the store once, and React's re-render
+      //    rewrites the `flex` shorthand, which clears the overrides (writing
+      //    the shorthand resets the longhands). A no-movement click restores
+      //    the captured style attribute instead, since nothing re-renders.
+      const applyShift = (shiftPx: number) => {
         if (a.fixed) {
           a.paneIds.forEach(id => setOverride(id, Math.round(a0px + shiftPx)))
         }
@@ -247,15 +273,65 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
         if (!a.fixed && !b.fixed) {
           const weights = [...node.weights]
-          // Convert the CLAMPED pixel sizes back to weights so the persisted
-          // weights always agree with what's on screen.
+          // Clamped px → weights so persisted weights match what's on screen.
           weights[aIndex] = (a0px + shiftPx) / pxPerWeight
           weights[bIndex] = (b0px - shiftPx) / pxPerWeight
           setTreeSplitWeights(node.id, weights)
         }
       }
 
+      const styleA = kidA.getAttribute('style')
+      const styleB = kidB.getAttribute('style')
+
+      const previewSide = (el: HTMLElement, fixed: boolean, px: number) => {
+        if (fixed) {
+          el.style.flexBasis = `${px}px`
+        } else if (!a.fixed && !b.fixed) {
+          el.style.flex = `0 1 ${px}px`
+        }
+        // Mixed seam, flex side: untouched — it absorbs what the fixed side
+        // gives up, exactly as the track model would render it.
+      }
+
+      const previewShift = (shiftPx: number) => {
+        previewSide(kidA, a.fixed, a0px + shiftPx)
+        previewSide(kidB, b.fixed, b0px - shiftPx)
+      }
+
+      const resize = rafCoalesce(previewShift)
+      let lastShift: null | number = null
+
+      const onMove = (ev: PointerEvent) => {
+        lastShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
+        resize.push(lastShift)
+      }
+
       const cleanup = () => {
+        resize.finish()
+
+        if (lastShift !== null) {
+          // One store commit; the re-render rewrites `flex` and clears the
+          // preview overrides.
+          applyShift(lastShift)
+        } else {
+          // Click without movement: nothing will re-render, so put the
+          // wrappers' inline styles back exactly as React last wrote them.
+          if (styleA === null) {
+            kidA.removeAttribute('style')
+          } else {
+            kidA.setAttribute('style', styleA)
+          }
+
+          if (styleB === null) {
+            kidB.removeAttribute('style')
+          } else {
+            kidB.setAttribute('style', styleB)
+          }
+        }
+
+        // Geometry vars re-enable AFTER the final store commit above, so the
+        // release publishes exactly one fresh measurement.
+        endSashDrag()
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
 
@@ -515,10 +591,11 @@ function Sash({
     >
       {/* Persistent hairline: same token as PaneShell's divider sash
           (--ui-stroke-secondary) so every seam — vertical or horizontal —
-          reads identically. */}
+          reads identically. Sits at 0.1 so seams recede into the surface,
+          and comes up to full on hover alongside the thicker grab band. */}
       <span
         className={cn(
-          'absolute bg-(--ui-stroke-secondary)',
+          'absolute bg-(--ui-stroke-secondary) opacity-10 transition-opacity duration-100 group-hover:opacity-100',
           horizontal ? 'inset-y-0 left-1/2 w-px -translate-x-1/2' : 'inset-x-0 top-1/2 h-px -translate-y-1/2'
         )}
       />

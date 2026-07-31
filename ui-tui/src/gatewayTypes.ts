@@ -1,22 +1,25 @@
+import type { BillingBlock, UsageModelData } from '@hermes/shared/billing'
+import type { HermesSkin } from '@hermes/shared/skin'
+
 import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
 
-export interface GatewaySkin {
-  banner_hero?: string
-  banner_logo?: string
-  branding?: Record<string, string>
-  colors?: Record<string, string>
-  help_header?: string
-  tool_prefix?: string
-}
+/** The cross-surface skin contract (canonical shape in `@hermes/shared`).
+ *  Includes the paired light_colors/dark_colors overlays from #20379. */
+export type GatewaySkin = HermesSkin
 
 export interface GatewayCompletionItem {
   display: string
+  /** Completion class, set by the gateway. `skill` covers skill commands and
+   *  skill bundles — the only kind offered for an inline `/skill` reference. */
+  kind?: string
   meta?: string
   text: string
 }
 
 export interface GatewayTranscriptMessage {
   context?: string
+  display_kind?: string
+  display_metadata?: Record<string, unknown>
   name?: string
   role: 'assistant' | 'system' | 'tool' | 'user'
   text?: string
@@ -43,216 +46,43 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-// ── Terminal billing (Phase 2b) ──────────────────────────────────────
+// ── Remote Spending (Phase 2b) ───────────────────────────────────────
 
-export interface BillingCardInfo {
-  brand: string
-  last4: string
-  masked: string
-  /** "Visa ····4242 — the card on your subscription" (= masked when provenance unknown). */
-  display?: string
-  /** Raw card-resolution rung ("subPin" | "customerDefault" | "autoRefill") or null on older NAS. */
-  resolved_via?: null | string
-}
-
-export interface BillingMonthlyCap {
-  is_default_ceiling: boolean
-  limit_display: string
-  limit_usd: string | null
-  spent_display: string
-  spent_this_month_usd: string | null
-}
-
-export interface BillingAutoReload {
-  card:
-    | { kind: 'canonical' }
-    | {
-        kind: 'distinct'
-        payment_method_id: string
-        brand: string | null
-        last4: string | null
-      }
-    | { kind: 'none' }
-  enabled: boolean
-  reload_to_display: string
-  reload_to_usd: string | null
-  threshold_display: string
-  threshold_usd: string | null
-}
-
-export interface BillingStateResponse {
-  auto_reload: BillingAutoReload | null
-  balance_display: string
-  balance_usd: string | null
-  can_charge: boolean
-  card: BillingCardInfo | null
-  charge_presets: string[]
-  charge_presets_display: string[]
-  cli_billing_enabled: boolean
-  error?: string | null
-  is_admin: boolean
-  logged_in: boolean
-  max_usd: string | null
-  min_usd: string | null
-  monthly_cap: BillingMonthlyCap | null
-  ok: boolean
-  org_name: string | null
-  portal_url: string | null
-  role: string | null
-  // Shared dollar usage model (two-bar view), embedded by the gateway so /topup
-  // renders the same bars as /usage and /subscription from this single fetch.
-  usage?: UsageModelData
-}
-
-/**
- * Raw error payload echoed from the server (`_serialize_billing_error`). Carries
- * the extra fields a few error codes attach — notably `remainingUsd` on
- * `monthly_cap_exceeded` — so the client can render the same detail the CLI does.
- */
-export interface BillingErrorPayload {
-  isDefaultCeiling?: boolean
-  remainingUsd?: string
-}
-
-export interface BillingChargeResponse {
-  actor?: string
-  charge_id?: string
-  code?: string
-  error?: string
-  idempotency_key?: string
-  message?: string
-  ok: boolean
-  payload?: BillingErrorPayload
-  portal_url?: string | null
-  recovery?: string
-  retry_after?: number | null
-}
-
-export interface BillingChargeStatusResponse {
-  amount_usd?: string | null
-  error?: string
-  message?: string
-  ok: boolean
-  payload?: BillingErrorPayload
-  portal_url?: string | null
-  reason?: string | null
-  retry_after?: number | null
-  settled_at?: string | null
-  status?: string
-}
-
-export interface BillingMutationResponse {
-  actor?: string
-  code?: string
-  error?: string
-  granted?: boolean
-  message?: string
-  ok: boolean
-  payload?: BillingErrorPayload
-  portal_url?: string | null
-  recovery?: string
-  retry_after?: number | null
-}
-
-export interface SubscriptionTierOption {
-  tier_id: string
-  name: string
-  tier_order: number // sorts the picker + upgrade/downgrade hint
-  dollars_per_month_display: string // pre-formatted ($X / $X.YY)
-  monthly_credits: string | null
-  is_current: boolean // the active plan: shown, not selectable
-  is_enabled: boolean // false = grandfathered current tier
-}
-
-export interface SubscriptionStateResponse {
-  ok: boolean
-  logged_in: boolean
-  is_admin: boolean
-  can_change_plan: boolean // role gate (ADMIN/OWNER), from NAS
-  org_name: string | null
-  org_id: string | null // org.id from the NAS response
-  role: string | null
-  context: 'personal' | 'team' // personal account vs team/org terminal
-  current: {
-    tier_id: string | null // null = free (no active sub)
-    tier_name: string | null
-    monthly_credits: string | null
-    credits_remaining: string | null
-    cycle_ends_at: string | null // ISO
-    pending_downgrade_tier_name: string | null
-    pending_downgrade_at: string | null
-    pending_downgrade_display: string | null // formatted pending_downgrade_at
-    cancel_at_period_end: boolean // subscription scheduled to cancel at period end
-    cancellation_effective_at: string | null // ISO when cancellation takes effect
-    cancellation_effective_display: string | null // formatted cancellation_effective_at
-  } | null
-  tiers: SubscriptionTierOption[] // selectable catalog for the in-terminal picker
-  portal_url: string | null
-  error?: string | null
-  // Shared dollar usage model (two-bar view), embedded by the gateway so the
-  // overlay renders the same bars as /usage from this single fetch.
-  usage?: UsageModelData
-}
-
-// A chargeless quote (POST /subscription/preview) of what a change would do.
-// `effect` drives the confirm copy; a failed preview reuses the typed-error
-// envelope fields (same as the mutations) so a 403 still triggers the step-up.
-export interface SubscriptionPreviewResponse {
-  ok: boolean
-  effect?: 'charge_now' | 'scheduled' | 'no_op' | 'blocked'
-  reason?: string | null
-  current_tier_id?: string | null
-  current_tier_name?: string | null
-  target_tier_id?: string | null
-  target_tier_name?: string | null
-  monthly_credits_delta?: string | null
-  amount_due_now_cents?: number | null // the prorated upfront charge for an upgrade
-  effective_at?: string | null // ISO, when a scheduled change lands
-  // typed-error envelope (present when ok=false)
-  error?: string
-  message?: string
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: BillingErrorPayload
-  actor?: string
-  code?: string
-  recovery?: string
-}
-
-// The single money route (POST /subscription/upgrade). `status` distinguishes a
-// completed upgrade from an SCA/decline that must finish in the portal at
-// `recovery_url`. `idempotency_key` is echoed so a retry reuses it.
-export interface SubscriptionUpgradeResponse {
-  ok: boolean
-  status?: 'upgraded' | 'already_on_tier' | 'requires_action' | 'payment_failed'
-  target_tier_name?: string | null
-  recovery_url?: string | null
-  reason?: string | null
-  idempotency_key?: string
-  // typed-error envelope (present when ok=false)
-  error?: string
-  message?: string
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: BillingErrorPayload
-  actor?: string
-  code?: string
-  recovery?: string
-}
+// Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
+export type {
+  BillingAutoReload,
+  BillingBlock,
+  BillingCardInfo,
+  BillingChargeResponse,
+  BillingChargeStatusResponse,
+  BillingErrorPayload,
+  BillingMonthlyCap,
+  BillingMutationResponse,
+  BillingStateResponse,
+  SubscriptionPreviewResponse,
+  SubscriptionStateResponse,
+  SubscriptionTierOption,
+  SubscriptionUpgradeResponse,
+  UsageBarData,
+  UsageModelData
+} from '@hermes/shared/billing'
 
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
-  | { message?: string; name: string; type: 'skill' }
-  | { message: string; notice?: string; type: 'send' }
+  | { display?: string; message?: string; name: string; type: 'skill' }
+  | { display?: string; message: string; notice?: string; type: 'send' }
   | { message: string; notice?: string; type: 'prefill' }
 
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
+  battery?: boolean
   bell_on_complete?: boolean
   busy_input_mode?: string
   details_mode?: string
+  /** Focus view (/focus) — display-only reduced-output mode. */
+  focus_view?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
@@ -277,6 +107,9 @@ export interface ConfigDisplayConfig {
   // validation anyway.
   tui_status_indicator?: string
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
+  /** Theme mode pin: 'light' / 'dark' beat background auto-detection; 'auto'
+   *  (default) trusts the OSC-11 probe + env signals. */
+  tui_theme?: string
 }
 
 export interface ConfigVoiceConfig {
@@ -295,6 +128,9 @@ export interface ConfigFullResponse {
 }
 
 export interface ConfigMtimeResponse {
+  /** Revision hash of MCP-relevant config sections; reload MCP only when it
+   *  changes (cosmetic writes like /skin must not trigger reconnects). */
+  mcp_rev?: string
   mtime?: number
 }
 
@@ -308,6 +144,9 @@ export interface ConfigSetResponse {
   confirm_message?: string
   confirm_required?: boolean
   credential_warning?: string
+  // A model pick made mid-turn is queued and applied at the next turn start,
+  // not live yet — the handler says "next turn" instead of "model → X".
+  deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
   value?: string
@@ -316,6 +155,13 @@ export interface ConfigSetResponse {
 
 export interface SetupStatusResponse {
   provider_configured?: boolean
+}
+
+export interface SystemBatteryResponse {
+  available?: boolean
+  category?: string
+  percent?: null | number
+  plugged?: null | boolean
 }
 
 // ── Session lifecycle ────────────────────────────────────────────────
@@ -433,31 +279,6 @@ export interface SessionUsageResponse {
   usage?: UsageModelData
 }
 
-/** One serialized usage bar (mirrors server `_serialize_usage_bar`). */
-export interface UsageBarData {
-  kind: 'plan' | 'topup'
-  remaining_display: string
-  total_display: string
-  spent_display: string
-  pct_used: null | number
-  fill_fraction: number
-}
-
-/** The shared dollar usage model (mirrors server `_serialize_usage_model`). */
-export interface UsageModelData {
-  available: boolean
-  status?: string
-  plan_name?: null | string
-  renews_at?: null | string
-  renews_display?: null | string
-  subscription_remaining_display?: null | string
-  topup_remaining_display?: null | string
-  total_spendable_display?: null | string
-  has_topup?: boolean
-  plan_bar?: null | UsageBarData
-  topup_bar?: null | UsageBarData
-}
-
 export interface SessionStatusResponse {
   output?: string
 }
@@ -502,6 +323,9 @@ export interface SessionSteerResponse {
 
 export interface PromptSubmitResponse {
   ok?: boolean
+  /** Set when the submitted text was a bare voice stop phrase consumed
+   *  server-side to end the voice chat instead of starting a turn. */
+  voice_stopped?: boolean
 }
 
 export interface BackgroundStartResponse {
@@ -573,6 +397,7 @@ export interface VoiceToggleResponse {
   details?: string
   enabled?: boolean
   record_key?: string
+  stop_hint?: string
   stt_available?: boolean
   tts?: boolean
 }
@@ -580,6 +405,38 @@ export interface VoiceToggleResponse {
 export interface VoiceRecordResponse {
   status?: 'busy' | 'recording' | 'stopped'
   text?: string
+}
+
+// ── Wake word ────────────────────────────────────────────────────────
+
+export interface WakeStartResponse {
+  enabled_persisted?: boolean
+  hint?: string
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
+  reason?: string
+  started?: boolean
+}
+
+export interface WakeStopResponse {
+  disabled_persisted?: boolean
+  reason?: null | string
+  stopped?: boolean
+}
+
+export interface WakeStatusResponse {
+  /** Armed but the mic delivers only silence (macOS backend-permission gap). */
+  audio_silent?: boolean
+  available?: boolean
+  /** Config truth (wake_word.enabled). */
+  enabled?: boolean
+  hint?: string
+  listening?: boolean
+  owned_by_caller?: boolean
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
 }
 
 // ── Tools (TS keeps configure since it resets local history) ─────────
@@ -618,6 +475,10 @@ export interface ModelOptionsResponse {
 export interface ReloadMcpResponse {
   status?: string
   message?: string
+  /** The mcp_rev the server actually loaded (re-hashed after discovery).
+   *  The client records THIS as its accepted revision, not the one it
+   *  requested — a reload that raced a config edit reports the newer rev. */
+  loaded_rev?: string
 }
 
 export interface ReloadEnvResponse {
@@ -766,7 +627,16 @@ export type GatewayEvent =
       type: 'billing.step_up.verification'
     }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
-  | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
+  | {
+      payload?: { no_speech_limit?: boolean; stop_phrase?: boolean; text?: string; typed?: boolean }
+      session_id?: string
+      type: 'voice.transcript'
+    }
+  | {
+      payload?: { phrase?: string; profile?: null | string; start_new_session?: boolean }
+      session_id?: string
+      type: 'wake.detected'
+    }
   | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | {
@@ -791,6 +661,16 @@ export type GatewayEvent =
       type: 'moa.reference'
     }
   | { payload?: { aggregator?: string }; session_id?: string; type: 'moa.aggregating' }
+  | {
+      payload?: { label?: string; refs_done?: number; refs_total?: number }
+      session_id?: string
+      type: 'moa.progress'
+    }
+  | {
+      payload?: { aggregator?: string; phase?: string; refs_done?: number; refs_total?: number }
+      session_id?: string
+      type: 'moa.phase'
+    }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {
@@ -841,7 +721,20 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
-      payload?: { reasoning?: string; rendered?: string; text?: string; usage?: Usage }
+      payload: { already_streamed?: boolean; text: string }
+      session_id?: string
+      type: 'message.interim'
+    }
+  | {
+      payload?: {
+        billing?: BillingBlock
+        failure_reason?: string
+        reasoning?: string
+        rendered?: string
+        response_previewed?: boolean
+        text?: string
+        usage?: Usage
+      }
       session_id?: string
       type: 'message.complete'
     }

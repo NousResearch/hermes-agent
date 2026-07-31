@@ -135,7 +135,10 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
 # match a safe prefix, the operational HERMES_ allowlist, or (on Windows) an
-# OS-essential name.
+# OS-essential name.  Delegate-task child context is also an exact-name
+# operational marker: without it, a sandbox script that spawns/imports Hermes
+# code can lose the DB-layer Kanban mutation guard while still inheriting
+# HERMES_HOME.
 #
 # NB: the broad "HERMES_" prefix was deliberately removed (#27303) — it leaked
 # HERMES_*-named config that lacks a secret substring (e.g. HERMES_BASE_URL,
@@ -166,6 +169,7 @@ _HERMES_CHILD_ALLOWED = frozenset({
     "HERMES_PROFILE",
     "HERMES_CONFIG",
     "HERMES_ENV",
+    "HERMES_DELEGATED_CHILD_CONTEXT",
 })
 
 # Windows-only: a handful of variables are required by the OS/CRT itself.
@@ -261,6 +265,22 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             len(_dropped_hermes),
             ", ".join(sorted(_dropped_hermes)),
         )
+
+    # delegate_task children are marked with a ContextVar, not os.environ, while
+    # the execute_code sandbox crosses a process boundary. Bridge that context
+    # into the child env and strip dispatcher-owned Kanban variables after the
+    # normal secret/passthrough scrub so an explicit passthrough cannot re-grant
+    # a delegated child the parent's board mutation capability.
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_process_context,
+            scrub_kanban_env,
+        )
+
+        if is_delegated_child_process_context():
+            scrubbed = scrub_kanban_env(scrubbed)
+    except Exception:
+        pass
     return scrubbed
 
 
@@ -268,6 +288,21 @@ def check_sandbox_requirements() -> bool:
     """Code execution sandbox requires a POSIX OS for Unix domain sockets."""
     if not SANDBOX_AVAILABLE:
         return False
+
+    try:
+        from tools.terminal_tool import (
+            _check_vercel_sandbox_requirements,
+            _get_env_config,
+        )
+
+        config = _get_env_config()
+    except Exception:
+        logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
+        return False
+
+    if config.get("env_type") == "vercel_sandbox":
+        return _check_vercel_sandbox_requirements(config)
+
     return True
 
 
@@ -601,7 +636,7 @@ def _rpc_server_loop(
                     # sandbox-script-supplied JSON.
                     str(request.get("token") or "").encode(), rpc_token.encode()
                 ):
-                    resp = json.dumps({"error": "Unauthorized RPC request"})
+                    resp = tool_error("Unauthorized RPC request")
                     conn.sendall((resp + "\n").encode())
                     continue
 
@@ -611,23 +646,19 @@ def _rpc_server_loop(
                 # Enforce the allow-list
                 if tool_name not in allowed_tools:
                     available = ", ".join(sorted(allowed_tools))
-                    resp = json.dumps({
-                        "error": (
-                            f"Tool '{tool_name}' is not available in execute_code. "
-                            f"Available: {available}"
-                        )
-                    })
+                    resp = tool_error(
+                        f"Tool '{tool_name}' is not available in execute_code. "
+                        f"Available: {available}"
+                    )
                     conn.sendall((resp + "\n").encode())
                     continue
 
                 # Enforce tool call limit
                 if tool_call_counter[0] >= max_tool_calls:
-                    resp = json.dumps({
-                        "error": (
-                            f"Tool call limit reached ({max_tool_calls}). "
-                            "No more tool calls allowed in this execution."
-                        )
-                    })
+                    resp = tool_error(
+                        f"Tool call limit reached ({max_tool_calls}). "
+                        "No more tool calls allowed in this execution."
+                    )
                     conn.sendall((resp + "\n").encode())
                     continue
 
@@ -736,12 +767,13 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona"}:
+        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
+                "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_network": config.get("docker_network", True),
@@ -903,20 +935,16 @@ def _rpc_poll_loop(
                 # Enforce allow-list
                 if tool_name not in allowed_tools:
                     available = ", ".join(sorted(allowed_tools))
-                    tool_result = json.dumps({
-                        "error": (
-                            f"Tool '{tool_name}' is not available in execute_code. "
-                            f"Available: {available}"
-                        )
-                    })
+                    tool_result = tool_error(
+                        f"Tool '{tool_name}' is not available in execute_code. "
+                        f"Available: {available}"
+                    )
                 # Enforce tool call limit
                 elif tool_call_counter[0] >= max_tool_calls:
-                    tool_result = json.dumps({
-                        "error": (
-                            f"Tool call limit reached ({max_tool_calls}). "
-                            "No more tool calls allowed in this execution."
-                        )
-                    })
+                    tool_result = tool_error(
+                        f"Tool call limit reached ({max_tool_calls}). "
+                        "No more tool calls allowed in this execution."
+                    )
                 else:
                     # Strip forbidden terminal parameters
                     if tool_name == "terminal" and isinstance(tool_args, dict):
@@ -1187,10 +1215,10 @@ def execute_code(
         JSON string with execution results.
     """
     if not SANDBOX_AVAILABLE:
-        return json.dumps({
-            "error": "execute_code sandbox is unavailable in this environment. "
-                     "Use normal tool calls (terminal, read_file, write_file, ...) instead."
-        })
+        return tool_error(
+            "execute_code sandbox is unavailable in this environment. "
+            "Use normal tool calls (terminal, read_file, write_file, ...) instead."
+        )
 
     if not code or not code.strip():
         return tool_error("No code provided.")
@@ -1736,6 +1764,8 @@ def _is_usable_python(python_path: str) -> bool:
     Cached so we don't fork a subprocess on every execute_code call.
     """
     try:
+        from agent.delegation_context import delegated_child_subprocess_env
+
         result = subprocess.run(
             [python_path, "-c",
              "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
@@ -1743,6 +1773,7 @@ def _is_usable_python(python_path: str) -> bool:
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL,
+            env=delegated_child_subprocess_env(),
         )
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):

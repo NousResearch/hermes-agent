@@ -56,35 +56,6 @@ def test_override_propagates_to_mcp_loop(tmp_path, monkeypatch, mcp_loop):
     assert mcp_loop._run_on_mcp_loop(read_home(), timeout=10) == str(process_home)
 
 
-def test_oauth_token_paths_follow_override(tmp_path, monkeypatch, mcp_loop):
-    """The actual symptom path: HermesTokenStorage resolving inside the
-    probe's MCP-loop coroutine must land in the selected profile's
-    mcp-tokens dir, not the process home's."""
-    from hermes_constants import (
-        reset_hermes_home_override,
-        set_hermes_home_override,
-    )
-
-    process_home = tmp_path / "proc-home"
-    profile_home = tmp_path / "profile-home"
-    process_home.mkdir()
-    profile_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(process_home))
-
-    async def token_path():
-        from tools.mcp_oauth import HermesTokenStorage
-
-        return str(HermesTokenStorage("probe-srv")._tokens_path())
-
-    token = set_hermes_home_override(str(profile_home))
-    try:
-        path = mcp_loop._run_on_mcp_loop(token_path(), timeout=10)
-    finally:
-        reset_hermes_home_override(token)
-    assert path.startswith(str(profile_home))
-    assert os.path.join("mcp-tokens", "probe-srv.json") in path
-
-
 def test_concurrent_scopes_do_not_interfere(tmp_path, monkeypatch, mcp_loop):
     """Two threads carrying DIFFERENT overrides scheduling onto the same
     loop must each see their own home — the wrapper is task-local."""

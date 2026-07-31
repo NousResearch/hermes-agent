@@ -1,0 +1,71 @@
+name: Publish E2E evidence
+
+# This runs only from the default branch after CI completes. It intentionally
+# checks out main, never the PR ref, and treats the downloaded artifact as
+# untrusted input before uploading validated GitHub attachments.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: publish-e2e-evidence-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish inline E2E evidence
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: gh-image
+    steps:
+      - name: Check out trusted publisher
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      # v1.2.0 resolves to 44f4b93ecbbe22de6c45fa2f62f519aee564ca8c.
+      - name: Install gh-image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install drogers0/gh-image --pin v1.2.0
+
+      - name: Download and attach evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_SESSION_TOKEN: ${{ secrets.GH_IMAGE_SESSION_TOKEN }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+
+          PR_NUMBER=$(gh api "repos/$SOURCE_REPO/actions/runs/$SOURCE_RUN_ID" --jq '.pull_requests[0].number // empty')
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No pull request is associated with CI run $SOURCE_RUN_ID."
+            exit 0
+          fi
+
+          ARTIFACT_NAME=$(gh api "repos/$SOURCE_REPO/actions/runs/$SOURCE_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.expired == false and (.name | startswith("e2e-evidence-"))) | .name' \
+            | python3 -c 'import sys; print(next(iter(sys.stdin), "").strip())')
+          if [ -z "$ARTIFACT_NAME" ]; then
+            echo "No E2E evidence artifact was produced for CI run $SOURCE_RUN_ID."
+            exit 0
+          fi
+
+          EVIDENCE_DIR="$RUNNER_TEMP/e2e-evidence"
+          mkdir -p "$EVIDENCE_DIR"
+          gh run download "$SOURCE_RUN_ID" --repo "$SOURCE_REPO" --name "$ARTIFACT_NAME" --dir "$EVIDENCE_DIR"
+
+          python3 scripts/ci/publish_e2e_evidence.py \
+            --evidence-dir "$EVIDENCE_DIR" \
+            --source-repo "$SOURCE_REPO" \
+            --pr-number "$PR_NUMBER"

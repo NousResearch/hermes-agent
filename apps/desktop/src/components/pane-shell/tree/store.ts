@@ -21,6 +21,7 @@ import {
   findGroup,
   findGroupOfPane,
   groupLeafIds,
+  type GroupNode,
   insertAtGroup,
   isLayoutNode,
   type LayoutNode,
@@ -30,14 +31,13 @@ import {
   normalize,
   removePane,
   reorderPaneInGroup as reorderPaneInGroupOp,
-  type RootEdge,
   setActivePane as setActivePaneOp,
   setGroupHeaderHidden as setGroupHeaderHiddenOp,
   setGroupMinimized,
   setSplitWeights as setSplitWeightsOp,
-  splitGroupZone as splitGroupZoneOp,
   type SplitNode
 } from './model'
+import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { rootChildSide } from './renderer/track-model'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
@@ -126,9 +126,42 @@ export function setTreePaneHidden(paneId: string, hidden: boolean) {
 
   $hiddenTreePanes.set(next)
 
-  // Unhiding is an intent to SEE the pane — front it in its group.
+  // Reactive unhides (e.g. `bindPaneVisibility('files', $hasWorkspace)`) are
+  // state-driven, not user intent — opening the side or fronting the tab in
+  // response to an environmental flag change would clobber an explicit user
+  // collapse (Cmd+J) and silently re-open the rail after every session create.
+  // Callers that want user-intent semantics (open the side, front the tab)
+  // must call `revealTreePane` explicitly. We still front the pane in its
+  // group so it's visible the next time the column is shown.
   if (!hidden) {
-    revealTreePane(paneId)
+    frontPaneInGroup(paneId)
+  }
+}
+
+/** Make `paneId` the active tab in its group without touching side collapse
+ *  or zone-minimized state — the safe "make it visible next time the column
+ *  is shown" primitive that reactive unhides need. */
+function frontPaneInGroup(paneId: string) {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, paneId) : null
+
+  if (!tree || !group || group.active === paneId) {
+    return
+  }
+
+  // Don't steal the active tab from a pane the user is already viewing. In the
+  // Focus layout `files` shares a group with `workspace`, so a reactive unhide
+  // (cwd arrives on the first reply) would otherwise yank the active tab off
+  // the new session onto files. Only take the active slot when the current
+  // active pane isn't itself showable — then fronting picks a valid tab.
+  if (group.active && !$hiddenTreePanes.get().has(group.active)) {
+    return
+  }
+
+  const next = setActivePaneOp(tree, group.id, paneId)
+
+  if (next !== tree) {
+    commit(next)
   }
 }
 
@@ -165,9 +198,24 @@ function setDismissed(paneId: string, dismissed: boolean) {
 const paneClosers: Record<string, () => void> = {}
 const paneOpeners: Record<string, () => void> = {}
 
-/** Route a pane's Close through the app store that owns its visibility. */
-export function registerPaneCloser(paneId: string, close: () => void) {
-  paneClosers[paneId] = close
+/** Pane ids whose Close an app store owns. True for the main workspace, whose
+ *  pane can't leave the tree but whose TAB can still be emptied — the close
+ *  GESTURE (⌘-click / middle-click) keys off this rather than `uncloseable`.
+ *  An atom, not a lookup: a closer registered by a wiring EFFECT lands after
+ *  the strip's first paint, and a plain read would leave that tab gestureless
+ *  until something else happened to re-render it. */
+export const $panesWithCloser = atom<ReadonlySet<string>>(new Set())
+
+/** Route a pane's Close through the app store that owns its visibility.
+ *  Passing no closer unregisters (a wiring effect's cleanup). */
+export function registerPaneCloser(paneId: string, close?: () => void) {
+  if (close) {
+    paneClosers[paneId] = close
+  } else {
+    delete paneClosers[paneId]
+  }
+
+  $panesWithCloser.set(new Set(Object.keys(paneClosers)))
 }
 
 /**
@@ -221,25 +269,85 @@ export function noteActiveTreeGroup(groupId: null | string) {
   }
 }
 
-/** Install the active-zone tracker (call once from the tree root). Records the
+/** The zone the pointer is currently over, or null off every zone. Transient —
+ *  it only OVERRIDES the focused zone while the mouse actually sits in one, so
+ *  moving the pointer away reverts the tab verbs to real focus rather than
+ *  stranding them on whatever the mouse last brushed past. */
+export const $hoveredTreeGroup = atom<null | string>(null)
+
+/** Record the hovered zone (pointerover / pointer leaving the window). Idempotent. */
+export function noteHoveredTreeGroup(groupId: null | string) {
+  if (groupId !== $hoveredTreeGroup.get()) {
+    $hoveredTreeGroup.set(groupId)
+  }
+}
+
+/** The zone every keyboard tab verb acts on, as an ELIGIBILITY LADDER: the
+ *  hovered zone, else the focused one, else the workspace's. Each rung must
+ *  satisfy `eligible` to claim the keys, so a pointer parked somewhere that
+ *  can't serve the verb — the sidebar, the titlebar, a single-pane rail —
+ *  hands off to the next rung instead of swallowing the keystroke. Hover-first
+ *  is what makes ⌘1…⌘9 land in the pane you're pointing at without clicking
+ *  into it; the rungs below are why the keys still work when you're pointing
+ *  at nothing. One resolver so the number keys, ⌃Tab, and the ⌘W / ⌘T family
+ *  can never disagree about which zone is "the" zone. */
+function tabTargetGroup(eligible: (group: GroupNode) => boolean): GroupNode | null {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return null
+  }
+
+  for (const groupId of [$hoveredTreeGroup.get(), $activeTreeGroup.get()]) {
+    const group = groupId ? findGroup(tree, groupId) : null
+
+    if (group && eligible(group)) {
+      return group
+    }
+  }
+
+  const main = findGroupOfPane(tree, 'workspace')
+
+  return main && eligible(main) ? main : null
+}
+
+const treeGroupOfEvent = (event: Event): null | string => {
+  const el = event.target instanceof HTMLElement ? event.target : null
+
+  return el?.closest<HTMLElement>('[data-tree-group]')?.dataset.treeGroup ?? null
+}
+
+/** Install the zone trackers (call once from the tree root). Records the
  *  `[data-tree-group]` under each pointerdown / focusin so ⌘W knows which
- *  zone's tab to close even when nothing is DOM-focused. */
+ *  zone's tab to close even when nothing is DOM-focused, and the one under the
+ *  pointer so the tab verbs follow the mouse. */
 export function trackActiveTreeGroup(): () => void {
-  const track = (event: Event) => {
-    const el = event.target instanceof HTMLElement ? event.target : null
-    const groupId = el?.closest<HTMLElement>('[data-tree-group]')?.dataset.treeGroup
+  const trackActive = (event: Event) => {
+    const groupId = treeGroupOfEvent(event)
 
     if (groupId) {
       noteActiveTreeGroup(groupId)
     }
   }
 
-  window.addEventListener('pointerdown', track, true)
-  window.addEventListener('focusin', track, true)
+  // `pointerover` fires on every element boundary crossing (not every mouse
+  // move), so leaving the panes for the titlebar reports null and the override
+  // lifts on its own.
+  const trackHover = (event: Event) => noteHoveredTreeGroup(treeGroupOfEvent(event))
+  const clearHover = () => noteHoveredTreeGroup(null)
+
+  window.addEventListener('pointerdown', trackActive, true)
+  window.addEventListener('focusin', trackActive, true)
+  window.addEventListener('pointerover', trackHover, true)
+  document.documentElement.addEventListener('pointerleave', clearHover)
+  window.addEventListener('blur', clearHover)
 
   return () => {
-    window.removeEventListener('pointerdown', track, true)
-    window.removeEventListener('focusin', track, true)
+    window.removeEventListener('pointerdown', trackActive, true)
+    window.removeEventListener('focusin', trackActive, true)
+    window.removeEventListener('pointerover', trackHover, true)
+    document.documentElement.removeEventListener('pointerleave', clearHover)
+    window.removeEventListener('blur', clearHover)
   }
 }
 
@@ -248,12 +356,40 @@ const isUncloseablePane = (paneId: string): boolean =>
     (registry.getArea('panes').find(c => c.id === paneId)?.data as { uncloseable?: boolean } | undefined)?.uncloseable
   )
 
-/** ⌘W "main tabs always": close the MAIN (workspace) zone's active tab, unless
- *  it's the uncloseable workspace itself. Returns false when there's nothing to
- *  close, so ⌘W stays a no-op — it never closes the window. */
-export function closeWorkspaceTab(): boolean {
-  const tree = $layoutTree.get()
-  const active = tree ? findGroupOfPane(tree, 'workspace')?.active : null
+/** A pane that belongs to a CHAT tab strip — the workspace or a session tile. */
+export const isSessionStripPane = (paneId: string): boolean =>
+  paneId === 'workspace' || paneId.startsWith('session-tile:')
+
+/** The zone the session-tab verbs (⌘W / ⌘T / ⌘⇧T / the strip's "+") act on:
+ *  the first of hovered / focused / workspace that hosts a chat strip. Same
+ *  ladder ⌘1…⌘9 indexes, so the number keys and the tab verbs can't disagree
+ *  about which strip is "the" strip. A target parked in the sidebar / terminal
+ *  / files must NOT retarget them — those zones fall through to main rather
+ *  than letting ⌘W close the file tree. */
+function focusedSessionGroup(): GroupNode | null {
+  return tabTargetGroup(group => group.panes.some(isSessionStripPane))
+}
+
+/** The pane a NEW session tab should dock beside (⌘T): the focused chat zone's
+ *  active session pane, else its first. Null when no zone hosts a chat strip —
+ *  the caller falls back to the workspace. */
+export function focusedSessionTabAnchor(): null | string {
+  const group = focusedSessionGroup()
+
+  if (!group) {
+    return null
+  }
+
+  const active = group.active
+
+  return active && isSessionStripPane(active) ? active : (group.panes.find(isSessionStripPane) ?? null)
+}
+
+/** ⌘W: close the FOCUSED chat zone's active tab, unless it's the uncloseable
+ *  workspace itself. Returns false when there's nothing to close, so ⌘W stays a
+ *  no-op — it never closes the window. */
+export function closeFocusedSessionTab(): boolean {
+  const active = focusedSessionGroup()?.active
 
   if (!active || isUncloseablePane(active)) {
     return false
@@ -310,39 +446,98 @@ export function treePanesWithPrefix(prefix: string): string[] {
   return tree ? allPaneIds(tree).filter(id => id.startsWith(prefix)) : []
 }
 
-/** ⌘1…⌘9: activate the Nth tab of the FOCUSED zone (the interaction tracker's
- *  group), but only when it's a real tab strip (≥2 panes). Returns false so the
- *  caller falls back to its default (profile switch) — the number keys mean
- *  "switch tab" only while a multi-tab zone holds focus. */
-export function activateTreeTabSlot(slot: number): boolean {
-  const groupId = $activeTreeGroup.get()
-  const tree = $layoutTree.get()
-  const panes = (groupId && tree ? findGroup(tree, groupId)?.panes : null) ?? []
+/** The main tab strip's "+": open a new session as its own tab (reusing an
+ *  already-open unused tab when one exists, so repeated clicks don't pile up
+ *  empty sessions). The app wiring registers the concrete action so this
+ *  generic renderer stays session-agnostic; null until wired (the "+" hides).
+ *  An atom so the strip re-renders when the action becomes available. */
+export const $newSessionTabAction = atom<(() => void) | null>(null)
 
-  if (panes.length < 2 || slot < 1 || slot > panes.length) {
+/**
+ * Keyboard slots (⌘1…⌘9, ⌃Tab) must index the SAME tabs the strip paints —
+ * chrome-hidden panes (files in Focus layout), unregistered ones, and
+ * narrow-collapsed collapsibles stay in `group.panes` but aren't chips. Walking
+ * the raw array made ⌘2 land on what the strip called tab 1 after a hidden
+ * pane sat earlier in the list (classic after-⌘W-shift offset).
+ */
+function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
+  const hidden = $hiddenTreePanes.get()
+  const registered = registry.getArea('panes')
+  const paneFor = (id: string) => registered.find(c => c.id === id)
+
+  return group.panes.filter(id => {
+    const pane = paneFor(id)
+
+    if (!pane) {
+      return false
+    }
+
+    if (hidden.has(id)) {
+      return false
+    }
+
+    // Match TreeGroup's paneShown for the narrow breakpoint — collapsible
+    // panes drop out of the strip when the viewport collapses them.
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia?.(SIDEBAR_COLLAPSE_MEDIA_QUERY).matches &&
+      Boolean((pane.data as { collapsible?: boolean } | undefined)?.collapsible)
+    ) {
+      return false
+    }
+
+    return true
+  })
+}
+
+/** ⌘1…⌘9: activate the Nth *visible* tab of the target zone — the first of
+ *  hovered / focused / workspace that is a real tab strip (≥2 shown panes).
+ *  Pointing at the sidebar (or nothing) therefore still switches main's tabs
+ *  instead of dead-ending. Returns false so the caller falls back to its
+ *  default (profile switch) when no zone qualifies. */
+export function activateTreeTabSlot(slot: number): boolean {
+  const group = tabTargetGroup(candidate => shownPanesInGroup(candidate).length >= 2)
+  const panes = group ? shownPanesInGroup(group) : []
+
+  if (!group || slot < 1 || slot > panes.length) {
     return false
   }
 
-  activateTreePane(groupId!, panes[slot - 1])
+  activateTreePane(group.id, panes[slot - 1])
 
   return true
 }
 
-/** ⌃Tab / ⌃⇧Tab: cycle the FOCUSED zone's tabs (wrapping) — but only a
- *  session/main strip with ≥2 tabs. Returns false so the caller falls back to
- *  the recent-session switcher when the focus isn't a chat tab strip. */
+/** ⌃Tab / ⌃⇧Tab: cycle the target zone's *visible* tabs (wrapping) — the first
+ *  of hovered / focused / workspace that is a chat strip with ≥2 shown tabs.
+ *  Returns false so the caller falls back to the recent-session switcher when
+ *  no zone qualifies. */
 export function cycleTreeTabInFocusedZone(direction: 1 | -1): boolean {
-  const groupId = $activeTreeGroup.get()
-  const tree = $layoutTree.get()
-  const group = groupId && tree ? findGroup(tree, groupId) : null
-  const panes = group?.panes ?? []
+  const group = tabTargetGroup(candidate => {
+    const shown = shownPanesInGroup(candidate)
 
-  if (panes.length < 2 || !panes.some(id => id === 'workspace' || id.startsWith('session-tile:'))) {
+    return shown.length >= 2 && shown.some(isSessionStripPane)
+  })
+
+  if (!group) {
     return false
   }
 
-  const idx = Math.max(0, panes.indexOf(group!.active ?? ''))
-  activateTreePane(group!.id, panes[(idx + direction + panes.length) % panes.length])
+  const panes = shownPanesInGroup(group)
+
+  // Active may itself be hidden (Files collapsed mid-cycle) — treat it as
+  // missing so the step starts from a real chip rather than landing on a ghost.
+  const current = Math.max(0, panes.indexOf(group.active ?? ''))
+  const idx = panes.includes(group.active ?? '') ? current : 0
+  const nextId = panes[(idx + direction + panes.length) % panes.length]
+  activateTreePane(group.id, nextId)
+
+  // Cycling onto a session/main tab must surface the name card — a zone that
+  // was double-tap-hidden stays headerless otherwise ("the one that cycles
+  // never gets it").
+  if (isSessionStripPane(nextId)) {
+    setTreeGroupHeaderHidden(group.id, false)
+  }
 
   return true
 }
@@ -464,8 +659,10 @@ export type TreeSide = 'left' | 'right'
 export const $collapsedTreeSides = atom<ReadonlySet<TreeSide>>(new Set())
 
 // Side visibility is DERIVED from an app store (the binding owns persistence
-// + button state); reveals flow back through its setter so they never
-// disagree with the flag.
+// + button state). Reveals un-collapse the column directly instead of writing
+// back through the setter — the right side's store IS the file tree's toggle,
+// so a neighbour's reveal must not press it. Layout reset still reopens every
+// side through its setter, because there the toggles SHOULD move.
 const sideOpeners: Partial<Record<TreeSide, (open: boolean) => void>> = {}
 
 export function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
@@ -590,14 +787,12 @@ export function revealTreePane(paneId: string) {
   const side = treeSideOfPane(paneId)
 
   if (side && $collapsedTreeSides.get().has(side)) {
-    const open = sideOpeners[side]
-
-    // Through the bound store when there is one, so the toggle stays truthful.
-    if (open) {
-      open(true)
-    } else {
-      setTreeSideCollapsed(side, false)
-    }
+    // Un-collapse the COLUMN, never the side's bound store: on the right that
+    // store is ⌘J / $fileBrowserOpen, i.e. the file tree's own toggle. Routing
+    // a reveal through it dragged the tree open behind every neighbour that
+    // shares the column — open the diff (⌘G) and the file tree appeared too.
+    // The tree opens only when the user opens it.
+    setTreeSideCollapsed(side, false)
   }
 
   const hiddenNow = $hiddenTreePanes.get()
@@ -616,7 +811,7 @@ export function revealTreePane(paneId: string) {
     // just front its tab behind a collapsed rail. Without this, a tool panel
     // (terminal/logs) in a shared zone stays minimized after its toggle opens
     // it: setPaneCollapsed's shared-zone branch calls revealTreePane instead
-    // of toggleTreeGroupMinimized, so the zone never un-minimizes and the
+    // of setTreeGroupMinimized, so the zone never un-minimizes and the
     // pane appears to "close but not open" on ctrl-` / tab click.
     let next = tree
 
@@ -789,7 +984,14 @@ function adoptContributedPanes(): void {
   }
 
   const dismissed = $dismissedPanes.get()
-  const missing = panes.filter(c => !inTree.has(c.id) && !dismissed.has(c.id))
+
+  // `placement: 'floating'` opts OUT of the tree entirely — those panes render
+  // as fixed cards above it (renderer/floating-panes.tsx). Adopting one would
+  // turn it into a track that steals width from a zone, which is the whole
+  // thing floating exists to avoid.
+  const missing = panes.filter(
+    c => !inTree.has(c.id) && !dismissed.has(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
+  )
 
   if (missing.length === 0) {
     return
@@ -1016,19 +1218,7 @@ export function reorderTreePane(groupId: string, paneId: string, toIndex: number
   }
 }
 
-/** Split a zone on `side`, moving `movePaneId` out of its stack into the new
- *  zone (VS Code split-and-move — the zone menu's Split actions). */
-export function splitTreeZone(groupId: string, side: RootEdge, movePaneId: string) {
-  const tree = $layoutTree.get()
-
-  if (tree) {
-    commit(splitGroupZoneOp(tree, groupId, side, movePaneId))
-    markActivePreset('custom')
-    markPaneUserPlaced(movePaneId)
-  }
-}
-
-export function toggleTreeGroupMinimized(groupId: string, minimized: boolean) {
+export function setTreeGroupMinimized(groupId: string, minimized: boolean) {
   const tree = $layoutTree.get()
 
   if (tree) {
@@ -1067,7 +1257,7 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
 
         activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
       } else {
-        toggleTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
+        setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
       }
     } else if (!collapsed) {
       revealTreePane(paneId)
@@ -1077,7 +1267,7 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
   }
 
   if (Boolean(group.minimized) !== collapsed) {
-    toggleTreeGroupMinimized(group.id, collapsed)
+    setTreeGroupMinimized(group.id, collapsed)
 
     if (!collapsed) {
       revealTreePane(paneId)
@@ -1101,7 +1291,7 @@ export function restoreTreePane(paneId: string) {
     const group = paneGroup(paneId)
 
     if (group?.minimized) {
-      toggleTreeGroupMinimized(group.id, false)
+      setTreeGroupMinimized(group.id, false)
     }
 
     revealTreePane(paneId)
@@ -1112,7 +1302,7 @@ export function restoreTreePane(paneId: string) {
   const group = paneGroup(paneId)
 
   if (group) {
-    toggleTreeGroupMinimized(group.id, false)
+    setTreeGroupMinimized(group.id, false)
     activateTreePane(group.id, paneId)
   }
 }
@@ -1132,7 +1322,7 @@ export function collapseTreePane(paneId: string) {
   const group = paneGroup(paneId)
 
   if (group) {
-    toggleTreeGroupMinimized(group.id, true)
+    setTreeGroupMinimized(group.id, true)
   }
 }
 

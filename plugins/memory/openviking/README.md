@@ -4,11 +4,22 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 
 ## Requirements
 
-- `pip install openviking`
-- OpenViking server running (`openviking-server`)
-- Embedding + VLM model configured in `~/.openviking/ov.conf`
+- OpenViking installed with the `openviking-server` command available
+- OpenViking server config initialized and validated (`openviking-server init`,
+  then `openviking-server doctor`)
+- OpenViking server running and reachable from Hermes
 
 ## Setup
+
+Prepare OpenViking first:
+
+```bash
+openviking-server init
+openviking-server doctor
+openviking-server
+```
+
+Then configure Hermes:
 
 ```bash
 hermes memory setup    # select "openviking"
@@ -19,14 +30,36 @@ connection values into Hermes, or create a minimal `ovcli.conf` when one does
 not exist.
 
 Or manually:
+
 ```bash
 hermes config set memory.provider openviking
-echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
+```
+
+Add the connection settings to the active profile's `.env` file. For the
+default profile that is `~/.hermes/.env`; for a named profile use
+`~/.hermes/profiles/<profile>/.env`.
+
+```text
+OPENVIKING_ENDPOINT=http://127.0.0.1:1933
+# OPENVIKING_API_KEY=...
+# OPENVIKING_ACCOUNT=default
+# OPENVIKING_USER=default
+# OPENVIKING_AGENT=hermes
 ```
 
 ## Config
 
-All config via environment variables in `.env`:
+OpenViking's server config is separate from Hermes:
+
+- `ov.conf` configures OpenViking storage, embedding/VLM models, auth, and
+  server behavior. OpenViking reads it from `--config`,
+  `OPENVIKING_CONFIG_FILE`, or `~/.openviking/ov.conf`.
+- `ovcli.conf` stores client/CLI connection values such as `url`, `api_key`,
+  `account`, and `user`. It is read from `OPENVIKING_CLI_CONFIG_FILE` or
+  `~/.openviking/ovcli.conf`.
+
+Hermes-side provider config is read from environment variables in the active
+profile's `.env`:
 
 | Env Var | Default | Description |
 |---------|---------|-------------|

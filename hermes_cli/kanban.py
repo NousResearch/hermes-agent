@@ -26,7 +26,6 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
-from hermes_cli.profiles import get_active_profile_name
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +76,8 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "model_override": t.model_override,
+        "provider_override": t.provider_override,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
@@ -132,7 +133,9 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
-def _check_dispatcher_presence() -> tuple[bool, str]:
+def _check_dispatcher_presence(
+    hermes_home: Optional[Path] = None,
+) -> tuple[bool, str]:
     """Return ``(running, message)``.
 
     - ``running=True``: a gateway is alive for this HERMES_HOME and its
@@ -147,15 +150,35 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     Defensive against import failures and config-read errors — if the
     probe itself errors, we return ``(True, "")`` so we don't spam
     false warnings (better to miss a warning than to cry wolf).
+
+    ``hermes_home`` scopes the probe to a named profile's directory. The
+    dashboard plugin API passes it because the dashboard backend process can
+    be running under a different HERMES_HOME than the profile the request
+    targets, which otherwise produced a "no gateway is running" warning
+    against a perfectly healthy profile gateway (#71211). CLI callers leave
+    it ``None`` and keep the existing process-level behavior.
     """
     try:
-        from gateway.status import get_running_pid  # type: ignore
+        from gateway.status import resolve_gateway_liveness  # type: ignore
     except Exception:
         return (True, "")  # can't probe — silent
     try:
-        pid = get_running_pid()
+        # Same shared ladder the dashboard status endpoints use, so a
+        # PID-file-less (launch-service-managed) or cross-container gateway
+        # is not misreported as absent. use_cache=False: this is a one-shot
+        # CLI/create-time probe, not a polling loop, and it must observe the
+        # gateway's state right now rather than a cached snapshot.
+        liveness = resolve_gateway_liveness(
+            profile_dir=hermes_home, use_cache=False
+        )
     except Exception:
         return (True, "")  # probe errored — silent
+    if liveness.probe_error:
+        # The resolver swallows per-rung failures so status endpoints never
+        # 500. This caller must still fail OPEN: an unreadable probe means
+        # "can't tell", not "no gateway", and warning on it cries wolf.
+        return (True, "")
+    pid = liveness.pid
 
     # Even if the gateway is up, dispatch_in_gateway may be off.
     try:
@@ -347,6 +370,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--model", default=None, dest="model_override",
+                          help="Pin the worker to this model (passed as "
+                               "-m <model>) without changing the profile's "
+                               "configured model. Combine with --provider "
+                               "when the model belongs to a different "
+                               "backend than the profile's default.")
+    p_create.add_argument("--provider", default=None, dest="provider_override",
+                          help="Provider the --model belongs to (passed as "
+                               "--provider <name> to the worker). Requires "
+                               "--model.")
     p_create.add_argument("--goal", action="store_true", dest="goal_mode",
                           help="Run the worker in a goal loop: after each "
                                "turn a judge checks the response against the "
@@ -444,6 +477,23 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
     p_assign.add_argument("profile", help="Profile name (or 'none' to unassign)")
+
+    # --- set-model (per-task model/provider override) ---
+    p_set_model = sub.add_parser(
+        "set-model",
+        help="Set or clear a task's model/provider override "
+             "(takes effect on the next dispatch)",
+    )
+    p_set_model.add_argument("task_id")
+    p_set_model.add_argument(
+        "model", nargs="?", default=None,
+        help="Model to pin the worker to (or 'none' to clear the override)",
+    )
+    p_set_model.add_argument(
+        "--provider", default=None,
+        help="Provider the model belongs to (worker is spawned with "
+             "--provider <name>). Cleared together with the model.",
+    )
 
     # --- reclaim / reassign (recovery) ---
     p_reclaim = sub.add_parser(
@@ -720,6 +770,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("task_id")
     p_nsub.add_argument("--platform", required=True)
     p_nsub.add_argument("--chat-id", required=True)
+    p_nsub.add_argument("--chat-type", default="", help="dm / group / channel (used by wake routing)")
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
     p_nsub.add_argument(
@@ -880,6 +931,25 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
 
+    # --- repair ---
+    p_repair = sub.add_parser(
+        "repair",
+        help="Check kanban.db integrity and auto-repair index-only corruption",
+        description=(
+            "Runs PRAGMA integrity_check on the board's DB and reports the "
+            "result. When the failure consists only of index-scoped errors "
+            "('wrong # of entries in index <name>' / 'row N missing from "
+            "index <name>'), the corrupt file is quarantined to a "
+            ".corrupt.<hash>.bak sibling first and the damaged indexes are "
+            "rebuilt with REINDEX — the same narrow auto-repair the "
+            "connect-time guard applies. Any other corruption class is "
+            "reported and left untouched (fail-closed). Exits 0 when the DB "
+            "is healthy or was repaired, non-zero when it is still corrupt."
+        ),
+    )
+    p_repair.add_argument("--json", action="store_true",
+                          help="Emit the repair report as JSON")
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -906,6 +976,15 @@ def kanban_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         return 0
+
+    # Fast-fail for clearer CLI UX only. The durable trust boundary is lower in
+    # hermes_cli.kanban_db, because children can import DB mutators directly.
+    if _is_delegated_child_cli_mutation(args):
+        print(
+            "kanban: delegate_task child contexts cannot mutate Kanban tasks via the CLI",
+            file=sys.stderr,
+        )
+        return 1
 
     # Board-management commands operate on board metadata and the persisted
     # current-board pointer itself. They must ignore the shared `--board`
@@ -950,6 +1029,12 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
+        # `repair` must dispatch BEFORE the auto-init below: on a corrupt DB
+        # init_db() itself raises KanbanDbCorruptError, which would turn
+        # every `hermes kanban repair` into "could not initialize database"
+        # without ever reaching the repair path.
+        if action == "repair":
+            return _cmd_repair(args)
         try:
             kb.init_db()
         except Exception as exc:
@@ -964,6 +1049,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "ls":       _cmd_list,
             "show":     _cmd_show,
             "assign":   _cmd_assign,
+            "set-model": _cmd_set_model,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
             "diagnostics": _cmd_diagnostics,
@@ -1025,6 +1111,66 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+_DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
+    "init",
+    "create",
+    "swarm",
+    "assign",
+    "reclaim",
+    "reassign",
+    "link",
+    "unlink",
+    "claim",
+    "comment",
+    "attach",
+    "attach-rm",
+    "complete",
+    "edit",
+    "block",
+    "schedule",
+    "unblock",
+    "promote",
+    "archive",
+    "dispatch",
+    "daemon",
+    "repair",
+    "heartbeat",
+    "notify-subscribe",
+    "notify-unsubscribe",
+    "specify",
+    "decompose",
+    "gc",
+})
+
+_DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
+    "create",
+    "new",
+    "rm",
+    "remove",
+    "delete",
+    "switch",
+    "use",
+    "rename",
+    "set-default-workdir",
+})
+
+
+def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
+    action = getattr(args, "kanban_action", None)
+    if action == "boards":
+        boards_action = getattr(args, "boards_action", None) or "list"
+        if boards_action not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
+            return False
+    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
+        return False
+    try:
+        from agent.delegation_context import is_delegated_child_process_context
+
+        return is_delegated_child_process_context()
+    except Exception:
+        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
 
 
 # ---------------------------------------------------------------------------
@@ -1368,6 +1514,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
+            model_override=getattr(args, "model_override", None),
+            provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
@@ -1542,7 +1690,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:
-        print(f"  model:     {task.model_override}")
+        _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
+        print(f"  model:     {task.model_override}{_prov}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
@@ -1647,6 +1796,30 @@ def _cmd_assign(args: argparse.Namespace) -> int:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
     print(f"Assigned {args.task_id} to {profile or '(unassigned)'}")
+    return 0
+
+
+def _cmd_set_model(args: argparse.Namespace) -> int:
+    model = args.model
+    if model is not None and model.lower() in {"none", "-", "null", ""}:
+        model = None
+    provider = getattr(args, "provider", None)
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.set_model_override(conn, args.task_id, model, provider=provider)
+    except (ValueError, RuntimeError) as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if not ok:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    if model:
+        label = f"{provider}:{model}" if provider else model
+        print(f"Set model override on {args.task_id}: {label} "
+              "(applies on next dispatch)")
+    else:
+        print(f"Cleared model override on {args.task_id} "
+              "(worker uses its profile default)")
     return 0
 
 
@@ -1996,6 +2169,50 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
+            # Goal-mode pre-completion judge gate (mirrors the gate in
+            # tools/kanban_tools.py:_handle_complete — Issue #38367).
+            # Without this, a goal_mode worker can call
+            # `hermes kanban complete <id>` from the terminal tool and
+            # bypass the auxiliary judge that the tool-call path enforces.
+            task = kb.get_task(conn, tid)
+            if task and task.goal_mode:
+                judge_available = False
+                try:
+                    from agent.auxiliary_client import get_text_auxiliary_client
+                    _client, _model = get_text_auxiliary_client("goal_judge")
+                    judge_available = _client is not None and bool(_model)
+                except Exception:
+                    pass
+                if judge_available:
+                    from hermes_cli.goals import judge_goal
+                    verdict = "done"
+                    reason = ""
+                    try:
+                        # judge_goal returns (verdict, reason, parse_failed,
+                        # wait_directive, transport_failed) — see
+                        # hermes_cli/goals.py. Unpacking fewer raises
+                        # ValueError into the fail-open handler below,
+                        # silently disabling the gate.
+                        verdict, reason, _, _, _ = judge_goal(
+                            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                            last_response=(summary or args.result or "").strip(),
+                        )
+                    except Exception as judge_exc:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "goal judge check failed, allowing completion: %s",
+                            judge_exc,
+                            exc_info=True,
+                        )
+                    if verdict != "done":
+                        print(
+                            f"kanban: goal completion of {tid} rejected by judge: {reason}. "
+                            f"Provide evidence matching the task's acceptance criteria.",
+                            file=sys.stderr,
+                        )
+                        failed.append(tid)
+                        continue
+
             if not kb.complete_task(
                 conn, tid,
                 result=args.result,
@@ -2541,6 +2758,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
         kb.add_notify_sub(
             conn, task_id=args.task_id,
             platform=args.platform, chat_id=args.chat_id,
+            chat_type=args.chat_type,
             thread_id=args.thread_id, user_id=args.user_id,
             notifier_profile=args.notifier_profile or _profile_author(),
         )
@@ -2840,6 +3058,76 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
+
+
+def _cmd_repair(args: argparse.Namespace) -> int:
+    """Check DB integrity and apply the narrow index-REINDEX auto-repair.
+
+    Dispatched BEFORE the auto ``kb.init_db()`` in :func:`kanban_command`
+    (init itself refuses corrupt DBs), so this is reachable on exactly the
+    boards that need it. Exit codes: 0 = healthy / repaired / no DB file,
+    1 = still corrupt (non-index corruption, or REINDEX did not produce a
+    clean re-check).
+    """
+    try:
+        report = kb.repair_db()
+    except Exception as exc:  # locked/busy probe, unexpected I/O
+        print(f"kanban repair: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "status": report.status,
+            "db_path": str(report.db_path),
+            "messages": report.messages,
+            "post_repair_messages": report.post_repair_messages,
+            "backup_path": (
+                str(report.backup_path) if report.backup_path else None
+            ),
+            "reindexed": report.reindexed,
+        }, indent=2))
+        return 0 if report.status in {"ok", "repaired", "missing"} else 1
+
+    if report.status == "missing":
+        print(f"No kanban DB at {report.db_path} — nothing to repair.")
+        return 0
+    if report.status == "ok":
+        print(f"{report.db_path}: integrity_check ok — no repair needed.")
+        return 0
+    if report.status == "repaired":
+        print(f"{report.db_path}: repaired.")
+        print(f"  reindexed: {', '.join(report.reindexed)}")
+        if report.backup_path:
+            print(f"  pre-repair backup: {report.backup_path}")
+        print("  integrity_check now ok.")
+        return 0
+    # still corrupt
+    print(f"{report.db_path}: CORRUPT.", file=sys.stderr)
+    for line in (report.messages or [])[:10]:
+        print(f"  {line}", file=sys.stderr)
+    if report.reindexed:
+        print(
+            f"  REINDEX ({', '.join(report.reindexed)}) attempted but "
+            f"integrity_check is still failing:",
+            file=sys.stderr,
+        )
+        for line in (report.post_repair_messages or [])[:10]:
+            print(f"    {line}", file=sys.stderr)
+    else:
+        print(
+            "  Not an index-only failure — automatic REINDEX repair does "
+            "not apply (fail-closed).",
+            file=sys.stderr,
+        )
+    if report.backup_path:
+        print(f"  corrupt copy quarantined at: {report.backup_path}",
+              file=sys.stderr)
+    print(
+        "  Recover manually (e.g. `sqlite3 kanban.db \".recover\"` into a "
+        "fresh file) or move the file aside to start a new board.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 # ---------------------------------------------------------------------------

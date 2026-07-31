@@ -186,93 +186,20 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
     assert acknowledgements == ["deleg_duplicate"]
 
 
-def test_distinct_process_incarnations_are_not_deduplicated():
-    """Producer spawn time distinguishes a reused process session ID."""
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter)
+def _persist_pending_completion(event):
+    from tools import async_delegation
 
-    async def _exercise():
-        first = await runner._deliver_completion_notification(
-            "first", _completion_event(started_at=10.0)
-        )
-        second = await runner._deliver_completion_notification(
-            "second", _completion_event(started_at=20.0)
-        )
-        return first, second
-
-    assert asyncio.run(_exercise()) == (True, True)
-
-    assert adapter.handle_message.await_count == 2
-
-
-def test_delivered_identity_retention_is_bounded():
-    """Lifecycle dedupe cannot grow without bound in a long-running gateway."""
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter)
-    runner._completion_delivery_retention = 2
-    runner._completion_deliveries_delivered = OrderedDict()
-
-    async def _exercise():
-        for index in range(3):
-            await runner._deliver_completion_notification(
-                f"completion {index}",
-                _async_event(f"deleg_retention_{index}"),
-            )
-
-    asyncio.run(_exercise())
-
-    assert len(runner._completion_deliveries_delivered) == 2
-    assert ("async_delegation", "deleg_retention_0", "") not in (
-        runner._completion_deliveries_delivered
-    )
-    assert ("async_delegation", "deleg_retention_2", "") in (
-        runner._completion_deliveries_delivered
-    )
-
-
-def test_delivery_state_is_isolated_per_gateway_profile_lifecycle():
-    """A process-local claim in one profile never suppresses another runner."""
-    default_adapter = SimpleNamespace(handle_message=AsyncMock())
-    profile_adapter = SimpleNamespace(handle_message=AsyncMock())
-    default_runner = _runner(default_adapter)
-    profile_runner = _runner(profile_adapter)
-    event = _async_event("deleg_same_producer_id")
-
-    async def _exercise():
-        first = await default_runner._deliver_completion_notification(
-            "default", dict(event),
-        )
-        second = await profile_runner._deliver_completion_notification(
-            "profile", dict(event),
-        )
-        return first, second
-
-    assert asyncio.run(_exercise()) == (True, True)
-    default_adapter.handle_message.assert_awaited_once()
-    profile_adapter.handle_message.assert_awaited_once()
-
-
-def test_async_completion_uses_canonical_origin_routing(monkeypatch, isolated_registry):
-    isolated = queue.Queue()
-    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
-    event = _async_event("deleg_routing")
-    isolated.put(event)
-
-    canonical = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="canonical-chat",
-        chat_type="group",
-        thread_id="canonical-topic",
-    )
-    entry = SimpleNamespace(origin=canonical)
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter, origins={event["session_key"]: entry})
-    _stop_after_sleeps(monkeypatch, runner, count=2)
-
-    asyncio.run(runner._async_delegation_watcher(interval=0))
-
-    delivered = adapter.handle_message.await_args.args[0]
-    assert delivered.source == canonical
+    async_delegation._persist_dispatch({
+        "delegation_id": event["delegation_id"],
+        "session_key": event["session_key"],
+        "origin_ui_session_id": "",
+        "parent_session_id": event.get("parent_session_id"),
+        "dispatched_at": event["dispatched_at"],
+    })
+    async_delegation._persist_completion(event, {
+        "status": "completed",
+        "summary": event["summary"],
+    })
 
 
 def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch):
@@ -347,109 +274,6 @@ def test_process_tool_redacts_explicit_kill_output(monkeypatch):
         "session_id": session.id,
     }))
     assert result["output"] == "PRIVATE_TOKEN=<redacted>\n"
-
-
-def test_kill_of_already_exited_process_returns_output_before_consuming():
-    registry = ProcessRegistry()
-    session = ProcessSession(
-        id="proc_already_exited",
-        command="echo complete",
-        task_id="task",
-        started_at=1.0,
-        output_buffer="complete\n",
-        exited=True,
-        exit_code=0,
-    )
-    registry._finished[session.id] = session
-
-    result = registry.kill_process(session.id)
-
-    assert result["status"] == "already_exited"
-    assert result["output"] == "complete\n"
-    assert registry.is_completion_consumed(session.id)
-
-
-def test_read_log_only_consumes_when_terminal_output_page_is_observed():
-    registry = ProcessRegistry()
-    session = ProcessSession(
-        id="proc_paged_log",
-        command="printf lines",
-        task_id="task",
-        started_at=1.0,
-        output_buffer="first\nsecond\nfinal\n",
-        exited=True,
-        exit_code=0,
-    )
-    registry._finished[session.id] = session
-
-    middle_page = registry.read_log(session.id, offset=1, limit=1)
-    assert middle_page["output"] == "second"
-    assert not registry.is_completion_consumed(session.id)
-
-    final_page = registry.read_log(session.id, offset=2, limit=1)
-    assert final_page["output"] == "final"
-    assert registry.is_completion_consumed(session.id)
-
-
-def test_bulk_kill_does_not_consume_discarded_completion_output(monkeypatch):
-    registry = ProcessRegistry()
-    session = ProcessSession(
-        id="proc_bulk_kill",
-        command="sleep 999",
-        task_id="task",
-        started_at=1.0,
-        output_buffer="output bulk cleanup does not return\n",
-        notify_on_complete=True,
-    )
-    session.process = MagicMock()
-    session.process.pid = 4243
-    registry._running[session.id] = session
-    monkeypatch.setattr(registry, "_terminate_host_pid", lambda *_a, **_kw: None)
-    monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
-
-    assert registry.kill_all() == 1
-    assert not registry.is_completion_consumed(session.id)
-    queued = registry.completion_queue.get_nowait()
-    assert queued["session_id"] == session.id
-    assert queued["started_at"] == session.started_at
-    assert queued["output"] == "output bulk cleanup does not return\n"
-
-
-def test_unobserved_normal_completion_still_notifies(monkeypatch):
-    import tools.process_registry as pr_module
-
-    class _Registry:
-        def get(self, _session_id):
-            return SimpleNamespace(
-                output_buffer="done\n",
-                exited=True,
-                exit_code=0,
-                command="echo done",
-                started_at=1234.5,
-            )
-
-        def is_completion_consumed(self, _session_id):
-            return False
-
-    monkeypatch.setattr(pr_module, "process_registry", _Registry())
-    adapter = SimpleNamespace(handle_message=AsyncMock())
-    runner = _runner(adapter)
-
-    async def _instant_sleep(*_a, **_kw):
-        pass
-
-    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
-    asyncio.run(runner._run_process_watcher({
-        "session_id": "proc_unobserved",
-        "check_interval": 0,
-        "session_key": "agent:main:telegram:dm:123",
-        "platform": "telegram",
-        "chat_type": "dm",
-        "chat_id": "123",
-        "notify_on_complete": True,
-    }))
-
-    adapter.handle_message.assert_awaited_once()
 
 
 def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypatch):

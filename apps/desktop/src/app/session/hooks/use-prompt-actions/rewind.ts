@@ -26,6 +26,23 @@ import {
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 /**
+ * Build `prompt.submit` truncation params. Ordinal 0 truncates to an empty
+ * transcript (restore/regenerate the first user turn) — the gateway refuses
+ * that edge unless `confirm_empty_truncate` is set, so stale clients cannot
+ * silently wipe a session via a leftover ordinal.
+ */
+export function truncateSubmitParams(truncateOrdinal: number | undefined): Record<string, unknown> {
+  if (truncateOrdinal === undefined) {
+    return {}
+  }
+
+  return {
+    truncate_before_user_ordinal: truncateOrdinal,
+    ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
+  }
+}
+
+/**
  * Rewind a turn: `prompt.submit` with an optional `truncate_before_user_ordinal`
  * (drops that user turn + everything after). Idle rewinds submit directly
  * (interrupting an idle agent can leave a stale interrupt flag that cancels the
@@ -53,7 +70,7 @@ export async function runRewindSubmit(
       {
         session_id: sessionId,
         text,
-        ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+        ...truncateSubmitParams(truncateOrdinal)
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )

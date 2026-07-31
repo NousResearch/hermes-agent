@@ -15,6 +15,7 @@ import type { GroupNode, LayoutNode } from '../model'
 import { allPaneIds } from '../model'
 
 import type { DoubleTapContext } from './drag-session'
+import type { FloatingAnchor } from './floating-rect'
 
 export const MIN_PANE_PX = 80
 
@@ -34,13 +35,20 @@ export interface PaneSizing {
 }
 
 /** Chrome behavior flags a pane contributes. Read via `paneChrome`. */
-interface PaneChrome {
+interface PaneChrome extends PaneSizing {
   /** Leaves the grid on narrow viewports; revealed as an edge overlay. */
   collapsible?: boolean
   /** Extra ids accepted from PANE_TOGGLE_REVEAL_EVENT (the real app's pane
    *  ids, e.g. `chat-sidebar` for `sessions`). */
   revealAliases?: string[]
+  /** Tiling role in the tree, or `'floating'` — the one NON-tiling placement:
+   *  the pane is excluded from the tree entirely and rendered as a fixed card
+   *  above it (see renderer/floating-panes.tsx). A floating pane takes no
+   *  space from any zone, has no tab, and can't be docked or split. */
   placement?: string
+  /** Spawn corner for `placement: 'floating'` (default `'top-right'`). The
+   *  pane also TRACKS that corner's edges when the window resizes. */
+  anchor?: FloatingAnchor
   /** No Close in the tab menu — the one surface the app can't lose (the
    *  main workspace). Session tiles share `placement: 'main'` but close. */
   uncloseable?: boolean
@@ -58,6 +66,11 @@ interface PaneChrome {
    *  (artifacts/skills/plugin pages) are not tab-able surfaces. The flag is
    *  live: the workspace contribution re-registers it on route changes. */
   headerVeto?: boolean
+  /** A lead NODE for this pane's TAB, rendered before the label. A session
+   *  pane (main workspace + tiles) passes its live `SessionStatusDot` here so
+   *  the tab and the sidebar row render status/color from the ONE primitive
+   *  (self-subscribing — it updates without the strip re-registering). */
+  tabLead?: () => React.ReactNode
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome

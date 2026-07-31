@@ -1,16 +1,20 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
+import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $currentBranch, $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  appendLiveSessionProjection,
   applyRuntimeInfo,
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
   isSessionGoneError,
+  preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -33,6 +37,62 @@ describe('applyRuntimeInfo approval mode', () => {
 
     expect(approvalModeForProfile('work')).toBe('smart')
     expect(approvalModeForProfile('default')).toBe('smart')
+  })
+})
+
+const initialOnboardingState = $desktopOnboarding.get()
+
+describe('applyRuntimeInfo credential warnings', () => {
+  beforeEach(() => {
+    $desktopOnboarding.set({ ...initialOnboardingState, reason: null, requested: false })
+  })
+
+  afterEach(() => {
+    $desktopOnboarding.set(initialOnboardingState)
+  })
+
+  it('requests setup for the exact empty-key warning returned by the server', () => {
+    const warning = "No API key configured for provider 'openrouter'. First message will fail."
+
+    applyRuntimeInfo({ credential_warning: warning })
+
+    expect($desktopOnboarding.get()).toMatchObject({ reason: warning, requested: true })
+  })
+
+  it('ignores an auxiliary-provider warning', () => {
+    applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
+
+    expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+  })
+})
+
+describe('applyRuntimeInfo foreground scoping', () => {
+  beforeEach(() => {
+    setCurrentCwd('/main-repo')
+    setCurrentBranch('main')
+  })
+
+  afterEach(() => {
+    setCurrentCwd('')
+    setCurrentBranch('')
+  })
+
+  it('publishes a foreground runtime into the composer atoms', () => {
+    const patch = applyRuntimeInfo({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+
+    expect($currentCwd.get()).toBe('/main-repo/worktree')
+    expect($currentBranch.get()).toBe('bb/feature')
+    expect(patch).toMatchObject({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+  })
+
+  it('keeps a background runtime out of the composer atoms but still returns its patch', () => {
+    const patch = applyRuntimeInfo({ branch: 'bb/tile', cwd: '/other-worktree' }, { foreground: false })
+
+    // The main pane's rail must stay on its own tree.
+    expect($currentCwd.get()).toBe('/main-repo')
+    expect($currentBranch.get()).toBe('main')
+    // ...while the caller still gets everything it needs for its own session.
+    expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
   })
 })
 
@@ -287,5 +347,387 @@ describe('reconcileResumeMessages', () => {
 
     const [out] = reconcileResumeMessages(next, previous)
     expect(out.parts.some(p => p.type === 'reasoning')).toBe(true)
+  })
+
+  it('preserves attachment refs for a matching user turn', () => {
+    const next = [msg('stored-user', 'user', 'describe this image')]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/photo.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toEqual(['@image:/tmp/photo.png'])
+  })
+
+  it('does not overwrite attachment refs already present on the resumed message', () => {
+    const next = [
+      msg('stored-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/authoritative.png']
+      })
+    ]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/cached.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toEqual(['@image:/tmp/authoritative.png'])
+  })
+
+  it('does not preserve attachment refs when the user text differs', () => {
+    const next = [msg('stored-user', 'user', 'a different prompt')]
+
+    const previous = [
+      msg('live-user', 'user', 'describe this image', {
+        attachmentRefs: ['@image:/tmp/photo.png']
+      })
+    ]
+
+    const [out] = reconcileResumeMessages(next, previous)
+
+    expect(out.attachmentRefs).toBeUndefined()
+  })
+})
+
+describe('preserveLocalPendingTurnMessages', () => {
+  it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
+    const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
+
+    const previous = [
+      ...next,
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      '2-assistant',
+      'user-optimistic',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('drops the local copies once the same role ordinals are authoritative', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', 'new question'),
+      msg('4-assistant-stored', 'assistant', 'complete answer')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('drops stale optimistic history after compression and keeps only the live tail', () => {
+    const compressedAuthority = [
+      msg('stored-user', 'user', 'first turn that survived compression'),
+      msg('stored-assistant', 'assistant', 'latest authoritative reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('user-old-1', 'user', 'compressed-away prompt one'),
+      msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
+      msg('user-old-2', 'user', 'compressed-away prompt two'),
+      msg('assistant-old-2', 'assistant', 'compressed-away reply two'),
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache).map(message => message.id)).toEqual(
+      ['stored-user', 'stored-assistant', 'user-inflight']
+    )
+  })
+
+  it('drops the live tail once the latest authoritative user has persisted it after compression', () => {
+    const compressedAuthority = [
+      msg('stored-user', 'user', 'the one genuinely in-flight prompt'),
+      msg('stored-assistant', 'assistant', 'its authoritative reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('user-old-1', 'user', 'compressed-away prompt one'),
+      msg('assistant-old-1', 'assistant', 'compressed-away reply one'),
+      msg('user-inflight', 'user', 'the one genuinely in-flight prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(compressedAuthority, pollutedWarmCache)).toBe(compressedAuthority)
+  })
+
+  // A mid-turn redirect inserts its correction as a SECOND optimistic user row
+  // for the same turn. Keeping only the newest dropped the prompt that started
+  // it, so a resume repainted the thread with the user's message missing.
+  it('keeps every optimistic user row in the live run after a mid-turn redirect', () => {
+    const previous = [
+      msg('user-1000', 'user', 'remove the session counts'),
+      msg('user-2000', 'user', 'hurry up'),
+      msg('assistant-stream-1', 'assistant', 'Moving.', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages([], previous).map(message => message.id)).toEqual([
+      'user-1000',
+      'user-2000',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('still drops optimistic rows separated from the live run by an assistant reply', () => {
+    const previous = [
+      msg('user-stale', 'user', 'compressed-away prompt'),
+      msg('assistant-stale', 'assistant', 'compressed-away reply'),
+      msg('user-1000', 'user', 'the live prompt'),
+      msg('user-2000', 'user', 'the correction'),
+      msg('assistant-stream-1', 'assistant', 'Moving.', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages([], previous).map(message => message.id)).toEqual([
+      'user-1000',
+      'user-2000',
+      'assistant-stream-1'
+    ])
+  })
+
+  // #67603: the gateway persists model-switch / personality notices as role=user
+  // ([System: …], tui_gateway/server.py). A single trailing marker is already
+  // handled by the latestAuthoritativeUser guard above, but TWO switches around
+  // one turn put a marker BEFORE the committed prompt (shifting its ordinal) and
+  // another AFTER it (so the prompt is no longer the last user row, so the text
+  // guard can't rescue it). Naive ordinal pairing then pairs the optimistic row
+  // against a marker, treats it as uncommitted, and re-appends it — the
+  // duplicated user bubble stacked at the bottom of the chat.
+  it('does not duplicate the optimistic prompt when markers bracket it (two model switches)', () => {
+    const marker = (name: string) => `[System: The active model for this chat has changed to ${name}.]`
+
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'second question')
+    ]
+
+    const next = [
+      msg('s1-user', 'user', 'first'),
+      msg('s2-assistant', 'assistant', 'first answer'),
+      msg('s3-marker', 'user', marker('k2')),
+      msg('s4-user', 'user', 'second question'),
+      msg('s5-assistant', 'assistant', 'second answer'),
+      msg('s6-marker', 'user', marker('k3'))
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('still keeps a genuinely uncommitted optimistic turn when a marker is present', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'new question')
+    ]
+
+    // The marker is persisted but the new prompt has not committed yet — the
+    // optimistic row must survive (marker exclusion must not over-correct).
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-marker-stored', 'user', '[System: The active model for this chat has changed to k3.]')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-marker-stored',
+      'user-optimistic'
+    ])
+  })
+
+  // #70720: the gateway persists an attached image as a leading `@image:<path>`
+  // directive line, while the local optimistic composer keeps it as separate
+  // `attachmentRefs`. A naive text compare (chatMessageText a === b) therefore
+  // always mismatched whenever an image was attached and re-appended the
+  // optimistic row as a distinct, duplicate user bubble. Both sides must now
+  // reduce to the same visible text via textWithoutImageRefs.
+  it('does not duplicate the optimistic image turn when the persisted turn carries @image refs', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'what is in this photo?', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', '@image:/tmp/cat.png\nwhat is in this photo?')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('still keeps a genuinely uncommitted optimistic image turn when the persisted text differs', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'a different caption', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      })
+    ]
+
+    // Persisted turn has a different caption — the optimistic row is still
+    // uncommitted and must survive (image-aware compare must not over-correct).
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', '@image:/tmp/cat.png\nwhat is in this photo?')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-user-stored',
+      'user-optimistic'
+    ])
+  })
+})
+
+describe('appendLiveSessionProjection', () => {
+  // Corrections typed while a turn ran are their own user bubbles on the same
+  // turn. Resume must rebuild the prompt AND every correction, in order.
+  it('projects mid-turn redirect corrections after the prompt that started the turn', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'remove the session counts',
+        corrections: ['hurry up', 'and the worktree ones'],
+        assistant: 'Moving.',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'remove the session counts',
+      'hurry up',
+      'and the worktree ones',
+      'Moving.'
+    ])
+  })
+
+  it('does not re-project a correction the transcript already persisted', () => {
+    const stored = [msg('stored-user', 'user', 'remove the session counts'), msg('stored-fix', 'user', 'hurry up')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'remove the session counts',
+        corrections: ['hurry up'],
+        assistant: 'Moving.',
+        streaming: true
+      }
+    })
+
+    expect(restored.filter(message => message.role === 'user').map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-fix'
+    ])
+  })
+
+  it('does not duplicate the inflight user when the persisted turn carries @image refs', () => {
+    // By the time a stored transcript reaches appendLiveSessionProjection it
+    // has already been run through toChatMessages, so the @image directive has
+    // been lifted into attachmentRefs and the visible text is the bare caption.
+    const stored = [
+      msg('stored-user', 'user', 'current running prompt', {
+        attachmentRefs: ['@image:/tmp/cat.png']
+      }),
+      msg('stored-assistant', 'assistant', 'earlier answer')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    // The persisted user already carries the same visible text (the attachment
+    // lives in attachmentRefs on both sides), so the inflight *user* projection
+    // must be suppressed — exactly one user row, no duplicated bubble stacked
+    // on top of the persisted one. The live assistant tail is still projected.
+    const userRows = restored.filter(message => message.role === 'user')
+    expect(userRows).toHaveLength(1)
+    expect(userRows[0].id).toBe('stored-user')
+
+    const userText = userRows[0].parts.map(part => ('text' in part ? part.text : '')).join('')
+
+    expect(userText).toBe('current running prompt')
+  })
+
+  it('restores the running turn and accepted queued prompt after a renderer restart', () => {
+    const stored = [msg('stored-user', 'user', 'earlier'), msg('stored-assistant', 'assistant', 'earlier answer')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current prompt',
+        assistant: 'partial answer',
+        streaming: true
+      },
+      queued: { user: 'newest prompt' }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'earlier',
+      'earlier answer',
+      'current prompt',
+      'partial answer',
+      'newest prompt'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('does not duplicate a persisted inflight user after consecutive canceled user turns', () => {
+    const stored = [
+      msg('stored-user-1', 'user', 'canceled prompt one'),
+      msg('stored-user-2', 'user', 'canceled prompt two'),
+      msg('stored-user-3', 'user', 'current running prompt')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    expect(restored.map(message => message.role)).toEqual(['user', 'user', 'user', 'assistant'])
+    expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
+      'canceled prompt one',
+      'canceled prompt two',
+      'current running prompt',
+      'partial answer'
+    ])
+    expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
+  })
+
+  it('preserves the original array when no live projection exists', () => {
+    const stored = [msg('stored-user', 'user', 'earlier')]
+
+    expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
   })
 })

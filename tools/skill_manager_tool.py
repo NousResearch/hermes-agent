@@ -34,17 +34,21 @@ Directory layout for user skills:
 
 import json
 import logging
-import os
 import re
 import shutil
-import tempfile
 import contextvars as _ctxvars
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
-from utils import atomic_replace, is_truthy_value
+from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
+from agent.skill_utils import (
+    extract_skill_description,
+    is_skill_description_truncated_for_prompt,
+    parse_frontmatter as _parse_frontmatter,
+    SKILL_PROMPT_DESC_LIMIT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -374,8 +378,46 @@ def _background_review_write_guard(
                     f"skill '{name}'."
                 ),
             }
+        # Skills that are not curator-managed are off-limits to autonomous
+        # curation. This prevents the LLM consolidation pass from mutating
+        # skills the user owns (manually authored, URL-installed, or created by
+        # a foreground `skill_manage(create)` at the user's request), which lack
+        # the `created_by: "agent"` marker.
+        #
+        # A MISSING record and an explicit `created_by: null` must resolve
+        # IDENTICALLY (issue #67140). Keying on `isinstance(usage_rec, dict)`
+        # made the policy depend on the guard's own side effect: a local skill
+        # with no telemetry record passed, the successful write called
+        # bump_patch() which created a `created_by: null` record, and the very
+        # same write was refused from then on. "Allowed exactly once" is not a
+        # policy — it is a race with our own bookkeeping. Fail closed for both
+        # shapes; `hermes curator adopt <name>` is the supported way in.
+        usage_data = skill_usage.load_usage()
+        usage_rec = usage_data.get(name)
+        if not skill_usage._is_curator_managed_record(usage_rec):
+            if isinstance(usage_rec, dict):
+                _detail = f"created_by={usage_rec.get('created_by')!r}"
+            else:
+                _detail = "no usage record"
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for skill "
+                    f"'{name}': the skill is not curator-managed ({_detail}). "
+                    "User-owned skills are off-limits to autonomous curation. "
+                    f"Run `hermes curator adopt {name}` to opt it in."
+                ),
+            }
     except Exception:
-        logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
+        logger.warning("owned skill guard lookup failed for %s", name, exc_info=True)
+        return {
+            "success": False,
+            "error": (
+                f"Refusing background curator {action} for skill '{name}': "
+                "agent ownership could not be verified because the provenance "
+                "record is unavailable or unreadable."
+            ),
+        }
     return None
 
 
@@ -521,10 +563,16 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
     return None
 
 
-def _validate_frontmatter(content: str) -> Optional[str]:
+def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[str]:
     """
     Validate that SKILL.md content has proper frontmatter with required fields.
     Returns error message or None if valid.
+
+    When ``new_skill`` is True (create path only), the description must also
+    fit the 60-char system-prompt budget (SKILL_PROMPT_DESC_LIMIT) so newly
+    authored skills never lose routing signal to index truncation. Edit and
+    patch paths deliberately skip this so existing over-limit skills remain
+    maintainable while their descriptions are cleaned up.
     """
     if not content.strip():
         return "Content cannot be empty."
@@ -553,8 +601,17 @@ def _validate_frontmatter(content: str) -> Optional[str]:
         return "Frontmatter must include 'name' field."
     if "description" not in parsed:
         return "Frontmatter must include 'description' field."
-    if len(str(parsed["description"])) > MAX_DESCRIPTION_LENGTH:
+    desc = str(parsed["description"])
+    if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
+    if new_skill and len(desc.strip().strip("'\"")) > SKILL_PROMPT_DESC_LIMIT:
+        return (
+            f"Description is {len(desc.strip())} chars — new skills must fit the "
+            f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget (one sentence, "
+            f"trigger first, ends with a period). The skill index truncates "
+            f"longer descriptions to {SKILL_PROMPT_DESC_LIMIT - 3} chars + '...', "
+            f"destroying the routing signal. Move detail into the skill body."
+        )
 
     body = content[end_match.end() + 3:].strip()
     if not body:
@@ -602,6 +659,81 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
                 continue
             if skill_md.parent.name == name:
                 return {"path": skill_md.parent}
+    return None
+
+
+def _maybe_auto_propose_org_edit(name: str, skill_path: Path) -> Optional[str]:
+    """Submit an org-skill edit upstream when `sync.org_auto_propose` is on.
+
+    Returns a short note for the tool result, or None when nothing happened.
+    Never raises: an offline/failed submission must not fail the edit itself —
+    the change is already saved locally and can be proposed later.
+    """
+    try:
+        from agent.skill_utils import is_org_mirror_path
+        from tools import skills_sync_client as ssc
+
+        if not is_org_mirror_path(skill_path, _skills_dir()):
+            return None
+        if not ssc.sync_org_auto_propose():
+            return (
+                f"This skill is shared by your organisation. Your edit is "
+                f"saved locally and will not be overwritten by org updates. "
+                f"Run `hermes sync propose {name}` to share it back."
+            )
+        result = ssc.propose_skill(name)
+        if result.get("proposal_pending"):
+            return (
+                f"Auto-proposed to your organisation as proposal "
+                f"#{result.get('proposal_id')} (pending admin review)."
+            )
+        return "Auto-proposed to your organisation (merged into the shared set)."
+    except Exception as e:
+        logger.debug("auto-propose skipped for %s: %s", name, e)
+        return (
+            f"Edit saved locally. Could not submit it to your organisation "
+            f"right now — run `hermes sync propose {name}` to retry."
+        )
+
+
+def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optional[Dict[str, Any]]:
+    """Org-shared skills are EDITABLE IN PLACE — this only blocks deletion.
+
+    Earlier versions refused every write to `_org/`, which broke the learning
+    loop exactly where it matters most: the agent is told to patch a skill the
+    moment it finds a gap, and shared skills are the ones the most people use.
+    Blocking that froze org skills while personal ones kept improving, and the
+    "fork it into a personal skill" alternative is not something an agent does
+    mid-task — so improvements were simply lost.
+
+    Now an edit lands in the mirror and is protected from being overwritten by
+    the next org pull (see the baseline sidecar in skills_sync_client). It
+    reaches the organisation when the user runs `hermes sync propose`, or
+    immediately if `sync.org_auto_propose` is on.
+
+    Deletion is still refused: the mirror is a materialized view of the org
+    HEAD, so a local delete is meaningless (the next pull restores it) and
+    removing a skill for the organisation is an admin action, not a local one.
+    """
+    if action not in {"delete", "remove_file"}:
+        return None
+    try:
+        from agent.skill_utils import is_org_mirror_path
+
+        if is_org_mirror_path(skill_path, _skills_dir()):
+            return {
+                "success": False,
+                "error": (
+                    f"Cannot {action} '{name}' locally: it is shared by your "
+                    "organisation, so a local delete would just come back on "
+                    "the next sync. Ask an org admin to remove it for "
+                    "everyone. (Editing it IS allowed — your changes are kept "
+                    "and can be proposed back with `hermes sync propose "
+                    f"{name}`.)"
+                ),
+            }
+    except Exception:
+        logger.debug("org mirror guard lookup failed for %s", name, exc_info=True)
     return None
 
 
@@ -757,41 +889,21 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
     return target, None
 
 
-def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
-    """
-    Atomically write text content to a file.
-    
-    Uses a temporary file in the same directory and os.replace() to ensure
-    the target file is never left in a partially-written state if the process
-    crashes or is interrupted.
-    
-    Args:
-        file_path: Target file path
-        content: Content to write
-        encoding: Text encoding (default: utf-8)
-    """
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(
-        dir=str(file_path.parent),
-        prefix=f".{file_path.name}.tmp.",
-        suffix="",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
-            f.write(content)
-        atomic_replace(temp_path, file_path)
-    except Exception:
-        # Clean up temp file on error
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            logger.error("Failed to remove temporary file %s during atomic write", temp_path, exc_info=True)
-        raise
-
-
 # =============================================================================
 # Core actions
 # =============================================================================
+
+
+def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> None:
+    """Append a system_prompt_preview field when the description will be truncated."""
+    fm, _ = _parse_frontmatter(content)
+    if is_skill_description_truncated_for_prompt(fm):
+        result["system_prompt_preview"] = (
+            f"System prompt will show: \"{extract_skill_description(fm)}\" — "
+            f"keep the trigger self-contained in the first "
+            f"{SKILL_PROMPT_DESC_LIMIT - 3} chars."
+        )
+
 
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
@@ -805,7 +917,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return {"success": False, "error": err}
 
     # Validate content
-    err = _validate_frontmatter(content)
+    err = _validate_frontmatter(content, new_skill=True)
     if err:
         return {"success": False, "error": err}
 
@@ -827,7 +939,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
     # Write SKILL.md atomically
     skill_md = skill_dir / "SKILL.md"
-    _atomic_write_text(skill_md, content)
+    atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
@@ -858,6 +970,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
+    _add_description_prompt_preview(result, content)
     return result
 
 
@@ -874,6 +987,9 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+    org_guard = _org_mirror_write_guard(name, existing["path"], "edit")
+    if org_guard:
+        return org_guard
     guard = _background_review_write_guard(name, existing["path"], "edit")
     if guard:
         return guard
@@ -887,13 +1003,13 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
-    _atomic_write_text(skill_md, content)
+    atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
-            _atomic_write_text(skill_md, original_content)
+            atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
     # Extract description from new content for verbose notifications
@@ -906,12 +1022,18 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(existing["path"]),
         "_change": {"description": _desc},
     }
+    org_note = _maybe_auto_propose_org_edit(name, existing["path"])
+    if org_note:
+        result["org_sharing"] = org_note
+        result["message"] = f"{result['message']} {org_note}"
+    _add_description_prompt_preview(result, content)
+    return result
 
 
 def _patch_skill(
@@ -936,6 +1058,9 @@ def _patch_skill(
         return {"success": False, "error": _skill_not_found_error(name)}
 
     skill_dir = existing["path"]
+    org_guard = _org_mirror_write_guard(name, skill_dir, "patch")
+    if org_guard:
+        return org_guard
     guard = _background_review_write_guard(name, skill_dir, "patch")
     if guard:
         return guard
@@ -1007,12 +1132,12 @@ def _patch_skill(
             }
 
     original_content = content  # for rollback
-    _atomic_write_text(target, new_content)
+    atomic_write_text(target, new_content)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        _atomic_write_text(target, original_content)
+        atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
     result = {
@@ -1024,6 +1149,10 @@ def _patch_skill(
         "old": old_string[:200] + ("…" if len(old_string) > 200 else ""),
         "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
     }
+    org_note = _maybe_auto_propose_org_edit(name, skill_dir)
+    if org_note:
+        result["org_sharing"] = org_note
+        result["message"] = f"{result['message']} {org_note}"
     return result
 
 
@@ -1042,6 +1171,9 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
+    org_guard = _org_mirror_write_guard(name, existing["path"], "delete")
+    if org_guard:
+        return org_guard
     guard = _background_review_write_guard(name, existing["path"], "delete")
     if guard:
         return guard
@@ -1159,6 +1291,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
+    org_guard = _org_mirror_write_guard(name, existing["path"], "write_file")
+    if org_guard:
+        return org_guard
     guard = _background_review_write_guard(name, existing["path"], "write_file")
     if guard:
         return guard
@@ -1176,22 +1311,27 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
-    _atomic_write_text(target, file_content)
+    atomic_write_text(target, file_content)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
-            _atomic_write_text(target, original_content)
+            atomic_write_text(target, original_content)
         else:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
     }
+    org_note = _maybe_auto_propose_org_edit(name, existing["path"])
+    if org_note:
+        result["org_sharing"] = org_note
+        result["message"] = f"{result['message']} {org_note}"
+    return result
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
@@ -1320,6 +1460,56 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
         _skill_gate_bypass.reset(token)
 
 
+# Debounce state for the sync push hook. A burst of skill_manage writes
+# (e.g. create + several write_file calls) collapses into a single push after
+# a short quiet window, on a daemon timer so the agent write never blocks.
+_sync_push_timer = None
+_sync_push_lock = None
+_SYNC_PUSH_DEBOUNCE_S = 5.0
+
+
+def _maybe_debounced_sync_push(skill_name: str) -> None:
+    """Schedule a debounced best-effort sync push after a skill write.
+
+    Cheap fast-path: if the skill isn't opted into sync, do nothing (no auth,
+    no network). Otherwise (re)arm a daemon timer; the actual push runs through
+    ``skills_sync_client.maybe_push_skills`` which enforces the access gate
+    and swallows all errors. Never blocks the caller (M1-C: agent never blocks
+    on sync).
+    """
+    global _sync_push_timer, _sync_push_lock
+    try:
+        from tools.skill_usage import is_sync_enabled
+
+        if not is_sync_enabled(skill_name):
+            return
+    except Exception:
+        return
+
+    import threading
+
+    if _sync_push_lock is None:
+        _sync_push_lock = threading.Lock()
+
+    def _fire():
+        try:
+            from tools.skills_sync_client import maybe_push_skills
+
+            maybe_push_skills(message=f"sync: {skill_name}")
+        except Exception:
+            pass
+
+    with _sync_push_lock:
+        if _sync_push_timer is not None:
+            try:
+                _sync_push_timer.cancel()
+            except Exception:
+                pass
+        _sync_push_timer = threading.Timer(_SYNC_PUSH_DEBOUNCE_S, _fire)
+        _sync_push_timer.daemon = True
+        _sync_push_timer.start()
+
+
 def skill_manage(
     action: str,
     name: str,
@@ -1418,6 +1608,18 @@ def skill_manage(
         except Exception:
             pass
 
+        # Sync push hook (debounced, best-effort). Fires only AFTER the
+        # write gate passed (staged/unapproved writes never reach here -- the
+        # gate returns early above), so we never push un-reviewed content.
+        # Inert unless the access gate is open (the user is a Nous admin on the
+        # token), a sync base URL is configured, and the skill is opted into
+        # sync. Debounced so a burst of edits collapses to one push. Never
+        # raises -- an agent write must never block on sync (M1-C invariant).
+        try:
+            _maybe_debounced_sync_push(name)
+        except Exception:
+            pass
+
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -1452,6 +1654,10 @@ SKILL_MANAGE_SCHEMA = {
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
+        "Description: long descriptions are truncated to the first 57 chars "
+        "plus '...' in the system prompt skill index; longer text is visible "
+        "via skills_list/skill_view. Keep the trigger self-contained in that "
+        "first 57-char window: 'Use when <trigger>. <one-line behavior>.'\n\n"
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "

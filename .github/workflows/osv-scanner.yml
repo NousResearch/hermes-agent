@@ -14,14 +14,14 @@ name: OSV-Scanner
 # code patterns in PR diffs) by covering the orthogonal "currently-pinned
 # dep became known-vulnerable" case.
 #
-# Steps below are inlined from Google's officially-recommended reusable
-# workflow (google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml),
-# rather than called via `uses:` so we can set a `timeout-minutes` in the
-# degenerate case where this job hangs.
-
+# Uses Google's officially-recommended reusable workflow, pinned by SHA.
 # Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
 # fail-on-vuln is disabled so the job does not block merges on pre-existing
 # vulnerabilities in pinned deps that we may need to patch deliberately.
+#
+# The reusable workflow can't emit custom outputs, so a wrapper job
+# downloads the SARIF result and summarizes the vulnerability count into
+# a review_status for the unified PR comment.
 
 on:
   workflow_call:
@@ -40,62 +40,88 @@ permissions:
 jobs:
   scan:
     name: Scan lockfiles
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    with:
+      # Scan explicit lockfiles rather than recursing, so we only look at
+      # the three sources of truth and skip vendored / test / worktree dirs.
+      scan-args: |-
+        --lockfile=uv.lock
+        --lockfile=package-lock.json
+        --lockfile=website/package-lock.json
+      # The upstream reusable workflow uploads this exact file under its
+      # fixed artifact name, which the wrapper downloads below.
+      results-file-name: osv-results.sarif
+      fail-on-vuln: false
+
+  emit-status:
+    name: Emit review status
     runs-on: ubuntu-latest
+    needs: scan
+    if: always()
+    outputs:
+      review_status: ${{ steps.emit.outputs.review_status }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: 'Run scanner'
-        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
-        with:
-          # Scan explicit lockfiles rather than recursing, so we only look at
-          # the three sources of truth and skip vendored / test / worktree dirs.
-          scan-args: |-
-            --output=results.json
-            --format=json
-            --lockfile=uv.lock
-            --lockfile=package-lock.json
-            --lockfile=website/package-lock.json
-        continue-on-error: true
-
-      - name: 'Run osv-scanner-reporter'
-        uses: google/osv-scanner-action/osv-reporter-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
-        with:
-          scan-args: |-
-            --output=results.sarif
-            --new=results.json
-            --gh-annotations=false
-            --fail-on-vuln=false
-
-      # Upload the results as artifacts (optional). Commenting out will disable uploads of run results in SARIF
-      # format to the repository Actions tab.
-      - name: 'Upload artifact'
-        id: 'upload_artifact'
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - name: Download SARIF result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: OSV Scanner SARIF file
-          path: results.sarif
-          retention-days: 5
+          path: /tmp/osv-results
+        continue-on-error: true
 
-      # Upload the results to GitHub's code scanning dashboard.
-      - name: 'Upload to code-scanning'
-        if: ${{ !cancelled() }}
-        uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
-        with:
-          sarif_file: results.sarif
-
-      - name: 'Print Code Scanning URL'
-        if: ${{ !cancelled() }}
+      - name: Emit review_status
+        id: emit
         run: |
-          echo "View the OSV-Scanner results in the 'Security' tab, using the following link:"
-          echo "${{ github.server_url }}/${{ github.repository }}/security/code-scanning?query=is%3Aopen+branch%3A${GITHUB_REF_NAME}+tool%3Aosv-scanner"
-        env:
-          GITHUB_REF_NAME: ${{ github.ref_name }}
+          set -euo pipefail
+          STATUS="[]"
 
-      - name: 'Error troubleshooter'
-        if: ${{ always() && steps.upload_artifact.outcome == 'failure' }}
-        run: |
-          echo "::error::Artifact upload failed. This is most likely caused by a error during scanning earlier in the workflow."
-          exit 1
+          if [ -f /tmp/osv-results/osv-results.sarif ]; then
+            # Count vulnerabilities from the SARIF file
+            VULN_COUNT=$(python3 -c "
+          import json, sys
+          try:
+              with open('/tmp/osv-results/osv-results.sarif') as f:
+                  data = json.load(f)
+              count = 0
+              vulns = []
+              for run in data.get('runs', []):
+                  for result in run.get('results', []):
+                      count += 1
+                      rule_id = result.get('ruleId', 'unknown')
+                      message = result.get('message', {}).get('text', '')
+                      loc = result.get('locations', [{}])[0].get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '')
+                      vulns.append(f'- {rule_id} in {loc}: {message}')
+              print(count)
+              if vulns:
+                  print('\n'.join(vulns[:20]), file=sys.stderr)
+          except Exception:
+              print(0)
+          ")
+
+            VULN_DETAIL=""
+            if [ "$VULN_COUNT" -gt 0 ] 2>/dev/null; then
+              VULN_PLURAL=$([ "$VULN_COUNT" -eq 1 ] && echo "y" || echo "ies")
+              VULN_DETAIL=$(python3 -c "
+          import json, sys
+          try:
+              with open('/tmp/osv-results/osv-results.sarif') as f:
+                  data = json.load(f)
+              vulns = []
+              for run in data.get('runs', []):
+                  for result in run.get('results', []):
+                      rule_id = result.get('ruleId', 'unknown')
+                      loc = result.get('locations', [{}])[0].get('physicalLocation', {}).get('artifactLocation', {}).get('uri', '')
+                      vulns.append(f'- {rule_id} in {loc}')
+              print(json.dumps('\n'.join(vulns[:20])))
+          except Exception:
+              print(json.dumps(''))
+          ")
+              STATUS="[{\"source\":\"osv scan\",\"results\":[{\"kind\":\"warning\",\"title\":\"OSV vulnerability scan\",\"summary\":\"${VULN_COUNT} known vulnerabilit${VULN_PLURAL} found in pinned dependencies.\",\"detail\":${VULN_DETAIL},\"how_to_fix\":\"Review the findings in the [Security tab](../../security/code-scanning). Update the affected dependencies if a patched version is available.\"}]}]"
+            else
+              STATUS="[]"
+            fi
+          fi
+
+          echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"

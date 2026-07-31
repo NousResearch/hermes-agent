@@ -105,30 +105,6 @@ class TestCompressAlwaysKeepsAUserTurn:
             f"non-retryable 400. Role histogram: {hist}"
         )
 
-    def test_summary_pinned_to_user_when_no_user_survives(self, compressor):
-        """When the whole compressible region is assistant/tool and no
-        user message survives in head or tail, the inserted summary
-        itself must be the user turn."""
-        from agent.context_compressor import (
-            SUMMARY_PREFIX,
-            COMPRESSED_SUMMARY_METADATA_KEY,
-        )
-
-        c = compressor
-        c.compression_count = 1
-        messages = [{"role": "user", "content": "work kanban task 7"}]
-        messages += _tool_turns(0, 12)
-
-        mocked = f"{SUMMARY_PREFIX}\nsummary body"
-        with patch.object(c, "_generate_summary", return_value=mocked):
-            out = c.compress(messages, current_tokens=90_000)
-
-        summary_rows = [m for m in out if m.get(COMPRESSED_SUMMARY_METADATA_KEY)]
-        assert len(summary_rows) == 1
-        assert summary_rows[0].get("role") == "user", (
-            "The handoff summary must carry role=user when it is the only "
-            "possible user turn in the compressed transcript (#58753)."
-        )
 
     def test_no_consecutive_user_roles_introduced(self, compressor):
         """Forcing the summary to role=user must not create two

@@ -13,7 +13,7 @@
     "tauri:build": "tauri build",
     "tauri:build:debug": "tauri build --debug",
     "typecheck": "tsc -p . --noEmit",
-    "check": "npm run typecheck",
+    "check": "npm run typecheck && npm run lint",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "fix": "npm run lint:fix"

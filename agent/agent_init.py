@@ -28,7 +28,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import urlparse, parse_qs, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
@@ -48,6 +48,7 @@ from agent.tool_guardrails import (
     ToolGuardrailDecision,
 )
 from hermes_cli.config import cfg_get
+from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches, is_truthy_value
@@ -68,18 +69,188 @@ def _ra():
     return run_agent
 
 
-def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
+def _moa_reference_output_allowed(agent: Any) -> bool:
+    """Keep MoA display events off only the machine-readable ``-Q`` surface."""
+    return not (
+        getattr(agent, "platform", None) == "cli"
+        and getattr(agent, "tool_progress_mode", "all") == "off"
+    )
+
+
+def _relay_moa_reference_event(agent: Any, event: str, **kwargs: Any) -> None:
+    """Relay MoA display events while preserving the ``-Q`` stdout contract."""
+    if not _moa_reference_output_allowed(agent):
+        return
+    cb = getattr(agent, "tool_progress_callback", None)
+    if cb is None:
+        return
+    try:
+        if event == "moa.reference":
+            cb(
+                "moa.reference",
+                str(kwargs.get("label") or ""),
+                str(kwargs.get("text") or ""),
+                None,
+                moa_index=kwargs.get("index"),
+                moa_count=kwargs.get("count"),
+            )
+        elif event == "moa.aggregating":
+            cb(
+                "moa.aggregating",
+                str(kwargs.get("aggregator") or ""),
+                None,
+                None,
+                moa_ref_count=kwargs.get("ref_count"),
+            )
+    except Exception:
+        pass
+
+
+def _normalize_route_base_url(base_url: Any) -> str:
+    """Canonicalize an endpoint URL for model-route identity comparisons."""
+    return normalize_route_base_url(base_url)
+
+
+def _provider_default_routes(provider: str) -> set[str]:
+    """Return known exact default routes for a canonical provider id."""
+    routes: set[str] = set()
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS, get_provider
+
+        overlay = HERMES_OVERLAYS.get(provider)
+        provider_def = get_provider(provider, allow_network=False)
+        for value in (
+            getattr(overlay, "base_url_override", ""),
+            getattr(provider_def, "base_url", ""),
+        ):
+            route = _normalize_route_base_url(value)
+            if route:
+                routes.add(route)
+    except Exception:
+        pass
+
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        route = _normalize_route_base_url(
+            getattr(profile, "base_url", "")
+        )
+        if route:
+            routes.add(route)
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.models import normalize_provider as normalize_model_provider
+        from hermes_cli.providers import normalize_provider as normalize_registry_provider
+
+        for provider_id, config in PROVIDER_REGISTRY.items():
+            canonical_id = normalize_registry_provider(
+                normalize_model_provider(provider_id)
+            )
+            if canonical_id != provider:
+                continue
+            route = _normalize_route_base_url(
+                getattr(config, "inference_base_url", "")
+            )
+            if route:
+                routes.add(route)
+    except Exception:
+        pass
+
+    if provider == "gemini":
+        routes.update(
+            f"{route.rstrip('/')}/openai"
+            for route in list(routes)
+        )
+    return routes
+
+
+def _context_route_mismatch(
+    configured_base_url: Any,
+    active_base_url: Any,
+    configured_provider: Any,
+    active_provider: Any,
+    *,
+    already_normalized: bool = False,
+) -> bool:
+    """Return whether a context pin's configured route differs from runtime."""
+    if already_normalized:
+        configured_route = str(configured_base_url or "")
+        active_route = str(active_base_url or "")
+    else:
+        configured_route = _normalize_route_base_url(configured_base_url)
+        active_route = _normalize_route_base_url(active_base_url)
+    if configured_route:
+        return configured_route != active_route
+
+    configured_provider = str(configured_provider or "").strip()
+    active_provider = str(active_provider or "").strip()
+    if not configured_provider:
+        return False
+    try:
+        from hermes_cli.models import normalize_provider as normalize_model_provider
+
+        configured_provider = normalize_model_provider(configured_provider)
+        active_provider = normalize_model_provider(active_provider)
+    except Exception:
+        configured_provider = configured_provider.lower()
+        active_provider = active_provider.lower()
+    try:
+        from hermes_cli.providers import normalize_provider as normalize_registry_provider
+
+        configured_provider = normalize_registry_provider(configured_provider)
+        active_provider = normalize_registry_provider(active_provider)
+    except Exception:
+        pass
+
+    if active_route:
+        configured_routes = _provider_default_routes(configured_provider)
+        return not configured_routes or active_route not in configured_routes
+    return bool(
+        configured_provider
+        and active_provider
+        and configured_provider != active_provider
+    )
+
+
+def _normalize_custom_provider_name(value: Any) -> str:
+    """Mirror runtime normalization for a requested custom-provider identity."""
+    return str(value or "").strip().lower().replace(" ", "-")
+
+
+def _custom_provider_runtime_ids(value: Any) -> set[str]:
+    """Return raw/menu identities that runtime accepts for a configured name."""
+    normalized = _normalize_custom_provider_name(value)
+    if not normalized:
+        return set()
+    return {normalized, f"custom:{normalized}"}
+
+
+def _build_codex_gpt5_autoraise_notice(
+    autoraise: Dict[str, Any], context_length: Optional[int] = None
+) -> str:
     """Build the one-time notice shown when Codex gpt-5.x raises compaction.
 
     ``autoraise`` is ``{"model": <slug>, "from": <old_ratio>, "to": <new_ratio>}``.
-    The same text is printed inline for CLI users and replayed via
+    ``context_length`` is the live-resolved window from the context compressor
+    (Codex's /models catalog is authoritative and can change server-side, e.g.
+    the gpt-5.6 family's 272K → 372K → 272K shifts in July 2026), so the banner
+    reports what this session actually got rather than a hardcoded cap. The
+    same text is printed inline for CLI users and replayed via
     ``status_callback`` for gateway users, so it must be self-contained and
     include the exact opt-back-out command.
     """
     model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
-    # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5/5.6 family
-    # is capped at 272K by the Codex OAuth backend.
-    cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
+    if isinstance(context_length, int) and context_length > 0:
+        cap = f"{round(context_length / 1000)}K"
+    else:
+        # Static fallback when the resolved window isn't available:
+        # gpt-5.3-codex-spark has a native 128K window; the gpt-5.4/5.5/5.6
+        # family is capped at 272K by the Codex OAuth backend.
+        cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
     return (
@@ -285,7 +456,6 @@ def init_agent(
     args: list[str] | None = None,
     model: str = "",
     max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
-    tool_delay: float = 1.0,
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     save_trajectories: bool = False,
@@ -346,6 +516,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    requested_provider: str = None,
 ):
     """
     Initialize the AI Agent.
@@ -354,10 +525,10 @@ def init_agent(
         base_url (str): Base URL for the model API (optional)
         api_key (str): API key for authentication (optional, uses env var if not provided)
         provider (str): Provider identifier (optional; used for telemetry/routing hints)
+        requested_provider (str): Original provider identity before runtime canonicalization
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
         max_iterations (int): Maximum number of tool calling iterations (default: 90)
-        tool_delay (float): Delay between tool calls in seconds (default: 1.0)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
         disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
         save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
@@ -403,7 +574,6 @@ def init_agent(
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
-    agent.tool_delay = tool_delay
     agent.save_trajectories = save_trajectories
     agent.verbose_logging = verbose_logging
     agent.quiet_mode = quiet_mode
@@ -434,6 +604,11 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    agent.requested_provider = (
+        requested_provider.strip().lower()
+        if isinstance(requested_provider, str) and requested_provider.strip()
+        else agent.provider
+    )
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -467,6 +642,13 @@ def init_agent(
         # AWS Bedrock — auto-detect from provider name or base URL
         # (bedrock-runtime.<region>.amazonaws.com).
         agent.api_mode = "bedrock_converse"
+    elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
+        # Portal is dual-wire: anthropic/* → Messages, everything else →
+        # chat_completions. Callers that already pass api_mode win above;
+        # this covers direct AIAgent construction without a resolved runtime.
+        from hermes_cli.providers import nous_api_mode
+
+        agent.api_mode = nous_api_mode(agent.model)
     else:
         agent.api_mode = "chat_completions"
 
@@ -586,6 +768,8 @@ def init_agent(
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
+    agent._model_request_active = threading.Event()
+    agent._supports_active_turn_redirect = True
 
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does
@@ -596,6 +780,13 @@ def init_agent(
     # existing tool message rather than inserting a new user turn).
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
+
+    # Active-turn redirect mechanism. A regular follow-up sent while the model
+    # is generating is different from a hard /stop: preserve the valid turn
+    # prefix, cancel only the in-flight model request, and rebuild its tail with
+    # the correction. The loop drains this slot at a role-safe boundary.
+    agent._pending_redirect: Optional[str] = None
+    agent._pending_redirect_lock = threading.Lock()
 
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker
@@ -636,9 +827,10 @@ def init_agent(
     # Anthropic prompt caching: auto-enabled for Claude models on native
     # Anthropic, OpenRouter, and third-party gateways that speak the
     # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
-    # input costs by ~75% on multi-turn conversations. Uses system_and_3
-    # strategy (4 breakpoints). See ``_anthropic_prompt_cache_policy``
-    # for the layout-vs-transport decision.
+    # input costs by ~75% on multi-turn conversations. Uses four breakpoints:
+    # the static system prefix, full system prompt, and last two messages
+    # (falling back to system-and-3 when no static prefix is available). See
+    # ``_anthropic_prompt_cache_policy`` for the layout-vs-transport decision.
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy()
     )
@@ -648,7 +840,7 @@ def init_agent(
     # sessions with >5-minute pauses between turns (#14971).
     agent._cache_ttl = "5m"
     try:
-        from hermes_cli.config import load_config as _load_pc_cfg
+        from hermes_cli.config import load_config_readonly as _load_pc_cfg
 
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
@@ -692,8 +884,10 @@ def init_agent(
     # report cumulative micros spent.  Surfaced behind HERMES_DEV_CREDITS.
     agent._credits_state = None
     agent._credits_session_start_micros = None
-    # Threshold-notice latch (L4): active sticky-notice keys + the warn90 crossing gate.
-    agent._credits_latch = {"active": set(), "seen_below_90": False, "usage_band": None}
+    # Threshold-notice latch (L4): active sticky-notice keys + the crossing gates.
+    from agent.credits_tracker import new_credits_latch
+
+    agent._credits_latch = new_credits_latch()
 
     # OpenRouter response cache hit counter — incremented when
     # X-OpenRouter-Cache-Status: HIT is seen in streaming response headers.
@@ -869,49 +1063,20 @@ def init_agent(
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
     elif agent.provider == "moa":
-        from agent.moa_loop import MoAClient
+        from agent.moa_loop import build_moa_facade
         agent.api_mode = "chat_completions"
 
-        # Route reference-model outputs to the agent's tool_progress_callback so
+        # build_moa_facade wires the reference relay that routes
+        # reference-model outputs to the agent's tool_progress_callback so
         # every surface that already consumes it (CLI spinner/scrollback, TUI,
-        # desktop, gateway) can show each reference's answer as a labelled block
-        # before the aggregator acts. The facade emits "moa.reference" and
-        # "moa.aggregating" events; we forward them through the same callback
-        # the tool lifecycle uses. Best-effort and cache-safe — these are
-        # display-only events, they never touch the message history.
-        def _moa_reference_relay(event: str, **kwargs: Any) -> None:
-            cb = getattr(agent, "tool_progress_callback", None)
-            if cb is None:
-                return
-            try:
-                if event == "moa.reference":
-                    label = str(kwargs.get("label") or "")
-                    text = str(kwargs.get("text") or "")
-                    idx = kwargs.get("index")
-                    count = kwargs.get("count")
-                    cb(
-                        "moa.reference",
-                        label,
-                        text,
-                        None,
-                        moa_index=idx,
-                        moa_count=count,
-                    )
-                elif event == "moa.aggregating":
-                    cb(
-                        "moa.aggregating",
-                        str(kwargs.get("aggregator") or ""),
-                        None,
-                        None,
-                        moa_ref_count=kwargs.get("ref_count"),
-                    )
-            except Exception:
-                pass
-
-        agent.client = MoAClient(
-            agent.model or "default",
-            reference_callback=_moa_reference_relay,
-        )
+        # desktop, gateway) can show each reference's answer as a labelled
+        # block before the aggregator acts. The facade emits "moa.reference",
+        # "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
+        # through the same callback the tool lifecycle uses. Best-effort and
+        # cache-safe — display-only events, they never touch the message
+        # history. The factory is shared with the fallback-restore/recovery
+        # paths so a restored facade keeps emitting these events (#53802).
+        agent.client = build_moa_facade(agent, agent.model)
         agent._client_kwargs = {}
         agent.api_key = api_key or "moa-virtual-provider"
         agent.base_url = "moa://local"
@@ -925,7 +1090,7 @@ def init_agent(
         # Guardrail config — read from config.yaml at init time.
         agent._bedrock_guardrail_config = None
         try:
-            from hermes_cli.config import load_config as _load_br_cfg
+            from hermes_cli.config import load_config_readonly as _load_br_cfg
             _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
             if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
                 agent._bedrock_guardrail_config = {
@@ -990,10 +1155,14 @@ def init_agent(
             elif base_url_host_matches(effective_base, "chatgpt.com"):
                 from agent.auxiliary_client import _codex_cloudflare_headers
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+            elif base_url_host_matches(effective_base, "x.ai"):
+                from tools.xai_http import hermes_xai_default_headers
+
+                client_kwargs["default_headers"] = hermes_xai_default_headers()
             elif "default_headers" not in client_kwargs:
                 # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
-                # endpoints).
+                # declare custom headers (e.g. Vercel AI Gateway attribution,
+                # Kimi User-Agent on non-kimi.com endpoints).
                 try:
                     from providers import get_provider_profile as _gpf
                     _ph = _gpf(agent.provider)
@@ -1177,6 +1346,13 @@ def init_agent(
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+
+    # Keep a stable identity for the pool entry that supplied this runtime.
+    # OAuth refreshes can replace the runtime token before a failed request is
+    # recovered, so the mutable API-key value alone cannot reliably attribute
+    # the failure to its source entry.
+    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+    sync_credential_pool_entry_id(agent)
     
     # Provider fallback chain — ordered list of backup providers tried
     # when the primary is exhausted (rate-limit, overload, connection
@@ -1301,7 +1477,7 @@ def init_agent(
     # reads the JSON files directly.  See run_agent._save_session_log.
     agent._session_json_enabled = False
     try:
-        from hermes_cli.config import load_config as _load_sess_cfg
+        from hermes_cli.config import load_config_readonly as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
     except Exception:
@@ -1323,6 +1499,9 @@ def init_agent(
     
     # Cached system prompt -- built once per session, only rebuilt on compression
     agent._cached_system_prompt: Optional[str] = None
+    # Cross-session-stable prefix of the cached prompt. It remains separate
+    # from the persisted string and is used only to place an early cache marker.
+    agent._cached_system_prompt_static: Optional[str] = None
     
     # Filesystem checkpoint manager (transparent — not a tool)
     from tools.checkpoint_manager import CheckpointManager
@@ -1369,7 +1548,7 @@ def init_agent(
     
     # Load config once for memory, skills, and compression sections
     try:
-        from hermes_cli.config import load_config as _load_agent_config
+        from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
@@ -1427,7 +1606,14 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
-    if not skip_memory:
+    # A flush/background agent may pass skip_memory=True to avoid spinning up an
+    # external memory *provider*, but if the caller also explicitly enables the
+    # "memory" toolset it still needs the built-in file-backed store — otherwise
+    # the memory tool dispatches with store=None and every call fails (#65429).
+    # So the built-in store is created unless memory is globally disabled, while
+    # the external-provider block below stays gated on skip_memory.
+    _memory_toolset_requested = "memory" in (agent.enabled_toolsets or [])
+    if not skip_memory or _memory_toolset_requested:
         try:
             mem_config = _agent_cfg.get("memory", {})
             agent._memory_enabled = mem_config.get("memory_enabled", False)
@@ -1647,6 +1833,89 @@ def init_agent(
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+    # Minimum REAL (actionable) user messages guaranteed to survive in the
+    # uncompressed tail (compression.min_tail_user_messages).  Default 1
+    # preserves current behavior exactly — the existing single-user tail
+    # anchor.  Values > 1 extend the guarantee to the last N actionable
+    # user turns.  Booleans rejected (bool subclasses int), non-int-like
+    # values fall back to 1, floor at 1.
+    _raw_min_tail_users = _compression_cfg.get("min_tail_user_messages", 1)
+    if isinstance(_raw_min_tail_users, bool):
+        compression_min_tail_users = 1
+    elif isinstance(_raw_min_tail_users, int):
+        compression_min_tail_users = _raw_min_tail_users
+    elif isinstance(_raw_min_tail_users, float):
+        compression_min_tail_users = (
+            int(_raw_min_tail_users) if _raw_min_tail_users.is_integer() else 1
+        )
+    else:
+        try:
+            compression_min_tail_users = int(str(_raw_min_tail_users).strip())
+        except (TypeError, ValueError):
+            compression_min_tail_users = 1
+    if compression_min_tail_users < 1:
+        compression_min_tail_users = 1
+    # Cap on compression retry rounds before a turn gives up with "max
+    # compression attempts reached" (compression.max_attempts).  Hardcoding 3
+    # strands sessions that legitimately need more rounds — e.g. a restart
+    # history reload whose incompressible tool schemas keep the request
+    # estimate above the threshold even though the messages compress fine
+    # (the #62605 failure class).  Default 3 preserves current behavior, so
+    # an unset key is behavior-neutral; validated >= 1, hard-capped at 10,
+    # and any non-int-like value falls back to 3.  Booleans are rejected
+    # (bool subclasses int, so int(True) would silently become 1) and
+    # fractional floats are rejected rather than truncated — "4.7 attempts"
+    # is a config mistake, not a request for 4.
+    _raw_max_attempts = _compression_cfg.get("max_attempts", 3)
+    if isinstance(_raw_max_attempts, bool):
+        compression_max_attempts = 3
+    elif isinstance(_raw_max_attempts, int):
+        compression_max_attempts = _raw_max_attempts
+    elif isinstance(_raw_max_attempts, float):
+        compression_max_attempts = (
+            int(_raw_max_attempts) if _raw_max_attempts.is_integer() else 3
+        )
+    else:
+        try:
+            compression_max_attempts = int(str(_raw_max_attempts).strip())
+        except (TypeError, ValueError):
+            compression_max_attempts = 3
+    if compression_max_attempts < 1:
+        compression_max_attempts = 3
+    compression_max_attempts = min(compression_max_attempts, 10)
+
+    def _parse_prune_int(raw, default):
+        # Same parser semantics as compression.max_attempts above: reject
+        # booleans (bool subclasses int — YAML `true` would coerce to 1),
+        # reject fractional floats rather than truncating them, accept
+        # integral floats and numeric strings, fall back to the default on
+        # anything else.
+        if isinstance(raw, bool):
+            return default
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            return int(raw) if raw.is_integer() else default
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return default
+
+    # Opt-in proactive tool-result prune trigger (0 = disabled — the
+    # default, so an unset key is behavior-neutral).  Negative values are
+    # treated as disabled rather than erroring.
+    compression_proactive_prune_tokens = max(
+        0, _parse_prune_int(_compression_cfg.get("proactive_prune_tokens", 0), 0)
+    )
+    compression_proactive_prune_min_chars = _parse_prune_int(
+        _compression_cfg.get("proactive_prune_min_result_chars", 8000), 8000
+    )
+    compression_proactive_prune_min_reclaim = max(
+        0,
+        _parse_prune_int(
+            _compression_cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096
+        ),
+    )
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of
@@ -1659,13 +1928,65 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    # Per-model threshold overrides: keys are substring-matched against the
+    # model name (longest match wins). Empty dict = use the global threshold
+    # for all models (backward compatible).
+    _raw_model_thresholds = _compression_cfg.get("model_thresholds", {})
+    if isinstance(_raw_model_thresholds, dict):
+        compression_model_thresholds = {
+            str(k): float(v) for k, v in _raw_model_thresholds.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+    else:
+        compression_model_thresholds = {}
+    # Absolute token cap: when set, compression triggers at the lower of
+    # the ratio-based threshold and this absolute count. Clamped to the
+    # model's context length at apply-time so a cap above the window is
+    # a no-op (ratio-based threshold wins).
+    compression_threshold_tokens = _compression_cfg.get("threshold_tokens")
+    if compression_threshold_tokens is not None:
+        try:
+            compression_threshold_tokens = int(compression_threshold_tokens)
+            if compression_threshold_tokens <= 0:
+                compression_threshold_tokens = None
+        except (TypeError, ValueError):
+            compression_threshold_tokens = None
     # In-place compaction: when True, compress_context() rewrites the message
     # list + rebuilds the system prompt WITHOUT rotating the session id (no
     # parent_session_id chain, no `name #N` renumber). See #38763 and
     # agent/conversation_compression.py. Consumed by compress_context(), not the
     # compressor, so it rides on the agent.
+    # Default True must match DEFAULT_CONFIG["compression"]["in_place"]
+    # (#38763). default=False here previously flipped agents into rotation
+    # mode whenever the merged config omitted the key (partial configs,
+    # load_config failure → {}), re-arming the pre-lease drift abort.
     compression_in_place = is_truthy_value(
-        _compression_cfg.get("in_place"), default=False
+        _compression_cfg.get("in_place"), default=True
+    )
+    # Opt-in (default False): a micro-compaction pass rewrites already-sent
+    # history every turn, which breaks the provider prompt-cache prefix on a
+    # per-turn cadence rather than at an episodic boundary. That is the cost
+    # `proactive_prune_min_reclaim_tokens` exists to amortize, so the feature
+    # stays off until an operator opts in and accepts the tradeoff.
+    compression_micro_compact = is_truthy_value(
+        _compression_cfg.get("micro_compact"), default=False
+    )
+    # How often a pass runs, in completed turns. Each pass rewrites
+    # already-sent history and costs one prompt-cache break, so this is the
+    # dial for how often that cost is paid: 1 = every turn (most aggressive
+    # reclaim), 5 = one break per five turns. Clamped to >= 1.
+    compression_micro_compact_every_n_turns = max(
+        1,
+        _parse_prune_int(_compression_cfg.get("micro_compact_every_n_turns", 1), 1),
+    )
+    # Rolling-summary defrag threshold, in tokens. Lived on the compressor as
+    # a hardcoded attribute with no path from config until now.
+    compression_micro_compact_defrag_tokens = max(
+        1,
+        _parse_prune_int(
+            _compression_cfg.get("micro_compact_defrag_threshold_tokens", 2000),
+            2000,
+        ),
     )
     codex_app_server_auto_compaction = str(
         _compression_cfg.get("codex_app_server_auto", "native") or "native"
@@ -1677,6 +1998,12 @@ def init_agent(
             codex_app_server_auto_compaction,
         )
         codex_app_server_auto_compaction = "native"
+    # Opt-in idle compaction: compact a session up front when it resumes after
+    # this many seconds of inactivity (0 = disabled). Time-based, so it
+    # complements the size-based threshold above. Consumed by build_turn_context().
+    compression_idle_compact_after_seconds = max(
+        0, int(_compression_cfg.get("idle_compact_after_seconds", 0))
+    )
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1747,8 +2074,9 @@ def init_agent(
             )
             _config_context_length = None
 
-    # Resolve custom_providers list once for reuse below (startup
-    # context-length override and plugin context-engine init).
+    # Resolve custom_providers once before route-scoping a global context pin:
+    # a named custom provider may keep its base URL only in this list rather
+    # than repeating it under ``model``.
     try:
         from hermes_cli.config import get_compatible_custom_providers
         _custom_providers = get_compatible_custom_providers(_agent_cfg)
@@ -1756,6 +2084,163 @@ def init_agent(
         _custom_providers = _agent_cfg.get("custom_providers")
         if not isinstance(_custom_providers, list):
             _custom_providers = []
+
+    # ``model.context_length`` describes the configured default model. A
+    # process launched directly with ``--model`` / ``-m`` has already replaced
+    # ``agent.model`` before this initializer loads config, so carrying the
+    # default model's explicit window into that different runtime is stale. The
+    # live switch/fallback paths already clear this override; keep direct-start
+    # overrides consistent with them and let provider metadata resolve the
+    # active model's window instead.
+    if _config_context_length is not None and isinstance(_model_cfg, dict):
+        _configured_default_model = str(_model_cfg.get("default") or "").strip()
+        _configured_default_runtime_model = _configured_default_model
+        _active_runtime_model = agent.model
+        if _configured_default_model:
+            try:
+                from hermes_cli.model_normalize import normalize_model_for_provider
+
+                _configured_default_runtime_model = normalize_model_for_provider(
+                    _configured_default_model, agent.provider
+                )
+                _active_runtime_model = normalize_model_for_provider(
+                    agent.model, agent.provider
+                )
+            except Exception:
+                pass
+        _configured_provider = str(_model_cfg.get("provider") or "").strip()
+        _configured_base_url = _normalize_route_base_url(
+            _model_cfg.get("base_url")
+        )
+        _configured_provider_norm = _normalize_custom_provider_name(
+            _configured_provider
+        )
+        _custom_provider_candidate = bool(_configured_provider_norm)
+        _runtime_first_provider_ids = {
+            "auto",
+            "moa",
+            "vertex",
+            "google-vertex",
+            "vertex-ai",
+            "gcp-vertex",
+            "vertexai",
+        }
+        if _configured_provider_norm in _runtime_first_provider_ids:
+            _custom_provider_candidate = False
+        elif (
+            _custom_provider_candidate
+            and _configured_provider_norm != "custom"
+            and not _configured_provider_norm.startswith("custom:")
+        ):
+            try:
+                from hermes_cli.auth import resolve_provider as resolve_auth_provider
+
+                _resolved_auth_provider = resolve_auth_provider(
+                    _configured_provider_norm
+                )
+                _custom_provider_candidate = (
+                    str(_resolved_auth_provider or "").strip().lower()
+                    != _configured_provider_norm
+                )
+            except Exception:
+                pass
+        if not _configured_base_url and _custom_provider_candidate:
+            _configured_custom_provider = _normalize_custom_provider_name(
+                _configured_provider
+            )
+            _user_providers = _agent_cfg.get("providers")
+            _disabled_custom_provider_ids: set[str] = set()
+            if isinstance(_user_providers, dict):
+                from hermes_cli.config import is_provider_enabled
+
+                for _provider_key, _provider_entry in _user_providers.items():
+                    if not isinstance(_provider_entry, dict):
+                        continue
+                    _entry_name = str(
+                        _provider_entry.get("name") or ""
+                    ).strip()
+                    _entry_provider_ids = _custom_provider_runtime_ids(
+                        _provider_key
+                    ) | _custom_provider_runtime_ids(_entry_name)
+                    if not is_provider_enabled(_provider_entry):
+                        _disabled_custom_provider_ids.update(
+                            provider_id
+                            for provider_id in _entry_provider_ids
+                            if provider_id
+                        )
+                        continue
+                    if _configured_custom_provider not in _entry_provider_ids:
+                        continue
+                    _configured_base_url = _normalize_route_base_url(
+                        _provider_entry.get("api")
+                        or _provider_entry.get("url")
+                        or _provider_entry.get("base_url")
+                    )
+                    if _configured_base_url:
+                        break
+            if not _configured_base_url:
+                for _provider_entry in _custom_providers:
+                    if not isinstance(_provider_entry, dict):
+                        continue
+                    _entry_name = str(
+                        _provider_entry.get("name") or ""
+                    ).strip()
+                    _entry_provider_key = str(
+                        _provider_entry.get("provider_key") or ""
+                    ).strip().lower()
+                    _entry_provider_ids = _custom_provider_runtime_ids(
+                        _entry_name
+                    ) | _custom_provider_runtime_ids(_entry_provider_key)
+                    if (
+                        _entry_provider_key
+                        and _custom_provider_runtime_ids(_entry_provider_key)
+                        & _disabled_custom_provider_ids
+                    ):
+                        continue
+                    if _configured_custom_provider not in _entry_provider_ids:
+                        continue
+                    _configured_base_url = _normalize_route_base_url(
+                        _provider_entry.get("base_url")
+                    )
+                    if _configured_base_url:
+                        break
+        _active_route_url = str(agent.base_url or "")
+        _requested_route_url = str(base_url or "")
+        if "?" in _requested_route_url.split("#", 1)[0]:
+            try:
+                _requested_parts = urlparse(_requested_route_url)
+                _requested_without_query = urlunparse(
+                    _requested_parts._replace(query="")
+                )
+                if _normalize_route_base_url(
+                    _requested_without_query
+                ) == _normalize_route_base_url(_active_route_url):
+                    _active_route_url = _requested_route_url
+            except (TypeError, ValueError):
+                pass
+        _active_base_url = _normalize_route_base_url(_active_route_url)
+        _route_mismatch = _context_route_mismatch(
+            _configured_base_url,
+            _active_base_url,
+            _configured_provider,
+            agent.provider,
+            already_normalized=True,
+        )
+        _model_mismatch = bool(
+            _configured_default_runtime_model
+            and _configured_default_runtime_model != _active_runtime_model
+        )
+        if _model_mismatch or _route_mismatch:
+            _ra().logger.debug(
+                "Ignoring model.context_length=%s for startup runtime %s at %s "
+                "(configured default is %s at %s)",
+                _config_context_length,
+                agent.model,
+                _active_base_url or agent.provider,
+                _configured_default_model,
+                _configured_base_url or _model_cfg.get("provider"),
+            )
+            _config_context_length = None
 
     # Store for reuse by _check_compression_model_feasibility (auxiliary
     # compression model context-length detection needs the same list).
@@ -1779,11 +2264,11 @@ def init_agent(
         # Surface a clear warning if the user set a context_length but it
         # wasn't a valid positive int — the helper silently skips those.
         if _config_context_length is None:
-            _target = agent.base_url.rstrip("/") if agent.base_url else ""
+            _target = _normalize_route_base_url(agent.base_url)
             for _cp_entry in _custom_providers:
                 if not isinstance(_cp_entry, dict):
                     continue
-                _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                _cp_url = _normalize_route_base_url(_cp_entry.get("base_url"))
                 if _target and _cp_url == _target:
                     _cp_models = _cp_entry.get("models", {})
                     if isinstance(_cp_models, dict):
@@ -1815,7 +2300,18 @@ def init_agent(
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
 
-    agent._ensure_lmstudio_runtime_loaded(_config_context_length)
+    _lmstudio_runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
+        _config_context_length
+    )
+    if agent._lmstudio_load_was_unverified(_lmstudio_runtime_context_length):
+        _ra().logger.warning(
+            "LM Studio model activation was rejected or completed without a "
+            "verifiable active context length; falling back to configured context"
+        )
+    _effective_context_length = agent._effective_lmstudio_context_length(
+        _config_context_length,
+        _lmstudio_runtime_context_length,
+    )
 
 
 
@@ -1892,10 +2388,20 @@ def init_agent(
             agent.model,
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
-            config_context_length=_config_context_length,
+            config_context_length=_effective_context_length,
             provider=agent.provider,
             custom_providers=_custom_providers,
         )
+        # Per-model threshold overrides are part of the explicit
+        # context-engine contract: assign them BEFORE the initial
+        # update_model() call so the first resolution (which derives
+        # threshold_percent/threshold_tokens for the initial model) already
+        # sees the overrides. Assigning after update_model() left the initial
+        # model on the engine's global threshold until the first /model
+        # switch. Engines that override update_model() own their own policy
+        # and may ignore the attribute.
+        if compression_model_thresholds:
+            agent.context_compressor.model_thresholds = compression_model_thresholds
         agent.context_compressor.update_model(
             model=agent.model,
             context_length=_plugin_ctx_len,
@@ -1917,11 +2423,17 @@ def init_agent(
             quiet_mode=agent.quiet_mode,
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
-            config_context_length=_config_context_length,
+            config_context_length=_effective_context_length,
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
+            model_thresholds=compression_model_thresholds,
+            threshold_tokens_cap=compression_threshold_tokens,
+            proactive_prune_tokens=compression_proactive_prune_tokens,
+            proactive_prune_min_result_chars=compression_proactive_prune_min_chars,
+            proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
+            min_tail_user_messages=compression_min_tail_users,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -1931,12 +2443,32 @@ def init_agent(
             pass
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
+    # Apply micro-compaction settings to the compressor (feature is opt-in)
+    _cc = getattr(agent, "context_compressor", None)
+    if _cc is not None and hasattr(_cc, "_micro_compact_enabled"):
+        _cc._micro_compact_enabled = compression_micro_compact
+    if _cc is not None and hasattr(_cc, "_micro_compact_every_n_turns"):
+        _cc._micro_compact_every_n_turns = compression_micro_compact_every_n_turns
+    if _cc is not None and hasattr(_cc, "_micro_compact_defrag_threshold_tokens"):
+        _cc._micro_compact_defrag_threshold_tokens = (
+            compression_micro_compact_defrag_tokens
+        )
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
+    agent.max_compression_attempts = compression_max_attempts
+    agent.compression_idle_compact_after_seconds = (
+        compression_idle_compact_after_seconds
+    )
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)
-    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
+    _allow_lmstudio_explicit_below_floor = (
+        str(getattr(agent, "provider", "") or "").strip().lower() == "lmstudio"
+        and isinstance(agent._config_context_length, int)
+        and not isinstance(agent._config_context_length, bool)
+        and agent._config_context_length > 0
+    )
+    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
@@ -2116,7 +2648,7 @@ def init_agent(
     # autoraised model) updates the marker state and re-notifies once. The
     # config display gate (compression.codex_gpt55_autoraise_notice) still
     # suppresses the banner entirely without disabling the threshold autoraise.
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None) or {}
     _show_autoraise_notice = (
         bool(_autoraise)
         and compression_enabled
@@ -2132,14 +2664,21 @@ def init_agent(
             _active_threshold_pct = getattr(
                 agent.context_compressor, "threshold_percent", compression_threshold
             )
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,})")
+            _cap_note = ""
+            _cap = getattr(agent.context_compressor, "threshold_tokens_cap", None)
+            if _cap and _cap > 0:
+                _cap_note = f" (capped at {_cap:,} tokens)"
+            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
         # Notice with the exact opt-back-out command. Printed inline at startup
         # for CLI users; gateway users get the same text replayed via
         # _compression_warning on turn 1 (set below).
         if _show_autoraise_notice:
-            print(_build_codex_gpt5_autoraise_notice(_autoraise))
+            print(_build_codex_gpt5_autoraise_notice(
+                _autoraise,
+                context_length=getattr(agent.context_compressor, "context_length", None),
+            ))
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
@@ -2149,7 +2688,10 @@ def init_agent(
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
     if _show_autoraise_notice:
-        agent._compression_warning = _build_codex_gpt5_autoraise_notice(_autoraise)
+        agent._compression_warning = _build_codex_gpt5_autoraise_notice(
+            _autoraise,
+            context_length=getattr(agent.context_compressor, "context_length", None),
+        )
 
     # Mark shown so repeated inits in this profile (e.g. every gateway message)
     # stay silent. Recorded once, whether the notice went to the CLI print or
@@ -2172,6 +2714,7 @@ def init_agent(
     agent._primary_runtime = {
         "model": agent.model,
         "provider": agent.provider,
+        "requested_provider": agent.requested_provider,
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),

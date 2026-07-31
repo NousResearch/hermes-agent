@@ -1,9 +1,12 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
+  getVoicePlaybackSequence,
+  isVoicePlaybackSequenceCurrent,
   markVoicePlaybackInterrupted,
   playSpeechText,
   type SpeechStreamSession,
@@ -60,6 +63,7 @@ export function useVoiceConversation({
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
   const { handle, level } = useMicRecorder(voiceCopy)
+  const playback = useStore($voicePlayback)
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)
@@ -73,6 +77,8 @@ export function useVoiceConversation({
   const bargeCapturePendingRef = useRef(false)
   const bargedRef = useRef(false)
   const speechStartSequenceRef = useRef(0)
+  const resumeAfterExternalPlaybackRef = useRef(false)
+  const discardInterruptedResponseRef = useRef(false)
   const enabledRef = useRef(enabled)
   const mutedRef = useRef(muted)
   const busyRef = useRef(busy)
@@ -141,6 +147,14 @@ export function useVoiceConversation({
         return
       }
 
+      if (discardInterruptedResponseRef.current) {
+        if (pendingResponse()) {
+          consumePendingResponse()
+        }
+
+        discardInterruptedResponseRef.current = false
+      }
+
       turnClosingRef.current = true
       clearTurnTimeout()
       setStatus('transcribing')
@@ -200,15 +214,23 @@ export function useVoiceConversation({
         turnClosingRef.current = false
       }
     },
-    [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [consumePendingResponse, handle, onSubmit, onTranscribeAudio, pendingResponse, voiceCopy.transcriptionFailed]
   )
 
   const startListening = useCallback(async () => {
-    pendingStartRef.current = false
-
     if (!enabledRef.current || mutedRef.current || busyRef.current) {
       return
     }
+
+    const activePlayback = $voicePlayback.get()
+
+    if (activePlayback.status !== 'idle' && activePlayback.source !== 'voice-conversation') {
+      resumeAfterExternalPlaybackRef.current = true
+
+      return
+    }
+
+    pendingStartRef.current = false
 
     if (bargeCapturePendingRef.current) {
       return // the barge monitor is mid-capture and owns the mic
@@ -229,6 +251,14 @@ export function useVoiceConversation({
 
     // enabled/muted/busy or an interleaved turn may have changed while we waited.
     if (!enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
+      return
+    }
+
+    const currentPlayback = $voicePlayback.get()
+
+    if (currentPlayback.status !== 'idle' && currentPlayback.source !== 'voice-conversation') {
+      resumeAfterExternalPlaybackRef.current = true
+
       return
     }
 
@@ -435,15 +465,23 @@ export function useVoiceConversation({
 
   /** Whole-text fallback: wait for the reply to complete, then speak it. */
   const awaitFallbackSpeech = useCallback(
-    (responseId: string) => {
+    (responseId: string, playbackSequence: number) => {
       const poll = () => {
         if (responseIdRef.current !== responseId) {
+          return
+        }
+
+        if (!isVoicePlaybackSequenceCurrent(playbackSequence)) {
+          awaitingSpokenResponseRef.current = false
+          settleAfterSpeech(false)
+
           return
         }
 
         const response = pendingResponse()
 
         if (!response || response.id !== responseId) {
+          awaitingSpokenResponseRef.current = false
           settleAfterSpeech(false)
 
           return
@@ -500,7 +538,26 @@ export function useVoiceConversation({
       ensureBargeMonitor()
 
       void (async () => {
-        const session = await startSpeechStream({ source: 'voice-conversation' })
+        const pendingSession = startSpeechStream({ source: 'voice-conversation' })
+        const playbackSequence = getVoicePlaybackSequence()
+
+        speechStartSequenceRef.current = playbackSequence
+        const session = await pendingSession
+
+        if (session === undefined) {
+          const activePlayback = $voicePlayback.get()
+
+          if (activePlayback.status !== 'idle' && activePlayback.source !== 'voice-conversation') {
+            resumeAfterExternalPlaybackRef.current = true
+          }
+
+          if (responseIdRef.current === responseId) {
+            awaitingSpokenResponseRef.current = false
+            settleAfterSpeech(false)
+          }
+
+          return
+        }
 
         // The session may resolve after the loop moved on (barge, disable).
         if (responseIdRef.current !== responseId) {
@@ -524,7 +581,7 @@ export function useVoiceConversation({
 
           // No streaming backend/provider: speak the whole reply once it lands.
           speechSessionRef.current = null
-          awaitFallbackSpeech(responseId)
+          awaitFallbackSpeech(responseId, playbackSequence)
 
           return
         }
@@ -560,7 +617,7 @@ export function useVoiceConversation({
         }
 
         if (outcome === 'fallback') {
-          awaitFallbackSpeech(responseId)
+          awaitFallbackSpeech(responseId, playbackSequence)
 
           return
         }
@@ -586,6 +643,7 @@ export function useVoiceConversation({
 
     setMuted(false)
     awaitingSpokenResponseRef.current = false
+    discardInterruptedResponseRef.current = false
     dropSpeechSession()
     consumePendingResponse()
     pendingStartRef.current = true
@@ -601,6 +659,8 @@ export function useVoiceConversation({
 
   const end = useCallback(async () => {
     pendingStartRef.current = false
+    resumeAfterExternalPlaybackRef.current = false
+    discardInterruptedResponseRef.current = false
     clearTurnTimeout()
     stopVoicePlayback()
     handle.cancel()
@@ -623,6 +683,7 @@ export function useVoiceConversation({
       const next = !value
 
       if (next) {
+        resumeAfterExternalPlaybackRef.current = false
         clearTurnTimeout()
         handle.cancel()
         setStatus('idle')
@@ -633,6 +694,84 @@ export function useVoiceConversation({
       return next
     })
   }, [handle])
+
+  // Manual Read Aloud owns both audio and the microphone while it is active.
+  // Yield from every voice-conversation phase, then re-arm exactly once after
+  // that external owner releases playback. This also prevents the barge monitor
+  // from hearing the selected text through the speakers and interrupting it.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref writes (see eslint rule comment)
+  useEffect(() => {
+    const externalPlayback = playback.status !== 'idle' && playback.source !== 'voice-conversation'
+
+    if (!enabled || muted || !externalPlayback) {
+      return
+    }
+
+    const hadPendingResponse = awaitingSpokenResponseRef.current
+
+    const shouldYield =
+      hadPendingResponse ||
+      pendingStartRef.current ||
+      status === 'listening' ||
+      status === 'thinking' ||
+      status === 'speaking'
+
+    if (!shouldYield) {
+      return
+    }
+
+    resumeAfterExternalPlaybackRef.current = true
+    pendingStartRef.current = false
+    awaitingSpokenResponseRef.current = false
+
+    if (turnTimeoutRef.current) {
+      window.clearTimeout(turnTimeoutRef.current)
+      turnTimeoutRef.current = null
+    }
+
+    if (status === 'listening') {
+      handle.cancel()
+    }
+
+    stopBargeMonitorRef.current?.()
+    stopBargeMonitorRef.current = null
+    bargeCapturePendingRef.current = false
+    bargedRef.current = false
+    speechSessionRef.current = null
+    responseIdRef.current = null
+    spokenSourceLengthRef.current = 0
+
+    if (hadPendingResponse) {
+      if (pendingResponse()) {
+        consumePendingResponse()
+      } else {
+        discardInterruptedResponseRef.current = true
+      }
+    }
+
+    setStatus('idle')
+  }, [consumePendingResponse, enabled, handle, muted, pendingResponse, playback.source, playback.status, status])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref writes (see eslint rule comment)
+  useEffect(() => {
+    if (!resumeAfterExternalPlaybackRef.current) {
+      return
+    }
+
+    if (!enabled || muted) {
+      resumeAfterExternalPlaybackRef.current = false
+
+      return
+    }
+
+    if (playback.status !== 'idle' || busy || status !== 'idle') {
+      return
+    }
+
+    resumeAfterExternalPlaybackRef.current = false
+    pendingStartRef.current = true
+    void startListening()
+  }, [busy, enabled, muted, playback.status, startListening, status])
 
   useEffect(() => {
     if (!enabled) {
@@ -682,6 +821,13 @@ export function useVoiceConversation({
       return
     }
 
+    if (discardInterruptedResponseRef.current) {
+      if (pendingResponse()) {
+        consumePendingResponse()
+        discardInterruptedResponseRef.current = false
+      }
+    }
+
     if (awaitingSpokenResponseRef.current && status !== 'speaking') {
       // Generation phase: the turn is in flight but no reply audio exists
       // yet. Keep the mic live so speech can interrupt the model mid-
@@ -717,7 +863,17 @@ export function useVoiceConversation({
     if (pendingStartRef.current) {
       void startListening()
     }
-  }, [busy, enabled, muted, ensureBargeMonitor, openLiveSpeech, pendingResponse, startListening, status])
+  }, [
+    busy,
+    consumePendingResponse,
+    enabled,
+    muted,
+    ensureBargeMonitor,
+    openLiveSpeech,
+    pendingResponse,
+    startListening,
+    status
+  ])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

@@ -9,6 +9,7 @@ and ``speak_text`` tolerates empty input without touching the provider
 stack.
 """
 
+from pathlib import Path
 
 import pytest
 
@@ -153,6 +154,87 @@ class TestStopWithoutStart:
         assert voice.stop_and_transcribe() is None
 
 
+@pytest.mark.parametrize("played", [True, False])
+def test_streaming_wrapper_propagates_playback_outcome(monkeypatch, played):
+    import hermes_cli.voice as voice
+    from tools import tts_tool
+
+    lifecycle = []
+
+    def _fake_stream(_queue, _stop, done_event):
+        lifecycle.append(done_event.is_set())
+        done_event.set()
+        return played
+
+    monkeypatch.setattr(tts_tool, "stream_tts_to_speaker", _fake_stream)
+
+    assert voice._speak_text_streaming("Outcome propagation.") is played
+    assert lifecycle == [False]
+
+
+@pytest.mark.real_audio_playback
+def test_speak_text_does_not_retry_after_universal_no_audio(monkeypatch):
+    import hermes_cli.voice as voice
+    import tools.tts_streaming as ts
+    from tools import tts_tool
+
+    legacy_requests = []
+    monkeypatch.setattr(ts, "resolve_streaming_provider", lambda _config: object())
+    monkeypatch.setattr(voice, "_speak_text_streaming", lambda _text, _stop: False)
+    monkeypatch.setattr(
+        tts_tool,
+        "text_to_speech_tool",
+        lambda **kwargs: legacy_requests.append(kwargs) or '{"success": false}',
+    )
+
+    assert voice.speak_text("Do not retry this failed pipeline.") is None
+    assert legacy_requests == []
+
+
+@pytest.mark.real_audio_playback
+def test_speak_text_routes_nonstreaming_provider_losslessly(monkeypatch):
+    import hermes_cli.voice as voice
+    import tools.tts_streaming as ts
+    from tools import tts_tool
+
+    generated: list[str] = []
+    played: list[bytes] = []
+    warnings: list[tuple] = []
+    config = {"provider": "edge", "edge": {"max_text_length": 17}}
+
+    async def _generate_edge(text, output_path, _config):
+        generated.append(text)
+        Path(output_path).write_bytes(text.encode())
+        return output_path
+
+    def _play(path):
+        played.append(Path(path).read_bytes())
+        return True
+
+    monkeypatch.setattr(
+        ts,
+        "resolve_streaming_provider",
+        lambda _config, preferred=None: None,
+    )
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: config)
+    monkeypatch.setattr(tts_tool, "_strip_markdown_for_tts", lambda text: text)
+    monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
+    monkeypatch.setattr(tts_tool, "_generate_edge_tts", _generate_edge)
+    monkeypatch.setattr("tools.voice_mode.play_audio_file", _play)
+    monkeypatch.setattr(voice, "play_audio_file", _play)
+    monkeypatch.setattr(
+        voice.logger,
+        "warning",
+        lambda *args, **_kwargs: warnings.append(args),
+    )
+    text = "p" * 40
+
+    assert voice.speak_text(text) is None
+    assert [len(piece) for piece in generated] == [17, 17, 6], warnings
+    assert "".join(generated) == text
+    assert b"".join(played) == text.encode()
+
+
 @pytest.mark.real_audio_playback
 class TestSpeakTextGuards:
     @pytest.mark.parametrize("text", ["", "   ", "\n\t  "])
@@ -164,51 +246,6 @@ class TestSpeakTextGuards:
 
         # Should simply return None without raising.
         assert speak_text(text) is None
-
-    def test_speak_text_uses_returned_tts_file_path(self, monkeypatch):
-        import hermes_cli.voice as voice
-        from tools import tts_tool
-
-        played = []
-        returned_path = "/tmp/hermes_voice/actual.flac"
-
-        monkeypatch.setattr(
-            tts_tool,
-            "text_to_speech_tool",
-            lambda **_kwargs: f'{{"success": true, "file_path": "{returned_path}"}}',
-        )
-        monkeypatch.setattr(voice.os, "makedirs", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(voice.os.path, "isfile", lambda path: path == returned_path)
-        monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
-        monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
-        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
-
-        assert voice.speak_text("Hello world") is None
-        assert played == [returned_path]
-
-    def test_speak_text_prefers_requested_mp3_over_returned_ogg(self, monkeypatch):
-        import hermes_cli.voice as voice
-        from tools import tts_tool
-
-        played = []
-        requested_paths = []
-
-        def fake_tts(**kwargs):
-            requested_path = kwargs["output_path"]
-            requested_paths.append(requested_path)
-            ogg_path = requested_path.rsplit(".", 1)[0] + ".ogg"
-            return f'{{"success": true, "file_path": "{ogg_path}"}}'
-
-        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
-        monkeypatch.setattr(voice.os, "makedirs", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(voice.os.path, "isfile", lambda _path: True)
-        monkeypatch.setattr(voice.os.path, "getsize", lambda _path: 1000)
-        monkeypatch.setattr(voice.os, "unlink", lambda _path: None)
-        monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
-
-        assert voice.speak_text("Hello world") is None
-        assert played == requested_paths
-
 
 class TestContinuousAPI:
     """Continuous (VAD) mode API — CLI-parity loop entry points."""
@@ -447,9 +484,9 @@ class TestBeepsEnabledTruthyStrings:
 
 @pytest.mark.real_audio_playback
 class TestSpeakTextStreamingDispatch:
-    """speak_text routes through the generic streaming dispatcher (#58930)
-    when a chunked streaming provider resolves — one dispatcher, zero
-    parallel streaming implementations."""
+    """speak_text always uses the universal TTS dispatcher (#58930):
+    chunked providers stream and every other provider uses its lossless sync
+    fallback, with zero parallel synthesis implementations."""
 
     def test_streaming_provider_routes_through_dispatcher(self, monkeypatch):
         import hermes_cli.voice as voice
@@ -465,6 +502,7 @@ class TestSpeakTextStreamingDispatch:
                     break
                 streamed.append(item)
             done_event.set()
+            return True
 
         monkeypatch.setattr(
             ts, "resolve_streaming_provider", lambda cfg, preferred=None: object()

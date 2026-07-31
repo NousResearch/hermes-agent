@@ -28,6 +28,8 @@ const markVoicePlaybackInterrupted = vi.fn()
 const stopVoicePlayback = vi.fn()
 
 vi.mock('@/lib/voice-playback', () => ({
+  getVoicePlaybackSequence: vi.fn(() => 0),
+  isVoicePlaybackSequenceCurrent: vi.fn(() => true),
   markVoicePlaybackInterrupted: () => markVoicePlaybackInterrupted(),
   playSpeechText: vi.fn(async () => true),
   startSpeechStream: vi.fn(async () => null),

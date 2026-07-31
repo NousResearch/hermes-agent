@@ -1211,7 +1211,7 @@ export function ChatBar({
                     All four render nothing until something contributes. */}
                   <ContribSlot area={COMPOSER_AREAS.top} />
                   <VoiceActivity state={voiceActivityState} />
-                  <VoicePlaybackActivity />
+                  <VoicePlaybackActivity scope="non-selection" />
                   {queueEdit && editingQueuedPrompt && (
                     <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
                       <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">

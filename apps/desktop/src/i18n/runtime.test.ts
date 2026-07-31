@@ -36,6 +36,36 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('cron.promptPlaceholder')).toBe('代理每次執行時應做什麼？')
   })
 
+  it('provides explicit selection translation copy in every supported locale', () => {
+    const keys = [
+      'title',
+      'providerNote',
+      'target',
+      'preferredHint',
+      'searchLanguages',
+      'noLanguages',
+      'languageTagHint',
+      'failed',
+      'emptyResult',
+      'tooLong'
+    ] as const
+
+    for (const locale of ['ar', 'ja', 'zh', 'zh-hant'] as const) {
+      for (const key of keys) {
+        const value = TRANSLATIONS[locale].selectionTranslate[key]
+
+        expect(typeof value, `${locale}.selectionTranslate.${key}`).toBe('string')
+        expect(value.length, `${locale}.selectionTranslate.${key}`).toBeGreaterThan(0)
+        expect(value, `${locale}.selectionTranslate.${key}`).not.toBe(TRANSLATIONS.en.selectionTranslate[key])
+      }
+
+      const customTagCopy = TRANSLATIONS[locale].selectionTranslate.useLanguageTag('French', 'fr')
+      expect(customTagCopy, `${locale}.selectionTranslate.useLanguageTag`).not.toBe(
+        TRANSLATIONS.en.selectionTranslate.useLanguageTag('French', 'fr')
+      )
+    }
+  })
+
   it('translates settings copy for newly supported locales', () => {
     setRuntimeI18nLocale('ja')
     expect(translateNow('settings.appearance.title')).toBe('外観')

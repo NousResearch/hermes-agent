@@ -2285,6 +2285,27 @@ export interface Translations {
     zoneCount: (count: number) => string
   }
 
+  selectionTranslate: {
+    title: string
+    providerNote: string
+    target: string
+    preferredHint: string
+    searchLanguages: string
+    noLanguages: string
+    useLanguageTag: (name: string, tag: string) => string
+    languageTagHint: string
+    source: string
+    translation: string
+    translating: string
+    failed: string
+    emptyResult: string
+    tooLong: string
+    retry: string
+    copy: string
+    copied: string
+    copyFailed: string
+  }
+
   assistant: {
     thread: {
       loadingSession: string

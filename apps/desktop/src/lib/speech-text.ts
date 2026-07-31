@@ -165,3 +165,43 @@ export function sanitizeTextForSpeech(text: string): string {
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+// NeuTTS and KittenTTS cap fallback requests at 2,000 characters. Keep a
+// margin so every built-in and unknown-provider fallback remains lossless.
+export function splitSpeechText(text: string, maxChars = 1_900): string[] {
+  let remaining = text.trim()
+
+  if (!remaining) {
+    return []
+  }
+
+  const chunks: string[] = []
+
+  while (remaining.length > maxChars) {
+    const prefix = remaining.slice(0, maxChars + 1)
+    const sentenceBoundary = /[.!?](?:["')\]]*)\s+/g
+    let cut = -1
+    let match: RegExpExecArray | null
+
+    while ((match = sentenceBoundary.exec(prefix)) !== null) {
+      cut = match.index + match[0].trimEnd().length
+    }
+
+    if (cut < Math.floor(maxChars / 2)) {
+      cut = remaining.lastIndexOf(' ', maxChars)
+    }
+
+    if (cut <= 0) {
+      cut = maxChars
+    }
+
+    chunks.push(remaining.slice(0, cut).trimEnd())
+    remaining = remaining.slice(cut).trimStart()
+  }
+
+  if (remaining) {
+    chunks.push(remaining)
+  }
+
+  return chunks
+}

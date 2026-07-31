@@ -171,7 +171,7 @@ def run(
     _atomic_write_json(state_dir / MEASUREMENTS_FILE, measurements)
 
     # --- Deterministic preflight from live snapshot paths ---
-    catalogue_path = hermes_home / "cron" / "jobs.json"
+    catalogue_path = hermes_home / "cache" / "model_catalog.json"
     sources_path = state_dir / SOURCES_FILE
     previous_path = state_dir / PREFLIGHT_FILE
     # Read previous BEFORE we overwrite it.

@@ -61,13 +61,31 @@ def read_hardware() -> dict[str, Any]:
     }
 
 
+def _route_projection(config: dict[str, Any]) -> dict[str, Any]:
+    """Return only non-secret inference-routing fields from a profile config."""
+    if not config:
+        return {}
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        provider = model_cfg.get("provider")
+        model = model_cfg.get("default") or model_cfg.get("model")
+    else:
+        provider = config.get("provider")
+        model = model_cfg
+    fallbacks = []
+    for item in config.get("fallback_providers", []) or []:
+        if isinstance(item, dict):
+            fallbacks.append({key: item.get(key) for key in ("provider", "model", "base_url") if item.get(key) is not None})
+    return {"provider": provider, "model": model, "fallback_providers": fallbacks}
+
+
 def effective_configs(hermes_home: Path) -> dict[str, Any]:
     profiles: dict[str, dict[str, Any]] = {}
     profile_root = hermes_home / "profiles"
     if profile_root.is_dir():
         for config_path in sorted(profile_root.glob("*/config.yaml")):
-            profiles[config_path.parent.name] = _read_yaml(config_path)
-    return {"root": _read_yaml(hermes_home / "config.yaml"), "profiles": profiles}
+            profiles[config_path.parent.name] = _route_projection(_read_yaml(config_path))
+    return {"root": _route_projection(_read_yaml(hermes_home / "config.yaml")), "profiles": profiles}
 
 
 def _active_routes(hermes_home: Path) -> list[dict[str, Any]]:
@@ -79,6 +97,19 @@ def _active_routes(hermes_home: Path) -> list[dict[str, Any]]:
         for job in jobs
         if isinstance(job, dict) and job.get("enabled", True) and job.get("state") != "paused"
     ]
+
+
+def _previous_snapshot_summary(previous: Any) -> dict[str, Any] | None:
+    """Keep only bounded comparison metadata; never recursively embed snapshots."""
+    if not isinstance(previous, dict):
+        return None
+    sources = previous.get("source_retrievals")
+    source_names = sorted({str(item.get("name")) for item in sources or [] if isinstance(item, dict) and item.get("name")})
+    return {
+        "schema_version": previous.get("schema_version"),
+        "generated_at": previous.get("generated_at"),
+        "source_names": source_names[:50],
+    }
 
 
 def build_preflight(
@@ -104,7 +135,7 @@ def build_preflight(
         "catalogue": {"evidence_role": "availability_only", "modified_at": modified_at, "data": catalogue},
         "hardware": hardware_reader(),
         "source_retrievals": source_retrievals,
-        "previous_snapshot": _read_json(previous_path, None),
+        "previous_snapshot": _previous_snapshot_summary(_read_json(previous_path, None)),
     }
 
 

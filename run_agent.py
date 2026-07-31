@@ -7113,11 +7113,11 @@ class AIAgent:
                 token = set_conversation_context(root)
         try:
             def _run(fence=None):
-            return compress_context(
-                self, messages, system_message,
+                return compress_context(
+                    self, messages, system_message,
                     approx_tokens=approx_tokens, task_id=task_id,
                     focus_topic=focus_topic,
-                force=force,
+                    force=force,
                     defer_context_engine_notification=(
                         defer_context_engine_notification
                     ),

@@ -148,6 +148,55 @@ class TestRunCompressContextWithProgressTimeout:
         assert result_msgs == compressed
         assert result_prompt == "committed"
 
+    def test_never_finishing_commit_waits_past_pre_commit_ceiling(self):
+        """Once begin_commit() wins, the host waits without a ceiling.
+
+        context_total_ceiling_seconds only bounds the pre-commit (summary)
+        phase. A hung SessionDB commit cannot be fence-cancelled; returning
+        early would diverge live messages from durable session state. This
+        pins that contract so docs and the wrapper stay aligned.
+        """
+        original = [{"role": "user", "content": "a"}]
+        compressed = [{"role": "assistant", "content": "late-commit"}]
+        entered = threading.Event()
+        release = threading.Event()
+
+        def worker(fence: CompressionCommitFence):
+            assert fence.begin_commit()
+            entered.set()
+            try:
+                assert release.wait(timeout=2)
+                return (compressed, "committed-late")
+            finally:
+                fence.finish_commit()
+
+        ceiling = 0.05
+        started = time.monotonic()
+        done = {}
+
+        def run():
+            done["result"] = run_compress_context_with_progress_timeout(
+                worker=worker,
+                messages=original,
+                system_prompt_fallback="fallback",
+                idle_timeout_seconds=ceiling,
+                total_ceiling_seconds=ceiling,
+            )
+
+        t = threading.Thread(target=run, name="commit-hang-waiter")
+        t.start()
+        assert entered.wait(timeout=1)
+        # Still blocked past the pre-commit ceiling while commit holds the fence.
+        time.sleep(ceiling + 0.15)
+        assert t.is_alive(), "waiter must block on an in-flight commit past ceiling"
+        release.set()
+        t.join(timeout=2)
+        assert not t.is_alive()
+        waited = time.monotonic() - started
+        assert waited >= ceiling + 0.1
+        assert done["result"][0] == compressed
+        assert done["result"][1] == "committed-late"
+
     def test_rejects_non_positive_idle(self):
         with pytest.raises(ValueError):
             run_compress_context_with_progress_timeout(

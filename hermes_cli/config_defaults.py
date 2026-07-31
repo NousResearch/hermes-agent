@@ -647,9 +647,12 @@ DEFAULT_CONFIG = {
                                       # worker is cut off. 0 = disable the owned wrapper
                                       # (callers that already pass commit_fence, e.g. gateway
                                       # hygiene, never use this path).
-        "context_total_ceiling_seconds": 600,  # absolute cap on in-agent compress_context wait
-                                      # even while tokens are still moving. Clamped to
-                                      # >= context_timeout_seconds when the idle budget is > 0.
+        "context_total_ceiling_seconds": 600,  # absolute cap on the *pre-commit*
+                                      # in-agent compress_context wait (summary /
+                                      # stream phase) even while tokens are still
+                                      # moving. Clamped to >= context_timeout_seconds
+                                      # when the idle budget is > 0. Does NOT bound
+                                      # an already-started SessionDB commit fence.
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to

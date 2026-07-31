@@ -606,6 +606,15 @@ def run_compress_context_with_progress_timeout(
     state. When the worker already entered the commit boundary, waits for that
     commit to finish and returns its result.
 
+    Timeout budgets (``idle_timeout_seconds`` / ``total_ceiling_seconds``) cover
+    the **pre-commit** wait only — the summary / stream phase before
+    :meth:`CompressionCommitFence.begin_commit`. Once the worker holds the
+    commit fence, SessionDB mutation is already in flight and cannot be safely
+    abandoned without risking transcript divergence; the caller therefore waits
+    for ``future.result()`` with no additional host ceiling (same contract as
+    gateway session-hygiene after a lost cancel race). A hung commit can still
+    stall the turn; that is a SessionDB / I/O failure mode outside this wrapper.
+
     ``system_prompt_fallback`` may be a string or a zero-arg callable resolved
     only on the timeout path, so successful compression never pays for (or
     fails on) an eager prompt rebuild.
@@ -665,6 +674,17 @@ def run_compress_context_with_progress_timeout(
         if cancelled is None:
             time.sleep(0.001)
     if not cancelled:
+        # Pre-commit ceiling already elapsed, but begin_commit() won the race.
+        # Waiting is intentional: SessionDB mutation cannot be fence-cancelled.
+        waited = time.monotonic() - wait_started
+        if waited >= ceiling:
+            logger.warning(
+                "Context compression crossed the commit boundary after the "
+                "pre-commit ceiling (waited %.1fs, ceiling %.1fs); waiting for "
+                "SessionDB commit to finish before continuing",
+                waited,
+                ceiling,
+            )
         return future.result()
 
     waited = time.monotonic() - wait_started

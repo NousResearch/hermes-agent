@@ -178,6 +178,52 @@ class TestAuthenticate:
 class TestSessionOps:
 
     @pytest.mark.asyncio
+    async def test_set_session_model_preserves_enabled_and_disabled_toolsets(self, monkeypatch):
+        """Regression sibling to /model: the async ACP session/set_model
+        entrypoint also rebuilds state.agent via _make_agent and must pass
+        through the pre-switch agent's enabled_toolsets/disabled_toolsets so
+        session-scoped MCP toolsets survive the switch."""
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://api.openai.com/v1",
+                enabled_toolsets=["hermes-acp", "mcp-demo-search"],
+                disabled_toolsets=["browser"],
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+
+        captured = {}
+
+        def fake_make_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("requested_provider") or "openai-codex",
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=kwargs.get("disabled_toolsets"),
+            )
+
+        monkeypatch.setattr(manager, "_make_agent", fake_make_agent)
+        monkeypatch.setattr(
+            "acp_adapter.server.HermesACPAgent._resolve_model_selection",
+            staticmethod(lambda raw, current: (current, raw.strip())),
+        )
+
+        result = await acp_agent.set_session_model(
+            model_id="anthropic:claude-sonnet-4-6",
+            session_id=state.session_id,
+        )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-demo-search"]
+        assert captured["disabled_toolsets"] == ["browser"]
+        assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-demo-search"]
+        assert state.agent.disabled_toolsets == ["browser"]
+
+    @pytest.mark.asyncio
     async def test_new_session_returns_authenticated_cross_provider_model_state(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(
@@ -502,6 +548,66 @@ class TestSlashCommands:
         state = self._make_state(mock_manager)
         result = agent._handle_slash_command("/model", state)
         assert "test-model" in result
+
+    def test_cmd_model_preserves_enabled_and_disabled_toolsets_across_switch(self, agent, mock_manager, monkeypatch):
+        """Regression: /model rebuilds state.agent via _make_agent, which
+        previously always recomputed enabled_toolsets from config.yaml alone
+        (session.py::_make_agent), silently dropping any session-scoped MCP
+        toolset the ACP client had registered before the switch. _make_agent
+        now accepts enabled_toolsets/disabled_toolsets and _cmd_model must
+        pass the pre-switch agent's values through."""
+        state = self._make_state(mock_manager)
+        state.agent.enabled_toolsets = ["hermes-acp", "mcp-demo-search"]
+        state.agent.disabled_toolsets = ["browser"]
+
+        captured = {}
+
+        def fake_make_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("requested_provider") or "openrouter",
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=kwargs.get("disabled_toolsets"),
+            )
+
+        monkeypatch.setattr(mock_manager, "_make_agent", fake_make_agent)
+        monkeypatch.setattr(
+            "acp_adapter.server.HermesACPAgent._resolve_model_selection",
+            staticmethod(lambda raw, current: (current, raw.strip())),
+        )
+
+        agent._handle_slash_command("/model anthropic:claude-sonnet-4-6", state)
+
+        assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-demo-search"]
+        assert captured["disabled_toolsets"] == ["browser"]
+        assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-demo-search"]
+        assert state.agent.disabled_toolsets == ["browser"]
+
+    def test_cmd_model_passes_none_toolsets_when_agent_has_none(self, agent, mock_manager, monkeypatch):
+        """A session with no session-scoped toolsets yet must not force an
+        empty enabled_toolsets list onto the rebuilt agent — _make_agent's
+        own config.yaml-derived default should still apply."""
+        state = self._make_state(mock_manager)
+        state.agent.enabled_toolsets = None
+        state.agent.disabled_toolsets = None
+
+        captured = {}
+
+        def fake_make_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), provider="openrouter")
+
+        monkeypatch.setattr(mock_manager, "_make_agent", fake_make_agent)
+        monkeypatch.setattr(
+            "acp_adapter.server.HermesACPAgent._resolve_model_selection",
+            staticmethod(lambda raw, current: (current, raw.strip())),
+        )
+
+        agent._handle_slash_command("/model anthropic:claude-sonnet-4-6", state)
+
+        assert captured["enabled_toolsets"] is None
+        assert captured["disabled_toolsets"] is None
 
 
 

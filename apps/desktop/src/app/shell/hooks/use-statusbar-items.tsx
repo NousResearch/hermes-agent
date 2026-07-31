@@ -35,7 +35,7 @@ import {
   setCurrentUsage
 } from '@/store/session'
 import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
-import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
+import { $subagentsBySession, activeSubagentCount, failedSubagentCount, subagentsForPanel } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
 import {
   $backendUpdateApply,
@@ -101,19 +101,6 @@ export function useStatusbarItems({
   const primarySessionStartedAt = useStore($sessionStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
 
-  // The indicator must speak the same scope as the Spawn-tree panel it opens:
-  // every session's subagents, never background system actions. Only two
-  // COUNTS are read, so select scalars — a whole-map `useStore` re-ran this
-  // hook (rebuilding all ~9 statusbar items) on every subagent progress tick
-  // in ANY session, including background ones.
-  const subagentsRunning = useStoreSelector($subagentsBySession, bySession =>
-    Object.values(bySession).reduce((sum, items) => sum + activeSubagentCount(items), 0)
-  )
-
-  const subagentsFailed = useStoreSelector($subagentsBySession, bySession =>
-    Object.values(bySession).reduce((sum, items) => sum + failedSubagentCount(items), 0)
-  )
-
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const backendUpdateStatus = useStore($backendUpdateStatus)
@@ -151,6 +138,17 @@ export function useStatusbarItems({
 
   const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
   const busy = primaryFocused ? primaryBusy : focusedBusy
+
+  // Match the panel's live scope: all sessions with active work, plus terminal
+  // history for the focused session. Scalar selectors avoid progress-tick
+  // rerenders when the two displayed counts are unchanged.
+  const subagentsRunning = useStoreSelector($subagentsBySession, bySession =>
+    activeSubagentCount(subagentsForPanel(bySession, activeSessionId))
+  )
+
+  const subagentsFailed = useStoreSelector($subagentsBySession, bySession =>
+    failedSubagentCount(subagentsForPanel(bySession, activeSessionId))
+  )
 
   // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
   // a fresh `{...}` each render would bust the usage-label memos below.

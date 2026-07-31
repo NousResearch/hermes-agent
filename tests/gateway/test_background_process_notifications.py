@@ -537,3 +537,38 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
     assert result is True
     assert posts == ["raw-origin-sid"]
+
+
+def test_gateway_drain_retains_and_formats_overflow_events():
+    """watch_overflow_* events must survive the gateway drain and render
+    their summary — previously they were discarded at the drain (only
+    watch_match/watch_disabled were retained) and had no formatter branch."""
+    import asyncio
+    from gateway.run import (
+        _drain_gateway_watch_events,
+        _format_gateway_process_notification,
+    )
+
+    queue = asyncio.Queue()
+    tripped = {
+        "type": "watch_overflow_tripped",
+        "message": "watch flood detected: 47 notifications suppressed for pattern 'ERROR'",
+        "session_id": "proc_a1b2",
+    }
+    released = {
+        "type": "watch_overflow_released",
+        "message": "watch flood released: notifications resumed for pattern 'ERROR'",
+        "session_id": "proc_a1b2",
+    }
+    queue.put_nowait(tripped)
+    queue.put_nowait(released)
+
+    retained = _drain_gateway_watch_events(queue)
+    assert retained == [tripped, released]
+
+    out_tripped = _format_gateway_process_notification(tripped)
+    assert "47 notifications suppressed" in out_tripped
+    assert "exit code" not in out_tripped
+    out_released = _format_gateway_process_notification(released)
+    assert "notifications resumed" in out_released
+    assert "exit code" not in out_released

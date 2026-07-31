@@ -2812,6 +2812,12 @@ def format_process_notification(evt: dict) -> "str | None":
     if evt_type == "watch_disabled":
         return f"[IMPORTANT: {evt.get('message', '')}]"
 
+    # Overflow events carry their human-readable summary in `message` —
+    # without this case they fall through to the completion formatter and
+    # surface as a phantom "process exited (exit code ?)" notification.
+    if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")

@@ -1981,6 +1981,31 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     assert "node --version" in all_content
 
 
+@pytest.mark.asyncio
+async def test_per_platform_streaming_does_not_override_global_disabled(monkeypatch, tmp_path):
+    """Regression for #53697: display.platforms.telegram.streaming=True must not
+    re-enable gateway streaming when streaming.enabled=False (global master switch)."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-per-platform-streaming-global-off",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {"streaming": True},
+                },
+                "interim_assistant_messages": True,
+            },
+            "streaming": {"enabled": False},
+        },
+        platform=Platform.TELEGRAM,
+    )
+
+    assert result.get("already_sent") is not True
+    assert adapter.edits == []
+
+
 class TestSlackReplyInThreadProgressRouting:
     """#18859: reply_in_thread=false must stop progress from creating threads."""
 

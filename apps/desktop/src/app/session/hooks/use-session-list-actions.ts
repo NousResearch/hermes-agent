@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 
-import { getCronJobs, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import { getCronJobs, getSession, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -10,7 +10,7 @@ import {
 } from '@/lib/session-source'
 import { setCronJobs } from '@/store/cron'
 import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
-import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
+import { $profiles, ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import { $removedSessionIds } from '@/store/projects'
 import {
   $messagingSessions,
@@ -28,6 +28,8 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
+
+import { hydratePinnedSessions, missingPinnedSessionIds, pinHydrationProfiles } from './pinned-session-hydration'
 
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
@@ -177,6 +179,30 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         messagingExclude: MESSAGING_EXCLUDED_SOURCES
       })
 
+      // Pins are durable navigation state, not members of the current recents
+      // page. Resolve only the pins absent from the bounded recents/cron slices
+      // so old pins paint on cold start without forcing the user to "Load more".
+      // The by-id lookup also keeps this bounded: no full-history scan and no
+      // increase to the normal recents page size.
+      const pinIds = $pinnedSessionIds.get()
+
+      const missingPinIds = missingPinnedSessionIds(pinIds, [
+        ...result.recents.sessions,
+        ...result.cron.sessions
+      ])
+
+      const hydratedPins = missingPinIds.length
+        ? await hydratePinnedSessions(
+            missingPinIds,
+            pinHydrationProfiles(
+              profileScope,
+              $profiles.get().map(profile => profile.name),
+              ALL_PROFILES
+            ),
+            getSession
+          )
+        : []
+
       if (refreshSessionsRequestRef.current === requestId) {
         const recents = result.recents
 
@@ -186,11 +212,13 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // (the tombstone self-clears once projects.tree confirms the delete).
         const tombstones = $removedSessionIds.get()
 
+        const hydratedRecents = [...recents.sessions, ...hydratedPins]
+
         const incoming = tombstones.size
-          ? recents.sessions.filter(
+          ? hydratedRecents.filter(
               s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
             )
-          : recents.sessions
+          : hydratedRecents
 
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
         // that returns content-identical rows must keep the previous array

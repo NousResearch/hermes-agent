@@ -1372,6 +1372,12 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
 
 
 
+
+
+
+
+
+
 def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
     """A new subscription must NOT replay historical terminal events.
 
@@ -1400,3 +1406,5 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
+
+

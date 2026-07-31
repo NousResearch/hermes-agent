@@ -733,10 +733,20 @@ def _update_via_zip(args):
     from urllib.request import urlretrieve
 
     # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
-    # static archive from GitHub. Branch ZIPs remain limited to the default
-    # "main" channel so --branch cannot silently diverge on the fallback path;
-    # release tags are static archives too, so --version can be honored here.
+    # static archive from GitHub. Keep this fallback limited to the default
+    # "main" channel: it preserves .git and copies archive members into the
+    # working tree, so it cannot honor targets that require coherent git state
+    # (non-main branches or detached release tags).
     target_kind, target = _m()._resolve_update_target(args)
+    if target_kind == "tag":
+        print("✗ --version is not supported on the Windows ZIP-fallback update path.")
+        print(
+            "  This path runs when git file I/O is broken on the system and cannot "
+            "produce a coherent detached-HEAD checkout at a release tag. Resolve "
+            "the git-side breakage (typically an antivirus or NTFS filter holding "
+            f"files open) and rerun `hermes update --version {target}`."
+        )
+        _m().sys.exit(1)
     if target_kind == "branch" and target != "main":
         print(
             f"✗ --branch={target} is not supported on the Windows ZIP-fallback "
@@ -749,11 +759,7 @@ def _update_via_zip(args):
             f"--branch {target}`, or update against main with `hermes update`."
         )
         _m().sys.exit(1)
-    archive_kind = "tags" if target_kind == "tag" else "heads"
-    zip_url = (
-        "https://github.com/NousResearch/hermes-agent/archive/"
-        f"refs/{archive_kind}/{target}.zip"
-    )
+    zip_url = f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{target}.zip"
 
     print("→ Downloading latest version...")
     tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")

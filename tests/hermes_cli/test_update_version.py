@@ -154,15 +154,16 @@ def test_cmd_update_version_checks_out_detached_tag(monkeypatch, tmp_path):
     assert not any("checkout -B" in call for call in flattened)
 
 
-def test_update_zip_version_uses_tag_archive_url(monkeypatch, tmp_path):
+def test_update_zip_version_is_rejected_before_download(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda _root: 0)
     monkeypatch.setattr(hermes_main, "_record_bytecode_fingerprint", lambda: None)
 
-    captured = {}
+    downloaded = False
 
     def fake_urlretrieve(url, path):
-        captured["url"] = url
+        nonlocal downloaded
+        downloaded = True
         raise RuntimeError("stop after URL capture")
 
     monkeypatch.setattr("urllib.request.urlretrieve", fake_urlretrieve)
@@ -170,4 +171,7 @@ def test_update_zip_version_uses_tag_archive_url(monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="1"):
         hermes_main._update_via_zip(SimpleNamespace(version="v2026.7.30", branch=None))
 
-    assert captured["url"].endswith("/archive/refs/tags/v2026.7.30.zip")
+    out = capsys.readouterr().out
+    assert "--version is not supported on the Windows ZIP-fallback" in out
+    assert "hermes update --version v2026.7.30" in out
+    assert not downloaded

@@ -51,7 +51,7 @@ hermes update --version v0.19.0
 hermes update --check --version v0.19.0   # preview whether your checkout differs
 ```
 
-`--version` and `--branch` are mutually exclusive. A version update fetches the requested tag from `origin` and checks it out directly, leaving the source tree in detached-HEAD state at that immutable release tag. Local uncommitted changes are handled with the same auto-stash/restore flow as branch updates.
+`--version` and `--branch` are mutually exclusive. A version update fetches the requested tag from `origin` and checks it out directly, leaving the source tree in detached-HEAD state at that immutable release tag. Local uncommitted changes are handled with the same auto-stash/restore flow as branch updates. The Windows ZIP fallback update path cannot produce an exact detached tag checkout, so it rejects `--version`; fix the git file-I/O issue and rerun the normal git-backed update path instead.
 
 ### Local changes on non-interactive updates
 

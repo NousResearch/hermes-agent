@@ -1,11 +1,13 @@
 # CodeQL security analysis for hermes-agent.
 #
 # Scope:
-#   - queries: security-extended (CVE-class findings only).
-#     We do NOT enable security-and-quality because the "quality" set
-#     is FP-heavy on a single-maintainer Python codebase (e.g. it
-#     flags standard library trust-boundary patterns the project
-#     explicitly relies on).
+#   - queries: security-extended, ADDED ON TOP OF CodeQL's default query
+#     suite (that's how `queries: security-extended` behaves — it augments
+#     the default suite, it does not replace it). We do NOT additionally
+#     enable security-and-quality because the "quality" set is FP-heavy on
+#     a single-maintainer Python codebase (e.g. it flags standard library
+#     trust-boundary patterns the project explicitly relies on) — that's
+#     the query-set boundary this workflow actually draws.
 #   - languages: python + javascript (the two source ecosystems on this
 #     side; TypeScript is bundled into the JS analysis per CodeQL docs).
 #     We do not analyze GitHub Actions workflows — actions are pinned
@@ -21,7 +23,7 @@
 #   - per-push: ~3-6 min
 #   - weekly scheduled: ~3-6 min
 # Branch protections: the per-push block can be skipped on a docs-only
-# change via `[skip ci]` or `[codeql skip]` in the commit message.
+# change via `[skip ci]` in the commit message.
 
 name: "CodeQL"
 
@@ -57,7 +59,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@3b0bd1d116c0bde30213346b22d4f634d96a2fb0  # v3
+        uses: github/codeql-action/init@a2983b8bed1923f44751c5c43237f479442827b3  # v3
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -66,6 +68,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@3b0bd1d116c0bde30213346b22d4f634d96a2fb0  # v3
+        uses: github/codeql-action/analyze@a2983b8bed1923f44751c5c43237f479442827b3  # v3
         with:
           category: "/language:${{ matrix.language }}"

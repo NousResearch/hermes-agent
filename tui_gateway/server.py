@@ -2126,6 +2126,89 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+def _reconcile_deferred_build_overrides(
+    sid: str, session: dict, agent, before: dict
+) -> None:
+    """Apply build-relevant overrides written while the agent was being built.
+
+    ``_start_agent_build`` reads ``model_override`` /
+    ``create_reasoning_override`` / ``create_service_tier_override`` into the
+    build kwargs and then spends seconds inside ``_make_agent`` (MCP discovery,
+    prompt/skill build).  Every writer of those keys gates its live-apply on
+    ``session["agent"]`` being set — ``config.set reasoning``,
+    ``config.set fast``, ``_apply_model_switch``, the pre-agent ``/moa`` branch,
+    and the explicit-provider ``config.set model`` path (which skips the
+    initialization wait entirely).  A pick made inside that window therefore
+    reaches neither the kwargs (already snapshotted) nor the agent (not yet
+    installed), so it is silently lost for the life of the session.
+
+    Re-read the three keys after installation and apply whatever changed
+    through the same helpers the live paths use.  Model goes first: the switch
+    rebuilds the agent's client, and fast-mode overrides must resolve against
+    the newly selected model.
+    """
+    override = session.get("model_override")
+    if isinstance(override, dict) and override != before.get("model"):
+        model = str(override.get("model") or "").strip()
+        provider = str(override.get("provider") or "").strip()
+        if model:
+            raw = f"{model} --provider {provider}" if provider else model
+            try:
+                _apply_model_switch(
+                    sid,
+                    session,
+                    raw,
+                    # The pick is already committed to the session, so its
+                    # cost confirmation (if any) was answered by whoever wrote
+                    # it. Re-prompting here would strand the switch: nothing is
+                    # listening to this background build, so a confirm_required
+                    # return would drop the user's model on the floor.
+                    confirm_expensive_model=True,
+                    pin_session_override=True,
+                    # Reconciling a session-scoped pick — never write config.yaml.
+                    persist_override=False,
+                )
+            except Exception as exc:
+                # The live path raises *before* committing the override
+                # (#50163), so a failed reconcile must not leave the failed
+                # target pinned: a later /new or resume rebuilds from
+                # model_override and would resurrect a model that does not
+                # work.  Put back exactly what the build baked in.
+                logger.warning(
+                    "Deferred-build model override reconcile failed: %s", exc
+                )
+                prior = before.get("model")
+                if prior is None:
+                    session.pop("model_override", None)
+                else:
+                    session["model_override"] = prior
+
+    changed = False
+
+    tier = session.get("create_service_tier_override")
+    if tier is not None and tier != before.get("tier"):
+        agent.service_tier = "priority" if tier == "priority" else None
+        request_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        request_overrides.pop("service_tier", None)
+        request_overrides.pop("speed", None)
+        if tier == "priority":
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            fast_overrides = resolve_fast_mode_overrides(getattr(agent, "model", None))
+            if fast_overrides:
+                request_overrides.update(fast_overrides)
+        agent.request_overrides = request_overrides
+        changed = True
+
+    reasoning = session.get("create_reasoning_override")
+    if reasoning is not None and reasoning != before.get("reasoning"):
+        agent.reasoning_config = reasoning
+        changed = True
+
+    if changed:
+        _persist_live_session_runtime(session)
+
+
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
@@ -2229,6 +2312,17 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         kw["reasoning_config_override"] = reasoning
                     if (tier := current.get("create_service_tier_override")) is not None:
                         kw["service_tier_override"] = tier
+                # Snapshot what the build is about to bake in. _make_agent
+                # blocks for seconds and every writer of these keys skips its
+                # live-apply while session["agent"] is None, so anything the
+                # user picks from here until installation must be reconciled
+                # afterwards or it is lost — see
+                # _reconcile_deferred_build_overrides.
+                pre_build_overrides = {
+                    "model": current.get("model_override"),
+                    "reasoning": current.get("create_reasoning_override"),
+                    "tier": current.get("create_service_tier_override"),
+                }
                 agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
@@ -2265,6 +2359,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             _wire_callbacks(sid)
+            # The agent is installed and wired, so writers now take their live
+            # branch. Adopt anything picked during the build window before the
+            # session.info below publishes the session's runtime identity.
+            _reconcile_deferred_build_overrides(
+                sid, current, agent, pre_build_overrides
+            )
             # Surface the self-improvement review's "💾 …" summary as an event
             # the TUI/desktop render in-transcript, honoring
             # display.memory_notifications. _init_session wires this for the

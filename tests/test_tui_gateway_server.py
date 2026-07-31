@@ -16410,3 +16410,298 @@ def test_fallback_session_info_always_emits_branch(monkeypatch):
 
     assert "branch" in info
     assert info["branch"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Deferred agent build <-> override race.
+#
+# _start_agent_build snapshots model_override / create_reasoning_override /
+# create_service_tier_override into the build kwargs and then blocks for
+# seconds inside _make_agent (MCP discovery, prompt/skill build).  Every writer
+# of those keys gates its live-apply on session["agent"] being set, so a pick
+# made inside that window reached neither the kwargs (already read) nor the
+# agent (not yet installed) and was silently lost for the life of the session.
+# ---------------------------------------------------------------------------
+
+
+class _BuildRaceAgent:
+    """Stand-in for the agent _make_agent returns, recording in-place switches."""
+
+    def __init__(self):
+        self.model = "old/model"
+        self.provider = "openrouter"
+        self.base_url = ""
+        self.api_key = "sk-or"
+        self.api_mode = "chat_completions"
+        self.reasoning_config = None
+        self.service_tier = None
+        self.request_overrides: dict = {}
+        self.tools: list = []
+        self.switch_calls: list = []
+
+    def switch_model(self, **kwargs):
+        self.switch_calls.append(kwargs)
+        self.model = kwargs.get("new_model", self.model)
+        self.provider = kwargs.get("new_provider", self.provider)
+
+
+def _park_agent_build(monkeypatch, **session_extra):
+    """Start a deferred agent build parked inside _make_agent.
+
+    Returns ``(sid, session, agent, release)``.  Until ``release`` is set the
+    build thread sits inside _make_agent with ``session["agent"]`` still None —
+    the exact window every override writer used to mishandle.
+    """
+    agent = _BuildRaceAgent()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _slow_make_agent(_sid, _key, **_kwargs):
+        entered.set()
+        release.wait(timeout=5.0)
+        return agent
+
+    monkeypatch.setattr(server, "_make_agent", _slow_make_agent)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_config_health", lambda _cfg: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("old/model", ""))
+    monkeypatch.setattr(server, "_start_notification_poller", lambda _sid, _s: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda _s: None)
+    monkeypatch.setattr(server, "_persist_live_session_system_prompt", lambda _s: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda _sid, _s: None)
+    monkeypatch.setattr(server, "_append_model_switch_marker", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        server,
+        "_get_db",
+        lambda: types.SimpleNamespace(create_session=lambda *a, **kw: None),
+    )
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "unregister_gateway_notify", lambda key: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    sid = "build-race-sid"
+    session = _session(agent_ready=threading.Event(), **session_extra)
+    session["agent"] = None
+    server._sessions[sid] = session
+    server._start_agent_build(sid, session)
+    assert entered.wait(timeout=2.0), "build thread never entered _make_agent"
+    assert session.get("agent") is None, "agent must not be installed yet"
+    return sid, session, agent, release
+
+
+def _finish_build(session, release):
+    release.set()
+    assert session["agent_ready"].wait(timeout=5.0), "build never completed"
+
+
+def _switch_result(model, provider, **extra):
+    return types.SimpleNamespace(
+        success=True,
+        new_model=model,
+        target_provider=provider,
+        api_key=extra.get("api_key", "sk-test"),
+        base_url=extra.get("base_url", "https://example.invalid"),
+        api_mode=extra.get("api_mode", "chat_completions"),
+        warning_message="",
+        model_info=None,
+    )
+
+
+def test_reasoning_pick_during_agent_build_reaches_installed_agent(monkeypatch):
+    """#63998's original shape: /reasoning during the build window was dropped.
+
+    config.set reasoning writes create_reasoning_override and then gates the
+    live apply on session["agent"] — None mid-build — so the effort never
+    reached the agent the build was about to install.
+    """
+    sid, session, agent, release = _park_agent_build(monkeypatch)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": sid, "key": "reasoning", "value": "high"},
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert session.get("agent") is None, "build must still be in flight"
+
+        _finish_build(session, release)
+
+        assert session["create_reasoning_override"] is not None
+        assert agent.reasoning_config == session["create_reasoning_override"], (
+            "reasoning picked during the build window never reached the agent"
+        )
+    finally:
+        release.set()
+        server._sessions.pop(sid, None)
+
+
+def test_explicit_provider_model_switch_during_agent_build_reaches_agent(monkeypatch):
+    """config.set model with an explicit provider skips the initialization wait.
+
+    That route calls _apply_model_switch with session["agent"] still None, so it
+    only records model_override; without reconciliation the built agent keeps
+    running the model the build snapshotted.
+    """
+    result = _switch_result("claude-sonnet-4.6", "anthropic")
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
+
+    sid, session, agent, release = _park_agent_build(monkeypatch)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": sid,
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic",
+                    "confirm_expensive_model": True,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        # The explicit-provider path returned without ever waiting for a build.
+        assert session.get("agent") is None, "build must still be in flight"
+        assert session["model_override"]["model"] == "claude-sonnet-4.6"
+
+        _finish_build(session, release)
+
+        assert agent.switch_calls, (
+            "model picked during the build window never reached the agent"
+        )
+        assert agent.model == "claude-sonnet-4.6"
+        assert agent.provider == "anthropic"
+    finally:
+        release.set()
+        server._sessions.pop(sid, None)
+
+
+def test_moa_one_shot_during_agent_build_reaches_agent(monkeypatch):
+    """The pre-agent /moa branch writes model_override and returns.
+
+    Its comment claimed "the override is consumed by the first build", which is
+    false once the build is already in flight — the MoA turn silently ran on the
+    old model.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.moa_config.normalize_moa_config",
+        lambda _cfg: {"default_preset": "balanced"},
+    )
+    result = _switch_result("balanced", "moa", base_url="moa://local")
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
+
+    sid, session, agent, release = _park_agent_build(monkeypatch)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"session_id": sid, "name": "moa", "arg": "summarize this"},
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert session["model_override"]["provider"] == "moa"
+
+        _finish_build(session, release)
+
+        assert agent.switch_calls, (
+            "/moa preset picked during the build window never reached the agent"
+        )
+        assert agent.provider == "moa"
+        assert agent.model == "balanced"
+    finally:
+        release.set()
+        server._sessions.pop(sid, None)
+
+
+def test_failed_reconcile_does_not_leave_failed_model_override_pinned(monkeypatch):
+    """A failed reconcile must not persist the model it failed to switch to.
+
+    The live switch path raises *before* committing model_override (#50163).
+    The reconcile must match it: a retained failed target would be resurrected
+    by the next /new or resume and rebuild the session onto a broken model.
+    """
+    result = _switch_result("broken/model", "anthropic")
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
+
+    sid, session, agent, release = _park_agent_build(monkeypatch)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": sid,
+                    "key": "model",
+                    "value": "broken/model --provider anthropic",
+                    "confirm_expensive_model": True,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert session["model_override"]["model"] == "broken/model"
+
+        # The in-place swap fails only once the build thread reconciles.
+        def _boom(**_kwargs):
+            raise RuntimeError("provider rejected the model")
+
+        agent.switch_model = _boom
+
+        _finish_build(session, release)
+
+        assert session.get("model_override") is None, (
+            "a failed reconcile left the failed model pinned on the session; "
+            "the next /new or resume would rebuild onto it"
+        )
+    finally:
+        release.set()
+        server._sessions.pop(sid, None)
+
+
+def test_fast_mode_pick_during_agent_build_reaches_installed_agent(monkeypatch):
+    """create_service_tier_override is the third key the build snapshots.
+
+    config.set fast pins it, then gates the live apply on the agent existing —
+    the same race as reasoning.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda _model: {"service_tier": "priority"},
+    )
+
+    sid, session, agent, release = _park_agent_build(monkeypatch)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": sid, "key": "fast", "value": "fast"},
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert session.get("agent") is None, "build must still be in flight"
+        assert session["create_service_tier_override"] == "priority"
+
+        _finish_build(session, release)
+
+        assert agent.service_tier == "priority", (
+            "fast mode picked during the build window never reached the agent"
+        )
+    finally:
+        release.set()
+        server._sessions.pop(sid, None)

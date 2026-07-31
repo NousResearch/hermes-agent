@@ -5256,7 +5256,16 @@ def resolve_provider_client(
     # sent to Codex after the main lane fell back to gpt-5.5). Let _resolve_auto()
     # return the actual current runtime model when the caller did not explicitly
     # request one. (# compression-current-model)
-    if not model and provider != "auto":
+    #
+    # Nous + vision is the one carve-out: the branch below resolves its model
+    # from the Portal's tier-aware vision recommendation (``_try_nous(vision=
+    # True)``), and ``final_model = model or default`` means anything pre-filled
+    # here wins over that. The main chat model is routinely text-only (e.g. a
+    # ``:free`` chat SKU), so pre-filling it sends the image to a model that
+    # cannot accept one and the Portal 404s. Leave ``model`` unset and let the
+    # Portal slot through; only an explicit caller model may override it.
+    _nous_portal_vision = provider == "nous" and is_vision
+    if not model and provider != "auto" and not _nous_portal_vision:
         model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
@@ -6179,10 +6188,17 @@ def resolve_vision_provider_client(
             # DeepSeek-V4-Flash default) and _main_model_supports_vision can't be
             # trusted to catch that. Only fall back to the chat model when no
             # provider default is available (catalog unreachable).
-            vision_model = _resolve_provider_vision_default(main_provider) or main_model
+            provider_vision_default = _resolve_provider_vision_default(main_provider)
+            vision_model = provider_vision_default or main_model
             if main_provider == "nous":
+                # Nous resolves its vision model from the Portal's tier-aware
+                # recommended-models slots inside _try_nous(vision=True).
+                # Passing the chat model here overrides that pick, so a
+                # text-only chat default (e.g. a `:free` chat SKU) receives the
+                # image and the upstream rejects it with a 404. Only an
+                # explicit auxiliary.vision.model may override the Portal.
                 sync_client, default_model = _resolve_strict_vision_backend(
-                    main_provider, vision_model
+                    main_provider, resolved_model or provider_vision_default
                 )
                 if sync_client is not None:
                     logger.info(

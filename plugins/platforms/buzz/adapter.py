@@ -269,7 +269,7 @@ _MEDIA_URL_PATTERN = (
     r"[0-9a-f]{64}(?:\.[a-z0-9]{1,10})?(?:\?[^\s<>\[\]()]*)?"
 )
 _MARKDOWN_MEDIA_RE = re.compile(
-    rf"!\[[^\]]*\]\(\s*(?P<url>{_MEDIA_URL_PATTERN})"
+    rf"!\[(?P<alt>[^\]]*)\]\(\s*(?P<url>{_MEDIA_URL_PATTERN})"
     r"(?:\s+[\"'][^\"']*[\"'])?\s*\)",
     re.IGNORECASE,
 )
@@ -310,10 +310,10 @@ def _is_relay_media_url(url: str, relay_url: str) -> bool:
 
 def _find_relay_media_refs(
     text: str, relay_url: str
-) -> Tuple[List[str], List[Tuple[int, int]]]:
-    """Find same-relay media URLs and the content spans that contain them."""
+) -> Tuple[List[str], List[Tuple[int, int, str]]]:
+    """Find same-relay media URLs and their safe text replacements."""
     urls: List[str] = []
-    spans: List[Tuple[int, int]] = []
+    replacements: List[Tuple[int, int, str]] = []
     markdown_spans: List[Tuple[int, int]] = []
 
     for match in _MARKDOWN_MEDIA_RE.finditer(text):
@@ -321,7 +321,7 @@ def _find_relay_media_refs(
         if not _is_relay_media_url(url, relay_url):
             continue
         markdown_spans.append(match.span())
-        spans.append(match.span())
+        replacements.append((*match.span(), match.group("alt").strip()))
         if url not in urls:
             urls.append(url)
 
@@ -334,18 +334,17 @@ def _find_relay_media_refs(
         url = match.group(0)
         if not _is_relay_media_url(url, relay_url):
             continue
-        spans.append(match.span())
+        replacements.append((*match.span(), ""))
         if url not in urls:
             urls.append(url)
 
-    return urls, spans
+    return urls, replacements
 
 
-def _remove_media_spans(text: str, spans: List[Tuple[int, int]]) -> str:
-    chars = list(text)
-    for start, end in sorted(spans, reverse=True):
-        del chars[start:end]
-    cleaned = "".join(chars)
+def _replace_media_refs(text: str, replacements: List[Tuple[int, int, str]]) -> str:
+    cleaned = text
+    for start, end, replacement in sorted(replacements, reverse=True):
+        cleaned = f"{cleaned[:start]}{replacement}{cleaned[end:]}"
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
@@ -2369,11 +2368,11 @@ class BuzzAdapter(BasePlatformAdapter):
         Each object is independent: one failed download is logged and skipped
         without discarding the caption or any other successfully cached files.
         """
-        urls, spans = _find_relay_media_refs(text, self.relay_url)
+        urls, replacements = _find_relay_media_refs(text, self.relay_url)
         if not urls:
             return text, [], [], MessageType.TEXT
 
-        cleaned_text = _remove_media_spans(text, spans)
+        cleaned_text = _replace_media_refs(text, replacements)
         media_urls: List[str] = []
         media_types: List[str] = []
         media_kinds: List[str] = []

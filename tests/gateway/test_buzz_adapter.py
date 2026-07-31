@@ -1602,7 +1602,7 @@ class TestInboundMediaLocalisation:
         return captured, cli_calls
 
     @pytest.mark.asyncio
-    async def test_markdown_relay_image_is_localised_before_dispatch(
+    async def test_markdown_relay_image_preserves_alt_text_before_dispatch(
         self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -1611,7 +1611,7 @@ class TestInboundMediaLocalisation:
         media_url = f"https://test.relay/media/{'a' * 64}.png"
 
         await adapter._dispatch_message(
-            text=f"Please inspect this screenshot\n\n![]({media_url})",
+            text=f"Please inspect this screenshot\n\n![Login error dialog]({media_url})",
             chat_id=CHANNEL,
             chat_type="dm",
             user_id=OTHER_PUBKEY,
@@ -1622,7 +1622,7 @@ class TestInboundMediaLocalisation:
 
         assert len(captured) == 1
         event = captured[0]
-        assert event.text == "Please inspect this screenshot"
+        assert event.text == "Please inspect this screenshot\n\nLogin error dialog"
         assert event.message_type == MessageType.PHOTO
         assert event.media_types == ["image/png"]
         assert len(event.media_urls) == 1
@@ -1726,7 +1726,7 @@ class TestInboundMediaLocalisation:
         assert "/cache/documents/" in event.media_urls[0]
 
     @pytest.mark.asyncio
-    async def test_download_failure_keeps_caption_and_dispatches_text(
+    async def test_download_failure_preserves_caption_and_alt_text(
         self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
@@ -1735,7 +1735,7 @@ class TestInboundMediaLocalisation:
         captured, _calls = self._capture_dispatch(adapter, failed_urls=[media_url])
 
         await adapter._dispatch_message(
-            text=f"The error is visible here\n![]({media_url})",
+            text=f"The error is visible here\n![Checkout error dialog]({media_url})",
             chat_id=CHANNEL,
             chat_type="dm",
             user_id=OTHER_PUBKEY,
@@ -1745,7 +1745,7 @@ class TestInboundMediaLocalisation:
         )
 
         event = captured[0]
-        assert event.text == "The error is visible here"
+        assert event.text == "The error is visible here\nCheckout error dialog"
         assert event.message_type == MessageType.TEXT
         assert event.media_urls == []
         assert event.media_types == []

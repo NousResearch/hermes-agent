@@ -58,4 +58,23 @@ describe('a sent reference renders as the chip the composer showed', () => {
 
     expect(document.querySelector('[data-slot="aui_user-fence"]')?.textContent).toBe('const x = 1\n')
   })
+
+  it('renders consecutive quote lines as one blockquote without visible markers', () => {
+    render(<UserMessageText text={'> First line\n> \n> Second line\n\nMy response'} />)
+
+    const quote = document.querySelector('[data-slot="aui_user-quote"]')
+
+    expect(quote?.tagName).toBe('BLOCKQUOTE')
+    expect(quote?.textContent).toBe('First line\n\nSecond line')
+    expect(quote?.getAttribute('dir')).toBe('auto')
+    expect(document.body.textContent).not.toContain('> First line')
+    expect(document.body.textContent).toContain('My response')
+  })
+
+  it('does not treat a greater-than line inside a fence as a quote', () => {
+    render(<UserMessageText text={'```text\n> shell output\n```'} />)
+
+    expect(document.querySelector('[data-slot="aui_user-quote"]')).toBeNull()
+    expect(document.querySelector('[data-slot="aui_user-fence"]')?.textContent).toBe('> shell output\n')
+  })
 })

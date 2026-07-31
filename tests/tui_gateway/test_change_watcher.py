@@ -62,6 +62,64 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     assert ("sessions.changed", {}) in events
 
 
+def test_gateway_state_move_broadcasts_platforms_changed(watcher_home):
+    home, events = watcher_home
+    server._broadcast_watched_changes(now=0.0)
+
+    (home / "gateway_state.json").write_text('{"platforms": {}}')
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("platforms.changed", {}) in events
+
+
+def test_pending_pairing_request_broadcasts_pairing_changed(watcher_home):
+    """A new pending request must reach the Messaging page on its own signal.
+
+    The messaging gateway writes the pending code from a different process, and
+    it moves nothing in gateway_state.json — so platforms.changed cannot stand
+    in for this. Without a dedicated signal the badge stays invisible until an
+    unrelated connect/disconnect happens to fire.
+    """
+    home, events = watcher_home
+    store = home / "platforms" / "pairing"
+    store.mkdir(parents=True)
+    server._broadcast_watched_changes(now=0.0)
+
+    (store / "telegram-pending.json").write_text('{"abc": {"user_id": "1"}}')
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("pairing.changed", {}) in events
+    assert ("platforms.changed", {}) not in events
+
+
+def test_pairing_signal_follows_a_profile_store(watcher_home):
+    """Each profile keeps its own whitelist, and the page can be scoped to any."""
+    home, events = watcher_home
+    store = home / "profiles" / "work" / "platforms" / "pairing"
+    store.mkdir(parents=True)
+    server._broadcast_watched_changes(now=0.0)
+
+    (store / "telegram-approved.json").write_text('{"u1": {"user_id": "u1"}}')
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("pairing.changed", {}) in events
+
+
+def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):
+    """_rate_limits.json moves on every unauthorized DM, including ones that
+    produce no new row — signalling on it would refetch for nothing."""
+    home, events = watcher_home
+    store = home / "platforms" / "pairing"
+    store.mkdir(parents=True)
+    (store / "telegram-pending.json").write_text("{}")
+    server._broadcast_watched_changes(now=0.0)
+
+    (store / "_rate_limits.json").write_text('{"telegram:1": 123}')
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("pairing.changed", {}) not in events
+
+
 def test_sessions_floor_coalesces_burst_but_keeps_trailing_edge(watcher_home):
     home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)

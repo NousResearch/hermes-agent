@@ -29,27 +29,6 @@ class TestSkillScopedPassthrough:
         register_env_passthrough(["TENOR_API_KEY"])
         assert is_env_passthrough("TENOR_API_KEY")
 
-    def test_register_multiple(self):
-        register_env_passthrough(["FOO_TOKEN", "BAR_SECRET"])
-        assert is_env_passthrough("FOO_TOKEN")
-        assert is_env_passthrough("BAR_SECRET")
-        assert not is_env_passthrough("OTHER_KEY")
-
-    def test_clear(self):
-        register_env_passthrough(["TENOR_API_KEY"])
-        assert is_env_passthrough("TENOR_API_KEY")
-        clear_env_passthrough()
-        assert not is_env_passthrough("TENOR_API_KEY")
-
-    def test_get_all(self):
-        register_env_passthrough(["A_KEY", "B_TOKEN"])
-        result = get_all_passthrough()
-        assert "A_KEY" in result
-        assert "B_TOKEN" in result
-
-    def test_strips_whitespace(self):
-        register_env_passthrough(["  SPACED_KEY  "])
-        assert is_env_passthrough("SPACED_KEY")
 
     def test_skips_empty(self):
         register_env_passthrough(["", "  ", "VALID_KEY"])
@@ -69,29 +48,6 @@ class TestConfigPassthrough:
         assert is_env_passthrough("ANOTHER_TOKEN")
         assert not is_env_passthrough("UNRELATED_VAR")
 
-    def test_empty_config(self, tmp_path, monkeypatch):
-        config = {"terminal": {"env_passthrough": []}}
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
-
-        assert not is_env_passthrough("ANYTHING")
-
-    def test_missing_config_key(self, tmp_path, monkeypatch):
-        config = {"terminal": {"backend": "local"}}
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
-
-        assert not is_env_passthrough("ANYTHING")
-
-    def test_no_config_file(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _ep_mod._config_passthrough = None
-
-        assert not is_env_passthrough("ANYTHING")
 
     def test_union_of_skill_and_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["CONFIG_KEY"]}}

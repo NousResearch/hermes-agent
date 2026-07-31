@@ -47,6 +47,7 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +76,38 @@ _DEFAULT_POLL_INTERVAL = 4.0
 _MIN_POLL_INTERVAL = 1.0
 _CLI_TIMEOUT = 30.0
 
+# WebSocket transport (NIP-42 authenticated Nostr subscription).
+# kind 44100 is Buzz's channel-membership event — used for live DM discovery.
+_WS_AUTH_TIMEOUT = 20.0
+_WS_MAX_MESSAGE_BYTES = 2_000_000
+_WS_MEMBERSHIP_KIND = 44100
+_WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
+
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
 _DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
+
+
+def _load_nostr_auth():
+    """Import the sibling nostr_auth module in a loader-agnostic way.
+
+    The adapter is imported both as a package module
+    (``plugins.platforms.buzz.adapter``) and as a bare single-file module by
+    the test plugin loader, where relative imports have no parent package.
+    """
+    try:
+        from . import nostr_auth  # type: ignore[no-redef]
+
+        return nostr_auth
+    except ImportError:
+        import importlib.util
+
+        path = Path(__file__).with_name("nostr_auth.py")
+        spec = importlib.util.spec_from_file_location("plugin_adapter_buzz_nostr_auth", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +368,15 @@ class BuzzAdapter(BasePlatformAdapter):
             _rm_cfg = _rm_raw
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
 
+        # Inbound transport: "auto" (WebSocket with poll fallback, default),
+        # "websocket" (require WS; fail connect when it can't authenticate),
+        # or "poll" (CLI polling only). Env (BUZZ_TRANSPORT) overrides
+        # config.yaml.
+        _transport = (
+            os.getenv("BUZZ_TRANSPORT") or str(extra.get("transport", "auto") or "auto")
+        ).strip().lower()
+        self.transport = _transport if _transport in ("auto", "websocket", "poll") else "auto"
+
         # Auth: entries may be hex pubkeys or npubs; normalized to hex
         raw_allowed = os.getenv("BUZZ_ALLOWED_USERS") or extra.get("allowed_users", [])
         if isinstance(raw_allowed, str):
@@ -360,6 +399,10 @@ class BuzzAdapter(BasePlatformAdapter):
 
         # Runtime state
         self._poll_task: Optional[asyncio.Task] = None
+        self._ws_task: Optional[asyncio.Task] = None
+        self._ws_ready: Optional[asyncio.Event] = None
+        self._ws_active = False  # True while the WS loop owns inbound delivery
+        self._membership_since = 0
         self._lock_key: Optional[str] = None
         # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
         self._channel_state: Dict[str, dict] = {}
@@ -471,19 +514,37 @@ class BuzzAdapter(BasePlatformAdapter):
             await self._seed_channel(channel_id, chat_type="group")
         await self._discover_dms(seed=True)
 
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        # Inbound transport: prefer the NIP-42-authenticated WebSocket
+        # subscription (push, near-zero latency); fall back to CLI polling
+        # when the WS can't be established (transport="auto") or when the
+        # user pinned transport="poll".
+        transport_used = "poll"
+        if self.transport in ("auto", "websocket"):
+            if await self._start_websocket():
+                transport_used = "websocket"
+            elif self.transport == "websocket":
+                self._set_fatal_error(
+                    "ws_auth_failed",
+                    "Buzz WebSocket transport did not authenticate (transport=websocket)",
+                    retryable=True,
+                )
+                await self.disconnect()
+                return False
+        if transport_used == "poll":
+            self._poll_task = asyncio.create_task(self._poll_loop())
         self._mark_connected()
         logger.info(
-            "Buzz: connected to %s as %s, watching %d channel(s), poll interval %.1fs",
+            "Buzz: connected to %s as %s, watching %d channel(s) via %s%s",
             self.relay_url,
             self._display_name or self._self_npub[:16],
             len(self._channel_state),
-            self.poll_interval,
+            transport_used,
+            "" if transport_used == "websocket" else f", poll interval {self.poll_interval:.1f}s",
         )
         return True
 
     async def disconnect(self) -> None:
-        """Stop the poll loop and drop runtime state."""
+        """Stop the inbound transport and drop runtime state."""
         self._mark_disconnected()
         lock_key = getattr(self, "_lock_key", None)
         if lock_key:
@@ -494,6 +555,14 @@ class BuzzAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             self._lock_key = None
+        self._ws_active = False
+        if self._ws_task and not self._ws_task.done():
+            self._ws_task.cancel()
+            try:
+                await self._ws_task
+            except asyncio.CancelledError:
+                pass
+        self._ws_task = None
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
@@ -625,6 +694,185 @@ class BuzzAdapter(BasePlatformAdapter):
                 except ValueError:
                     pass
         return {"name": name or chat_id, "type": chat_type, "chat_id": chat_id}
+
+    # ── Inbound: WebSocket transport (NIP-42 authenticated) ──────────────
+    #
+    # Push transport contributed in PR #73636 by @ScaleLeanChris, adapted to
+    # dispatch through the same _handle_event() machinery as the poll loop so
+    # de-dupe, mention gating, DM latching, and the allow-list behave
+    # identically on both transports.
+
+    def _websocket_url(self) -> str:
+        parsed = urlsplit(self.relay_url.strip())
+        scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme)
+        if scheme not in ("ws", "wss") or not parsed.netloc:
+            raise ValueError("Buzz relay URL must use http(s) or ws(s)")
+        return urlunsplit((scheme, parsed.netloc, parsed.path or "", parsed.query, ""))
+
+    async def _start_websocket(self) -> bool:
+        """Start the WS loop; True when it authenticates within the timeout."""
+        try:
+            import websockets  # noqa: F401  (availability probe)
+
+            self._websocket_url()
+        except Exception as e:
+            logger.info("Buzz: WebSocket transport unavailable (%s); falling back to polling", e)
+            return False
+        self._ws_ready = asyncio.Event()
+        self._membership_since = int(time.time())
+        self._ws_task = asyncio.create_task(self._websocket_loop())
+        try:
+            await asyncio.wait_for(self._ws_ready.wait(), timeout=_WS_AUTH_TIMEOUT + 5)
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("Buzz: WebSocket did not authenticate in time")
+            self._ws_active = False
+            if self._ws_task and not self._ws_task.done():
+                self._ws_task.cancel()
+                try:
+                    await self._ws_task
+                except asyncio.CancelledError:
+                    pass
+            self._ws_task = None
+            return False
+        return True
+
+    async def _authenticate_websocket(self, websocket) -> None:
+        """NIP-42: wait for the relay's AUTH challenge, answer with a signed
+        kind-22242 event (plus the optional NIP-OA owner-attestation tag from
+        BUZZ_AUTH_TAG), and wait for the OK acknowledgment."""
+        build_auth_event = _load_nostr_auth().build_auth_event
+
+        raw = await asyncio.wait_for(websocket.recv(), timeout=_WS_AUTH_TIMEOUT)
+        message = json.loads(raw)
+        if not isinstance(message, list) or len(message) < 2 or message[0] != "AUTH":
+            raise ConnectionError("Buzz relay did not send a NIP-42 AUTH challenge")
+        event = build_auth_event(
+            private_key=self._private_key,
+            challenge=str(message[1]),
+            relay_url=self._websocket_url(),
+            auth_tag_json=os.getenv("BUZZ_AUTH_TAG", ""),
+        )
+        await websocket.send(json.dumps(["AUTH", event], separators=(",", ":")))
+        while True:
+            raw = await asyncio.wait_for(websocket.recv(), timeout=_WS_AUTH_TIMEOUT)
+            response = json.loads(raw)
+            if not isinstance(response, list) or not response:
+                continue
+            if response[0] == "OK" and len(response) >= 4 and response[1] == event["id"]:
+                if response[2] is True:
+                    return
+                raise ConnectionError(f"Buzz WebSocket AUTH rejected: {response[3]}")
+            if response[0] in ("NOTICE", "CLOSED"):
+                detail = response[-1] if len(response) > 1 else "authentication failed"
+                raise ConnectionError(f"Buzz WebSocket AUTH failed: {detail}")
+
+    async def _send_channel_subscription(self, websocket, subscription_id: str, channel_id: str) -> None:
+        state = self._channel_state.get(channel_id) or {}
+        since = max(int(state.get("last_ts") or time.time()) - 1, 0)
+        request = [
+            "REQ",
+            subscription_id,
+            {"kinds": [_CHAT_KIND], "#h": [channel_id], "since": since},
+        ]
+        await websocket.send(json.dumps(request, separators=(",", ":")))
+
+    async def _subscribe_websocket(self, websocket) -> Dict[str, Optional[str]]:
+        """Subscribe to every watched conversation plus membership events
+        (kind 44100 p-tagged to us) for live DM discovery."""
+        subscriptions: Dict[str, Optional[str]] = {}
+        for index, channel_id in enumerate(list(self._channel_state)):
+            subscription_id = f"hermes-buzz-{index}"
+            subscriptions[subscription_id] = channel_id
+            await self._send_channel_subscription(websocket, subscription_id, channel_id)
+        if self._self_pubkey:
+            request = [
+                "REQ",
+                _WS_MEMBERSHIP_SUB_ID,
+                {
+                    "kinds": [_WS_MEMBERSHIP_KIND],
+                    "#p": [self._self_pubkey],
+                    "since": max(self._membership_since - 1, 0),
+                },
+            ]
+            await websocket.send(json.dumps(request, separators=(",", ":")))
+            subscriptions[_WS_MEMBERSHIP_SUB_ID] = None
+        return subscriptions
+
+    async def _handle_membership_event(self, websocket, subscriptions: Dict[str, Optional[str]], event: dict) -> None:
+        """A membership event p-tagged to us: rediscover conversations and
+        subscribe to any new ones (fresh DMs dispatch from their beginning)."""
+        self._membership_since = max(self._membership_since, int(event.get("created_at") or 0))
+        before = set(self._channel_state)
+        await self._discover_dms(seed=False)
+        for channel_id in self._channel_state:
+            if channel_id in before:
+                continue
+            subscription_id = f"hermes-buzz-dm-{len(subscriptions)}"
+            subscriptions[subscription_id] = channel_id
+            await self._send_channel_subscription(websocket, subscription_id, channel_id)
+            logger.info("Buzz: subscribed to new conversation %s", channel_id)
+
+    async def _websocket_loop(self) -> None:
+        """Persistent authenticated subscription with bounded reconnect
+        backoff. Events route through _handle_event() — identical semantics
+        to the poll loop. On reconnect, per-channel `since` filters resume
+        from the last observed timestamps (same-second overlap de-duped by
+        event id)."""
+        import websockets
+
+        backoff = 1.0
+        try:
+            while True:
+                try:
+                    async with websockets.connect(
+                        self._websocket_url(),
+                        open_timeout=_WS_AUTH_TIMEOUT,
+                        close_timeout=5,
+                        ping_interval=20,
+                        ping_timeout=20,
+                        max_size=_WS_MAX_MESSAGE_BYTES,
+                    ) as websocket:
+                        await self._authenticate_websocket(websocket)
+                        subscriptions = await self._subscribe_websocket(websocket)
+                        self._ws_active = True
+                        if self._ws_ready is not None:
+                            self._ws_ready.set()
+                        backoff = 1.0
+                        async for raw in websocket:
+                            try:
+                                message = json.loads(raw)
+                            except (ValueError, TypeError):
+                                logger.warning("Buzz: ignoring malformed WebSocket frame")
+                                continue
+                            if not isinstance(message, list) or not message:
+                                continue
+                            if message[0] == "EVENT" and len(message) >= 3:
+                                subscription_id = str(message[1])
+                                event = message[2]
+                                if not isinstance(event, dict):
+                                    continue
+                                if subscription_id == _WS_MEMBERSHIP_SUB_ID:
+                                    await self._handle_membership_event(websocket, subscriptions, event)
+                                    continue
+                                channel_id = subscriptions.get(subscription_id)
+                                state = self._channel_state.get(channel_id or "")
+                                if channel_id and state is not None:
+                                    await self._handle_event(channel_id, state, event)
+                                    self._trim_seen(state)
+                            elif message[0] == "CLOSED":
+                                detail = message[-1] if len(message) > 2 else "subscription closed"
+                                raise ConnectionError(str(detail))
+                            elif message[0] == "NOTICE":
+                                logger.warning("Buzz: relay notice: %s", message[-1])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self._ws_active = False
+                    logger.warning("Buzz: WebSocket disconnected; retrying in %.1fs: %s", backoff, e)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+        finally:
+            self._ws_active = False
 
     # ── Inbound polling ───────────────────────────────────────────────────
 
@@ -1021,6 +1269,7 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
         "relay_url": "BUZZ_RELAY_URL",
         "cli_path": "BUZZ_CLI_PATH",
         "home_channel": "BUZZ_HOME_CHANNEL",
+        "transport": "BUZZ_TRANSPORT",
     }
     for src, env in _str_keys.items():
         val = extra.get(src)

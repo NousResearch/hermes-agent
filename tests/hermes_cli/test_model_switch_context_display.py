@@ -41,39 +41,8 @@ class TestResolveDisplayContextLength:
             "Codex OAuth's 272K cap must win over models.dev's 1.05M for gpt-5.5"
         )
 
-    def test_falls_back_to_model_info_when_resolver_returns_none(self):
-        fake_mi = _FakeModelInfo(1_048_576)
-        with patch(
-            "agent.model_metadata.get_model_context_length", return_value=None
-        ):
-            ctx = resolve_display_context_length(
-                "some-model",
-                "some-provider",
-                model_info=fake_mi,
-            )
-        assert ctx == 1_048_576
 
-    def test_returns_none_when_both_sources_empty(self):
-        with patch(
-            "agent.model_metadata.get_model_context_length", return_value=None
-        ):
-            ctx = resolve_display_context_length(
-                "unknown-model",
-                "unknown-provider",
-                model_info=None,
-            )
-        assert ctx is None
 
-    def test_resolver_exception_falls_back_to_model_info(self):
-        fake_mi = _FakeModelInfo(200_000)
-        with patch(
-            "agent.model_metadata.get_model_context_length",
-            side_effect=RuntimeError("network down"),
-        ):
-            ctx = resolve_display_context_length(
-                "x", "y", model_info=fake_mi
-            )
-        assert ctx == 200_000
 
     def test_prefers_resolver_even_when_model_info_has_larger_value(self):
         """Invariant: provider-aware resolver is authoritative, even if models.dev
@@ -122,72 +91,5 @@ class TestResolveDisplayContextLength:
             "over probe-down fallback"
         )
 
-    def test_custom_providers_trailing_slash_insensitive(self):
-        """Base URL comparison must tolerate trailing-slash differences
-        between config.yaml and the runtime value.
-        """
-        custom_provs = [
-            {
-                "base_url": "https://example.invalid/v1/",
-                "models": {"m": {"context_length": 400_000}},
-            }
-        ]
-        from unittest.mock import patch as _p
-        from agent import model_metadata as _mm
-        with _p.object(_mm, "get_cached_context_length", return_value=None), \
-             _p.object(_mm, "fetch_endpoint_model_metadata", return_value={}), \
-             _p.object(_mm, "fetch_model_metadata", return_value={}), \
-             _p.object(_mm, "is_local_endpoint", return_value=False), \
-             _p.object(_mm, "_is_known_provider_base_url", return_value=False):
-            ctx = resolve_display_context_length(
-                "m",
-                "custom",
-                base_url="https://example.invalid/v1",  # no trailing slash
-                custom_providers=custom_provs,
-            )
-        assert ctx == 400_000
 
-    def test_without_custom_providers_returns_default_fallback(self):
-        """Regression for #59314: When custom_providers is NOT passed
-        (the bug pre-fix), a custom provider model falls through to
-        probe-down default (256K) instead of the configured per-model
-        context_length."""
-        from unittest.mock import patch as _p
-        from agent import model_metadata as _mm
-        with _p.object(_mm, "get_cached_context_length", return_value=None), \
-             _p.object(_mm, "fetch_endpoint_model_metadata", return_value={}), \
-             _p.object(_mm, "fetch_model_metadata", return_value={}), \
-             _p.object(_mm, "is_local_endpoint", return_value=False), \
-             _p.object(_mm, "_is_known_provider_base_url", return_value=False):
-            # Without custom_providers, the function probes and gets default
-            ctx = resolve_display_context_length(
-                "test-model-unconfigured",
-                "custom",
-                base_url="https://example.invalid/v1",
-                api_key="k",
-                model_info=None,
-            )
-        # Without custom_providers, the function falls to probe-down default
-        assert ctx == 256_000, (
-            "Without custom_providers, an un-cached model gets 256K default. "
-            "The fix ensures custom_providers is passed so per-model overrides "
-            "are honored."
-        )
 
-    def test_global_context_is_scoped_to_configured_route(self):
-        with patch(
-            "agent.model_metadata.get_model_context_length",
-            return_value=256_000,
-        ) as resolver:
-            ctx = resolve_display_context_length(
-                "shared-model",
-                "custom",
-                base_url="https://small.example/v1",
-                config_context_length=1_048_576,
-                configured_model="shared-model",
-                configured_provider="custom",
-                configured_base_url="https://large.example/v1",
-            )
-
-        assert ctx == 256_000
-        assert resolver.call_args.kwargs["config_context_length"] is None

@@ -27,7 +27,6 @@
  * trust seam.
  */
 
-import { getStatus } from '@/hermes'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -247,8 +246,16 @@ async function scanDiskPlugins(): Promise<void> {
   scanning = true
 
   try {
-    const { hermes_home } = await getStatus()
-    const { entries } = await desktop.readDir(`${hermes_home}/desktop-plugins`)
+    // The plugin root is a LOCAL Electron path, resolved independently of the
+    // connected backend — a remote backend's hermes_home is a remote path and
+    // yields `undefined/desktop-plugins` here (#66899).
+    const root = await desktop.desktopPluginsRoot?.()
+
+    if (!root) {
+      return
+    }
+
+    const { entries } = await desktop.readDir(root)
     const seen = new Set<string>()
 
     for (const dir of entries.filter(e => e.isDirectory)) {
@@ -343,8 +350,15 @@ export function watchRuntimePlugins(): void {
     }
 
     try {
-      const { hermes_home } = await getStatus()
-      dirWatchId = (await desktop.watchDirectory(`${hermes_home}/desktop-plugins`)).id
+      // Same Electron-local root as the scanner — never the backend's
+      // hermes_home, which is a remote path in remote mode (#66899).
+      const root = await desktop.desktopPluginsRoot?.()
+
+      if (!root) {
+        return false
+      }
+
+      dirWatchId = (await desktop.watchDirectory(root)).id
 
       return true
     } catch {

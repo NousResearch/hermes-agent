@@ -599,6 +599,167 @@ def resolve_persist_behavior(
 
 
 # ---------------------------------------------------------------------------
+# Single-owner /model request parsing + effective-model resolution
+# ---------------------------------------------------------------------------
+#
+# Historically each surface (cli.py, gateway/slash_commands.py,
+# tui_gateway/server.py) re-implemented flag parsing + conflict checks, and
+# each resolution surface (gateway/run.py, gateway/platforms/api_server.py)
+# re-implemented the session-override > channel/session > global precedence.
+# Commit 7dd00bb47d had to re-fix the api_server discarding session-persisted
+# models precisely because the precedence rule lived in two places.  The
+# helpers below are the ONE owner; surfaces map error codes to their own
+# user-facing copy but never re-derive the semantics.
+
+# Error codes emitted by parse_model_switch_args().
+MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
+MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
+
+# Canonical (surface-neutral) error copy.  Surfaces prepend their own
+# decoration ("  ✗ " in the CLI, "❌ " in the gateway) but MUST NOT change
+# the core sentence — it is shared user-visible copy.
+MODEL_SWITCH_ERROR_TEXT = {
+    MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL: "/model --once cannot be combined with --global",
+    MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider.",
+}
+
+
+@dataclass(frozen=True)
+class ModelSwitchRequest:
+    """A fully parsed /model command request.
+
+    ``scope`` is the *requested* persistence scope derived purely from the
+    flags: ``"once"`` | ``"session"`` | ``"global"`` | ``"default"`` (no
+    explicit scope flag; the effective decision then belongs to
+    :func:`resolve_persist_behavior`, which also reads config).
+
+    ``errors`` carries error *codes* (see ``MODEL_SWITCH_ERR_*``); surfaces
+    render them via :data:`MODEL_SWITCH_ERROR_TEXT` plus their own prefix.
+    """
+
+    raw: str
+    target: str
+    explicit_provider: str = ""
+    is_global: bool = False
+    is_session: bool = False
+    is_once: bool = False
+    force_refresh: bool = False
+    scope: str = "default"
+    errors: tuple = ()
+
+    # Compat properties so a ModelSwitchRequest can be passed anywhere a
+    # ModelFlagParseResult was accepted (e.g. tui_gateway._apply_model_switch).
+    @property
+    def model_input(self) -> str:
+        return self.target
+
+    @property
+    def flags(self) -> "ModelFlagParseResult":
+        return ModelFlagParseResult(
+            model_input=self.target,
+            explicit_provider=self.explicit_provider,
+            is_global=self.is_global,
+            force_refresh=self.force_refresh,
+            is_session=self.is_session,
+            is_once=self.is_once,
+        )
+
+    def error_messages(self) -> list:
+        """Canonical (undercorated) error strings for this request."""
+        return [MODEL_SWITCH_ERROR_TEXT[code] for code in self.errors]
+
+
+def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
+    """Parse a raw /model argument string into a :class:`ModelSwitchRequest`.
+
+    The ONE parser for every /model surface.  Wraps
+    :func:`parse_model_flags_detailed` (tokenization + Unicode-dash
+    normalization) and layers on the flag-conflict validation that cli.py,
+    gateway/slash_commands.py, and tui_gateway/server.py each used to
+    re-implement:
+
+    * ``--once`` + ``--global``  → ``MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL``
+    * ``--once`` with no model and no ``--provider``
+      → ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``
+
+    Model targets pass through untouched: bare names (``sonnet``),
+    aggregator slugs (``vendor/model``), and colon forms (``vendor:model``)
+    are all resolved later by :func:`switch_model` (aggregator-aware — bare
+    names resolve WITHIN the current aggregator first).
+    """
+    raw = str(raw or "")
+    parsed = parse_model_flags_detailed(raw)
+
+    errors: list = []
+    if parsed.is_once and parsed.is_global:
+        errors.append(MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL)
+    if parsed.is_once and not parsed.model_input and not parsed.explicit_provider:
+        errors.append(MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET)
+
+    if parsed.is_once:
+        scope = "once"
+    elif parsed.is_session:
+        scope = "session"
+    elif parsed.is_global:
+        scope = "global"
+    else:
+        scope = "default"
+
+    return ModelSwitchRequest(
+        raw=raw,
+        target=parsed.model_input,
+        explicit_provider=parsed.explicit_provider,
+        is_global=parsed.is_global,
+        is_session=parsed.is_session,
+        is_once=parsed.is_once,
+        force_refresh=parsed.force_refresh,
+        scope=scope,
+        errors=tuple(errors),
+    )
+
+
+def _effective_model_candidate(value: Any) -> str:
+    """Extract a model-name candidate from a str / dict / attr-object."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return str(value.get("model") or "").strip()
+    model_attr = getattr(value, "model", None)
+    if model_attr is not None:
+        return str(model_attr or "").strip()
+    return ""
+
+
+def resolve_effective_model(
+    session_overrides: Any = None,
+    channel_config: Any = None,
+    global_config: Any = "",
+) -> str:
+    """Resolve the effective model: session override > channel > global.
+
+    The single owner of the precedence rule that gateway/run.py
+    (``_resolve_model_for_channel`` / ``_apply_session_model_override``) and
+    gateway/platforms/api_server.py (``_create_agent``'s session-override /
+    session-persisted-model branches) each encoded independently — the
+    divergence commit 7dd00bb47d had to close.  A user-issued ``/model``
+    (session override) always wins over per-channel/session-persisted
+    configuration, which wins over the global default.
+
+    Each argument may be a plain model string, a dict with a ``"model"``
+    key (a gateway ``_session_model_overrides`` entry), or an object with a
+    ``.model`` attribute (a ``ChannelOverride``).  Empty/None entries fall
+    through to the next tier.
+    """
+    for tier in (session_overrides, channel_config, global_config):
+        candidate = _effective_model_candidate(tier)
+        if candidate:
+            return candidate
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Alias resolution
 # ---------------------------------------------------------------------------
 
@@ -1916,7 +2077,6 @@ def list_authenticated_providers(
 
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
-    from hermes_cli.models import _PROVIDER_ALIASES as _CANON_ALIASES
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         # Skip vendor names that are merely aliases routing through an

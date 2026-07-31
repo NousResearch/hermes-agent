@@ -254,6 +254,25 @@ export function startActiveUpdate(): void {
   void (target === 'backend' ? applyBackendUpdate() : applyUpdates())
 }
 
+/**
+ * Command-palette entry point. The About panel's "Update now" only renders once
+ * we know an update is waiting; this row is always listed, so it also has to
+ * handle "already current" — open the overlay for the active target and let its
+ * check answer, and only apply when there's something to install.
+ */
+export function requestActiveUpdate(): void {
+  const target: UpdateTarget = isRemoteMode() ? 'backend' : 'client'
+  const status = target === 'backend' ? $backendUpdateStatus.get() : $updateStatus.get()
+
+  if ((status?.behind ?? 0) > 0 || status?.updateAvailable) {
+    startActiveUpdate()
+
+    return
+  }
+
+  openUpdateOverlayFor(target)
+}
+
 /** Re-read the running app's version from the Electron main process and
  *  publish it on `$desktopVersion`. Called when the About panel mounts, the
  *  update flow finishes, and the window regains focus, so the About text
@@ -294,6 +313,7 @@ function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
     behind: behind > 0 ? behind : 0,
+    currentVersion: res.current_version,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
     commits: res.commits,
     fetchedAt: Date.now()

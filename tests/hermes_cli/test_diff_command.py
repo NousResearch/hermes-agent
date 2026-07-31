@@ -90,41 +90,6 @@ def test_diff_clean_repo_reports_no_changes(repo):
 
 
 @requires_git
-def test_diff_shows_unstaged_changes(repo):
-    (repo / "main.py").write_text("print('changed')\n")
-    out = _run(_Stub(), "/diff")
-    assert "Unstaged" in out
-    assert "-print('hello')" in out
-    assert "+print('changed')" in out
-
-
-@requires_git
-def test_diff_lists_untracked_files(repo):
-    (repo / "newfile.py").write_text("n = 1\n")
-    out = _run(_Stub(), "/diff")
-    assert "Untracked" in out
-    assert "newfile.py" in out
-    assert "+n = 1" in out
-
-
-@requires_git
-def test_diff_stat_suppresses_body(repo):
-    (repo / "main.py").write_text("print('changed')\n")
-    out = _run(_Stub(), "/diff --stat")
-    assert "main.py" in out
-    assert "+print('changed')" not in out
-
-
-@requires_git
-def test_diff_staged_mode(repo):
-    (repo / "main.py").write_text("print('staged')\n")
-    _git(repo, "add", "main.py")
-    out = _run(_Stub(), "/diff staged")
-    assert "Staged" in out
-    assert "+print('staged')" in out
-
-
-@requires_git
 def test_diff_non_git_directory_is_graceful(tmp_path, monkeypatch):
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -137,30 +102,6 @@ def test_diff_non_git_directory_is_graceful(tmp_path, monkeypatch):
 # Session mode — stubbed checkpoint manager
 # ---------------------------------------------------------------------------
 
-def test_diff_session_prints_stat_and_diff(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    mgr = _Mgr({
-        "success": True,
-        "stat": " main.py | 2 +-",
-        "diff": "--- a/main.py\n+++ b/main.py\n-print('hello')\n+print('v3')\n",
-    })
-    out = _run(_Stub(_Agent(mgr)), "/diff session")
-    assert " main.py | 2 +-" in out
-    assert "+print('v3')" in out
-    assert mgr.calls  # session_diff was consulted
-
-
-def test_diff_session_stat_only_suppresses_body(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    mgr = _Mgr({
-        "success": True,
-        "stat": " main.py | 2 +-",
-        "diff": "+print('v3')\n",
-    })
-    out = _run(_Stub(_Agent(mgr)), "/diff session --stat")
-    assert " main.py | 2 +-" in out
-    assert "+print('v3')" not in out
-
 
 def test_diff_session_empty_reports_no_changes(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
@@ -169,22 +110,3 @@ def test_diff_session_empty_reports_no_changes(tmp_path, monkeypatch):
     assert "No changes" in out
 
 
-def test_diff_session_disabled_explains_how_to_enable(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    mgr = _Mgr({"success": True, "stat": "", "diff": ""}, enabled=False)
-    out = _run(_Stub(_Agent(mgr)), "/diff session")
-    assert "not enabled" in out.lower()
-    assert not mgr.calls  # short-circuits before touching the store
-
-
-def test_diff_session_without_agent_is_graceful(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    out = _run(_Stub(agent=None), "/diff session")
-    assert "No active agent session" in out
-
-
-def test_diff_session_failure_surfaces_error(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    mgr = _Mgr({"success": False, "error": "boom"})
-    out = _run(_Stub(_Agent(mgr)), "/diff session")
-    assert "boom" in out

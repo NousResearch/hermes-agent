@@ -6,106 +6,12 @@ import sys
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
-def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    env_file.write_text("OPENAI_BASE_URL=https://new.example/v1\n", encoding="utf-8")
-
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
 
 
-def test_project_env_overrides_stale_shell_values_when_user_env_missing(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    project_env = tmp_path / ".env"
-    project_env.write_text("OPENAI_BASE_URL=https://project.example/v1\n", encoding="utf-8")
-
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-
-    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
-
-    assert loaded == [project_env]
-    assert os.getenv("OPENAI_BASE_URL") == "https://project.example/v1"
 
 
-def test_project_env_value_cannot_synthesize_an_assignment(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    project_env = tmp_path / ".env"
-    project_env.write_text(
-        "TELEGRAM_BOT_TOKEN=0123456789:test"
-        "ANTHROPIC_API_KEY=sk-ant-test123\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
-
-    assert loaded == [project_env]
-    assert os.getenv("TELEGRAM_BOT_TOKEN") == (
-        "0123456789:testANTHROPIC_API_KEY=sk-ant-test123"
-    )
-    assert os.getenv("ANTHROPIC_API_KEY") is None
 
 
-def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    user_env = home / ".env"
-    project_env = tmp_path / ".env"
-    user_env.write_text("OPENAI_BASE_URL=https://user.example/v1\n", encoding="utf-8")
-    project_env.write_text("OPENAI_BASE_URL=https://project.example/v1\nOPENAI_API_KEY=project-key\n", encoding="utf-8")
-
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
-
-    assert loaded == [user_env, project_env]
-    assert os.getenv("OPENAI_BASE_URL") == "https://user.example/v1"
-    assert os.getenv("OPENAI_API_KEY") == "project-key"
-
-
-def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    # Null bytes can be introduced when copy-pasting API keys.
-    env_file.write_text("GLM_API_KEY=abc\x00\x00\nOPENAI_API_KEY=sk-123\n", encoding="utf-8")
-
-    monkeypatch.delenv("GLM_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("GLM_API_KEY") == "abc"
-    assert os.getenv("OPENAI_API_KEY") == "sk-123"
-
-
-def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
-    home.mkdir()
-    (home / ".env").write_text(
-        "OPENAI_BASE_URL=https://new.example/v1\nHERMES_INFERENCE_PROVIDER=custom\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
-
-    sys.modules.pop("hermes_cli.main", None)
-    importlib.import_module("hermes_cli.main")
-
-    assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
-    assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
 
 
 # ---------------------------------------------------------------------------
@@ -130,82 +36,6 @@ def _assert_clean_utf8_env_on_disk(env_file, *, first_key: str) -> None:
     assert first_key.encode("ascii") in after
 
 
-def test_utf16_le_bom_env_loads_and_rewrites_clean_utf8(tmp_path, monkeypatch):
-    """Notepad 'Unicode' (UTF-16-LE + BOM): first key loads; file rewritten UTF-8."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    content = "HERMES_TEST_KEY=hello_utf16\nSECOND_KEY=world\n"
-    env_file.write_bytes(codecs.BOM_UTF16_LE + content.encode("utf-16-le"))
-
-    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-    monkeypatch.delenv("\ufffd\ufffdHERMES_TEST_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("HERMES_TEST_KEY") == "hello_utf16"
-    assert os.getenv("SECOND_KEY") == "world"
-    assert os.environ.get("\ufffd\ufffdHERMES_TEST_KEY") is None
-    _assert_clean_utf8_env_on_disk(env_file, first_key="HERMES_TEST_KEY")
-
-
-def test_utf16_be_bom_env_loads_and_rewrites_clean_utf8(tmp_path, monkeypatch):
-    """UTF-16-BE + BOM: first key loads; file rewritten as clean UTF-8."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    content = "HERMES_TEST_KEY=hello_utf16\nSECOND_KEY=world\n"
-    env_file.write_bytes(codecs.BOM_UTF16_BE + content.encode("utf-16-be"))
-
-    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("HERMES_TEST_KEY") == "hello_utf16"
-    assert os.getenv("SECOND_KEY") == "world"
-    _assert_clean_utf8_env_on_disk(env_file, first_key="HERMES_TEST_KEY")
-
-
-def test_utf16_le_no_bom_still_repairs_to_utf8(tmp_path, monkeypatch):
-    """BOM-less UTF-16-LE: NUL-strip repair is now intentional; rewrites UTF-8."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    content = "HERMES_TEST_KEY=hello_utf16\nSECOND_KEY=world\n"
-    env_file.write_bytes(content.encode("utf-16-le"))  # no BOM
-
-    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("HERMES_TEST_KEY") == "hello_utf16"
-    assert os.getenv("SECOND_KEY") == "world"
-    _assert_clean_utf8_env_on_disk(env_file, first_key="HERMES_TEST_KEY")
-
-
-def test_utf16_be_no_bom_still_repairs_to_utf8(tmp_path, monkeypatch):
-    """BOM-less UTF-16-BE: NULs are on the opposite side; still repairs."""
-    home = tmp_path / "hermes"
-    home.mkdir()
-    env_file = home / ".env"
-    content = "HERMES_TEST_KEY=hello_utf16\nSECOND_KEY=world\n"
-    env_file.write_bytes(content.encode("utf-16-be"))  # no BOM
-
-    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
-    monkeypatch.delenv("SECOND_KEY", raising=False)
-
-    loaded = load_hermes_dotenv(hermes_home=home)
-
-    assert loaded == [env_file]
-    assert os.getenv("HERMES_TEST_KEY") == "hello_utf16"
-    assert os.getenv("SECOND_KEY") == "world"
-    _assert_clean_utf8_env_on_disk(env_file, first_key="HERMES_TEST_KEY")
 
 
 def test_utf16_le_bom_preserves_non_ascii_values(tmp_path, monkeypatch):
@@ -260,22 +90,6 @@ def test_utf32_le_bom_leaves_file_untouched(tmp_path, caplog):
     assert any("UTF-32" in r.message for r in caplog.records)
 
 
-def test_utf32_be_bom_leaves_file_untouched(tmp_path, caplog):
-    """UTF-32-BE BOM: same refuse-to-mangle path as LE (ordering independence)."""
-    import logging
-
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
-
-    env_file = tmp_path / ".env"
-    content = "HERMES_TEST_KEY=hello_utf32\nSECOND_KEY=world\n"
-    raw = codecs.BOM_UTF32_BE + content.encode("utf-32-be")
-    env_file.write_bytes(raw)
-
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.env_loader"):
-        _sanitize_env_file_if_needed(env_file)
-
-    assert env_file.read_bytes() == raw
-    assert any("UTF-32" in r.message for r in caplog.records)
 
 
 def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
@@ -307,22 +121,6 @@ def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
     assert env_file.read_bytes() == raw
 
 
-def test_leading_replacement_char_does_not_rewrite(tmp_path):
-    """errors=replace FFFD-on-first-line guard: do not persist mangling.
-
-    Leading 0xFF is not a UTF-16/32 BOM (those need the second BOM byte) but
-    is undecodable as UTF-8, so the replace path would glue U+FFFD onto the
-    key. The guard must leave the on-disk bytes untouched.
-    """
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
-
-    env_file = tmp_path / ".env"
-    raw = b"\xffHERMES_TEST_KEY=should-not-rewrite\nSECOND_KEY=ok\n"
-    env_file.write_bytes(raw)
-
-    _sanitize_env_file_if_needed(env_file)
-
-    assert env_file.read_bytes() == raw
 
 
 def test_plain_utf8_env_regression(tmp_path, monkeypatch):

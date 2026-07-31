@@ -30,11 +30,34 @@ from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
 from .adapter import _NPM_ERROR_LOG_MAX_CHARS, sidecar_deps_installed
+from .sidecar_paths import resolve_sidecar_dir
 
-_SIDECAR_DIR = Path(__file__).parent / "sidecar"
+# Writable sidecar runtime dir (mirrors to HERMES_HOME on immutable
+# installs — NS-606). All npm/setup work happens here. Resolved lazily on
+# first use — resolve_sidecar_dir() probes the filesystem and may mirror
+# files, side effects that must not fire at import time (e.g. when argparse
+# wiring imports this module for `hermes --help`).
+# Tests monkeypatch these module globals directly; the accessors honor a
+# non-None value and only resolve/derive when unset.
+_SIDECAR_DIR: Path | None = None
 # Written on npm failure so check_requirements() can surface the root cause
 # when called later (gateway start, hermes status). Cleared on success.
-_NPM_ERROR_LOG = _SIDECAR_DIR / ".photon-npm-error.log"
+_NPM_ERROR_LOG: Path | None = None
+
+
+def _sidecar_dir() -> Path:
+    """Sidecar runtime dir, resolved once on first use (never at import)."""
+    global _SIDECAR_DIR
+    if _SIDECAR_DIR is None:
+        _SIDECAR_DIR = resolve_sidecar_dir()
+    return _SIDECAR_DIR
+
+
+def _npm_error_log() -> Path:
+    """Path of the persisted npm-failure log (derived from the sidecar dir)."""
+    if _NPM_ERROR_LOG is not None:
+        return _NPM_ERROR_LOG
+    return _sidecar_dir() / ".photon-npm-error.log"
 
 
 # ---------------------------------------------------------------------------
@@ -435,13 +458,13 @@ def _install_sidecar() -> int:
     # `npm ci` installs the committed lockfile verbatim; fall back to
     # `npm install` when the lockfile is missing or drifted (e.g. a dev
     # checkout mid-upgrade).
-    print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
+    print(f"  $ cd {_sidecar_dir()} && {npm} ci")
     # stdout is not captured so npm progress prints to the terminal in real
     # time. stderr is captured so we can persist the failure reason for
     # check_requirements() to surface after the process exits.
     proc = subprocess.run(  # noqa: S603
         [npm, "ci"],
-        cwd=str(_SIDECAR_DIR),
+        cwd=str(_sidecar_dir()),
         check=False,
         stderr=subprocess.PIPE,
         text=True,
@@ -452,7 +475,7 @@ def _install_sidecar() -> int:
         print(f"  npm ci failed — falling back to:  {npm} install")
         proc = subprocess.run(  # noqa: S603
             [npm, "install"],
-            cwd=str(_SIDECAR_DIR),
+            cwd=str(_sidecar_dir()),
             check=False,
             stderr=subprocess.PIPE,
             text=True,
@@ -466,12 +489,12 @@ def _install_sidecar() -> int:
         error = (proc.stderr or "").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
         if error:
             try:
-                _NPM_ERROR_LOG.write_text(error, encoding="utf-8")
+                _npm_error_log().write_text(error, encoding="utf-8")
             except OSError:
                 pass
     else:
         try:
-            _NPM_ERROR_LOG.unlink()
+            _npm_error_log().unlink()
         except OSError:
             pass
     return proc.returncode

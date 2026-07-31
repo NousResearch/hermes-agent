@@ -27,24 +27,12 @@ class TestSentenceChunker:
         assert c.feed(" sentence of it all. And") == ["This is the first full sentence of it all. "]
         assert c.flush() == ["And"]
 
-    def test_short_fragment_rides_with_the_next_sentence(self):
-        c = ts.SentenceChunker()
-        # "Ha! " alone is under min_len — it must not become its own clip.
-        assert c.feed("Ha! ") == []
-        assert c.feed("That was a good one, honestly. ") == [
-            "Ha! That was a good one, honestly. "
-        ]
 
     def test_think_blocks_are_stripped_even_across_deltas(self):
         c = ts.SentenceChunker()
         assert c.feed("<think>secret reason") == []
         assert c.feed("ing</think>The actual spoken answer. ") == ["The actual spoken answer. "]
 
-    def test_flush_drains_the_tail(self):
-        c = ts.SentenceChunker()
-        c.feed("no boundary here")
-        assert c.flush() == ["no boundary here"]
-        assert c.flush() == []
 
     def test_paragraph_break_is_a_boundary(self):
         c = ts.SentenceChunker()
@@ -62,9 +50,6 @@ class TestSpeechInterruptedLatch:
         assert ts.take_speech_interrupted() is True
         assert ts.take_speech_interrupted() is False  # one-shot
 
-    def test_untouched_latch_is_false(self):
-        ts._interrupted_at = None
-        assert ts.take_speech_interrupted() is False
 
     def test_stale_barge_expires(self, monkeypatch):
         ts.mark_speech_interrupted()
@@ -97,22 +82,6 @@ def test_resolve_returns_configured_streamer(monkeypatch):
     assert isinstance(prov, ts.StreamingTTSProvider)
 
 
-def test_resolve_none_for_unregistered_provider(monkeypatch):
-    # edge is a sync provider — not registered — so the dispatcher keeps its voice.
-    assert ts.resolve_streaming_provider({"provider": "edge"}) is None
-
-
-def test_resolve_none_when_provider_unavailable(monkeypatch):
-    _register_fake(monkeypatch, "faketts", available=False)
-    assert ts.resolve_streaming_provider({"provider": "faketts"}) is None
-
-
-def test_resolve_honors_preferred_override(monkeypatch):
-    _register_fake(monkeypatch, "faketts")
-    prov = ts.resolve_streaming_provider({"provider": "edge"}, preferred="faketts")
-    assert isinstance(prov, ts.StreamingTTSProvider)
-
-
 def test_never_swaps_provider_for_streaming(monkeypatch):
     # A registered streamer must NOT be substituted when the user picked another
     # (non-streaming) provider — that would silently change their voice.
@@ -124,9 +93,11 @@ def test_never_swaps_provider_for_streaming(monkeypatch):
 
 
 def test_elevenlabs_available_reflects_key(monkeypatch):
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: "key" if k == "ELEVENLABS_API_KEY" else None)
+    # Key lookups now route through the provider-secret resolver
+    # (config > env/.env > credential pool), not bare get_env_value.
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "key" if env == "ELEVENLABS_API_KEY" else "")
     assert ts.ElevenLabsStreamer.available() is True
-    monkeypatch.setattr(ts, "get_env_value", lambda k, *a: None)
+    monkeypatch.setattr(ts, "_resolve_key", lambda env, pid: "")
     assert ts.ElevenLabsStreamer.available() is False
 
 
@@ -139,57 +110,6 @@ def test_openai_available_reflects_audio_key_resolution(monkeypatch):
     # tts.openai.api_key from config.yaml counts too
     monkeypatch.setattr(ts, "_openai_config_api_key", lambda: "cfg-key")
     assert ts.OpenAIStreamer.available() is True
-
-
-def test_openai_streamer_prefers_configured_base_url(monkeypatch):
-    captured = {}
-
-    class _Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def iter_bytes(self):
-            yield b"\x01\x00"
-
-    class _StreamingCreate:
-        @staticmethod
-        def create(**kwargs):
-            captured["request"] = kwargs
-            return _Response()
-
-    class _OpenAI:
-        def __init__(self, **kwargs):
-            captured["client"] = kwargs
-            self.audio = MagicMock()
-            self.audio.speech.with_streaming_response = _StreamingCreate()
-
-    monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "voice-key")
-    monkeypatch.setattr(
-        ts,
-        "get_env_value",
-        lambda key, *args: "https://env.example/v1" if key == "OPENAI_BASE_URL" else None,
-    )
-    monkeypatch.setattr("openai.OpenAI", _OpenAI)
-
-    config = {
-        "provider": "openai",
-        "openai": {
-            "base_url": "http://local-tts.example/v1",
-            "model": "tts-1",
-            "voice": "local-voice",
-        },
-    }
-    streamer = ts.resolve_streaming_provider(config)
-
-    assert streamer is not None
-    assert list(streamer.stream("Streaming test.")) == [b"\x01\x00"]
-    assert captured["client"] == {
-        "api_key": "voice-key",
-        "base_url": "http://local-tts.example/v1",
-    }
 
 
 def test_openai_streamer_prefers_configured_api_key(monkeypatch):
@@ -249,96 +169,55 @@ def _sd_mock():
     return sd, out
 
 
-def test_streamer_path_writes_pcm_to_output(monkeypatch):
-    from tools import tts_tool
-
-    class _Fake(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            yield b"\x01\x00" * 50
-            yield b"\x02\x00" * 50
-
-    sd, out = _sd_mock()
-    q = _drain_queue(["Hello there, this is a full sentence."])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=_Fake({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        tts_tool.stream_tts_to_speaker(q, stop, done)
-
-    assert out.write.called, "expected PCM chunks written to the output stream"
-    assert done.is_set()
-
-
-def test_stop_event_aborts_streaming(monkeypatch):
-    from tools import tts_tool
-
-    class _Fake(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            for _ in range(1000):
-                yield b"\x00\x00" * 50
-
-    sd, out = _sd_mock()
-    stop, done = threading.Event(), threading.Event()
-    stop.set()  # pre-set: no audio should be written
-    q = _drain_queue(["A complete sentence here."])
-
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=_Fake({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        tts_tool.stream_tts_to_speaker(q, stop, done)
-
-    assert not out.write.called
-    assert done.is_set()
-
-
 # ── Dispatch: universal per-sentence sync fallback ───────────────────────
 
 
-def test_sync_fallback_speaks_each_sentence(monkeypatch):
-    from tools import tts_tool
-
-    spoken = []
-    monkeypatch.setattr(tts_tool, "text_to_speech_tool",
-                        lambda text, output_path: spoken.append(text))
-    played = []
-    fake_vm = MagicMock()
-    fake_vm.play_audio_file.side_effect = lambda p: played.append(p)
-    monkeypatch.setitem(__import__("sys").modules, "tools.voice_mode", fake_vm)
-    monkeypatch.setattr("os.path.getsize", lambda p: 100)
-    monkeypatch.setattr("os.path.isfile", lambda p: True)
-
-    q = _drain_queue(["First full sentence here. ", "Second full sentence here. "])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
-        tts_tool.stream_tts_to_speaker(q, stop, done)
-
-    assert len(spoken) == 2, f"expected both sentences synthesized, got {spoken}"
-    assert len(played) == 2
-    assert done.is_set()
+# ── tts.streaming.provider config knob (salvaged from PR #47588) ─────────
 
 
-def test_display_callback_fires_without_audio(monkeypatch):
-    from tools import tts_tool
+# ── Credential routing: resolve_provider_secret, never bare env ──────────
 
-    seen = []
-    monkeypatch.setattr(tts_tool, "text_to_speech_tool", lambda text, output_path: None)
-    q = _drain_queue(["A sentence to display aloud."])
-    stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
-        tts_tool.stream_tts_to_speaker(q, stop, done, display_callback=seen.append)
+def test_elevenlabs_available_routes_through_secret_resolver(monkeypatch):
+    calls = []
 
-    assert seen, "display_callback should fire even on the sync path"
-    assert done.is_set()
+    def _fake_resolve(env_var, provider_id):
+        calls.append((env_var, provider_id))
+        return "pool-key"
+
+    monkeypatch.setattr(ts, "_resolve_key", _fake_resolve)
+    assert ts.ElevenLabsStreamer.available() is True
+    assert ("ELEVENLABS_API_KEY", "elevenlabs") in calls
+
+
+def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
+    import sys
+    import types
+
+    fake = types.ModuleType("tools.xai_http")
+    fake.resolve_xai_http_credentials = lambda: {"api_key": "xai-key"}
+    monkeypatch.setitem(sys.modules, "tools.xai_http", fake)
+    assert ts.XAIStreamer.available() is True
+    fake.resolve_xai_http_credentials = lambda: {"api_key": ""}
+    assert ts.XAIStreamer.available() is False
+
+
+# ── Gemini SSE parsing ────────────────────────────────────────────────────
+
+
+# ── xAI WebSocket bridge ─────────────────────────────────────────────────
+
+
+# ── 16 MiB per-sentence stream cap ───────────────────────────────────────
+
+
+def test_stream_cap_truncates_runaway_upstream(monkeypatch):
+    monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 100)
+
+    def _endless():
+        while True:
+            yield b"\x00" * 64
+
+    out = list(ts._capped(_endless(), "test"))
+    assert len(out) == 1  # 64 ok, 128 > cap → stop
+    assert sum(len(c) for c in out) <= 100

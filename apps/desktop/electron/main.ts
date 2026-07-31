@@ -37,7 +37,13 @@ import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
-import { canImportHermesCli, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
+import {
+  canImportHermesCli,
+  execProbeSync,
+  PROBE_TIMEOUT_MS,
+  shouldTrustHermesOverride,
+  verifyHermesCli
+} from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
@@ -179,6 +185,7 @@ import {
 } from './ssh-connection'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
+import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
@@ -1730,30 +1737,48 @@ const UPDATE_WAIT_POLL_MS = 1000
 // updater's own progress window appears. (#50419)
 const UPDATE_HANDOFF_DWELL_MS = 2500
 
+// Gate deps shared by the primary-window boot path and the pool-backend
+// spawn path. Consulting BOTH the on-disk marker and the in-process
+// updateInFlight flag is load-bearing (#73822): applyUpdates kills its own
+// backend BEFORE the Windows venv-blocker scan but only writes the marker
+// AFTER it, so a marker-only gate lets the renderer's ~1s reconnect respawn
+// a backend inside the update's own critical section — which the scan then
+// reports as a blocker, aborting every update attempt.
+function updateGateDeps() {
+  return {
+    hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
+    isUpdateInFlight: () => updateInFlight
+  }
+}
+
 // Block until no live update is in progress (or we hit the wait timeout).
 // Emits a boot-progress phase so the renderer shows "Update in progress…"
 // rather than a frozen splash. Returns true if it parked at all.
 async function waitForUpdateToFinish() {
-  let marker = readLiveUpdateMarker(HERMES_HOME)
+  let announced = false
 
-  if (!marker) {
+  const outcome = await waitForUpdateClearance(updateGateDeps(), {
+    onWaitTick: async reason => {
+      if (!announced) {
+        announced = true
+        rememberLog(`[updates] update in progress (${reason}); deferring backend start until it finishes`)
+      }
+
+      await advanceBootProgress(
+        'backend.update-wait',
+        'An update is finishing — Hermes will start automatically when it completes…',
+        12
+      )
+    },
+    pollMs: UPDATE_WAIT_POLL_MS,
+    timeoutMs: UPDATE_WAIT_TIMEOUT_MS
+  })
+
+  if (outcome === 'clear') {
     return false
   }
 
-  rememberLog(`[updates] update in progress (pid=${marker.pid}); deferring backend start until it finishes`)
-  const deadline = Date.now() + UPDATE_WAIT_TIMEOUT_MS
-
-  while (marker && Date.now() < deadline) {
-    await advanceBootProgress(
-      'backend.update-wait',
-      'An update is finishing — Hermes will start automatically when it completes…',
-      12
-    )
-    await new Promise(r => setTimeout(r, UPDATE_WAIT_POLL_MS))
-    marker = readLiveUpdateMarker(HERMES_HOME)
-  }
-
-  if (marker) {
+  if (outcome === 'timeout') {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
   } else {
     rememberLog('[updates] update finished; proceeding with backend start')
@@ -1867,11 +1892,22 @@ function backendSupportsServe(backend) {
   if (supported === null) {
     try {
       const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
-      execFileSync(backend.command, [...prefix, 'serve', '--help'], {
+      // Same cold-Windows Python-startup class as the runtime probes
+      // (#61764/#72632/#72707): `serve --help` imports at least as much as
+      // `hermes --version` (~10.5s measured cold), and a false negative here
+      // is cached for the process lifetime, silently routing a modern
+      // runtime through the legacy `dashboard` form. Share the probe budget
+      // and its timeout-only retry instead of a thinner local bound.
+      execProbeSync(backend.command, [...prefix, 'serve', '--help'], {
         cwd: backend.root || undefined,
         env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
-        timeout: 15000,
+        timeout: PROBE_TIMEOUT_MS,
         stdio: 'ignore',
+        // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
+        // (see resolveHermesBackend step 4); execFileSync of a .cmd without
+        // shell throws EINVAL on modern Node, which the catch below would
+        // mis-cache as "serve unsupported" for the process lifetime.
+        shell: Boolean(backend.shell),
         windowsHide: true
       })
       supported = true
@@ -2028,7 +2064,10 @@ function findSystemPython() {
         const out = execFileSync(
           'reg',
           ['query', `${hive}\\SOFTWARE\\Python\\PythonCore\\${version}\\InstallPath`, '/ve', '/reg:64'],
-          hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+          // Registry reads are near-instant; the bound only exists so a
+          // pathologically wedged reg.exe can't hang the synchronous boot
+          // resolver forever (this ran unbounded before).
+          hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 })
         )
 
         // Output format: "    (Default)    REG_SZ    C:\Path\To\Python\"
@@ -2083,7 +2122,12 @@ function findSystemPython() {
           [`-${version}`, '-c', 'import sys; print(sys.executable)'],
           hiddenWindowsChildOptions({
             encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore']
+            stdio: ['ignore', 'pipe', 'ignore'],
+            // Bare interpreter startup — much lighter than the hermes-import
+            // probes, but still python.exe under cold cache / AV scan, so
+            // share the probe budget rather than running unbounded (this
+            // synchronous exec previously had no timeout at all).
+            timeout: PROBE_TIMEOUT_MS
           })
         )
 
@@ -3860,17 +3904,20 @@ function resolveHermesBackend(backendArgs) {
       // through to the install-script bootstrap if the optional probe times
       // out under load; the pinned backend is the only valid runtime there.
       if (shouldTrustHermesOverride(hermesOverride) || verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
-        return (
-          unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs) || {
-            label: `existing Hermes CLI at ${hermesCommand}`,
-            command: hermesCommand,
-            args: backendArgs,
-            bootstrap: false,
-            env: {},
-            kind: 'command',
-            shell: shellForProbe
-          }
-        )
+        // `unwrapped` above already answered "is this a Windows venv shim?" —
+        // it was null (not a shim, or its import probe failed). Do NOT re-run
+        // unwrapWindowsVenvHermesCommand here: the second call repeats the
+        // same un-memoized import probe, costing up to another full probe
+        // timeout on the boot path for an answer we already have.
+        return {
+          label: `existing Hermes CLI at ${hermesCommand}`,
+          command: hermesCommand,
+          args: backendArgs,
+          bootstrap: false,
+          env: {},
+          kind: 'command',
+          shell: shellForProbe
+        }
       }
 
       rememberLog(
@@ -5108,6 +5155,20 @@ function sendClosePreviewRequested() {
   webContents.send('hermes:close-preview-requested')
 }
 
+function sendOpenFolderRequested() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const webContents = mainWindow.webContents
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:open-folder-requested')
+}
+
 // Tell the renderer the machine just woke. Sleep silently drops the
 // renderer's WebSocket to the local backend; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Hermes...".
@@ -5225,6 +5286,10 @@ function buildApplicationMenu() {
       // a menu accelerator would fight the rebind panel and (on macOS) be
       // swallowed before the renderer sees it. Here purely for discoverability.
       { click: () => createInstanceWindow(), label: 'New Window' },
+      // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
+      // (workspace.openFolder). Clicking runs the same open-folder-as-project
+      // flow through the renderer.
+      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
       { type: 'separator' },
       IS_MAC
         ? {
@@ -5577,8 +5642,12 @@ function installContextMenu(window) {
       }
     }
 
+    // Bare right-click on non-editable, non-selected, non-media content (a pane
+    // body, the sidebar, chrome): the renderer's own context menus own those
+    // surfaces, and anywhere without one shows nothing — not a lone, useless
+    // "Select All" from the native fallback.
     if (!template.length) {
-      template.push({ role: 'selectAll' })
+      return
     }
 
     Menu.buildFromTemplate(template).popup({ window })
@@ -8007,6 +8076,27 @@ async function spawnPoolBackend(profile, entry) {
   }
 
   const token = crypto.randomBytes(32).toString('base64url')
+
+  // Same update mutual exclusion as the primary window's waitForLocalStart
+  // (#73822): pool backends spawn from the same venv, so an ungated respawn
+  // during applyUpdates' critical section re-locks the venv and trips the
+  // venv-blocker preflight. No boot-progress UI here — pool backends boot
+  // silently for background profiles — so we only log while parked.
+  {
+    let poolAnnounced = false
+
+    await waitForUpdateClearance(updateGateDeps(), {
+      onWaitTick: reason => {
+        if (!poolAnnounced) {
+          poolAnnounced = true
+          rememberLog(`[updates] update in progress (${reason}); deferring pool backend start for profile "${profile}"`)
+        }
+      },
+      pollMs: UPDATE_WAIT_POLL_MS,
+      timeoutMs: UPDATE_WAIT_TIMEOUT_MS
+    })
+  }
+
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
@@ -10858,6 +10948,31 @@ ipcMain.handle('hermes:fs:openDir', async (_event, dirPath) => {
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
+})
+
+// The LOCAL Desktop runtime-plugin root: `<HERMES_HOME>/desktop-plugins`,
+// resolved from the main-process HERMES_HOME (see resolveHermesHome) — NOT from
+// the connected backend. A remote backend reports its own `hermes_home` over
+// the gateway, which is a path on the REMOTE box; deriving the plugin dir from
+// it yields `undefined/desktop-plugins` (or a non-existent remote path) and the
+// on-disk plugin door silently breaks (#66899). Electron owns this resolution
+// so it stays valid in every connection mode. Created on demand, like openDir.
+ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => {
+  // Profile-aware: a named Desktop profile gets its own plugin root under
+  // profiles/<name>/, matching the profile-scoped hermes_home the backend
+  // reported before this resolver existed. 'default'/unset pins the global root.
+  const profile = readActiveDesktopProfile()
+  const base = profile && profile !== 'default' ? path.join(HERMES_HOME, 'profiles', profile) : HERMES_HOME
+  const dir = path.join(base, 'desktop-plugins')
+
+  try {
+    await fs.promises.mkdir(dir, { recursive: true })
+  } catch {
+    // Best-effort create; return the path regardless so the reveal action can
+    // still surface a real openPath error and the scanner can retry later.
+  }
+
+  return dir
 })
 
 // Rename a file/folder in place. The renderer passes the existing path + a new

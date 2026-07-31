@@ -15,7 +15,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
-import { $repoStatus, $repoWorktrees } from '@/store/coding-status'
+import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
 import { $newWorktreeRequest } from '@/store/projects'
 
@@ -62,14 +62,24 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const { t } = useI18n()
   const s = t.statusStack.coding
   const p = t.sidebar.projects
-  const status = useStore($repoStatus)
-  const worktrees = useStore($repoWorktrees)
+  const resolvedRepoPath = repoPath?.trim() || undefined
+  // This surface's OWN worktree, always — never the primary's. The row used to
+  // fall back to the global `$repoStatus` for a blank repoPath, which painted
+  // the main pane's branch/± onto a tile whose cwd hadn't resolved yet. That
+  // fallback bought nothing (the primary's computed is keyed to `$currentCwd`,
+  // which is blank in exactly the same case) and cost a wrong-tree rail.
+  const status = useStore(repoStatusForCwd(resolvedRepoPath))
+  const worktrees = useStore(repoWorktreesForCwd(resolvedRepoPath))
+
+  // While mounted, keep this worktree in the coding-status refresh set so the
+  // turn-settle / tool-complete / focus edges re-probe it too (tiles otherwise
+  // only refreshed when the MAIN cwd probe happened to cover them).
+  useEffect(() => registerRepoStatusCwd(resolvedRepoPath), [resolvedRepoPath])
 
   // Shared worktree dialog — replaces the old inline dialog. Opened by the
   // dropdown menu's "branch off" items and the global ⌘⇧B hotkey.
   const [worktreeOpen, setWorktreeOpen] = useState(false)
   const [worktreeBase, setWorktreeBase] = useState<string | undefined>(undefined)
-  const resolvedRepoPath = repoPath?.trim() || undefined
 
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {

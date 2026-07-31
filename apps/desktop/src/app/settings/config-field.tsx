@@ -9,6 +9,7 @@ import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import type { ConfigFieldSchema } from '@/types/hermes'
 
+import { ComboboxInput } from './combobox-input'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
@@ -113,27 +114,19 @@ export function ConfigField({
 
   // Voice/model name fields are open-world (custom voice IDs, cloned voices,
   // brand-new model names) — render a free-input combobox where the known
-  // options are datalist suggestions instead of a closed Select gate.
+  // options are dropdown suggestions instead of a closed Select gate. The old
+  // native <datalist> filtered by the current value, so a field already set
+  // to a valid option showed only that single suggestion.
   if (selectOptions && FREE_INPUT_KEYS.has(schemaKey)) {
-    const datalistId = `config-field-options-${schemaKey.replace(/\./g, '-')}`
-
     return row(
-      <>
-        <Input
-          className={CONTROL_TEXT}
-          list={datalistId}
-          onChange={e => onChange(e.target.value)}
-          placeholder={c.notSet}
-          value={String(value ?? '')}
-        />
-        <datalist id={datalistId}>
-          {selectOptions
-            .filter(option => option !== '')
-            .map(option => (
-              <option key={option} label={optionLabels?.[option]} value={option} />
-            ))}
-        </datalist>
-      </>
+      <ComboboxInput
+        className={CONTROL_TEXT}
+        onChange={onChange}
+        optionLabels={optionLabels}
+        options={selectOptions.filter(o => o !== '')}
+        placeholder={c.notSet}
+        value={String(value ?? '')}
+      />
     )
   }
 

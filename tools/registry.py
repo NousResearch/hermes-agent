@@ -65,14 +65,48 @@ def _module_registers_tools(module_path: Path) -> bool:
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
-    """Import built-in self-registering tool modules and return their module names."""
+    """Import built-in self-registering tool modules and return their module names.
+
+    The per-file AST scan (:func:`_module_registers_tools`) costs ~145 ms over
+    ~100 files on a warm cache, so verdicts are memoized on disk keyed by
+    ``(mtime_ns, size)``. A file whose mtime_ns+size match the cached entry is
+    trusted without re-reading; any mismatch (or a corrupt/missing cache file)
+    falls back to a fresh scan for that file. The cache write is best-effort
+    and atomic, so concurrent processes can race harmlessly.
+    """
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
-    module_names = [
-        f"tools.{path.stem}"
-        for path in sorted(tools_path.glob("*.py"))
-        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
-        and _module_registers_tools(path)
-    ]
+
+    cache = _load_discovery_cache()
+    fresh_cache: Dict[str, list] = {}
+    cache_dirty = False
+
+    module_names: List[str] = []
+    for path in sorted(tools_path.glob("*.py")):
+        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+            continue
+        abs_path = str(path.resolve())
+        try:
+            st = path.stat()
+            stat_key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            continue
+        cached = cache.get(abs_path)
+        if (
+            isinstance(cached, (list, tuple))
+            and len(cached) == 3
+            and (cached[0], cached[1]) == stat_key
+        ):
+            registers = bool(cached[2])
+        else:
+            registers = _module_registers_tools(path)
+            cache_dirty = True
+        fresh_cache[abs_path] = [stat_key[0], stat_key[1], registers]
+        if registers:
+            module_names.append(f"tools.{path.stem}")
+
+    # Drop entries for files that no longer exist; rewrite only when changed.
+    if cache_dirty or set(fresh_cache) != set(cache):
+        _save_discovery_cache(fresh_cache)
 
     imported: List[str] = []
     for mod_name in module_names:
@@ -82,6 +116,45 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
         except Exception as e:
             logger.warning("Could not import tool module %s: %s", mod_name, e)
     return imported
+
+
+def _discovery_cache_path() -> Optional[Path]:
+    """Path of the tool-discovery verdict cache, or None if unresolvable."""
+    try:
+        # Deferred import keeps tools/registry.py a no-deps leaf at module
+        # import time (hermes_constants itself is stdlib-only, so no cycle).
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home()) / "cache" / "tool_discovery_cache.json"
+    except Exception:
+        return None
+
+
+def _load_discovery_cache() -> Dict[str, list]:
+    """Read the discovery cache; any error → empty dict (full scan)."""
+    path = _discovery_cache_path()
+    if path is None:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_discovery_cache(cache: Dict[str, list]) -> None:
+    """Best-effort atomic write of the discovery cache. Never raises."""
+    path = _discovery_cache_path()
+    if path is None:
+        return
+    try:
+        from utils import atomic_json_write  # stdlib+yaml only; no cycle
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, cache, indent=0)
+    except Exception as e:
+        logger.debug("Could not write tool discovery cache %s: %s", path, e)
 
 
 class ToolEntry:
@@ -594,12 +667,12 @@ class ToolRegistry:
             name,
             result_type,
         )
-        return json.dumps({
-            "error": f"Tool handler returned unsupported result type: {result_type}",
-            "error_type": "tool_result_contract",
-            "tool": name,
-            "result_type": result_type,
-        }, ensure_ascii=False)
+        return tool_error(
+            f"Tool handler returned unsupported result type: {result_type}",
+            error_type="tool_result_contract",
+            tool=name,
+            result_type=result_type,
+        )
 
     def dispatch(self, name: str, args: dict, **kwargs) -> str | dict:
         """Execute a tool handler by name.
@@ -612,7 +685,7 @@ class ToolRegistry:
         """
         entry = self.get_entry(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return tool_error(f"Unknown tool: {name}")
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -631,7 +704,7 @@ class ToolRegistry:
                 sanitized = _sanitize_tool_error(raw)
             except Exception:
                 sanitized = raw  # defensive: never let the sanitizer block error propagation
-            return json.dumps({"error": sanitized})
+            return tool_error(sanitized)
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

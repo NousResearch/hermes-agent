@@ -56,7 +56,7 @@ except ImportError:  # pragma: no cover - dependency gate
     CRYPTO_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -670,12 +670,10 @@ def _mime_from_filename(filename: str) -> str:
 
 
 def _split_table_row(line: str) -> List[str]:
-    row = line.strip()
-    if row.startswith("|"):
-        row = row[1:]
-    if row.endswith("|"):
-        row = row[:-1]
-    return [cell.strip() for cell in row.split("|")]
+    """Delegate to the canonical table-row splitter in agent.markdown_tables."""
+    from agent.markdown_tables import split_table_row
+
+    return split_table_row(line)
 
 
 def _normalize_markdown_blocks(content: str) -> str:
@@ -868,24 +866,14 @@ def _should_split_short_chat_block_for_weixin(block: str) -> bool:
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:
     if len(content) <= max_length:
         return [content]
-
-    packed: List[str] = []
-    current = ""
-    for block in _split_markdown_blocks(content):
-        candidate = block if not current else f"{current}\n\n{block}"
-        if len(candidate) <= max_length:
-            current = candidate
-            continue
-        if current:
-            packed.append(current)
-            current = ""
-        if len(block) <= max_length:
-            current = block
-            continue
-        packed.extend(BasePlatformAdapter.truncate_message(block, max_length))
-    if current:
-        packed.append(current)
-    return packed
+    # Block extraction stays weixin-local (_split_markdown_blocks uses the
+    # anchored _FENCE_RE + per-line rstrip semantics); the greedy packing
+    # loop is the shared core's.
+    return greedy_pack_blocks(
+        _split_markdown_blocks(content),
+        max_length,
+        overflow=lambda block: BasePlatformAdapter.truncate_message(block, max_length),
+    )
 
 
 def _split_text_for_weixin_delivery(

@@ -43,6 +43,8 @@ import type {
   OAuthStartResponse,
   OAuthSubmitResponse,
   PaginatedSessions,
+  PairingResponse,
+  PairingUser,
   ProfileCreatePayload,
   ProfileSetupCommand,
   ProfileSoul,
@@ -180,6 +182,8 @@ export type {
   ModelOptionProvider,
   ModelOptionsResponse,
   PaginatedSessions,
+  PairingResponse,
+  PairingUser,
   ProfileCreatePayload,
   ProfileInfo,
   ProfileSetupCommand,
@@ -956,7 +960,10 @@ export function editLearningNode(id: string, content: string): Promise<{ message
   })
 }
 
-export function toggleSkill(name: string, enabled: boolean): Promise<{ ok: boolean; name: string; enabled: boolean }> {
+export function setSkillEnabled(
+  name: string,
+  enabled: boolean
+): Promise<{ ok: boolean; name: string; enabled: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
     ...profileScoped(),
     path: '/api/skills/toggle',
@@ -1030,7 +1037,7 @@ export function getToolsets(): Promise<ToolsetInfo[]> {
   })
 }
 
-export function toggleToolset(
+export function setToolsetEnabled(
   name: string,
   enabled: boolean
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
@@ -1159,6 +1166,40 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
+  })
+}
+
+// -- Pairing (who may DM the bot) --------------------------------------------
+// Unknown DMers get a one-time code and land in `pending` until an admin
+// approves them. Approval grants on the row's `request_id`, never on the code:
+// the code is the requester's proof that the channel is theirs and is never
+// returned by the API, while an authenticated admin is only ever identifying
+// a row they can already see.
+
+export function getPairing(): Promise<PairingResponse> {
+  return window.hermesDesktop.api<PairingResponse>({
+    ...profileScoped(),
+    path: '/api/pairing'
+  })
+}
+
+export function approvePairing(platform: string, requestId: string): Promise<{ ok: boolean; user: PairingUser }> {
+  return window.hermesDesktop.api<{ ok: boolean; user: PairingUser }>({
+    ...profileScoped(),
+    path: '/api/pairing/approve',
+    method: 'POST',
+    // These endpoints read the profile off the body, not the query string —
+    // `profileScoped()` alone would approve into the wrong profile's store.
+    body: { platform, request_id: requestId, ...profileScoped() }
+  })
+}
+
+export function revokePairing(platform: string, userId: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/pairing/revoke',
+    method: 'POST',
+    body: { platform, user_id: userId, ...profileScoped() }
   })
 }
 

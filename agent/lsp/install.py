@@ -30,7 +30,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -124,10 +123,9 @@ def _is_windows() -> bool:
 
 def hermes_lsp_bin_dir() -> Path:
     """Return the Hermes-owned bin staging dir for LSP servers."""
-    home = os.environ.get("HERMES_HOME")
-    if home is None:
-        home = os.path.join(os.path.expanduser("~"), ".hermes")
-    p = Path(home) / "lsp" / "bin"
+    from hermes_constants import get_hermes_home
+
+    p = get_hermes_home() / "lsp" / "bin"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

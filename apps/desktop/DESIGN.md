@@ -91,10 +91,11 @@ for call-site shadow or border inventions.
 | Token | Use |
 | --- | --- |
 | `--ui-stroke-primary…quaternary` | hairlines, in descending strength |
-| `--ui-stroke-tertiary` | the default in-panel divider / list hairline |
+| `--ui-stroke-tertiary` | the default in-panel divider / list hairline — and every bordered surface in the transcript |
 | `--stroke-nous` | the overlay hairline (pairs with `shadow-nous`) |
 | `--ui-text-primary / -secondary / -tertiary` | text hierarchy |
 | `--ui-bg-quaternary` | soft control fill (secondary button) |
+| `--ui-widget-surface-background` | fill for inline chat widgets (`WIDGET_SHELL_CLASS`) |
 | `--chrome-action-hover` | hover fill for quiet controls |
 | `--theme-primary`, `--ui-accent` | brand/accent |
 
@@ -196,6 +197,14 @@ Notes:
   existing components under `src/components/assistant-ui` and
   `src/app/chat/composer`; do not fork a second markdown, message, tool-call, or
   approval renderer for one feature.
+- **Inline widgets** — a tool result that renders as a panel the user reads or
+  acts on (clarify, artifact card) wears `WIDGET_SHELL_CLASS`
+  (`src/components/chat/widget-shell.ts`): shared radius, the
+  `--ui-widget-surface-background` fill, no border. Its actions sit *outside*
+  the panel, below it. Don't give one widget its own radius or fill.
+- Bordered surfaces in the transcript (tables, fences, callouts, attachments)
+  use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
+  default and reads too hot against the thread.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
 - Install, onboarding, connecting, boot failure, and reauthentication are

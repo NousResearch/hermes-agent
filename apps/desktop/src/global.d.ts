@@ -164,6 +164,10 @@ declare global {
       revealPath?: (path: string) => Promise<boolean>
       // Open a DIRECTORY (created if missing) in the OS file manager.
       openDir?: (path: string) => Promise<{ ok: boolean; error?: string }>
+      // Local Desktop runtime-plugin root (<HERMES_HOME>/desktop-plugins),
+      // resolved by Electron independently of the connected backend (#66899).
+      // Created on demand; returns the normalized absolute path.
+      desktopPluginsRoot?: () => Promise<string>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
@@ -237,6 +241,7 @@ declare global {
         write: (id: string, data: string) => Promise<boolean>
       }
       onClosePreviewRequested?: (callback: () => void) => () => void
+      onOpenFolderRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
       onDeepLink?: (
         callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
@@ -373,6 +378,8 @@ export interface DesktopUpdateStatus {
   error?: string
   behind?: number
   currentSha?: string
+  /** Backend only: the version string the backend reports for itself. */
+  currentVersion?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean

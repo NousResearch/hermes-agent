@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { startThinkingSound, stopThinkingSound } from '@/lib/thinking-sound'
 import { monitorSpeechDuringPlayback } from '@/lib/voice-barge-in'
 import {
   markVoicePlaybackInterrupted,
@@ -27,6 +28,9 @@ interface VoiceConversationOptions {
   busy: boolean
   enabled: boolean
   onFatalError?: () => void
+  /** Interrupt the in-flight agent turn (the same seam as the Stop button).
+   *  Fired when the user speaks while the model is still generating. */
+  onInterrupt?: () => Promise<void> | void
   onStopWord?: () => void
   onSubmit: (text: string) => Promise<void> | void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
@@ -37,10 +41,15 @@ interface VoiceConversationOptions {
   beforeMicOpen?: () => Promise<void> | void
 }
 
+/** How long a barge-triggered interrupt may take to settle before we submit
+ *  the captured utterance anyway. */
+const INTERRUPT_SETTLE_TIMEOUT_MS = 5_000
+
 export function useVoiceConversation({
   busy,
   enabled,
   onFatalError,
+  onInterrupt,
   onStopWord,
   onSubmit,
   onTranscribeAudio,
@@ -62,6 +71,7 @@ export function useVoiceConversation({
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
+  const bargedRef = useRef(false)
   const speechStartSequenceRef = useRef(0)
   const enabledRef = useRef(enabled)
   const mutedRef = useRef(muted)
@@ -69,6 +79,12 @@ export function useVoiceConversation({
   const statusRef = useRef<ConversationStatus>('idle')
   const wasEnabledRef = useRef(enabled)
   const onStopWordRef = useRef(onStopWord)
+  const onInterruptRef = useRef(onInterrupt)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    onInterruptRef.current = onInterrupt
+  }, [onInterrupt])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -113,6 +129,7 @@ export function useVoiceConversation({
     stopBargeMonitorRef.current?.()
     stopBargeMonitorRef.current = null
     bargeCapturePendingRef.current = false
+    bargedRef.current = false
     speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
@@ -314,6 +331,25 @@ export function useVoiceConversation({
           return
         }
 
+        // A spoken stop command while barging means "stop everything" — the
+        // turn/playback was already cut at trip time; now end the conversation
+        // instead of submitting "stop" as a new prompt.
+        if (isVoiceStopCommand(transcript)) {
+          dropSpeechSession()
+          setStatus('idle')
+          onStopWordRef.current?.()
+
+          return
+        }
+
+        // A generation-phase barge interrupted the in-flight turn; the submit
+        // path refuses while `busy`, so wait for the interrupt to settle.
+        const deadline = Date.now() + INTERRUPT_SETTLE_TIMEOUT_MS
+
+        while (busyRef.current && Date.now() < deadline) {
+          await new Promise(resolve => window.setTimeout(resolve, 100))
+        }
+
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
@@ -327,24 +363,46 @@ export function useVoiceConversation({
     [consumePendingResponse, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
-  /** Barge-in monitor wiring shared by the live and fallback speech paths. */
-  const openBargeMonitor = useCallback(
-    (onBarge: () => void) =>
-      monitorSpeechDuringPlayback({
-        onSpeech: () => {
-          bargeCapturePendingRef.current = true
-          onBarge()
-          markVoicePlaybackInterrupted()
-          stopVoicePlayback()
-        },
-        onUtterance: audio => {
-          bargeCapturePendingRef.current = false
-          stopBargeMonitorRef.current = null
-          void submitCapturedUtterance(audio)
+  /**
+   * Full-duplex barge-in monitor for the WHOLE agent turn: armed at submit,
+   * live through generation (thinking) AND playback (speaking).
+   *
+   * - generation phase (`busy`): speech interrupts the in-flight turn via
+   *   `onInterrupt` — the same seam as the Stop button — and cuts any TTS that
+   *   managed to start, so the stale reply never speaks.
+   * - playback phase: speech cuts playback and the captured interruption is
+   *   transcribed and submitted as the next turn.
+   *
+   * Idempotent — one monitor owns the mic per turn; re-arming while one is
+   * live is a no-op (the live/fallback speech paths and the turn-drive effect
+   * all call this).
+   */
+  const ensureBargeMonitor = useCallback(() => {
+    if (stopBargeMonitorRef.current) {
+      return
+    }
+
+    stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
+      isPlaying: () => $voicePlayback.get().status === 'speaking',
+      onSpeech: () => {
+        bargeCapturePendingRef.current = true
+        bargedRef.current = true
+        markVoicePlaybackInterrupted()
+        stopVoicePlayback()
+
+        if (busyRef.current) {
+          // Mid-generation: stop the in-flight turn so the captured utterance
+          // becomes the next one instead of queueing behind a stale reply.
+          void onInterruptRef.current?.()
         }
-      }),
-    [submitCapturedUtterance]
-  )
+      },
+      onUtterance: audio => {
+        bargeCapturePendingRef.current = false
+        stopBargeMonitorRef.current = null
+        void submitCapturedUtterance(audio)
+      }
+    })
+  }, [submitCapturedUtterance])
 
   /** Push any new reply text into the live session; finish when complete. */
   const feedSpeechSession = useCallback(
@@ -396,12 +454,9 @@ export function useVoiceConversation({
           return
         }
 
-        let barged = false
-
-        stopBargeMonitorRef.current?.()
-        stopBargeMonitorRef.current = openBargeMonitor(() => {
-          barged = true
-        })
+        // The full-duplex monitor is normally already live (armed at submit);
+        // this is a safety net for read-aloud-style entries into the loop.
+        ensureBargeMonitor()
 
         speechStartSequenceRef.current = $voicePlayback.get().sequence
 
@@ -410,14 +465,14 @@ export function useVoiceConversation({
           .finally(() => {
             if (responseIdRef.current === responseId) {
               awaitingSpokenResponseRef.current = false
-              settleAfterSpeech(barged)
+              settleAfterSpeech(bargedRef.current)
             }
           })
       }
 
       poll()
     },
-    [openBargeMonitor, pendingResponse, settleAfterSpeech, voiceCopy.playbackFailed]
+    [ensureBargeMonitor, pendingResponse, settleAfterSpeech, voiceCopy.playbackFailed]
   )
 
   /**
@@ -432,15 +487,11 @@ export function useVoiceConversation({
       speechStartSequenceRef.current = $voicePlayback.get().sequence
       setStatus('speaking')
 
-      let barged = false
-
       // VAD barge-in: the user talking over the reply cuts playback, drops
       // the not-yet-spoken remainder, AND keeps capturing — the interruption
       // is transcribed from its first syllable instead of losing the opening
-      // words to a mic re-open.
-      stopBargeMonitorRef.current = openBargeMonitor(() => {
-        barged = true
-      })
+      // words to a mic re-open. Usually already live (armed at submit).
+      ensureBargeMonitor()
 
       void (async () => {
         const session = await startSpeechStream({ source: 'voice-conversation' })
@@ -483,10 +534,10 @@ export function useVoiceConversation({
         }
 
         awaitingSpokenResponseRef.current = false
-        settleAfterSpeech(barged)
+        settleAfterSpeech(bargedRef.current)
       })()
     },
-    [awaitFallbackSpeech, feedSpeechSession, openBargeMonitor, settleAfterSpeech]
+    [awaitFallbackSpeech, ensureBargeMonitor, feedSpeechSession, settleAfterSpeech]
   )
 
   const start = useCallback(async () => {
@@ -574,6 +625,22 @@ export function useVoiceConversation({
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [enabled, stopTurn])
 
+  // Ambient "thinking" sound: while the agent works (status 'thinking') no
+  // audio flows, which reads as dead air mid-conversation. Calm bubble blips
+  // fill the gap; they stop the INSTANT speech starts, the mic re-arms, or the
+  // conversation ends. Gated by voice.thinking_sound + the shared sound mute.
+  useEffect(() => {
+    if (enabled && !muted && status === 'thinking') {
+      startThinkingSound()
+
+      return stopThinkingSound
+    }
+
+    stopThinkingSound()
+
+    return undefined
+  }, [enabled, muted, status])
+
   // Drive the loop: when a voice-submitted reply appears, open a live speech
   // session (which feeds itself from then on). Otherwise start listening when
   // idle between turns.
@@ -584,6 +651,13 @@ export function useVoiceConversation({
     }
 
     if (awaitingSpokenResponseRef.current && status !== 'speaking') {
+      // Generation phase: the turn is in flight but no reply audio exists
+      // yet. Keep the mic live so speech can interrupt the model mid-
+      // generation (full-duplex) instead of going deaf until playback.
+      if (status === 'thinking' && (busy || bargeCapturePendingRef.current)) {
+        ensureBargeMonitor()
+      }
+
       const response = pendingResponse()
 
       if (response) {
@@ -592,8 +666,9 @@ export function useVoiceConversation({
         return
       }
 
-      if (!busy && status === 'thinking') {
-        // Turn finished without any speakable reply (tool-only, error).
+      if (!busy && status === 'thinking' && !bargeCapturePendingRef.current) {
+        // Turn finished without any speakable reply (tool-only, error). A
+        // live barge capture owns the loop instead — it submits or resumes.
         awaitingSpokenResponseRef.current = false
         dropSpeechSession()
         pendingStartRef.current = true
@@ -610,7 +685,7 @@ export function useVoiceConversation({
     if (pendingStartRef.current) {
       void startListening()
     }
-  }, [busy, enabled, muted, openLiveSpeech, pendingResponse, startListening, status])
+  }, [busy, enabled, muted, ensureBargeMonitor, openLiveSpeech, pendingResponse, startListening, status])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

@@ -2225,6 +2225,12 @@ class MatrixAdapter(BasePlatformAdapter):
             chat_id, video_path, "m.video", caption, reply_to, metadata=metadata
         )
 
+    # Template attrs for the shared _format_exec_approval core. Matrix keeps
+    # the smart-deny/scope wording in its local tail (reaction legend), so the
+    # core is used for the header + fence + reason head only.
+    _EA_HEADER = "⚠️ **Dangerous command requires approval**\n"
+    _EA_CMD_BUDGET = 2000
+
     async def send_exec_approval(
         self,
         chat_id: str,
@@ -2241,7 +2247,6 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
-        cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         scope_choices = ""
         if smart_denied:
             scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
@@ -2258,9 +2263,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 reaction_legend_parts.append("♾️ = approve always")
         reaction_legend_parts.append("❎ = deny")
         text = (
-            "⚠️ **Dangerous command requires approval**\n"
-            f"```\n{cmd_preview}\n```\n"
-            f"Reason: {description}\n\n"
+            f"{self._format_exec_approval(command, description)}\n\n"
             f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
             + "\n".join(reaction_legend_parts)

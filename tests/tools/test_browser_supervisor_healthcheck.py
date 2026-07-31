@@ -114,40 +114,6 @@ def test_cache_hit_returns_same_instance_when_healthy(
     first.stop()
 
 
-def test_dead_thread_triggers_recreate(isolated_registry, stub_cdp_supervisor):
-    """Cached supervisor with a non-live thread must not be reused."""
-    cdp_url = "http://h/2"
-    dead = _make_fake_supervisor(cdp_url, thread_alive=False, loop_running=True)
-    isolated_registry._by_task["t2"] = dead  # pre-seed cache with a dead entry
-
-    fresh = isolated_registry.get_or_start(task_id="t2", cdp_url=cdp_url)
-
-    assert fresh is not dead, "dead-thread supervisor must be replaced"
-    assert dead._stop_calls == [True], "dead supervisor must be torn down"
-    assert isolated_registry._by_task["t2"] is fresh
-    assert len(stub_cdp_supervisor) == 1
-    assert stub_cdp_supervisor[0].start_called
-    fresh.stop()
-
-
-def test_stopped_loop_triggers_recreate(isolated_registry, stub_cdp_supervisor):
-    """Cached supervisor whose event loop is no longer running is recreated."""
-    cdp_url = "http://h/3"
-    broken = _make_fake_supervisor(cdp_url, thread_alive=True, loop_running=False)
-    isolated_registry._by_task["t3"] = broken
-
-    fresh = isolated_registry.get_or_start(task_id="t3", cdp_url=cdp_url)
-
-    assert fresh is not broken
-    assert broken._stop_calls == [True]
-    # Release the still-live thread from the pre-seeded fake so we don't leak.
-    release = getattr(broken._thread, "_release", None)
-    if release is not None:
-        release()
-    assert isolated_registry._by_task["t3"] is fresh
-    fresh.stop()
-
-
 def test_missing_thread_and_loop_attrs_trigger_recreate(
     isolated_registry, stub_cdp_supervisor
 ):

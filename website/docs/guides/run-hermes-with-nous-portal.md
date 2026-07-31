@@ -151,7 +151,7 @@ You'll see per-tool routing — `via Nous Portal` for the ones routed through th
 Because the Tool Gateway includes OpenAI TTS, [voice mode](/user-guide/features/voice-mode) works without a separate OpenAI key:
 
 ```bash
-hermes setup voice
+hermes setup tts
 # → pick "Nous Subscription" for TTS
 # → pick a speech-to-text backend (local faster-whisper is free, no setup)
 ```
@@ -163,7 +163,7 @@ Then in any messaging-platform session (Telegram, Discord, Signal, etc.), send a
 The Portal subscription works for [cron jobs](/user-guide/features/cron) and [batch processing](/user-guide/features/batch-processing) the same way it works for interactive chat — the OAuth refresh token is reused automatically. No additional setup; just schedule cron jobs and they'll bill against your subscription.
 
 ```bash
-hermes cron create "every day at 9am" \
+hermes cron create "0 9 * * *" \
   "Search the web for top AI news and summarize the 5 most important stories" \
   --name "Daily AI news"
 ```

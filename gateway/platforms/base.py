@@ -552,6 +552,75 @@ from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 
+# ---------------------------------------------------------------------------
+# Streaming TTS format descriptor and handle (#60671)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AudioFormat:
+    """Declared PCM format for a streaming-TTS session.
+
+    All chunks delivered via ``write_streaming_tts`` must conform to this
+    format: raw little-endian PCM at the declared sample rate, channels,
+    and sample width.
+    """
+    sample_rate: int = 24000
+    channels: int = 1
+    sample_width: int = 2  # bytes per sample (int16 = 2)
+
+
+@dataclass
+class StreamingTTSHandle:
+    """Opaque handle returned by ``begin_streaming_tts``.
+
+    Adapters may subclass or extend this with platform-specific state
+    (track IDs, buffers, etc.).  The base fields are used by the consumer
+    for bookkeeping and cancellation.
+    """
+    chat_id: str = ""
+    audio_format: AudioFormat = field(default_factory=AudioFormat)
+    # Set to True after the first PCM chunk has been written (audible output
+    # has started).  The consumer uses this to decide whether a failure
+    # should fall back to whole-file TTS (not yet audible) or just end
+    # cleanly (already audible — don't replay from the beginning).
+    audible: bool = False
+    # Set to True by abort_streaming_tts; late chunks are dropped.
+    aborted: bool = False
+
+
+def streaming_tts_turn_key(session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> str | None:
+    """Return a per-turn streaming-TTS suppression key.
+
+    The key is intentionally turn-scoped, not chat-scoped, so overlapping
+    turns in the same chat cannot suppress each other's fallback paths.
+    ``turn_marker`` is usually the gateway run generation; if that is absent
+    we fall back to the current event's message/update identifiers.
+    """
+    if not session_key:
+        return None
+    if turn_marker is None and event is not None:
+        turn_marker = getattr(event, "message_id", None) or getattr(event, "platform_update_id", None)
+    if turn_marker is None:
+        return None
+    return f"{session_key}:{turn_marker}"
+
+
+def streaming_tts_should_skip_whole_file(
+    completed_turns: set[str],
+    session_key: str | None,
+    turn_marker: Any = None,
+    *,
+    event: Any = None,
+) -> bool:
+    """Pure helper used by the auto-TTS suppression path.
+
+    Keeps the suppression decision turn-scoped and testable without
+    exercising the whole adapter method stack.
+    """
+    turn_key = streaming_tts_turn_key(session_key, turn_marker, event=event)
+    return bool(turn_key and turn_key in completed_turns)
+
+
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
@@ -662,8 +731,8 @@ def get_inbound_media_max_bytes() -> int:
     unreadable — falls back to the default.
     """
     try:
-        from hermes_cli.config import load_config as _load_config
-        cfg = _load_config()
+        from hermes_cli.config import load_config_readonly as _load_config
+        cfg = _load_config()  # read-only: .get() only, never mutated
     except Exception:
         return DEFAULT_INBOUND_MEDIA_MAX_BYTES
     gw = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
@@ -2759,6 +2828,11 @@ class BasePlatformAdapter(ABC):
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
+        # Per-turn streaming-TTS completion flag (#60671).  When the gateway
+        # streaming-TTS consumer successfully delivers audio, it adds the
+        # turn key here so the base adapter's whole-file auto-TTS path skips
+        # the duplicate.  Cleared after the turn completes.
+        self._streaming_tts_completed_turns: set[str] = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
@@ -3344,14 +3418,30 @@ class BasePlatformAdapter(ABC):
             return None
         if not transcript:
             return None
-        # Exclude the current turn's assistant message, which has already been
-        # persisted by the time we reach delivery but must not be treated as
-        # "history" for dedup purposes.
+        # Exclude the CURRENT TURN entirely — everything from the last user
+        # message onward. The agent persists rows as it produces them, so by
+        # delivery time the transcript already contains this turn's tool
+        # results and assistant reply. The old form dropped only the most
+        # recent assistant entry, which left THIS turn's tool results in
+        # "history": a text_to_speech result carrying media_tag then put its
+        # own path into the dedup set and delivery silently stripped the
+        # attachment (staging repro 2026-07-29 — `response_delivery_dropped`
+        # for a MEDIA-tag-only reply; user saw TTS produce no audio).
         history = list(transcript)
-        for msg in reversed(history):
-            if msg.get("role") == "assistant":
-                history.remove(msg)
+        last_user_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_idx = i
                 break
+        if last_user_idx is not None:
+            history = history[:last_user_idx]
+        else:
+            # No user row (unusual store shape): keep the old safe behavior of
+            # at least excluding the trailing assistant reply.
+            for msg in reversed(history):
+                if msg.get("role") == "assistant":
+                    history.remove(msg)
+                    break
         if not history:
             return None
         # Avoid circular import: gateway.run already imports this module.
@@ -3498,11 +3588,11 @@ class BasePlatformAdapter(ABC):
         auto-deletion.  Non-fatal if config is unreadable.
         """
         try:
-            from hermes_cli.config import load_config as _load_config
+            from hermes_cli.config import load_config_readonly as _load_config
         except Exception:
             return 0
         try:
-            cfg = _load_config()
+            cfg = _load_config()  # read-only: .get() only, never mutated
         except Exception:
             return 0
         display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
@@ -3547,6 +3637,91 @@ class BasePlatformAdapter(ABC):
             # path).  Close the coroutine cleanly so Python doesn't warn
             # about it never being awaited, then drop silently.
             coro.close()
+
+    # ── Shared interactive-prompt formatting cores ─────────────────────────
+    # Template attrs for ``_format_exec_approval``. Adapters override these to
+    # keep their historical, platform-specific wording byte-identical while
+    # sharing the assembly logic (header → fenced command preview → reason →
+    # optional smart-deny note).
+    _EA_HEADER: str = "⚠️ Command Approval Required\n\n"
+    _EA_CODE_OPEN: str = "```\n"
+    _EA_CODE_CLOSE: str = "\n```\n"
+    _EA_REASON_LABEL: str = "Reason: "
+    _EA_SMART_DENY_LINE: str = (
+        "\n\nSmart DENY: owner override applies to this one operation only."
+    )
+    _EA_CMD_BUDGET: int = 3000
+
+    @staticmethod
+    def _truncate_preview(text: str, budget: int, suffix: str = "...") -> str:
+        """Truncate ``text`` to ``budget`` chars, appending ``suffix`` when cut.
+
+        The shared ``x[:budget] + "..." if len(x) > budget else x`` idiom used
+        by every adapter's approval/confirm preview construction.
+        """
+        text = str(text or "")
+        return text[:budget] + suffix if len(text) > budget else text
+
+    def _ea_escape(self, text: str) -> str:
+        """Escape hook applied to the command preview and reason text.
+
+        Default is pass-through; HTML-mode platforms (Telegram) override.
+        """
+        return text
+
+    def _format_exec_approval(
+        self,
+        command: str,
+        description: str = "dangerous command",
+        smart_denied: bool = False,
+    ) -> str:
+        """Shared formatting core for exec-approval prompt text.
+
+        Assembles ``_EA_HEADER`` + fenced command preview (truncated to
+        ``_EA_CMD_BUDGET``) + ``_EA_REASON_LABEL`` + description, plus
+        ``_EA_SMART_DENY_LINE`` when ``smart_denied``. Button construction
+        stays platform-local; adapters with additional trailing instructions
+        (e.g. reaction legends) append them to this core.
+        """
+        cmd_preview = self._truncate_preview(str(command or ""), self._EA_CMD_BUDGET)
+        text = (
+            f"{self._EA_HEADER}"
+            f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
+            f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
+        )
+        if smart_denied:
+            text += self._EA_SMART_DENY_LINE
+        return text
+
+    @staticmethod
+    def _format_choice_page(
+        options: list,
+        page: int,
+        per_page: int,
+    ) -> "tuple[list, Dict[str, Any]]":
+        """Shared pagination core for picker keyboards/menus.
+
+        Clamps ``page`` into range, slices ``options`` for that page and
+        returns ``(page_options, meta)`` where ``meta`` carries ``page``,
+        ``total_pages``, ``start``, ``end``, ``total`` and ``page_info`` —
+        the `` (N–M of T)`` suffix text (empty when everything fits on one
+        page). Option/button rendering stays platform-local.
+        """
+        total = len(options)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        start = page * per_page
+        end = min(start + per_page, total)
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        meta: Dict[str, Any] = {
+            "page": page,
+            "total_pages": total_pages,
+            "start": start,
+            "end": end,
+            "total": total,
+            "page_info": page_info,
+        }
+        return options[start:end], meta
 
     async def send_slash_confirm(
         self,
@@ -3925,6 +4100,89 @@ class BasePlatformAdapter(ABC):
         """
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
+    # ------------------------------------------------------------------
+    # Streaming TTS adapter contract (#60671)
+    # ------------------------------------------------------------------
+    # Voice-capable adapters (LiveKit, Discord voice, …) override these to
+    # accept PCM audio chunks while the LLM is still generating.  The default
+    # implementations report "unsupported" so existing adapters are
+    # source-compatible and keep the whole-file auto-TTS fallback.
+
+    def supports_streaming_tts(self, chat_id: str, audio_format: AudioFormat) -> bool:
+        """Return True when this adapter can accept streaming PCM for *chat_id*.
+
+        Default: False (whole-file auto-TTS path remains).  Override to opt in.
+        """
+        return False
+
+    async def begin_streaming_tts(
+        self,
+        chat_id: str,
+        audio_format: AudioFormat,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[StreamingTTSHandle]:
+        """Open a streaming-audio session for *chat_id*.
+
+        Returns an opaque handle passed to subsequent ``write_streaming_tts``
+        / ``finish_streaming_tts`` / ``abort_streaming_tts`` calls, or
+        ``None`` to decline (caller falls back to whole-file TTS).
+        """
+        return None
+
+    async def write_streaming_tts(self, handle: StreamingTTSHandle, chunk: bytes) -> None:
+        """Write one PCM chunk to the adapter's outbound audio track."""
+        pass
+
+    async def finish_streaming_tts(self, handle: StreamingTTSHandle, *, interrupted: bool = False) -> None:
+        """Signal normal end of the audio stream."""
+        pass
+
+    async def abort_streaming_tts(self, handle: StreamingTTSHandle, error: Optional[str] = None) -> None:
+        """Abort the stream due to an error or cancellation.
+
+        Must be idempotent: late producer chunks after abort must be silently
+        dropped, not raise.  Restores adapter state to "not streaming".
+        """
+        pass
+
+    def _streaming_tts_turn_key(
+        self,
+        session_key: str | None,
+        turn_marker: Any = None,
+        *,
+        event: Any = None,
+    ) -> str | None:
+        return streaming_tts_turn_key(session_key, turn_marker, event=event)
+
+    def _mark_streaming_tts_completed_turn(
+        self,
+        session_key: str | None,
+        turn_marker: Any = None,
+        *,
+        event: Any = None,
+    ) -> None:
+        turn_key = self._streaming_tts_turn_key(session_key, turn_marker, event=event)
+        if turn_key is not None:
+            completed = getattr(self, "_streaming_tts_completed_turns", None)
+            if completed is None:
+                completed = set()
+                self._streaming_tts_completed_turns = completed
+            completed.add(turn_key)
+
+    def _streaming_tts_turn_completed(
+        self,
+        session_key: str | None,
+        turn_marker: Any = None,
+        *,
+        event: Any = None,
+    ) -> bool:
+        return streaming_tts_should_skip_whole_file(
+            getattr(self, "_streaming_tts_completed_turns", set()),
+            session_key,
+            turn_marker,
+            event=event,
+        )
+
     async def send_video(
         self,
         chat_id: str,
@@ -4095,7 +4353,6 @@ class BasePlatformAdapter(ABC):
         ``MEDIA:`/path/to/file.png` ``) to avoid breaking path extraction.
         """
         chars = list(content)
-        n = len(chars)
 
         # Build list of (start, end) spans to mask
         spans: list = []
@@ -4636,11 +4893,52 @@ class BasePlatformAdapter(ABC):
     # Subclasses override these to react to message processing events
     # (e.g. Discord adds 👀/✅/❌ reactions).
 
+    # Opt-in emoji set for the shared reaction-ack flow in
+    # ``on_processing_complete``. Adapters whose reaction primitives follow
+    # the ``_add_reaction(chat_id, message_id, emoji)`` /
+    # ``_remove_reaction(chat_id, message_id)`` shape can set these class
+    # attributes instead of overriding the hook. Left as ``None`` the hook
+    # stays a no-op (historical default).
+    _ACK_EMOJI: Optional[str] = None
+    _OK_EMOJI: Optional[str] = None
+    _FAIL_EMOJI: Optional[str] = None
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Hook called when background processing completes."""
+        """Hook called when background processing completes.
+
+        Default: shared reaction-ack flow — swap the in-progress reaction for
+        a final success/failure reaction. Runs only when the adapter opts in
+        by setting ``_OK_EMOJI`` / ``_FAIL_EMOJI`` class attributes AND
+        defines ``_add_reaction`` / ``_remove_reaction`` primitives taking
+        ``(chat_id, message_id[, emoji])``. Otherwise this is a no-op, as it
+        always was. Remove-then-add rather than a bare replace: deterministic
+        whether the platform replaces a sender's previous reaction or stacks
+        them. CANCELLED outcomes leave the message unreacted.
+        """
+        if self._OK_EMOJI is None and self._FAIL_EMOJI is None:
+            return
+        add: Any = getattr(self, "_add_reaction", None)
+        remove: Any = getattr(self, "_remove_reaction", None)
+        if not callable(add) or not callable(remove):
+            return
+        enabled = getattr(self, "_reactions_enabled", None)
+        if callable(enabled) and not enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not chat_id or not message_id:
+            return
+        await remove(chat_id, message_id)
+        if outcome == ProcessingOutcome.SUCCESS:
+            if self._OK_EMOJI:
+                await add(chat_id, message_id, self._OK_EMOJI)
+        elif outcome == ProcessingOutcome.FAILURE:
+            if self._FAIL_EMOJI:
+                await add(chat_id, message_id, self._FAIL_EMOJI)
+        # CANCELLED: leave the message unreacted.
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
@@ -5280,14 +5578,18 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            from hermes_cli.commands import should_bypass_active_session
+            from hermes_cli.commands import (
+                is_interrupt_then_dispatch,
+                should_bypass_active_session,
+            )
 
             if should_bypass_active_session(cmd):
                 # /stop, /new, /reset must cancel the in-flight adapter task
                 # and preserve ordering of queued follow-ups.  Route those
                 # through the dedicated handoff path that serializes
                 # cancellation + runner response + pending drain.
-                if cmd in {"stop", "new", "reset"}:
+                # (Registry-derived: busy_policy == "interrupt_then_dispatch".)
+                if cmd and is_interrupt_then_dispatch(cmd):
                     self._discard_text_debounce(session_key)
                     try:
                         await self._dispatch_active_session_command(event, session_key, cmd)
@@ -5557,17 +5859,15 @@ class BasePlatformAdapter(ABC):
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
-                # Deduplicate against media already delivered in prior turns.
-                # The model may echo a previous MEDIA: tag or bare file path in
-                # a later response; without this guard the same file is sent
-                # repeatedly.
+                # Do NOT deduplicate MEDIA tags against prior turns here.
+                # The auto-append path in GatewayRunner._run_agent_inner already
+                # deduplicates auto-appended tags via _collect_auto_append_media_tags
+                # with history_media_paths, so this filter would only catch explicit
+                # MEDIA tags the model deliberately included in its response — which
+                # must be preserved (user asked to resend an image, the model echoed
+                # a path intentionally, etc.).  Bare-file-path dedup still applies
+                # to local_files below via the same _history_media_paths set.
                 _history_media_paths = self._history_media_paths_for_session(session_key)
-                if _history_media_paths:
-                    media_files = [
-                        (path, is_voice)
-                        for path, is_voice in media_files
-                        if path not in _history_media_paths
-                    ]
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -5588,6 +5888,15 @@ class BasePlatformAdapter(ABC):
                     local_files, text_content = self.extract_local_files(text_content)
                     local_files = self.filter_local_delivery_paths(local_files)
                     if _history_media_paths:
+                        _suppressed = [p for p in local_files if p in _history_media_paths]
+                        if _suppressed:
+                            # Log the suppression (#73771) — silent drops here
+                            # cost operators hours of log-diving.
+                            logger.info(
+                                "[%s] Suppressing %d bare local file path(s) already "
+                                "delivered in this session: %s",
+                                self.name, len(_suppressed), _suppressed,
+                            )
                         local_files = [p for p in local_files if p not in _history_media_paths]
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
@@ -5620,12 +5929,19 @@ class BasePlatformAdapter(ABC):
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
+                # Skip when streaming TTS already delivered audio for this turn
+                # (#60671) — the gateway streaming-TTS consumer sets the flag.
                 _tts_path = None
                 _tts_requested_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
-                        and not media_files):
+                        and not media_files
+                        and not self._streaming_tts_turn_completed(
+                            session_key,
+                            getattr(interrupt_event, "_hermes_run_generation", None),
+                            event=event,
+                        )):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
@@ -5941,6 +6257,15 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            # Clean up the per-turn streaming-TTS flag (#60671).
+            self._streaming_tts_completed_turns.discard(
+                self._streaming_tts_turn_key(
+                    session_key,
+                    getattr(interrupt_event, "_hermes_run_generation", None),
+                    event=event,
+                )
+                or ""
+            )
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,

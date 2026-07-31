@@ -43,6 +43,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
 )
 from gateway.platforms.helpers import redact_phone
+from gateway.platforms.media_cache import DEFAULT_EXT_TO_MIME, mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from gateway.platforms.signal_format import markdown_to_signal
 from gateway.platforms.signal_rate_limit import (
@@ -122,18 +123,17 @@ def _is_audio_ext(ext: str) -> bool:
     return ext.lower() in {".mp3", ".wav", ".ogg", ".m4a", ".aac"}
 
 
-_EXT_TO_MIME = {
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-    ".gif": "image/gif", ".webp": "image/webp",
-    ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".wav": "audio/wav",
-    ".m4a": "audio/mp4", ".aac": "audio/aac",
-    ".mp4": "video/mp4", ".pdf": "application/pdf", ".zip": "application/zip",
-}
+# Historical Signal ext→mime table now lives in
+# gateway.platforms.media_cache.DEFAULT_EXT_TO_MIME (byte-identical);
+# kept as a module alias for backwards compatibility with any callers
+# that referenced the private name.
+_EXT_TO_MIME = DEFAULT_EXT_TO_MIME
 
 
 def _ext_to_mime(ext: str) -> str:
     """Map file extension to MIME type."""
-    return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
+    # preserves historical signal mapping (shared table matches verbatim)
+    return mime_for_ext(ext, fallback="application/octet-stream")
 
 
 def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:

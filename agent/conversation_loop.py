@@ -22,9 +22,7 @@ import os
 import random
 import re
 import ssl
-import threading
 import time
-import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -40,7 +38,6 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.iteration_budget import IterationBudget
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
@@ -1386,10 +1383,23 @@ def run_conversation(
         # However, providers like Moonshot AI require a separate 'reasoning_content' field
         # on assistant messages with tool_calls. We handle both cases here.
         request_logger = getattr(agent, "logger", None) or logging.getLogger(__name__)
+        # Per-agent validation cursor: skips re-json.loads-ing tool_call
+        # arguments on history messages already validated in a previous
+        # iteration. Identity-keyed (strong refs) — compression/undo/repair
+        # rewriting the list breaks the prefix match and forces a re-scan
+        # from the divergence point. See sanitize_tool_call_arguments.
+        _sanitize_cursor = getattr(agent, "_sanitize_args_cursor", None)
+        if _sanitize_cursor is None:
+            _sanitize_cursor = {}
+            try:
+                agent._sanitize_args_cursor = _sanitize_cursor
+            except Exception:
+                pass
         repaired_tool_calls = agent._sanitize_tool_call_arguments(
             messages,
             logger=request_logger,
             session_id=agent.session_id,
+            cursor=_sanitize_cursor,
         )
         if repaired_tool_calls > 0:
             request_logger.info(
@@ -1434,6 +1444,12 @@ def run_conversation(
             # event row enters the live history.
             api_msg.pop("display_kind", None)
             api_msg.pop("display_metadata", None)
+
+            # Durable row identity stamped by _rows_to_conversation so the
+            # desktop can address a specific persisted message (reactions).
+            # Bookkeeping, never a provider field — only the chat-completions
+            # transport strips underscore keys, so drop it centrally here.
+            api_msg.pop("_row_id", None)
 
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks

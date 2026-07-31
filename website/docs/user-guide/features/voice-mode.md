@@ -163,6 +163,8 @@ Both `silence_threshold` and `silence_duration` are configurable in `config.yaml
 
 Say **"stop"** — and nothing else — to end the voice conversation hands-free. The match is deliberately strict: the whole utterance (case-insensitive, surrounding punctuation ignored) must equal a configured phrase, so "stop doing that and try X instead" still reaches the agent normally. Customize the phrase list with `voice.stop_phrases` in `config.yaml` (e.g. `["stop", "goodbye hermes"]`), or set it to `[]` to disable. A voice chat also ends on its own after three consecutive silent cycles (no speech detected).
 
+**Typing** a bare stop phrase while a voice chat is active works the same way on every surface (CLI, TUI, desktop): the message ends the voice chat instead of being sent to the agent. Outside a voice chat, typed "stop" is an ordinary message.
+
 ### Streaming TTS
 
 When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response. This works with **every TTS provider**:
@@ -175,10 +177,14 @@ The same pipeline runs in the classic CLI, the TUI, and the desktop app. In a de
 
 ### Barge-in
 
-You can interrupt the agent mid-speech:
+You can interrupt the agent at ANY point in its turn — the microphone stays live from the moment you finish speaking until the reply has fully played (full duplex):
 
-- **Talk over it** — in continuous voice mode, a voice-activity monitor listens while the agent speaks and cuts playback the moment you start talking, then goes straight back to recording. The detector calibrates its noise floor against the playback itself, so speaker bleed doesn't self-trigger. Disable with `voice.barge_in: false` in `config.yaml`.
+- **Interject while it's thinking** — in continuous voice mode, speaking during LLM generation (before any audio plays) interrupts the in-flight turn and your interjection becomes the next message, the same as typing over a running turn.
+- **Talk over it** — speaking while the agent's reply plays cuts playback the moment you start talking and submits what you said. The detector calibrates its noise floor against the *quiet room* at turn start (never against the playback itself), so speaker bleed can't deafen it and normal speech reliably trips it.
 - **Type or press the record key** — sending a new message or hitting the push-to-talk key stops playback instantly on every surface.
+- **Say "stop"** — the stop phrase works in both phases: mid-generation it interrupts the turn AND ends the voice chat; mid-playback it cuts the speech and ends the chat.
+
+Tuning (config.yaml): `voice.barge_in: false` disables it; `voice.barge_in_threshold_multiplier` (default `3.0`) scales the speech trigger over the quiet-room floor; `voice.barge_in_grace_seconds` (default `0.5`) suppresses trips right after playback starts. Set `HERMES_VOICE_DEBUG=1` to stream per-block VAD diagnostics (calibrated floor, RMS, trip decisions) to stderr for live tuning.
 
 The agent **knows** it was interrupted: the next message carries a short note telling the model its spoken reply was cut off, so it can react naturally ("rude!") or pick up where it left off instead of being oblivious.
 
@@ -484,6 +490,7 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
+| **OpenAI** | `gpt-transcribe` | Fast | Best | Paid ($0.0045/min) | Yes |
 | **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
 | **xAI** | `grok-stt` | Fast | Good | Paid | Yes |
 

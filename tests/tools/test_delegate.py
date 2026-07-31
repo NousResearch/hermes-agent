@@ -1334,6 +1334,31 @@ class TestDelegateEventEnum(unittest.TestCase):
                 "call-parent-1",
             )
 
+    def test_nested_progress_preserves_inner_parent_tool_call_id(self):
+        parent = _make_mock_parent()
+        parent.tool_progress_callback = MagicMock()
+
+        cb = _build_child_progress_callback(
+            0,
+            "outer child",
+            parent,
+            task_count=1,
+            parent_tool_call_id="call-outer",
+        )
+        self.assertIsNotNone(cb)
+
+        cb(
+            "subagent_progress",
+            tool_name="grandchild progress",
+            parent_tool_call_id="call-inner",
+        )
+
+        parent.tool_progress_callback.assert_called_once()
+        self.assertEqual(
+            parent.tool_progress_callback.call_args.kwargs["parent_tool_call_id"],
+            "call-inner",
+        )
+
 
     def test_progress_callback_ignores_unknown_events(self):
         """Unknown event types are silently ignored."""

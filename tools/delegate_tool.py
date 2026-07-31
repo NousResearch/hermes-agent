@@ -1217,7 +1217,7 @@ def _build_child_progress_callback(
                     spinner.print_above(f" {prefix}├─ 🔀 {summary_text}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
-            _relay("subagent_progress", f"{prefix}{summary_text}")
+            _relay("subagent_progress", f"{prefix}{summary_text}", **kwargs)
             return
 
         # TASK_TOOL_STARTED — display and batch for parent relay

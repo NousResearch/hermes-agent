@@ -1018,3 +1018,168 @@ def test_reasoning_options_accept_a_discovered_padded_identifier(monkeypatch):
     discovered = models.probe_lmstudio_models(base_url=BASE_URL)
     assert discovered == [TARGET]
     assert models.lmstudio_model_reasoning_options(discovered[0], BASE_URL) == ["low", "high"]
+
+
+# --------------------------------------------------------------------------
+# Discovery identifier precedence — `key` over `id`, but only once normalized
+#
+# Discovery advertises one identifier per entry and prefers ``key``. That
+# preference has to be decided between *normalized* values: a whitespace-only
+# ``key`` is truthy raw and empty once stripped, so choosing on the raw values
+# lets it shadow a perfectly usable ``id`` and drops the entry from discovery
+# entirely — while ``_lmstudio_entry_identifiers`` still resolves that entry
+# through the same ``id``. Discovery and lookup would then disagree about
+# whether the model exists.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "blank_key",
+    ["   ", "\t\n"],
+    ids=["spaces", "tab-newline"],
+)
+def test_a_whitespace_only_key_falls_back_to_the_id(monkeypatch, blank_key):
+    """The unusable ``key`` must not hide the usable ``id`` from discovery."""
+    _catalogs(
+        monkeypatch,
+        [_identified_entry(key=blank_key, identifier=TARGET)],
+    )
+    requests = _record(monkeypatch, load_response={"load_config": {"context_length": 131_072}})
+
+    discovered = models.probe_lmstudio_models(base_url=BASE_URL)
+    assert discovered == [TARGET]
+
+    # ...and the advertised identifier loads that same entry.
+    result = models.ensure_lmstudio_model_loaded(
+        discovered[0],
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=None,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 131_072
+    assert result.load_attempted is True
+    assert result.rejected is False
+    assert [(call["url"], call["body"]) for call in requests] == [
+        (LOAD_URL, {"model": TARGET, "echo_load_config": True}),
+    ]
+
+
+def test_a_whitespace_only_key_still_leaves_a_resident_target_alone(monkeypatch):
+    """The ``id``-discovered entry is the target, not a competing LLM."""
+    _catalogs(
+        monkeypatch,
+        [
+            _identified_entry(
+                key="   ",
+                identifier=TARGET,
+                loaded=(("target-instance", 131_072),),
+            )
+        ],
+    )
+    _forbid_requests(monkeypatch)
+
+    discovered = models.probe_lmstudio_models(base_url=BASE_URL)
+    assert discovered == [TARGET]
+
+    result = models.ensure_lmstudio_model_loaded(
+        discovered[0],
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=64_000,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 131_072
+    assert result.load_attempted is False
+    assert result.rejected is False
+
+
+def test_a_usable_key_still_wins_over_a_different_usable_id(monkeypatch):
+    """Precedence is unchanged when both identifiers are usable."""
+    _catalogs(
+        monkeypatch,
+        [
+            _identified_entry(
+                key=TARGET,
+                identifier=f"{TARGET}@q4",
+                loaded=(("target-instance", 131_072),),
+            )
+        ],
+    )
+    _forbid_requests(monkeypatch)
+
+    assert models.probe_lmstudio_models(base_url=BASE_URL) == [TARGET]
+
+    # Both normalized values remain independent aliases for lookup.
+    for alias in (TARGET, f"{TARGET}@q4"):
+        assert (
+            models.ensure_lmstudio_model_loaded(
+                alias, BASE_URL, api_key="lm-secret", target_context_length=64_000
+            )
+            == 131_072
+        )
+
+
+_UNUSABLE_KEYS = [
+    (None, "none"),
+    ("", "empty-string"),
+    ("   ", "whitespace"),
+    (0, "zero"),
+    (False, "false"),
+]
+
+
+@pytest.mark.parametrize(
+    "unusable",
+    [value for value, _ in _UNUSABLE_KEYS],
+    ids=[name for _, name in _UNUSABLE_KEYS],
+)
+def test_a_key_the_normalizer_rejects_falls_back_to_the_id(monkeypatch, unusable):
+    """Whatever ``_lmstudio_identifier`` empties out cannot shadow the ``id``."""
+    assert models._lmstudio_identifier(unusable) == ""
+
+    entry = _identified_entry(identifier=TARGET)
+    entry["key"] = unusable
+    _catalogs(monkeypatch, [entry])
+
+    assert models.probe_lmstudio_models(base_url=BASE_URL) == [TARGET]
+
+
+def test_a_truthy_non_string_key_keeps_its_coercion_and_precedence(monkeypatch):
+    """A non-string key normalizes to text and still outranks the ``id``."""
+    entry = _identified_entry(identifier=TARGET, loaded=(("target-instance", 131_072),))
+    entry["key"] = 12345
+    _catalogs(monkeypatch, [entry])
+    _forbid_requests(monkeypatch)
+
+    assert models.probe_lmstudio_models(base_url=BASE_URL) == ["12345"]
+
+    # The coerced identifier is a real alias, so it finds the entry back.
+    assert (
+        models.ensure_lmstudio_model_loaded(
+            "12345", BASE_URL, api_key="lm-secret", target_context_length=64_000
+        )
+        == 131_072
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"key": "   "},
+        {"identifier": "\t\n"},
+        {"key": " ", "identifier": "  "},
+        {},
+    ],
+    ids=["blank-key-only", "blank-id-only", "both-blank", "neither-present"],
+)
+def test_an_entry_without_a_usable_identifier_is_omitted(monkeypatch, fields):
+    """No usable identifier means nothing to advertise — and nothing to load."""
+    _catalogs(
+        monkeypatch,
+        [_identified_entry(**fields), _identified_entry(key=TARGET)],
+    )
+
+    assert models.probe_lmstudio_models(base_url=BASE_URL) == [TARGET]

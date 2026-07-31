@@ -138,7 +138,7 @@ export function ProjectOverviewRow({
                           })
                         },
                         event,
-                        { label: s.newSessionIn(project.label) }
+                        { cwd: project.path, label: s.newSessionIn(project.label) }
                       )
                     }
                   : undefined

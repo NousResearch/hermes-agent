@@ -6978,8 +6978,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         use_compact = self.compact or term_width < 80
         
         if use_compact:
-            with _suspend_output_history():
-                self._console_print(_build_compact_banner())
+            self._console_print(_build_compact_banner())
             self._show_status()
         else:
             # Get tools for display

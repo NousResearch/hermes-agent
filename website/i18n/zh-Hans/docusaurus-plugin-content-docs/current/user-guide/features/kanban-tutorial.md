@@ -148,56 +148,35 @@ dashboard 视图，按 `auth-project` 筛选：
 
 ![Pipeline view for a multi-role feature](/img/kanban-tutorial/08-pipeline-auth.png)
 
-三个阶段的链条一目了然：`Spec: password reset flow`（DONE，pm）、`Implement password reset flow`（DONE，backend-dev）、`Review password reset PR`（READY，reviewer）。每个任务底部都有绿色的父任务，以及作为依赖项的子任务。
+此截图使用**预创建下游审查卡**模型：实现卡有一个专用 reviewer 子卡。在该模型中，实现完成后工程师必须调用 `kanban_complete`，这样 reviewer 子卡才能离开 `todo`。不要为了请求审查而阻塞实现父卡。
 
-最有趣的是实现任务，因为它经历了阻塞和重试。以下是完整的三 agent 协作流程，以每个 worker 模型发出的工具调用形式展示：
-
-```python
-# --- PM worker 在 $SPEC 上生成并编写验收标准 ---
-# worker tool calls
-kanban_show()
-kanban_complete(
-    summary="spec approved; POST /forgot-password sends email, "
-            "GET /reset/:token renders form, POST /reset applies new password",
-    metadata={"acceptance": [
-        "expired token returns 410",
-        "reused last-3 password returns 400 with message",
-        "successful reset invalidates all active sessions",
-    ]},
-)
-# → $SPEC 完成；$IMPL 自动从 todo 提升为 ready
-
-# --- 工程师 worker 在 $IMPL 上生成（第一次尝试）---
-# worker tool calls
-kanban_show()   # 在 worker_context 中读取 $SPEC 的 summary 和 acceptance metadata
-# （工程师编写代码，运行测试，开启 PR）
-# 审查者反馈到来——工程师认为问题有效并阻塞任务
-kanban_block(
-    reason="Review: password strength check missing, reset link isn't "
-           "single-use (can be replayed within 30min)",
-)
-# → $IMPL 转换为 blocked；run 1 以 outcome='blocked' 关闭
-```
-
-现在你（人类，或单独的 reviewer profile）读取阻塞原因，判断修复方向明确，从 dashboard 的"Unblock"按钮解除阻塞——或通过 CLI/斜杠命令：
-
-```bash
-hermes kanban unblock $IMPL
-# 或在聊天中：/kanban unblock $IMPL
-```
-
-dispatcher 将 `$IMPL` 提升回 `ready`，并在下一次 tick 时重新生成 `backend-dev` worker。这第二次生成是同一任务上的**新 run**：
+如果同一张卡同时承载实现和审查，请改用一等 review lifecycle。完整的实现 → 审查 → 修改 → 再审流程如下：
 
 ```python
-# --- 工程师 worker 在 $IMPL 上生成（第二次尝试）---
-# worker tool calls
+# --- 工程师：第一次实现 ---
 kanban_show()
-# → worker_context 现在包含 run 1 的阻塞原因，因此该 worker 知道
-#   需要修复哪两个问题，而无需重新阅读整个规格说明
-# （工程师添加 zxcvbn 检查，使重置令牌变为一次性，重新运行测试）
-kanban_complete(
-    summary="added zxcvbn strength check, reset tokens are now single-use "
-            "(stored + deleted on success)",
+# （编写代码、运行测试、准备候选版本）
+kanban_request_review(
+    summary="implemented reset flow; candidate is ready for review",
+    metadata={"changed_files": ["auth/reset.py"], "tests_run": 8},
+    reviewer="reviewer",
+)
+# → 同一张卡进入 review；实现 run 以 outcome='review_requested' 关闭
+
+# --- Reviewer：请求修改 ---
+kanban_show()
+# （检查 handoff 和候选版本）
+kanban_request_changes(
+    reason="Add password-strength validation and make reset tokens single-use."
+)
+# → review run 以 outcome='changes_requested' 关闭；卡片返回 backend-dev
+#   的 ready/todo，且不会触碰 block-loop 计数
+
+# --- 工程师：第二次实现 ---
+kanban_show()  # worker_context 中包含之前的审查证据
+# （应用反馈并重新运行测试）
+kanban_request_review(
+    summary="added zxcvbn validation and single-use reset tokens",
     metadata={
         "changed_files": [
             "auth/reset.py",
@@ -207,23 +186,21 @@ kanban_complete(
         "tests_run": 11,
         "review_iteration": 2,
     },
+    reviewer="reviewer",
 )
+
+# --- Reviewer：批准 ---
+kanban_complete(summary="review passed; acceptance criteria verified")
+# → done
 ```
 
-点击实现任务，抽屉显示**两次尝试**：
+任务的 run 历史现在记录 `review_requested → changes_requested → review_requested → completed`。每次尝试都有独立的 actor、summary、metadata 和 outcome，因此第二次工程师运行能准确看到被拒绝的原因，最终批准也可审计。`kanban_block` 只用于真正的外部升级（缺少访问权限、产品决策、基础设施不可用），而不是普通审查反馈。
 
-![Implementation task with two runs — blocked then completed](/img/kanban-tutorial/04b-drawer-retry-history-scrolled.png)
-
-- **Run 1** — `@backend-dev` 标记为 `blocked`。审查反馈紧跟在结果下方："password strength check missing, reset link isn't single-use (can be replayed within 30min)"。
-- **Run 2** — `@backend-dev` 标记为 `completed`。全新的 summary，全新的 metadata。
-
-每个 run 在 `task_runs` 中都是独立的一行，有自己的 outcome、summary 和 metadata。重试历史不是叠加在"最新状态"任务之上的概念性附加物——它是主要的数据表示形式。当重试的 worker 打开任务时，`build_worker_context` 会向其展示之前的尝试，因此第二次 worker 能看到第一次被阻塞的原因，并针对性地解决那些具体问题，而不是从头重来。
-
-审查者接下来认领任务。当他们打开 `Review password reset PR` 时，会看到：
+如果你有意使用截图中的下游卡模型，reviewer 会在实现父卡完成后打开 `Review password reset PR`：
 
 ![Reviewer's drawer view of the pipeline](/img/kanban-tutorial/09-drawer-pipeline-review.png)
 
-父任务链接指向已完成的实现任务。当审查者的 worker 在 `Review password reset PR` 上生成并调用 `kanban_show()` 时，返回的 `worker_context` 包含父任务最近一次已完成 run 的 summary 和 metadata——因此审查者在查看 diff 之前就已读到"added zxcvbn strength check, reset tokens are now single-use"，并掌握了变更文件列表。
+reviewer 卡的 `worker_context` 包含已完成实现的 handoff。这是独立卡工作流；不要再与同卡 `kanban_request_review` 混用，否则会重复创建审查通道。
 
 ## 场景四 — 熔断器与崩溃恢复
 

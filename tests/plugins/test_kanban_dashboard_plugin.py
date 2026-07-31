@@ -235,6 +235,7 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
         f"/api/plugins/kanban/tasks/{task['id']}",
         json={
             "status": "review",
+            "assignee": "reviewer",
             "summary": f"Implementation ready. {secret}",
             "metadata": {"tests_run": 4, "token": secret},
         },
@@ -254,7 +255,9 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
             if event.kind == "review_requested"
         ][-1]
         assert secret not in json.dumps(review_event.payload)
-        assert kb.assign_task(conn, task["id"], "reviewer")
+        assert review_event.payload is not None
+        assert review_event.payload["implementer"] == "builder"
+        assert review_event.payload["reviewer"] == "reviewer"
 
     response = client.patch(
         f"/api/plugins/kanban/tasks/{task['id']}",
@@ -599,19 +602,57 @@ def test_bulk_status_ready(client):
     c2 = client.post("/api/plugins/kanban/tasks", json={"title": "c"}).json()["task"]
     # Parent-less tasks land in "ready" already; push them to blocked first.
     for tid in (a["id"], b["id"], c2["id"]):
-        client.patch(f"/api/plugins/kanban/tasks/{tid}",
-                     json={"status": "blocked", "block_reason": "wait"})
+        client.patch(
+            f"/api/plugins/kanban/tasks/{tid}",
+            json={"status": "blocked", "block_reason": "wait"},
+        )
 
-    r = client.post("/api/plugins/kanban/tasks/bulk",
-                    json={"ids": [a["id"], b["id"], c2["id"]], "status": "ready"})
-    assert r.status_code == 200
-    results = r.json()["results"]
-    assert all(r["ok"] for r in results)
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [a["id"], b["id"], c2["id"]], "status": "ready"},
+    )
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert all(item["ok"] for item in results)
     # All three are now ready.
     board = client.get("/api/plugins/kanban/board").json()
     ready = next(col for col in board["columns"] if col["name"] == "ready")
-    ids = {t["id"] for t in ready["tasks"]}
+    ids = {task["id"] for task in ready["tasks"]}
     assert {a["id"], b["id"], c2["id"]}.issubset(ids)
+
+
+def test_bulk_review_assignment_preserves_implementer_provenance(client):
+    tasks = [
+        client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": title, "assignee": "builder"},
+        ).json()["task"]
+        for title in ("review a", "review b")
+    ]
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={
+            "ids": [task["id"] for task in tasks],
+            "status": "review",
+            "assignee": "reviewer",
+            "summary": "ready",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert all(item["ok"] for item in response.json()["results"])
+    with kb.connect() as conn:
+        for task in tasks:
+            current = kb.get_task(conn, task["id"])
+            assert current is not None
+            assert current.status == "review"
+            assert current.assignee == "reviewer"
+            event = [
+                item for item in kb.list_events(conn, task["id"])
+                if item.kind == "review_requested"
+            ][-1]
+            assert event.payload is not None
+            assert event.payload["implementer"] == "builder"
+            assert event.payload["reviewer"] == "reviewer"
 
 
 # ---------------------------------------------------------------------------

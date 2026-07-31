@@ -4579,6 +4579,57 @@ def _retry_status_for_run(
     return "review" if payload.get("source_status") == "review" else "ready"
 
 
+def goal_run_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+    expected_run_id: Optional[int] = None,
+) -> Optional[str]:
+    """Resolve lifecycle status from the perspective of one worker run.
+
+    A successor may claim the task immediately after this run hands it off.
+    Returning the task's live ``running`` status in that case lets the old goal
+    loop mutate the successor.  Bind terminal handoffs to the original run and
+    report any other ownership loss as ``superseded``.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        return None
+    if expected_run_id is not None:
+        row = conn.execute(
+            "SELECT outcome FROM task_runs WHERE id = ? AND task_id = ?",
+            (int(expected_run_id), task_id),
+        ).fetchone()
+        outcome = (
+            str(row["outcome"])
+            if row and row["outcome"] is not None
+            else None
+        )
+        terminal_status = (
+            {
+                "completed": "done",
+                "review_requested": "review",
+                "changes_requested": "changes_requested",
+                "blocked": "blocked",
+                "dependency_wait": "blocked",
+            }.get(outcome)
+            if outcome is not None
+            else None
+        )
+        if terminal_status is not None:
+            return terminal_status
+        if outcome is not None or task.current_run_id != int(expected_run_id):
+            return "superseded"
+    if task.status in {"ready", "todo"}:
+        event = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if event and event["kind"] == "changes_requested":
+            return "changes_requested"
+    return task.status
+
+
 def heartbeat_claim(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6038,18 +6089,18 @@ def block_task(
 
 
 
-def _redact_review_value(value: Any) -> Any:
+def redact_review_value(value: Any) -> Any:
     """Redact secrets at the domain boundary for durable review handoffs."""
     if isinstance(value, str):
         from agent.redact import redact_sensitive_text
 
         return redact_sensitive_text(value, force=True)
     if isinstance(value, dict):
-        return {key: _redact_review_value(item) for key, item in value.items()}
+        return {key: redact_review_value(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_redact_review_value(item) for item in value]
+        return [redact_review_value(item) for item in value]
     if isinstance(value, tuple):
-        return tuple(_redact_review_value(item) for item in value)
+        return tuple(redact_review_value(item) for item in value)
     return value
 
 
@@ -6070,8 +6121,8 @@ def request_review(
     right profile.  Supplying ``reviewer`` also reassigns the task before it is
     exposed to the review dispatcher.
     """
-    summary = _redact_review_value(summary)
-    metadata = _redact_review_value(metadata)
+    summary = redact_review_value(summary)
+    metadata = redact_review_value(metadata)
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return False
@@ -6156,7 +6207,7 @@ def request_changes(
     ``changes_requested`` event.  The second tuple item is the implementer on
     success or a diagnostic reason on failure.
     """
-    reason = str(_redact_review_value(reason or "")).strip()
+    reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
 

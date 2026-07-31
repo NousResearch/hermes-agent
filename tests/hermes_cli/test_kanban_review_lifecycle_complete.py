@@ -434,6 +434,49 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
     assert crashed.status == "review"
 
 
+def test_goal_run_status_is_bound_to_original_run(conn) -> None:
+    task_id = kb.create_task(conn, title="Goal handoff race", assignee="builder")
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        summary="ready",
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    assert kb.goal_run_status(
+        conn, task_id, implementation.current_run_id
+    ) == "review"
+
+    assert kb.request_changes(
+        conn,
+        task_id,
+        reason="fix it",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    successor = kb.claim_task(conn, task_id)
+    assert successor is not None
+    assert kb.goal_run_status(
+        conn, task_id, review.current_run_id
+    ) == "changes_requested"
+    assert kb.goal_run_status(
+        conn, task_id, successor.current_run_id
+    ) == "running"
+    assert not kb.block_task(
+        conn,
+        task_id,
+        reason="stale reviewer must not block successor",
+        expected_run_id=review.current_run_id,
+    )
+    current = kb.get_task(conn, task_id)
+    assert current is not None
+    assert current.status == "running"
+    assert current.current_run_id == successor.current_run_id
+
+
 def test_parked_review_approval_without_evidence_still_creates_audit_run(conn) -> None:
     task_id = kb.create_task(conn, title="Manual approval", assignee="reviewer")
     assert kb.request_review(conn, task_id, summary="implementation handoff")

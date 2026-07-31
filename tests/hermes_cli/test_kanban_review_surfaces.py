@@ -248,6 +248,40 @@ def test_worker_guidance_distinguishes_same_card_and_downstream_review() -> None
     assert "escalate" in skill_text.lower()
 
 
+def test_cli_reopen_review_is_transition_first_and_redacts_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    secret = "ghp_" + "Q" * 40
+    with kb.connect() as conn:
+        invalid_id = kb.create_task(conn, title="not review", assignee="builder")
+        review_id = kb.create_task(conn, title="review", assignee="builder")
+        assert kb.request_review(conn, review_id, summary="ready")
+
+    invalid_output = kc.run_slash(
+        f'reopen-review {invalid_id} --reason "invalid {secret}"'
+    )
+    assert "cannot reopen" in invalid_output
+    with kb.connect() as conn:
+        assert kb.list_comments(conn, invalid_id) == []
+
+    success_output = kc.run_slash(
+        f'reopen-review {review_id} --reason "revise {secret}"'
+    )
+    assert "Reopened" in success_output
+    assert secret not in success_output
+    with kb.connect() as conn:
+        task = kb.get_task(conn, review_id)
+        assert task is not None
+        assert task.status == "ready"
+        comments = kb.list_comments(conn, review_id)
+        assert len(comments) == 1
+        assert secret not in comments[0].body
+
+
 def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

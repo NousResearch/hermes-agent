@@ -875,8 +875,14 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
+        review_assignee_deferred = (
+            payload.status == "review" and payload.assignee is not None
+        )
+
         # --- assignee ----------------------------------------------------
-        if payload.assignee is not None:
+        # For a combined assignee+review patch, request_review must capture
+        # the current implementer before routing the task to the reviewer.
+        if payload.assignee is not None and not review_assignee_deferred:
             try:
                 ok = kanban_db.assign_task(
                     conn, task_id, payload.assignee or None,
@@ -909,7 +915,10 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 ok = kanban_db.request_review(
                     conn, task_id, summary=payload.summary,
                     metadata=payload.metadata,
+                    reviewer=(payload.assignee or None),
                 )
+                if ok and review_assignee_deferred and not payload.assignee:
+                    ok = kanban_db.assign_task(conn, task_id, None)
             elif s == "ready":
                 # Re-open a blocked/scheduled/review task, or just an explicit
                 # status set. "Changes requested" (review -> ready) goes through
@@ -1370,6 +1379,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         ok = kanban_db.request_review(
                             conn, tid, summary=payload.summary,
                             metadata=payload.metadata,
+                            reviewer=(payload.assignee or None),
                         )
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)

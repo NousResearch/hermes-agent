@@ -110,12 +110,11 @@ def test_managed_vendor_endpoints_pin_the_deployed_gateway_url():
     typo'd pseudo-vendor to a non-existent host while every other test stubbed
     it): default builder, real deployed host, pinned vendor path.
     """
-    with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True), \
-         patch.dict(
-             os.environ,
-             {"TOOL_GATEWAY_DOMAIN": "nousresearch.com", "TOOL_GATEWAY_SCHEME": "https"},
-             clear=False,
-         ):
+    with patch.dict(
+        os.environ,
+        {"TOOL_GATEWAY_DOMAIN": "nousresearch.com", "TOOL_GATEWAY_SCHEME": "https"},
+        clear=False,
+    ):
         os.environ.pop("TOOL_GATEWAY_URL", None)
         endpoints = managed_tool_gateway.managed_vendor_endpoints("bfl")
 
@@ -126,8 +125,31 @@ def test_managed_vendor_endpoints_pin_the_deployed_gateway_url():
     }
 
 
-def test_managed_vendor_endpoints_unreachable_when_managed_tools_disabled():
-    with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=False):
+def test_managed_vendor_endpoints_do_not_consult_entitlement():
+    """Address resolution, not a policy decision.
+
+    What an account may spend is the gateway's ruling, stated in its refusals.
+    Guessing at it here would hide the address from a caller the server would
+    have served, so entitlement must not be read on this path at all.
+    """
+    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False), \
+         patch.object(
+             managed_tool_gateway,
+             "managed_nous_tools_enabled",
+             side_effect=AssertionError("entitlement must not gate address resolution"),
+         ):
+        os.environ.pop("TOOL_GATEWAY_URL", None)
+        endpoints = managed_tool_gateway.managed_vendor_endpoints("bfl")
+
+    assert endpoints is not None
+    assert endpoints["base_url"] == "https://tool-gateway.nousresearch.com/api/bfl"
+
+
+def test_managed_vendor_endpoints_are_none_when_no_origin_resolves():
+    # A misconfigured scheme leaves nothing to call, and the caller reports
+    # that rather than building a URL out of a broken setting.
+    with patch.dict(os.environ, {"TOOL_GATEWAY_SCHEME": "ftp"}, clear=False):
+        os.environ.pop("TOOL_GATEWAY_URL", None)
         assert managed_tool_gateway.managed_vendor_endpoints("bfl") is None
 
 

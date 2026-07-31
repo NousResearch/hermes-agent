@@ -1,11 +1,11 @@
 """Native BFL FLUX 3 video generation tools, backed by the Nous tool gateway.
 
-These are service-gated native tools in the ``image_generate`` mold: schemas
-and descriptions are pinned here as build-time facts, the handlers speak the
-gateway's own REST contract, and ``check_fn`` hides the whole toolset unless
-the user is signed in to Nous Portal with paid service access. No runtime
-discovery, and no server-supplied schema is ever consulted — that is the point
-of the design.
+These are native tools in the ``image_generate`` mold: schemas and
+descriptions are pinned here as build-time facts, the handlers speak the
+gateway's own REST contract, and ``check_fn`` hides the whole toolset only when
+there is no Nous sign-in to call it with — never on entitlement, which is the
+gateway's to rule on. No runtime discovery, and no server-supplied schema is
+ever consulted — that is the point of the design.
 
 The wire is two calls against the gateway's managed mount, and it names the
 vendor but not the vendor's API:
@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Optional
 
 from tools.registry import registry
@@ -39,6 +40,7 @@ from tools.managed_tool_gateway import (
     build_managed_media_uploader,
     managed_gateway_auth_headers,
     managed_vendor_endpoints,
+    peek_nous_access_token,
     read_nous_access_token,
 )
 
@@ -48,13 +50,14 @@ _TOOLSET = "bfl"
 _VENDOR = "bfl"
 
 # Submit sits behind the gateway's upstream call plus upload-reference
-# resolution, and the gateway bounds a poll server-side. One generous read
-# timeout covers both without ever approaching the agent's per-tool budget.
+# resolution, so it is given a generous read timeout. A poll passes its own,
+# much shorter one (see _POLL_READ_TIMEOUT_SECONDS): the job endpoint answers
+# at once, and a poll allowed to hang this long would spend the whole call.
 _TRANSPORT_READ_TIMEOUT_SECONDS = 180.0
 _TRANSPORT_CONNECT_TIMEOUT_SECONDS = 10.0
 
 _SIGN_IN_MESSAGE = (
-    "BFL video generation needs a Nous Portal sign-in with an active paid plan. "
+    "BFL video generation needs a Nous Portal sign-in. "
     "Ask the user to run `hermes model` and sign in to Nous, then retry."
 )
 
@@ -109,7 +112,12 @@ def _endpoints() -> Optional[dict]:
     return managed_vendor_endpoints(_VENDOR)
 
 
-async def _call_gateway(method: str, url: str, json_body: Optional[dict] = None) -> str:
+async def _call_gateway(
+    method: str,
+    url: str,
+    json_body: Optional[dict] = None,
+    read_timeout: Optional[float] = None,
+) -> str:
     """One REST round trip, rendered as this tool's result.
 
     The gateway's ``guidance`` (on success) and ``error.message`` (on a
@@ -117,6 +125,11 @@ async def _call_gateway(method: str, url: str, json_body: Optional[dict] = None)
     verbatim. A refusal is a normal outcome the model can respond to — being
     throttled is not a broken tool — so only genuinely unreadable responses
     become ``error``.
+
+    Those unreadable ones carry ``transport_error`` as well. A refusal is the
+    gateway's ruling on the request; a transport failure is the absence of one,
+    and says nothing about the job. The poll loop tells them apart on that key
+    rather than on the wording of a message.
     """
     import httpx
 
@@ -125,13 +138,17 @@ async def _call_gateway(method: str, url: str, json_body: Optional[dict] = None)
         return json.dumps({"error": _SIGN_IN_MESSAGE})
     headers["Content-Type"] = "application/json"
 
-    timeout = httpx.Timeout(_TRANSPORT_CONNECT_TIMEOUT_SECONDS, read=_TRANSPORT_READ_TIMEOUT_SECONDS)
+    timeout = httpx.Timeout(
+        _TRANSPORT_CONNECT_TIMEOUT_SECONDS,
+        read=_TRANSPORT_READ_TIMEOUT_SECONDS if read_timeout is None else read_timeout,
+    )
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(method, url, headers=headers, json=json_body)
     except Exception as exc:
         return json.dumps({
             "error": f"Could not reach the video-generation gateway: {type(exc).__name__}: {exc}",
+            "transport_error": True,
         })
 
     if response.status_code == 401:
@@ -143,8 +160,11 @@ async def _call_gateway(method: str, url: str, json_body: Optional[dict] = None)
         payload = None
 
     if not isinstance(payload, dict):
+        # An edge or a proxy answering in HTML rather than the gateway itself,
+        # which is what a 502 or 504 in front of it looks like from here.
         return json.dumps({
             "error": f"The video-generation gateway answered HTTP {response.status_code} with an unreadable body.",
+            "transport_error": True,
         })
 
     if response.status_code >= 400:
@@ -179,17 +199,50 @@ _MEDIA_FIELDS = {
 _MAX_IMAGES = 10
 
 
-# How long one get_result call waits before its second look. The bound that
-# matters is the whole call rather than this number: model_tools' async bridge
-# abandons a tool at 300s, and one call spends two polls (each bounded
-# server-side at 45s), this wait, and on Ready the download of the clip. There
-# is room to roughly double this; the reason not to is that a finished job is
-# only noticed at the next look, so the wait is also the notice delay.
-_POLL_FOLLOW_UP_WAIT_SECONDS = 45.0
-# Taken in slices so the wait is answerable. Nothing outside a tool can end a
-# call that has already started — the executor only checks for an interrupt
-# between tools — so a tool that blocks this long has to watch the flag itself.
+# One get_result call looks repeatedly rather than a fixed twice. The job
+# endpoint answers immediately — there is no long poll — so every second
+# between looks is a second a finished clip goes unnoticed, and many
+# short-spaced looks per call cut both that notice delay and the number of
+# times the model has to decide to keep waiting.
+#
+# Two bounds keep the loop inside the agent's per-tool ceiling. model_tools'
+# async bridge abandons a tool at 300s and reports it to the model as a bare
+# "TimeoutError:" — no job id, no sign the generation is still alive — which is
+# the worst answer this tool can give, so neither bound may approach it.
+# _CALL_BACKSTOP_SECONDS is the wall-clock guarantee over the whole handler;
+# _POLL_BUDGET_SECONDS stops new looks earlier still, and the difference
+# between them is what a clip finishing on the last look has to download in.
+_CALL_BACKSTOP_SECONDS = 240.0
+_POLL_BUDGET_SECONDS = 180.0
+# The gap between looks, and so the notice delay on a finished job. The
+# gateway's poll limiter allows 120 a minute per principal, and it only ever
+# has one generation of ours to answer for, so this cadence spends about a
+# tenth of what it permits.
+_POLL_GAP_SECONDS = 5.0
+# The budget is counted as it is spent — the waits and the time each look
+# actually takes — rather than read off a wall clock. A slow gateway therefore
+# costs looks instead of overrunning the call, and the loop stays testable
+# without a fake clock.
+#
+# Waits are taken in slices so they stay answerable. Nothing outside a tool can
+# end a call that has already started — the executor only checks for an
+# interrupt between tools — so a tool that blocks this long watches the flag
+# itself.
 _POLL_WAIT_SLICE_SECONDS = 1.0
+# A poll's own read timeout. It has to clear the gateway's server-side poll
+# budget, which bounds one status read at 45s across its retries and its
+# regional redirect hops: cutting a poll off before the server would give up
+# turns a slow-but-healthy read into a transport error, and an error ends the
+# loop. Still far below the submit path's patience, so a wedged poll cannot
+# quietly spend the whole call either.
+_POLL_READ_TIMEOUT_SECONDS = 60.0
+# How many looks in a row may fail to reach the gateway before the loop gives
+# up on the call. A blip costs a look rather than the whole remaining budget:
+# ending on the first one hands the model an error it can only answer by
+# polling again immediately, which is the burst this loop exists to prevent.
+# Bounded so a gateway that is genuinely down is reported promptly instead of
+# being retried for minutes.
+_MAX_CONSECUTIVE_TRANSPORT_ERRORS = 3
 
 # Mirrors the gateway's BFL statuses
 _TERMINAL_POLL_STATUSES = frozenset(
@@ -204,24 +257,57 @@ def _poll_is_finished(raw: str) -> bool:
     except Exception:
         return True
     if not isinstance(payload, dict) or "error" in payload:
-        # A refusal carries its own guidance (a wait, a limit, a dead job).
-        # Sleeping on it would only delay showing the model what to do.
+        # A refusal carries its own guidance (a limit, a dead job, a bad id),
+        # and sleeping on it would only delay showing the model what to do.
+        # The one exception is a throttle, which states a wait the loop can
+        # absorb — the caller checks _retry_after_seconds before asking here.
         return True
     details = payload.get("details")
     status = details.get("status") if isinstance(details, dict) else None
     return not isinstance(status, str) or status in _TERMINAL_POLL_STATUSES
 
 
-async def _wait_before_second_look() -> bool:
-    """Hold the call open between looks; False if the user interrupted.
+def _retry_after_seconds(raw: str) -> Optional[float]:
+    """How long the gateway asked us to wait, when a refusal is a throttle.
 
-    Counted down rather than clock-driven: this paces polling, so a slice
-    that runs long changes nothing, and the loop stays testable without a
-    fake clock.
+    A throttle is the one refusal worth absorbing here rather than handing
+    back. Returning it ends the call, and the model it lands on has no clock —
+    told to wait, it asks again immediately — so a rate limit answered that way
+    produces a tighter loop than the one that tripped it. The gateway sends the
+    wait as a number alongside the message, so there is nothing to parse out of
+    prose.
     """
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or "error" not in payload:
+        return None
+    details = payload.get("details")
+    value = details.get("retryAfterSeconds") if isinstance(details, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
+def _is_transport_error(raw: str) -> bool:
+    """True when the gateway did not answer, as opposed to answering "no".
+
+    Set by ``_call_gateway`` on the paths where nothing readable came back, so
+    this reads a flag rather than matching on the text of a message.
+    """
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return False
+    return isinstance(payload, dict) and payload.get("transport_error") is True
+
+
+async def _wait_between_looks(seconds: float) -> bool:
+    """Hold the call open until the next look; False if the user interrupted."""
     from tools.interrupt import is_interrupted
 
-    remaining = _POLL_FOLLOW_UP_WAIT_SECONDS
+    remaining = seconds
     while remaining > 0:
         if is_interrupted():
             return False
@@ -319,9 +405,14 @@ async def _deliver_media(value, permitted: tuple, task_id: Optional[str]):
 # Saving the finished clip
 # ---------------------------------------------------------------------------
 
-# Generous: a 50MB clip over a slow link, still well inside the agent's budget.
+# Generous: a 50MB clip over a slow link. Bounded per call by what is left of
+# the backstop, so this is a ceiling rather than the figure actually used.
 _DOWNLOAD_READ_TIMEOUT_SECONDS = 300.0
 _DOWNLOAD_CONNECT_TIMEOUT_SECONDS = 15.0
+# Kept clear of the backstop so the download's own timeout fires first: that
+# way a stalled save is reported as one, instead of being cancelled mid-write
+# with the call's answer lost.
+_DOWNLOAD_GRACE_SECONDS = 5.0
 # A rejection page is a few hundred bytes of XML; a clip is megabytes. Anything
 # smaller than this is not the video, whatever the HTTP status said.
 _MIN_PLAUSIBLE_VIDEO_BYTES = 64 * 1024
@@ -330,7 +421,24 @@ _MIN_PLAUSIBLE_VIDEO_BYTES = 64 * 1024
 _MAX_FILENAME_ATTEMPTS = 50
 
 
-async def _save_if_ready(raw: str, save_to) -> str:
+def _download_read_timeout(started: float) -> float:
+    """What is left of the call for a download, never more than the ceiling.
+
+    Without this the download's own generous timeout outlives the agent's
+    per-tool ceiling, and the "saving failed, poll again to retry" answer below
+    is never reached: the bridge kills the call first and the model is told
+    only "TimeoutError", with no indication the clip exists and is one poll
+    away.
+
+    Must not invent time past what remains: clamping upward used to schedule a
+    download the outer ``asyncio.wait_for`` then cancelled, answering with a
+    false ``_still_generating`` while the job was already Ready.
+    """
+    left = _CALL_BACKSTOP_SECONDS - (time.monotonic() - started) - _DOWNLOAD_GRACE_SECONDS
+    return max(0.0, min(_DOWNLOAD_READ_TIMEOUT_SECONDS, left))
+
+
+async def _save_if_ready(raw: str, save_to, started: float) -> str:
     """Download a finished clip and swap the signed URL for a local path.
 
     The URL is handled here rather than by the model on purpose. It is long and
@@ -367,7 +475,7 @@ async def _save_if_ready(raw: str, save_to) -> str:
     result.pop("sample", None)
 
     try:
-        target, size = await _download_video(url.strip(), save_to)
+        target, size = await _download_video(url.strip(), save_to, started)
     except Exception as exc:
         payload["result"] = (
             f"The clip finished but saving it failed: {type(exc).__name__}: {exc}. "
@@ -400,7 +508,7 @@ def _delivery_lead_in(target) -> str:
     return f"Saved to {target}. "
 
 
-async def _download_video(url: str, save_to) -> tuple:
+async def _download_video(url: str, save_to, started: float) -> tuple:
     """Stream the clip to disk, returning (path, bytes).
 
     SSRF-guarded, for the same reason the upload PUT is: this URL comes from
@@ -416,7 +524,7 @@ async def _download_video(url: str, save_to) -> tuple:
     # plausible, so a failed download can never leave something that looks like
     # a playable file behind.
     partial = target.with_name(target.name + ".part")
-    timeout = httpx.Timeout(_DOWNLOAD_CONNECT_TIMEOUT_SECONDS, read=_DOWNLOAD_READ_TIMEOUT_SECONDS)
+    timeout = httpx.Timeout(_DOWNLOAD_CONNECT_TIMEOUT_SECONDS, read=_download_read_timeout(started))
 
     try:
         async with create_ssrf_safe_async_client(timeout=timeout, follow_redirects=True) as client:
@@ -573,6 +681,65 @@ async def _handle_video_continuation(args: dict, **kwargs) -> str:
     return await _submit("video_continuation", prepared)
 
 
+def _still_generating(job_id: str) -> str:
+    """The backstop's answer: an ordinary "call again", never a raised timeout."""
+    return json.dumps(
+        {
+            "result": (
+                "Still generating. This call reached its own time limit, which the job is "
+                f"unaffected by — call bfl_flux3_get_result again with id={job_id} to keep "
+                "waiting."
+            ),
+            "details": {"id": job_id, "status": "Generating"},
+        },
+        ensure_ascii=False,
+    )
+
+
+async def _poll_until_done(url: str, save_to, started: float) -> str:
+    """Look until the job settles, the budget runs out, or the user stops.
+
+    The waiting is absorbed here rather than asked of the model. A model has no
+    clock: told to wait it emits "I'll check back in a minute" and its next
+    action lands immediately, so guidance produced a burst of polls rather than
+    a paced one. Waiting inside the call cannot be skipped, needs no shell, and
+    works the same on every platform.
+    """
+    spent = 0.0
+    unanswered = 0
+    while True:
+        look_started = time.monotonic()
+        raw = await _call_gateway("GET", url, read_timeout=_POLL_READ_TIMEOUT_SECONDS)
+        spent += time.monotonic() - look_started
+
+        if _is_transport_error(raw):
+            # The job is upstream and unaffected by our failure to ask about
+            # it, so a blip costs this look and the loop tries again.
+            unanswered += 1
+            if unanswered >= _MAX_CONSECUTIVE_TRANSPORT_ERRORS:
+                return raw
+            gap = _POLL_GAP_SECONDS
+        else:
+            unanswered = 0
+            throttled_for = _retry_after_seconds(raw)
+            if throttled_for is None and _poll_is_finished(raw):
+                return await _save_if_ready(raw, save_to, started)
+            # Never faster than our own cadence, however short a wait the
+            # gateway names: its number is a floor on politeness, not a licence
+            # to hammer.
+            gap = _POLL_GAP_SECONDS if throttled_for is None else max(throttled_for, _POLL_GAP_SECONDS)
+
+        if gap <= 0 or spent + gap >= _POLL_BUDGET_SECONDS:
+            # Out of budget. A still-generating status carries the gateway's own
+            # "call again"; a throttle we could not outwait carries its wait.
+            return raw
+        if not await _wait_between_looks(gap):
+            # Interrupted mid-wait: hand back the status we already have rather
+            # than spending a round trip the user has just asked us to stop for.
+            return raw
+        spent += gap
+
+
 async def _handle_get_result(args: dict, **kwargs) -> str:
     job_id = (args or {}).get("id")
     if not isinstance(job_id, str) or not job_id.strip():
@@ -582,25 +749,22 @@ async def _handle_get_result(args: dict, **kwargs) -> str:
         return _error("BFL video generation is not available in this build.")
     from urllib.parse import quote
 
-    url = f"{endpoints['base_url']}/generations/{quote(job_id.strip(), safe='')}"
+    job_id = job_id.strip()
+    url = f"{endpoints['base_url']}/generations/{quote(job_id, safe='')}"
     save_to = (args or {}).get("save_to")
+    started = time.monotonic()
 
-    raw = await _call_gateway("GET", url)
-    if _poll_is_finished(raw):
-        return await _save_if_ready(raw, save_to)
-
-    # Still running, so absorb the wait here instead of asking the model to
-    # take it. A model has no clock: told to wait it emits "I'll wait a minute"
-    # and its next action lands immediately, so the guidance produced a burst of
-    # polls rather than a paced one. Waiting inside the call cannot be skipped,
-    # needs no shell, and works the same on every platform. One call therefore
-    # covers a couple of minutes and returns as soon as a look finds it done.
-    if not await _wait_before_second_look():
-        # Interrupted mid-wait: hand back the status we already have rather
-        # than spending a round trip the user has just asked us to stop for.
-        return await _save_if_ready(raw, save_to)
-    raw = await _call_gateway("GET", url)
-    return await _save_if_ready(raw, save_to)
+    # The loop stops itself once its budget is spent, but a look already in
+    # flight still runs to completion, and a download follows it. This is the
+    # wall-clock guarantee over all of that: whatever stalls inside, the model
+    # is answered from here rather than by the async bridge, whose own timeout
+    # arrives as a bare "TimeoutError:".
+    try:
+        return await asyncio.wait_for(
+            _poll_until_done(url, save_to, started), timeout=_CALL_BACKSTOP_SECONDS
+        )
+    except asyncio.TimeoutError:
+        return _still_generating(job_id)
 
 
 async def _handle_prompting_guide(args: dict, **kwargs) -> str:
@@ -611,14 +775,52 @@ async def _handle_prompting_guide(args: dict, **kwargs) -> str:
 # Gating
 # ---------------------------------------------------------------------------
 
+def _has_nous_credential() -> bool:
+    """True when a Nous bearer is on hand, without spending a refresh to learn it.
+
+    Two lookups, because the transport itself has two.
+    ``peek_nous_access_token`` covers the env override and the active store's
+    cached token. A profile that was never logged into separately has neither,
+    and reads the credential from the global-root ``auth.json`` — the same
+    fallback ``resolve_nous_access_token`` takes when the transport refreshes.
+    Probing only the first would hide the tools from a profile whose calls
+    would have gone through perfectly well.
+
+    Neither lookup validates or refreshes the token: an expired credential is
+    the gateway's 401 to report, and that answer already asks for a sign-in.
+    """
+    if peek_nous_access_token():
+        return True
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        state = get_provider_auth_state("nous") or {}
+    except Exception:
+        return False
+    token = state.get("access_token")
+    return isinstance(token, str) and bool(token.strip())
+
+
 def check_bfl_requirements() -> bool:
+    """Visible to anyone signed in to Nous; the gateway rules on the rest.
+
+    No entitlement check. What an account may generate — plan, credits, per
+    account limits — is the gateway's decision, and it refuses with a reason
+    written for the model to act on; deciding it a second time here can only
+    disagree with the server and hide the tools from someone entitled to them.
+
+    A sign-in is still required, because the gateway takes a Nous bearer and
+    nothing else: with no credential every call could only ever answer "sign
+    in", so the six schemas would be pure cost on every API call.
+
+    Stays a pair of file reads — no portal probe, no OAuth refresh. Behind the
+    registry's 30s cache this still runs on every CLI start, gateway session
+    and cron tick.
+    """
     try:
         if _endpoints() is None:
             return False
-        from hermes_cli.nous_account import get_nous_portal_account_info
-
-        info = get_nous_portal_account_info()
-        return bool(getattr(info, "logged_in", False) and getattr(info, "paid_service_access", False))
+        return _has_nous_credential()
     except Exception:
         return False
 
@@ -811,7 +1013,7 @@ GET_RESULT_SCHEMA = {
     "description": (
         "Poll a FLUX 3 video job by the job id a generate tool returned. Generation takes minutes "
         "and a long Generating phase is normal. This call waits for you while the job runs, so it "
-        "may take a couple of minutes; if it returns still generating, just call it again. Do not "
+        "may run for several minutes; if it returns still generating, just call it again. Do not "
         "sleep between calls. "
         "On Ready the clip is downloaded for you and the response gives its local path; your only "
         "remaining step is to deliver that file as the response describes."
@@ -945,8 +1147,8 @@ Generating phase is normal, not a stall. Nothing reaches disk before the job is
 Ready, so checking folders mid-run tells you nothing.
 
 The waiting is not yours to do. bfl_flux3_get_result takes the pause itself
-while a job is still running, so one call can occupy a couple of minutes and
-comes back the moment the job finishes. If it returns still generating, just
+while a job is still running, so one call can occupy several minutes and comes
+back within seconds of the job finishing. If it returns still generating, just
 call it again — no sleeping, no interval to judge, nothing to time.
 
 A job survives client restarts: re-poll the same id rather than resubmitting,

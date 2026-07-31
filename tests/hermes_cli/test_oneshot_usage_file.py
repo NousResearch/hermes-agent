@@ -59,3 +59,20 @@ class TestWriteUsageFile:
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
 
+    def test_max_iteration_summary_is_successful_without_explicit_exit_code(
+        self,
+        tmp_path,
+    ):
+        path = tmp_path / "usage.json"
+        _write_usage_file(
+            str(path),
+            _result(
+                completed=False,
+                final_response="Iteration-limit summary.",
+                turn_exit_reason="max_iterations_reached(60/60)",
+            ),
+        )
+
+        report = json.loads(path.read_text())
+        assert report["exit_code"] == 0
+        assert report["successful"] is True

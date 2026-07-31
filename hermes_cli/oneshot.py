@@ -124,18 +124,34 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     return valid, None
 
 
-def _result_is_unsuccessful(result: dict) -> bool:
+def _has_usable_max_iteration_summary(response: Optional[str], result: dict) -> bool:
+    """Match cron's success contract for a usable iteration-limit fallback."""
+    return bool(
+        not result.get("failed")
+        and not result.get("partial")
+        and result.get("completed") is False
+        and str(result.get("turn_exit_reason") or "").startswith(
+            "max_iterations_reached("
+        )
+        and (response or "").strip()
+    )
+
+
+def _result_is_unsuccessful(response: Optional[str], result: dict) -> bool:
     """Return whether the agent reported an unambiguously unsuccessful turn."""
     return bool(
         result.get("failed")
         or result.get("partial")
-        or result.get("completed") is False
+        or (
+            result.get("completed") is False
+            and not _has_usable_max_iteration_summary(response, result)
+        )
     )
 
 
 def _result_exit_code(response: Optional[str], result: dict) -> int:
     """Map the structured turn outcome to the public oneshot exit contract."""
-    if _result_is_unsuccessful(result):
+    if _result_is_unsuccessful(response, result):
         return 2
     if not (response or "").strip():
         return 1
@@ -163,9 +179,11 @@ def _write_usage_file(
         if effective_exit_code is None:
             if failure is not None:
                 effective_exit_code = 1
-            elif _result_is_unsuccessful(result):
+            elif _result_is_unsuccessful(result.get("final_response"), result):
                 effective_exit_code = 2
-            elif result.get("completed") is True:
+            elif result.get("completed") is True or _has_usable_max_iteration_summary(
+                result.get("final_response"), result
+            ):
                 effective_exit_code = 0
 
         report = {

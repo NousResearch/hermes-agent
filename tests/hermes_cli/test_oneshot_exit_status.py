@@ -46,6 +46,34 @@ def test_completed_result_with_response_remains_successful(monkeypatch, capsys):
     assert capsys.readouterr().out == "done\n"
 
 
+def test_max_iteration_fallback_with_response_matches_cron_success_contract(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    usage_path = tmp_path / "usage.json"
+    monkeypatch.setattr(
+        oneshot,
+        "_run_agent",
+        lambda *_args, **_kwargs: (
+            "Summary produced at the iteration limit.",
+            {
+                "failed": False,
+                "partial": False,
+                "completed": False,
+                "turn_exit_reason": "max_iterations_reached(60/60)",
+            },
+        ),
+    )
+
+    assert oneshot.run_oneshot("do the work", usage_file=str(usage_path)) == 0
+    assert capsys.readouterr().out == "Summary produced at the iteration limit.\n"
+    report = json.loads(usage_path.read_text())
+    assert report["completed"] is False
+    assert report["exit_code"] == 0
+    assert report["successful"] is True
+
+
 def test_billing_failure_exit_matches_usage_report(monkeypatch, tmp_path):
     usage_path = tmp_path / "usage.json"
     billing_result = {

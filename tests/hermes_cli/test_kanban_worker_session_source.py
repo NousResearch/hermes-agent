@@ -91,7 +91,7 @@ def test_retag_reclaims_legacy_worker_rows(db, tmp_path):
     assert sources == {"legacy": "kanban", "legacy2": "kanban", "mine": "cli"}
 
 
-def test_retag_runs_once_per_database(db, tmp_path):
+def test_retag_runs_once_per_workspaces_root(db, tmp_path):
     """The state_meta gate keeps the retag off every subsequent spawn."""
     workspaces = tmp_path / "kanban" / "workspaces"
     db.create_session(session_id="legacy", source="cli", cwd=str(workspaces / "t_a"))
@@ -104,3 +104,18 @@ def test_retag_runs_once_per_database(db, tmp_path):
     assert db.retag_kanban_worker_sessions(str(workspaces)) == 0
     row = db._conn.execute("SELECT source FROM sessions WHERE id = 'later'").fetchone()
     assert row[0] == "cli"
+
+
+def test_retag_gate_is_per_board(db, tmp_path):
+    """A second board's workspaces root still gets its own sweep.
+
+    The gate is keyed on the root, so reclaiming board A must not convince the
+    dispatcher that board B's legacy rows were already handled.
+    """
+    board_a = tmp_path / "kanban" / "boards" / "a" / "workspaces"
+    board_b = tmp_path / "kanban" / "boards" / "b" / "workspaces"
+    db.create_session(session_id="a1", source="cli", cwd=str(board_a / "t_a"))
+    db.create_session(session_id="b1", source="cli", cwd=str(board_b / "t_b"))
+
+    assert db.retag_kanban_worker_sessions(str(board_a)) == 1
+    assert db.retag_kanban_worker_sessions(str(board_b)) == 1

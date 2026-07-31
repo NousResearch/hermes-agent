@@ -8841,12 +8841,19 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+_retagged_workspace_roots: set[str] = set()
+
+
 def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     """Reclaim pre-tag worker rows in state.db so they leave the session lists.
 
-    Best-effort and gated to run once per database — a dispatcher tick must
-    never fail because a session DB was busy or missing.
+    Best-effort and gated — the durable ``state_meta`` gate lives in
+    ``retag_kanban_worker_sessions``; the in-process set keeps a busy
+    dispatcher from reopening state.db on every spawn just to read it. A
+    dispatcher tick must never fail because a session DB was busy or missing.
     """
+    if workspaces_root_path in _retagged_workspace_roots:
+        return
     try:
         from hermes_state import SessionDB
 
@@ -8855,6 +8862,7 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
             db.retag_kanban_worker_sessions(workspaces_root_path)
         finally:
             db.close()
+        _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 

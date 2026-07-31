@@ -181,9 +181,7 @@ class TestUnicodeDecodeErrorInUpdatePrompts:
 
         out = capsys.readouterr().out
         assert "hermes config migrate" in out
-        assert mock_migrate.call_count == 0 or (
-            mock_migrate.call_args and mock_migrate.call_args.kwargs.get("interactive") is not True
-        )
+        mock_migrate.assert_not_called()
 
     def test_stash_restore_unicode_decode_error_falls_through_to_skip(self, tmp_path, capsys):
         from hermes_cli.update_cmd import _restore_stashed_changes

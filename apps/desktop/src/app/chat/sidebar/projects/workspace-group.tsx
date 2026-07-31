@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useState } from 'react'
 
+import { type NewSessionPlacement, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import type { SessionInfo } from '@/hermes'
@@ -14,6 +15,7 @@ import { newSessionInProfile, selectProfile } from '@/store/profile'
 import { switchBranchInRepo } from '@/store/projects'
 import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
+import type { TileDock } from '@/store/session-states'
 
 import { SidebarGroupRow, SidebarRowLead, SidebarRowLink, SidebarRowStack } from '../chrome'
 import { rankSessions } from '../order'
@@ -32,12 +34,19 @@ interface SidebarWorkspaceGroupProps {
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionSplit?: (dir: TileDock, opts?: { anchor?: string; before?: null | string; cwd?: null | string }) => void
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
 }
 
-export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemove }: SidebarWorkspaceGroupProps) {
+export function SidebarWorkspaceGroup({
+  group,
+  renderRows,
+  onNewSession,
+  onNewSessionSplit,
+  onRemove
+}: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
   const isProfileGroup = group.mode === 'profile'
@@ -71,21 +80,11 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
     />
   )
 
-  const handleNewSession = async () => {
+  const prepareWorkspaceTarget = async () => {
     // Reveal the lane the new session targets — an empty worktree/branch lane
     // starts collapsed, so without this the session lands in a folder the user
     // can't see. Stable across the lane's default flipping open once populated.
     setWorkspaceNodeOpen(group.id, true)
-
-    if (isProfileGroup) {
-      newSessionInProfile(group.id)
-
-      return
-    }
-
-    if (!onNewSession) {
-      return
-    }
 
     // Main-checkout lanes are branch-labeled views over the same repo root path.
     // Clicking "+" on `main` should open on `main`, not whatever branch the root
@@ -96,18 +95,62 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
       } catch (err) {
         notifyError(err, t.statusStack.coding.switchFailed(group.label))
 
-        return
+        return false
       }
     }
 
+    return true
+  }
+
+  const handleNewSession = async () => {
+    if (isProfileGroup) {
+      setWorkspaceNodeOpen(group.id, true)
+      newSessionInProfile(group.id)
+
+      return
+    }
+
+    if (!onNewSession || !(await prepareWorkspaceTarget())) {
+      return
+    }
+
     onNewSession(group.path)
+  }
+
+  const handleNewSessionSplit = async (placement: NewSessionPlacement) => {
+    if (!onNewSessionSplit || !(await prepareWorkspaceTarget())) {
+      return
+    }
+
+    onNewSessionSplit(placement.dir, {
+      anchor: placement.anchor,
+      before: placement.before,
+      cwd: group.path
+    })
   }
 
   // Profile groups start a fresh session in that profile but keep the
   // all-profiles browse view; workspace groups seed the new session's cwd.
   // Main checkout lanes are branch-targeted.
   const addButton = (onNewSession || isProfileGroup) && (
-    <WorkspaceAddButton label={s.newSessionIn(group.label)} onClick={() => void handleNewSession()} />
+    <WorkspaceAddButton
+      label={s.newSessionIn(group.label)}
+      onClick={() => void handleNewSession()}
+      onPointerDown={
+        !isProfileGroup && onNewSession && onNewSessionSplit
+          ? event => {
+              // Drag the "+" onto a chat zone: create the session pinned to
+              // this lane's cwd (branch switch first for main-checkout lanes),
+              // exactly where it's dropped. A sub-threshold release falls
+              // through to the onClick above.
+              startNewSessionDrag(placement => void handleNewSessionSplit(placement), event, {
+                cwd: group.path,
+                label: s.newSessionIn(group.label)
+              })
+            }
+          : undefined
+      }
+    />
   )
 
   return (

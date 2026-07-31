@@ -10184,7 +10184,16 @@ def _resolve_install_target_python(
         if first.exists() and "uv" not in first.name.lower():
             return first
 
-    return None
+    # Final fallback: the running interpreter. When the install target is
+    # uv (so the prefix's first element is the uv binary, not a Python) and
+    # the venv it declared via VIRTUAL_ENV does not actually exist (dev
+    # checkout using a different venv path, managed install, venv not yet
+    # created), the probe would otherwise be "indeterminate" forever and the
+    # lazy-refresh marker would never self-heal -- the user sees three
+    # "Import probes unavailable" warnings on every launch. The running
+    # interpreter is the one executing the probe right now, so it is a valid
+    # probe target.
+    return Path(sys.executable)
 
 
 def _is_termux_env(env: dict[str, str] | None = None) -> bool:

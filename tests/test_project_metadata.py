@@ -3,11 +3,118 @@
 from pathlib import Path
 import tomllib
 
-def _load_optional_dependencies():
+from packaging.markers import Marker, default_environment
+
+
+def _load_pyproject():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
-        project = tomllib.load(handle)["project"]
-    return project["optional-dependencies"]
+        return tomllib.load(handle)
+
+
+def _load_optional_dependencies():
+    return _load_pyproject()["project"]["optional-dependencies"]
+
+
+def test_pillow_source_is_explicit_and_scoped_to_available_arm32_wheels():
+    """Keep piwheels limited to Pillow where it publishes compatible wheels."""
+    data = _load_pyproject()
+    uv_config = data["tool"]["uv"]
+    pillow_sources = uv_config["sources"]["pillow"]
+    piwheels = next(
+        index for index in uv_config["index"] if index["name"] == "piwheels"
+    )
+
+    assert piwheels["url"].rstrip("/") == "https://www.piwheels.org/simple"
+    assert piwheels["explicit"] is True
+    piwheels_source_keys = {
+        name
+        for name, sources in uv_config["sources"].items()
+        for source in (sources if isinstance(sources, list) else [sources])
+        if source.get("index") == "piwheels"
+    }
+    assert piwheels_source_keys == {"pillow"}
+    assert len(pillow_sources) == 1
+    assert pillow_sources[0]["index"] == "piwheels"
+
+    marker = Marker(pillow_sources[0]["marker"])
+    environment = default_environment()
+    supported_machines = {"armv6l", "armv7l"}
+    supported_pythons = {"3.11", "3.13"}
+    for machine in ("armv6l", "armv7l", "aarch64", "arm64", "x86_64"):
+        for python_version in ("3.11", "3.12", "3.13"):
+            environment["platform_machine"] = machine
+            environment["python_version"] = python_version
+            environment["python_full_version"] = f"{python_version}.0"
+            expected = (
+                machine in supported_machines and python_version in supported_pythons
+            )
+            assert marker.evaluate(environment) is expected
+
+
+def test_arm32_pillow_wheels_are_hash_locked():
+    """The trusted ARM32 artifacts must stay inside uv's SHA256 lock chain."""
+    lock_path = Path(__file__).resolve().parents[1] / "uv.lock"
+    with lock_path.open("rb") as handle:
+        packages = tomllib.load(handle)["package"]
+
+    pillow = next(
+        package
+        for package in packages
+        if package["name"] == "pillow"
+        and package["source"].get("registry", "").rstrip("/")
+        == "https://www.piwheels.org/simple"
+    )
+    wheels = pillow["wheels"]
+
+    assert any(wheel["url"].endswith("linux_armv6l.whl") for wheel in wheels)
+    assert any(wheel["url"].endswith("linux_armv7l.whl") for wheel in wheels)
+    assert all(wheel["hash"].startswith("sha256:") for wheel in wheels)
+
+
+def test_locked_pillow_edges_preserve_expected_source_routing():
+    """Hermes must route Pillow to the intended source for each platform."""
+    lock_path = Path(__file__).resolve().parents[1] / "uv.lock"
+    with lock_path.open("rb") as handle:
+        packages = tomllib.load(handle)["package"]
+
+    assert any(
+        package["name"] == "pillow"
+        and package["source"].get("registry", "").rstrip("/")
+        == "https://pypi.org/simple"
+        for package in packages
+    ), "PyPI Pillow entry must remain for non-ARM32 platforms"
+    hermes = next(package for package in packages if package["name"] == "hermes-agent")
+    pillow_edges = [
+        dependency
+        for dependency in hermes["dependencies"]
+        if dependency["name"] == "pillow"
+    ]
+    edges_by_registry = {
+        edge["source"].get("registry", "").rstrip("/"): edge for edge in pillow_edges
+    }
+    assert set(edges_by_registry) == {
+        "https://pypi.org/simple",
+        "https://www.piwheels.org/simple",
+    }
+
+    pypi_marker = Marker(edges_by_registry["https://pypi.org/simple"]["marker"])
+    piwheels_marker = Marker(
+        edges_by_registry["https://www.piwheels.org/simple"]["marker"]
+    )
+    environment = default_environment()
+
+    for machine in ("armv6l", "armv7l", "aarch64", "arm64", "x86_64"):
+        for python_version in ("3.11", "3.12", "3.13"):
+            environment["platform_machine"] = machine
+            environment["python_version"] = python_version
+            environment["python_full_version"] = f"{python_version}.0"
+            use_piwheels = machine in {"armv6l", "armv7l"} and python_version in {
+                "3.11",
+                "3.13",
+            }
+            assert pypi_marker.evaluate(environment) is not use_piwheels
+            assert piwheels_marker.evaluate(environment) is use_piwheels
 
 
 def _load_package_data():

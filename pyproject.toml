@@ -343,6 +343,22 @@ hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
+# PyPI publishes native aarch64 Pillow wheels, so only 32-bit ARM needs
+# piwheels. piwheels publishes Pillow 12.2.0 for CPython 3.11 and 3.13 but
+# not 3.12. Keep the index explicit so no other dependency can resolve from it.
+# ARM32 Python 3.12 still uses the PyPI sdist and needs libjpeg/zlib headers.
+# On matching versions, a missing piwheels wheel is a hard resolution failure;
+# uv does not fall back to the sdist. See #72132.
+[tool.uv.sources]
+pillow = [
+  { index = "piwheels", marker = "(platform_machine == 'armv6l' or platform_machine == 'armv7l') and (python_version == '3.11' or python_version == '3.13')" },
+]
+
+[[tool.uv.index]]
+name = "piwheels"
+url = "https://www.piwheels.org/simple"
+explicit = true
+
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
 # sealed venv is missing hermes_constants, run_agent, etc.

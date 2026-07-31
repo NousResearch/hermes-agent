@@ -2,9 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
-    "python_full_version >= '3.13'",
-    "python_full_version == '3.12.*'",
-    "python_full_version < '3.12'",
+    "(python_full_version >= '3.13' and platform_machine == 'armv6l') or (python_full_version >= '3.13' and platform_machine == 'armv7l')",
+    "python_full_version >= '3.13' and platform_machine != 'armv6l' and platform_machine != 'armv7l'",
+    "(python_full_version == '3.12.*' and platform_machine == 'armv6l') or (python_full_version == '3.12.*' and platform_machine == 'armv7l')",
+    "python_full_version == '3.12.*' and platform_machine != 'armv6l' and platform_machine != 'armv7l'",
+    "(python_full_version < '3.12' and platform_machine == 'armv6l') or (python_full_version < '3.12' and platform_machine == 'armv7l')",
+    "python_full_version < '3.12' and platform_machine != 'armv6l' and platform_machine != 'armv7l'",
 ]
 
 [[package]]
@@ -1563,7 +1566,8 @@ dependencies = [
     { name = "openai" },
     { name = "packaging" },
     { name = "pathspec" },
-    { name = "pillow" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.12.*' and platform_machine == 'armv6l') or (python_full_version == '3.12.*' and platform_machine == 'armv7l') or (platform_machine != 'armv6l' and platform_machine != 'armv7l')" },
+    { name = "pillow", version = "12.2.0", source = { registry = "https://www.piwheels.org/simple" }, marker = "(python_full_version != '3.12.*' and platform_machine == 'armv6l') or (python_full_version != '3.12.*' and platform_machine == 'armv7l')" },
     { name = "prompt-toolkit" },
     { name = "psutil" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
@@ -1863,7 +1867,8 @@ requires-dist = [
     { name = "packaging", specifier = "==26.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "pathspec", specifier = "==1.1.1" },
-    { name = "pillow", specifier = "==12.2.0" },
+    { name = "pillow", marker = "(python_full_version < '3.11' and platform_machine == 'armv6l') or (python_full_version == '3.12.*' and platform_machine == 'armv6l') or (python_full_version >= '3.14' and platform_machine == 'armv6l') or (python_full_version < '3.11' and platform_machine == 'armv7l') or (python_full_version == '3.12.*' and platform_machine == 'armv7l') or (python_full_version >= '3.14' and platform_machine == 'armv7l') or (platform_machine != 'armv6l' and platform_machine != 'armv7l')", specifier = "==12.2.0" },
+    { name = "pillow", marker = "(python_full_version == '3.11.*' and platform_machine == 'armv6l') or (python_full_version == '3.13.*' and platform_machine == 'armv6l') or (python_full_version == '3.11.*' and platform_machine == 'armv7l') or (python_full_version == '3.13.*' and platform_machine == 'armv7l')", specifier = "==12.2.0", index = "https://www.piwheels.org/simple" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "psutil", specifier = "==7.2.2" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },
@@ -3033,6 +3038,12 @@ wheels = [
 name = "pillow"
 version = "12.2.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13' and platform_machine != 'armv6l' and platform_machine != 'armv7l'",
+    "(python_full_version == '3.12.*' and platform_machine == 'armv6l') or (python_full_version == '3.12.*' and platform_machine == 'armv7l')",
+    "python_full_version == '3.12.*' and platform_machine != 'armv6l' and platform_machine != 'armv7l'",
+    "python_full_version < '3.12' and platform_machine != 'armv6l' and platform_machine != 'armv7l'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/8c/21/c2bcdd5906101a30244eaffc1b6e6ce71a31bd0742a01eb89e660ebfac2d/pillow-12.2.0.tar.gz", hash = "sha256:a830b1a40919539d07806aa58e1b114df53ddd43213d9c8b75847eee6c0182b5", size = 46987819, upload-time = "2026-04-01T14:46:17.687Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/68/e1/748f5663efe6edcfc4e74b2b93edfb9b8b99b67f21a854c3ae416500a2d9/pillow-12.2.0-cp311-cp311-macosx_10_10_x86_64.whl", hash = "sha256:8be29e59487a79f173507c30ddf57e733a357f67881430449bb32614075a40ab", size = 5354347, upload-time = "2026-04-01T14:42:44.255Z" },
@@ -3089,6 +3100,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c3/28/ec0fc38107fc32536908034e990c47914c57cd7c5a3ece4d8d8f7ffd7e27/pillow-12.2.0-pp311-pypy311_pp73-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4a6c9fa44005fa37a91ebfc95d081e8079757d2e904b27103f4f5fa6f0bf78c0", size = 5355404, upload-time = "2026-04-01T14:46:06.33Z" },
     { url = "https://files.pythonhosted.org/packages/5e/8b/51b0eddcfa2180d60e41f06bd6d0a62202b20b59c68f5a132e615b75aecf/pillow-12.2.0-pp311-pypy311_pp73-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:25373b66e0dd5905ed63fa3cae13c82fbddf3079f2c8bf15c6fb6a35586324c1", size = 6002215, upload-time = "2026-04-01T14:46:08.83Z" },
     { url = "https://files.pythonhosted.org/packages/bc/60/5382c03e1970de634027cee8e1b7d39776b778b81812aaf45b694dfe9e28/pillow-12.2.0-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:bfa9c230d2fe991bed5318a5f119bd6780cda2915cca595393649fc118ab895e", size = 7080946, upload-time = "2026-04-01T14:46:11.734Z" },
+]
+
+[[package]]
+name = "pillow"
+version = "12.2.0"
+source = { registry = "https://www.piwheels.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.13' and platform_machine == 'armv6l') or (python_full_version >= '3.13' and platform_machine == 'armv7l')",
+    "(python_full_version < '3.12' and platform_machine == 'armv6l') or (python_full_version < '3.12' and platform_machine == 'armv7l')",
+]
+wheels = [
+    { url = "https://www.piwheels.org/simple/pillow/pillow-12.2.0-cp311-cp311-linux_armv6l.whl", hash = "sha256:10f568b93c7338fdaacc2c7a6b86efb2d4a283dc3748657b60d9a9e0f2e40bb3" },
+    { url = "https://www.piwheels.org/simple/pillow/pillow-12.2.0-cp311-cp311-linux_armv7l.whl", hash = "sha256:10f568b93c7338fdaacc2c7a6b86efb2d4a283dc3748657b60d9a9e0f2e40bb3" },
+    { url = "https://www.piwheels.org/simple/pillow/pillow-12.2.0-cp313-cp313-linux_armv6l.whl", hash = "sha256:d4ff90fbce9831907b35a54405d8b1312c1b83e29f72cc45cf02e60ee55dd48b" },
+    { url = "https://www.piwheels.org/simple/pillow/pillow-12.2.0-cp313-cp313-linux_armv7l.whl", hash = "sha256:d4ff90fbce9831907b35a54405d8b1312c1b83e29f72cc45cf02e60ee55dd48b" },
 ]
 
 [[package]]

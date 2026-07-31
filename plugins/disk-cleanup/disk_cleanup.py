@@ -563,6 +563,11 @@ def guess_category(path: Path) -> Optional[str]:
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
+            # User-authored and project trees — never auto-delete files
+            # inside these just because they happen to be named test_* or
+            # tmp_* (#75403, also #32164, #37721).
+            "patches", "projects", "skins", "themes", "contributors",
+            "profiles", "backups", "optional-skills",
         }:
             return None
         if top == "cron" or top == "cronjobs":

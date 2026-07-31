@@ -256,12 +256,23 @@ def stream_current(
     finalizer: Callable[[], Any],
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
+    completed_response_predicate: Callable[[Any], bool] | None = None,
 ) -> Any:
-    """Run a provider stream under the inherited Hermes turn when present."""
+    """Run a provider stream under the inherited Hermes turn when present.
+
+    When ``completed_response_predicate`` is set and the stream_factory returns
+    a complete response instead of an iterator (e.g. AnthropicAuxiliaryClient
+    and other shims that ignore ``stream=True``), unwrap and return the
+    completed response directly. This mirrors the pre-Relay behavior where
+    ``call_llm(stream=True)`` returned the raw response and the consumer's
+    own ``hasattr(stream, "choices")`` check handled it (#11732, #55933) —
+    without the unwrap the response stays trapped as ``final_response`` on the
+    inner ManagedLlmStream and the outer consumer sees an empty stream.
+    """
     turn = relay_runtime.active_turn()
     if turn is None:
         return stream_factory(request)
-    return stream(
+    managed = stream(
         request,
         stream_factory,
         session_id=turn.lease.session_id,
@@ -270,7 +281,17 @@ def stream_current(
         finalizer=finalizer,
         metadata=metadata,
         defer_logical_completion=defer_logical_completion,
+        completed_response_predicate=completed_response_predicate,
     )
+    # In the non-managed path the factory already ran eagerly during __init__,
+    # so a completed response is visible immediately and must surface raw.
+    # In the managed path the factory runs lazily on first pull, so
+    # final_response is still None here and the managed stream is returned.
+    if completed_response_predicate is not None:
+        completed = getattr(managed, "final_response", None)
+        if completed is not None:
+            return completed
+    return managed
 
 
 def stream(

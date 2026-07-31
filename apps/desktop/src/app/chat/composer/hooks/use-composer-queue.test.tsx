@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $composerQuotes, clearComposerQuotes, setComposerQuote } from '@/store/composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -23,7 +24,9 @@ import { useComposerQueue } from './use-composer-queue'
 
 const SESSION_KEY = 'stored-session-queue-hook'
 
-function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onSteer?: ChatBarProps['onSteer'] } = {}) {
+function renderQueueHook(
+  overrides: { busy?: boolean; onCancel?: () => void; onSteer?: ChatBarProps['onSteer']; text?: string } = {}
+) {
   const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
   const onCancel = overrides.onCancel ?? vi.fn()
   const onSteer = overrides.onSteer
@@ -36,7 +39,7 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onS
         attachments: [],
         busy,
         clearDraft: () => undefined,
-        draftRef: { current: '' },
+        draftRef: { current: overrides.text ?? '' },
         focusInput: () => undefined,
         loadIntoComposer: () => undefined,
         onCancel,
@@ -54,9 +57,10 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onS
 
 describe('useComposerQueue park integration', () => {
   beforeEach(() => {
-    window.localStorage.clear()
+    window.localStorage?.clear()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    clearComposerQuotes?.()
   })
 
   afterEach(() => {
@@ -194,5 +198,23 @@ describe('useComposerQueue park integration', () => {
 
     expect(isQueueParked(SESSION_KEY)).toBe(false)
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(1)
+  })
+
+  it('stores expanded quote text so a queued prompt does not depend on the composer-only body store', () => {
+    expect(setComposerQuote).toBeTypeOf('function')
+
+    if (typeof setComposerQuote !== 'function') {
+      return
+    }
+
+    setComposerQuote('earlier reply', '> Earlier reply')
+    const { hook } = renderQueueHook({ busy: true, text: '@quote:`earlier reply`Correction' })
+
+    act(() => {
+      expect(hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe('> Earlier reply\n\nCorrection')
+    expect($composerQuotes.get()).toEqual({})
   })
 })

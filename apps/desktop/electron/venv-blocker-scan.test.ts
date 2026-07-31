@@ -75,6 +75,12 @@ describe('formatProbeFailedMessage', () => {
     assert.ok(msg.includes('hermes update'))
     assert.ok(msg.includes('retry'))
   })
+
+  it('distinguishes a timeout from a confirmed blocker', () => {
+    const msg = formatProbeFailedMessage('timed out after 60 seconds')
+    assert.ok(msg.includes('timed out after 60 seconds'))
+    assert.ok(msg.includes('no blocking process was confirmed'))
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -254,6 +260,15 @@ describe('scanVenvBlockers', () => {
     }) as any
   }
 
+  function execTimeout(): any {
+    return (async (...args: any[]) => {
+      const e: any = new Error()
+      e.killed = true
+      e.signal = 'SIGTERM'
+      throw e
+    }) as any
+  }
+
   it('clear scan returns clear', async () => {
     assert.equal((await scanVenvBlockers('/r', execReturn(okJson), stubVenv)).kind, 'clear')
   })
@@ -265,6 +280,14 @@ describe('scanVenvBlockers', () => {
   it('non-zero exit is probe-failure', async () => {
     const o = await scanVenvBlockers('/r', execThrow(2, 'ModuleNotFoundError'), stubVenv)
     assert.equal(o.kind, 'probe-failure')
+  })
+
+  it('reports a timed-out subprocess explicitly', async () => {
+    const o = await scanVenvBlockers('/r', execTimeout(), stubVenv)
+    assert.deepEqual(o, {
+      kind: 'probe-failure',
+      error: 'timed out after 60 seconds'
+    })
   })
 
   it('missing venv python is probe-failure', async () => {
@@ -292,8 +315,7 @@ describe('scanVenvBlockers', () => {
     assert.ok(c.cmd.endsWith('python.exe'))
     assert.deepEqual(c.args, ['-m', 'hermes_cli._scan_venv_blockers'])
     assert.equal(c.cwd, '/update/root')
-    assert.equal(typeof c.timeout, 'number')
-    assert.ok(c.timeout > 0)
+    assert.equal(c.timeout, 60_000)
   })
 })
 

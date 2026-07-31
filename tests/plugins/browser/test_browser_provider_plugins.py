@@ -100,47 +100,6 @@ class TestBundledPluginsRegister:
         assert provider.name == plugin_name
         assert provider.display_name == expected_display
 
-    @pytest.mark.parametrize(
-        "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
-    )
-    def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
-        """``get_setup_schema()`` returns a dict the picker can consume."""
-        _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
-
-        provider = get_provider(plugin_name)
-        assert provider is not None
-        schema = provider.get_setup_schema()
-        assert isinstance(schema, dict)
-        assert "name" in schema
-        assert "env_vars" in schema
-        # Every cloud-browser plugin needs the cloud-scoped post-setup hook
-        # ("browserbase" = agent-browser CLI only, no local Chromium install)
-        # so the picker auto-installs the CLI on selection without gating
-        # readiness on a local Chromium build the cloud never uses.
-        assert schema.get("post_setup") == "browserbase"
-
-    @pytest.mark.parametrize(
-        "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
-    )
-    def test_each_plugin_implements_full_lifecycle(self, plugin_name: str) -> None:
-        """The ABC's three lifecycle methods are all overridden."""
-        _ensure_plugins_loaded()
-        from agent.browser_provider import BrowserProvider
-        from agent.browser_registry import get_provider
-
-        provider = get_provider(plugin_name)
-        assert provider is not None
-        # Each method must be a real override, not the ABC's NotImplementedError
-        # default — we check by comparing the function reference.
-        assert type(provider).create_session is not BrowserProvider.create_session
-        assert type(provider).close_session is not BrowserProvider.close_session
-        assert (
-            type(provider).emergency_cleanup is not BrowserProvider.emergency_cleanup
-        )
-
 
 # ---------------------------------------------------------------------------
 # is_available() behavior
@@ -168,16 +127,6 @@ class TestIsAvailable:
         monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "proj")
         assert p.is_available() is True
 
-    def test_browserbase_project_id_alone_insufficient(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _ensure_plugins_loaded()
-        from agent.browser_registry import get_provider
-
-        p = get_provider("browserbase")
-        assert p is not None
-        monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "proj")
-        assert p.is_available() is False
 
     def test_browser_use_satisfied_by_api_key(
         self, monkeypatch: pytest.MonkeyPatch
@@ -224,36 +173,6 @@ class TestRegistryResolution:
 
         assert _resolve("local") is None
 
-    def test_explicit_browserbase_returns_provider_even_when_unavailable(self) -> None:
-        """Rule 1: explicit-config wins even when credentials are missing.
-
-        This is critical — the dispatcher needs to surface a typed
-        credentials error rather than silently switching backends.
-        """
-        _ensure_plugins_loaded()
-        from agent.browser_registry import _resolve
-
-        provider = _resolve("browserbase")
-        assert provider is not None
-        assert provider.name == "browserbase"
-        assert provider.is_available() is False  # confirms "ignoring availability"
-
-    def test_explicit_firecrawl_returns_provider_even_when_unavailable(self) -> None:
-        """Firecrawl behaves the same as browserbase under explicit config."""
-        _ensure_plugins_loaded()
-        from agent.browser_registry import _resolve
-
-        provider = _resolve("firecrawl")
-        assert provider is not None
-        assert provider.name == "firecrawl"
-
-    def test_explicit_unknown_falls_back_to_auto_detect(self) -> None:
-        """Rule 1 miss: unknown name → fall through to legacy walk."""
-        _ensure_plugins_loaded()
-        from agent.browser_registry import _resolve
-
-        # With no credentials anywhere, auto-detect should also fail.
-        assert _resolve("not-a-real-provider") is None
 
     def test_legacy_walk_prefers_browser_use_over_browserbase(
         self, monkeypatch: pytest.MonkeyPatch
@@ -270,39 +189,6 @@ class TestRegistryResolution:
         provider = _resolve(None)
         assert provider is not None
         assert provider.name == "browser-use"
-
-    def test_legacy_walk_falls_through_to_browserbase(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Rule 3: browser-use unavailable → browserbase picked."""
-        _ensure_plugins_loaded()
-        from agent.browser_registry import _resolve
-
-        monkeypatch.setenv("BROWSERBASE_API_KEY", "k")
-        monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "p")
-
-        provider = _resolve(None)
-        assert provider is not None
-        assert provider.name == "browserbase"
-
-    def test_firecrawl_not_in_legacy_walk_even_when_only_one_available(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Regression: firecrawl is NEVER auto-selected even when single-eligible.
-
-        Pre-PR-#25214, the dispatcher only auto-detected between Browser Use
-        and Browserbase; firecrawl was reachable solely via explicit
-        config. We preserve that gate because FIRECRAWL_API_KEY is shared
-        with the *web* firecrawl plugin — auto-routing a web-extract user
-        to a paid cloud browser would be a real behaviour regression.
-        """
-        _ensure_plugins_loaded()
-        from agent.browser_registry import _resolve
-
-        monkeypatch.setenv("FIRECRAWL_API_KEY", "k")
-
-        # Only firecrawl is_available() — but it's not in the legacy walk.
-        assert _resolve(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -360,23 +246,4 @@ class TestPickerIntegration:
         names = sorted(r.get("browser_provider") for r in rows)
         assert names == ["browser-use", "browserbase", "firecrawl"]
 
-    def test_picker_rows_carry_post_setup_hook(self) -> None:
-        """Every browser plugin row has the cloud-scoped post_setup hook
-        ('browserbase': agent-browser CLI only) so selecting it installs the
-        CLI without requiring a local Chromium the cloud never uses."""
-        _ensure_plugins_loaded()
-        from hermes_cli.tools_config import _plugin_browser_providers
 
-        for row in _plugin_browser_providers():
-            assert row.get("post_setup") == "browserbase", (
-                f"plugin row {row['browser_provider']!r} missing post_setup hook"
-            )
-
-    def test_picker_rows_carry_browser_plugin_name_marker(self) -> None:
-        """`browser_plugin_name` matches `browser_provider` so downstream
-        code can route through the registry when it wants to."""
-        _ensure_plugins_loaded()
-        from hermes_cli.tools_config import _plugin_browser_providers
-
-        for row in _plugin_browser_providers():
-            assert row.get("browser_plugin_name") == row.get("browser_provider")

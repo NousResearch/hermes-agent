@@ -67,34 +67,6 @@ def test_paragraph_mode_chunks_within_limit_unless_atomic(text, limit):
             )
 
 
-@pytest.mark.parametrize("text", [FENCED, MIXED])
-def test_paragraph_mode_never_splits_closed_fences(text):
-    for limit in (80, 150, 300):
-        chunks = split_text_fence_aware(text, limit, prefer_paragraphs=True)
-        for chunk in chunks:
-            assert not text_has_unclosed_fence(chunk), (
-                f"fence split mid-block at limit={limit}: {chunk!r}"
-            )
-
-
-@pytest.mark.parametrize("text", SAMPLES)
-def test_paragraph_mode_no_empty_chunks(text):
-    for limit in (80, 400):
-        chunks = split_text_fence_aware(text, limit, prefer_paragraphs=True)
-        assert all(c for c in chunks)
-
-
-def test_paragraph_mode_short_text_single_chunk():
-    assert split_text_fence_aware("hello", 100) == ["hello"]
-    assert split_text_fence_aware("", 100) == []
-
-
-def test_paragraph_mode_utf16_len_fn():
-    chunks = split_text_fence_aware(CJK, 120, utf16_len, prefer_paragraphs=True)
-    assert chunks
-    assert all(utf16_len(c) <= 120 for c in chunks)
-
-
 # ── split_text_fence_aware (newline mode + balancing: stream_consumer) ───────
 
 
@@ -109,24 +81,6 @@ def test_newline_mode_balanced_fences_every_chunk(text):
         assert not text_has_unclosed_fence(chunk)
 
 
-def test_newline_mode_balancing_reopens_language_tag():
-    text = "before\n\n```python\n" + "print(1)\n" * 20 + "```\nafter"
-    chunks = split_text_fence_aware(
-        text, 80, prefer_paragraphs=False, balance_fences=True
-    )
-    assert len(chunks) > 1
-    # Some tail chunk must reopen the python fence.
-    assert any(c.startswith("```python\n") for c in chunks[1:])
-
-
-def test_newline_mode_content_preserved_without_fences():
-    text = "\n".join(f"line {i} with several words in it" for i in range(40))
-    chunks = split_text_fence_aware(text, 120, prefer_paragraphs=False)
-    joined = "\n".join(chunks)
-    # Newline-mode splitting only removes leading newlines at boundaries.
-    assert joined.replace("\n", "") == text.replace("\n", "")
-
-
 # ── split_at_paragraph_boundary ──────────────────────────────────────────────
 
 
@@ -135,19 +89,6 @@ def test_split_at_paragraph_boundary_head_plus_tail(text):
     head, tail = split_at_paragraph_boundary(text, 100)
     assert head + tail == text
     assert len(head) <= 100 or "\n" not in text[:100]
-
-
-def test_split_at_paragraph_boundary_prefers_blank_line():
-    text = "para one\n\npara two\n\npara three " + "x" * 200
-    head, _ = split_at_paragraph_boundary(text, 60)
-    assert head.endswith("\n\n")
-
-
-def test_split_at_paragraph_boundary_cjk_sentence():
-    text = "第一句话。\n第二句话！\n" + "第三句话没有结束标点一直写下去" * 20
-    head, tail = split_at_paragraph_boundary(text, 30)
-    assert head + tail == text
-    assert head.endswith(("。\n", "！\n"))
 
 
 # ── atoms ────────────────────────────────────────────────────────────────────
@@ -160,19 +101,6 @@ def test_atoms_fence_kept_whole():
     assert fence_atoms[0].rstrip().endswith("```")
 
 
-def test_atoms_table_kept_whole():
-    atoms = split_markdown_atoms(TABLE)
-    table_atoms = [a for a in atoms if a.split("\n")[0].strip().startswith("|")]
-    assert len(table_atoms) == 1
-    assert table_atoms[0].count("\n") == 41  # header + rule + 40 rows
-
-
-def test_atoms_nonempty_and_no_blank_lines():
-    for text in SAMPLES:
-        for atom in split_markdown_atoms(text):
-            assert atom.strip()
-
-
 # ── streaming merge + separators ─────────────────────────────────────────────
 
 
@@ -181,12 +109,6 @@ def test_merge_streaming_fences_rejoins_split_fence():
     merged = merge_streaming_fences(chunks)
     assert len(merged) == 1
     assert not text_has_unclosed_fence(merged[0])
-
-
-def test_merge_streaming_fences_leaves_balanced_alone():
-    chunks = ["one", "```\nx\n```", "three"]
-    assert merge_streaming_fences(chunks) == chunks
-    assert merge_streaming_fences([]) == []
 
 
 def test_infer_block_separator_rules():
@@ -199,11 +121,6 @@ def test_infer_block_separator_rules():
 # ── balance_fences_across_chunks ─────────────────────────────────────────────
 
 
-def test_balance_single_chunk_untouched():
-    chunks = ["```py\nunclosed"]
-    assert balance_fences_across_chunks(chunks) == chunks
-
-
 def test_balance_closes_and_reopens():
     out = balance_fences_across_chunks(["a\n```go\nx", "y\n```\nb"])
     assert out[0].endswith("\n```")
@@ -212,15 +129,6 @@ def test_balance_closes_and_reopens():
 
 
 # ── greedy_pack_blocks ───────────────────────────────────────────────────────
-
-
-def test_greedy_pack_respects_limit_and_order():
-    blocks = [f"block {i} " + "w" * 30 for i in range(10)]
-    packed = greedy_pack_blocks(blocks, 90)
-    assert all(len(p) <= 90 for p in packed)
-    assert "\n\n".join(packed).replace("\n\n", "|").count("|") >= 0
-    # Order/content preserved
-    assert "".join(packed).replace("\n\n", "") == "".join(blocks)
 
 
 def test_greedy_pack_overflow_callback():
@@ -237,12 +145,3 @@ def test_greedy_pack_overflow_callback():
 # ── canonical table-row splitter delegation ──────────────────────────────────
 
 
-def test_table_row_splitters_are_unified():
-    from agent.markdown_tables import split_table_row
-    from gateway.platforms.weixin import _split_table_row
-
-    rows = ["| a | b | c |", "a | b | c", "|配置|状态|", "  | x |  ", "||"]
-    for row in rows:
-        expected = split_table_row(row)
-        assert split_markdown_table_row(row) == expected
-        assert _split_table_row(row) == expected

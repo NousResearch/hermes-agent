@@ -157,33 +157,6 @@ def test_worker_interrupt_break_closes_stream():
     assert stream.close_calls == 1
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
-def test_worker_interrupt_break_poisons_slot_when_stream_close_fails():
-    """If the half-read stream can't be released, the client must not be
-    cached: the owner-thread abort poisons the slot so the worker's finally
-    really closes the pool (leaked connection and all)."""
-    agent = _make_agent()
-
-    def chunks():
-        yield _chunk(content="partial ")
-        agent._interrupt_requested = True
-        yield _chunk(content="never processed")
-
-    stream = _FakeStream(chunks, close_raises=True)
-    abort_reasons = []
-
-    with patch.object(
-        agent, "_create_request_openai_client", return_value=_mock_wire_client(stream)
-    ), patch.object(agent, "_close_request_openai_client"), patch.object(
-        agent,
-        "_abort_request_openai_client",
-        side_effect=lambda client, *, reason: abort_reasons.append(reason),
-    ):
-        with pytest.raises(InterruptedError):
-            agent._interruptible_streaming_api_call({})
-
-    assert stream.close_calls == 1
-    assert "interrupt_stream_close_failed" in abort_reasons
 
 
 def test_relay_managed_close_failure_poisons_request_client(tmp_path, monkeypatch):

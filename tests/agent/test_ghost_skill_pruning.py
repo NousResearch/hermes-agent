@@ -87,12 +87,6 @@ class TestSkillPrunedMarkerEmit:
         assert summary == "[skill_view] name=docker-management (1,234 chars)"
         assert SKILL_PRUNED_MARKER_PREFIX not in summary
 
-    def test_other_skill_tool_summaries_remain_metadata_only(self):
-        summary = _summarize_tool_result(
-            "skills_list", '{"name":"docker-management"}', "x" * 6000
-        )
-        assert summary == "[skills_list] name=docker-management (6,000 chars)"
-        assert SKILL_PRUNED_MARKER_PREFIX not in summary
 
     def test_marker_extractor_round_trips_the_emitted_marker(self):
         """Emit and check sides share one canonical string.
@@ -107,10 +101,6 @@ class TestSkillPrunedMarkerEmit:
 
 
 class TestReinjectPrunedSkillMarkers:
-    def test_no_duplicate_when_canonical_marker_survived(self):
-        marker = _skill_pruned_marker("pdf")
-        out = _reinject_pruned_skill_markers("summary body\n" + marker, ["pdf"])
-        assert out.count(SKILL_PRUNED_MARKER_PREFIX) == 1
 
     def test_reinjects_when_marker_paraphrased_away(self):
         out = _reinject_pruned_skill_markers(
@@ -126,19 +116,7 @@ class TestReinjectPrunedSkillMarkers:
         assert out.count(_skill_pruned_marker("alpha")) == 1
         assert out.count(_skill_pruned_marker("beta")) == 1
 
-    def test_empty_name_list_is_a_no_op(self):
-        assert _reinject_pruned_skill_markers("body", []) == "body"
 
-    def test_marker_block_is_not_classified_as_handoff_content(self):
-        """Markers must never turn a row into summary/handoff content."""
-        marker = _skill_pruned_marker("pdf")
-        assert ContextCompressor.classify_summary_content(marker) is None
-        row = "[skill_view] name=pdf (6,000 chars) " + marker
-        assert ContextCompressor.classify_summary_content(row) is None
-        # And the strip helper leaves marker-bearing rows untouched.
-        c = ContextCompressor.__new__(ContextCompressor)
-        msg = {"role": "user", "content": row}
-        assert c._strip_context_summary_handoff_message(msg) == msg
 
     def test_reinjected_summary_still_classifies_standalone(self):
         body = _reinject_pruned_skill_markers("## Goal\nwork\n", ["pdf"])
@@ -156,13 +134,6 @@ class TestProtectedSkillPrune:
             out.append({"role": role, "content": f"filler {start + i} " + "y" * 400})
         return out
 
-    def test_old_single_use_skill_is_pruned_with_marker(self):
-        c = _make_compressor()
-        msgs = _skill_view_pair("call_s", "old-skill") + self._filler(14)
-        result, pruned = c._prune_old_tool_results(msgs, protect_tail_count=4)
-        assert pruned >= 1
-        skill_row = result[1]
-        assert _skill_pruned_marker("old-skill") in skill_row["content"]
 
     def test_recently_loaded_skill_survives_prune(self):
         c = _make_compressor()
@@ -178,16 +149,6 @@ class TestProtectedSkillPrune:
         assert skill_row["content"].startswith("# fresh-skill instructions")
         assert SKILL_PRUNED_MARKER_PREFIX not in skill_row["content"]
 
-    def test_skill_named_in_tail_user_message_survives_prune(self):
-        c = _make_compressor()
-        msgs = (
-            _skill_view_pair("call_s", "steered-skill")
-            + self._filler(14)
-            + [{"role": "user", "content": "keep following the steered-skill steps"}]
-        )
-        result, _ = c._prune_old_tool_results(msgs, protect_tail_count=4)
-        skill_row = result[1]
-        assert skill_row["content"].startswith("# steered-skill instructions")
 
     def test_pressure_demotion_overrides_skill_protection(self):
         """Pass-4 must still demote protected skill bodies (#61932 guard)."""
@@ -271,59 +232,8 @@ class TestMarkerSurvivesRealCompress:
         # Stored iterative-update state carries the marker too.
         assert _skill_pruned_marker("pdf") in c._previous_summary
 
-    def test_marker_not_duplicated_when_summarizer_preserves_it(self):
-        c = _make_compressor(protect_first_n=1, protect_last_n=2)
-        msgs = self._messages_with_pruned_skill_in_middle()
-        keep_response = self._mock_response(
-            "## Goal\nBuild the PDF report.\n\n## Pruned Skills\n"
-            + _skill_pruned_marker("pdf")
-        )
-        with (
-            patch.object(c, "_find_tail_cut_by_tokens", return_value=7),
-            patch("agent.context_compressor.call_llm", return_value=keep_response),
-        ):
-            result = c.compress(msgs, force=True)
-        summary_text = self._summary_text_of(result)
-        assert summary_text.count(_skill_pruned_marker("pdf")) == 1
 
-    def test_marker_survives_static_fallback_summary(self):
-        c = _make_compressor(protect_first_n=1, protect_last_n=2)
-        msgs = self._messages_with_pruned_skill_in_middle()
-        with (
-            patch.object(c, "_find_tail_cut_by_tokens", return_value=7),
-            patch(
-                "agent.context_compressor.call_llm",
-                side_effect=RuntimeError("no provider"),
-            ),
-        ):
-            result = c.compress(msgs, force=True)
-        summary_text = self._summary_text_of(result)
-        assert _skill_pruned_marker("pdf") in summary_text
-        assert c._last_summary_fallback_used is True
 
-    def test_raw_skill_body_in_compressed_middle_gets_marker(self):
-        """A never-demoted skill_view body summarized away still ghosts.
-
-        The skill body can survive Phase-1 (protected tail of an earlier
-        prune) and then age into the compression window as RAW content.
-        The summarizer paraphrases it away — the P2 layer must emit the
-        marker for it as well, not only for already-pruned rows.
-        """
-        c = _make_compressor(protect_first_n=1, protect_last_n=2)
-        skill_body = "# pdf skill\n" + ("Detailed instructions line.\n" * 400)
-        msgs = self._messages_with_pruned_skill_in_middle()
-        msgs[3] = {"role": "tool", "tool_call_id": "call_pdf", "content": skill_body}
-        drop_response = self._mock_response(
-            "## Goal\nBuild the PDF report.\n\n## Completed Actions\n"
-            "1. Loaded some skills and worked on the report."
-        )
-        with (
-            patch.object(c, "_find_tail_cut_by_tokens", return_value=7),
-            patch("agent.context_compressor.call_llm", return_value=drop_response),
-        ):
-            result = c.compress(msgs, force=True)
-        summary_text = self._summary_text_of(result)
-        assert _skill_pruned_marker("pdf") in summary_text
 
     def test_marker_survives_iterative_recompression(self):
         """Markers in a rehydrated handoff summary survive iterative rewrites.

@@ -18,8 +18,10 @@ function Checkbox({ className, ...props }: React.ComponentProps<typeof CheckboxP
         className="flex items-center justify-center text-current"
         data-slot="checkbox-indicator"
       >
-        <Codicon className="hidden group-data-[state=checked]:block" name="check" size="0.875rem" />
-        <Codicon className="hidden group-data-[state=indeterminate]:block" name="dash" size="0.875rem" />
+        {/* codicon.css sets `display: inline-block` at higher specificity than a bare
+            `hidden`, so both glyphs paint at once without the important modifier. */}
+        <Codicon className="hidden! group-data-[state=checked]:block!" name="check" size="0.875rem" />
+        <Codicon className="hidden! group-data-[state=indeterminate]:block!" name="dash" size="0.875rem" />
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
   )

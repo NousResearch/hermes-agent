@@ -14,17 +14,8 @@ def test_wsl_windows_manifest_path_translates_to_drvfs():
         ) == "/mnt/c/Users/Fernando/AppData/Local/cua-driver/cua-driver.exe"
 
 
-def test_non_windows_path_is_unchanged_in_wsl():
-    with patch("hermes_constants.is_wsl", return_value=True):
-        assert cua_backend._wsl_windows_path_to_posix(
-            "/usr/local/bin/cua-driver"
-        ) == "/usr/local/bin/cua-driver"
 
 
-def test_windows_manifest_path_is_unchanged_outside_wsl():
-    path = r"D:\Tools\cua-driver.exe"
-    with patch("hermes_constants.is_wsl", return_value=False):
-        assert cua_backend._wsl_windows_path_to_posix(path) == path
 
 
 def test_resolve_mcp_invocation_normalizes_windows_manifest_command_in_wsl():

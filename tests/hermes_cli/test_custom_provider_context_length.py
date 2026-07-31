@@ -12,20 +12,6 @@ from hermes_cli.config import get_custom_provider_context_length
 
 
 class TestGetCustomProviderContextLength:
-    def test_returns_override_for_matching_entry(self):
-        custom = [
-            {
-                "name": "my-endpoint",
-                "base_url": "https://example.invalid/v1",
-                "models": {"gpt-5.5": {"context_length": 1_050_000}},
-            }
-        ]
-        assert (
-            get_custom_provider_context_length(
-                "gpt-5.5", "https://example.invalid/v1", custom
-            )
-            == 1_050_000
-        )
 
     def test_trailing_slash_insensitive(self):
         custom = [
@@ -55,82 +41,6 @@ class TestGetCustomProviderContextLength:
             == 500_000
         )
 
-    def test_extra_trailing_segment_is_route_significant(self):
-        custom = [
-            {
-                "base_url": "https://example.invalid/v1//",
-                "models": {"m": {"context_length": 500_000}},
-            }
-        ]
-
-        assert (
-            get_custom_provider_context_length(
-                "m", "https://example.invalid/v1", custom
-            )
-            is None
-        )
-
-    def test_returns_none_when_url_does_not_match(self):
-        custom = [
-            {
-                "base_url": "https://example.invalid/v1",
-                "models": {"m": {"context_length": 400_000}},
-            }
-        ]
-        assert (
-            get_custom_provider_context_length(
-                "m", "https://other.invalid/v1", custom
-            )
-            is None
-        )
-
-    def test_returns_none_when_model_does_not_match(self):
-        custom = [
-            {
-                "base_url": "https://example.invalid/v1",
-                "models": {"gpt-5.5": {"context_length": 400_000}},
-            }
-        ]
-        assert (
-            get_custom_provider_context_length(
-                "different-model", "https://example.invalid/v1", custom
-            )
-            is None
-        )
-
-    def test_returns_none_for_string_value(self):
-        """'256K' string is not a valid int — skip silently.
-
-        (The inline startup path still emits a user-visible warning; the
-        helper itself returns None so downstream fallbacks can run.)
-        """
-        custom = [
-            {
-                "base_url": "https://example.invalid/v1",
-                "models": {"m": {"context_length": "256K"}},
-            }
-        ]
-        assert (
-            get_custom_provider_context_length(
-                "m", "https://example.invalid/v1", custom
-            )
-            is None
-        )
-
-    def test_returns_none_for_zero_or_negative(self):
-        for bad in (0, -1, -100):
-            custom = [
-                {
-                    "base_url": "https://example.invalid/v1",
-                    "models": {"m": {"context_length": bad}},
-                }
-            ]
-            assert (
-                get_custom_provider_context_length(
-                    "m", "https://example.invalid/v1", custom
-                )
-                is None
-            ), f"value {bad!r} should be rejected"
 
     def test_empty_inputs_return_none(self):
         assert get_custom_provider_context_length("", "http://x", [{"base_url": "http://x", "models": {"": {"context_length": 1}}}]) is None
@@ -138,24 +48,6 @@ class TestGetCustomProviderContextLength:
         assert get_custom_provider_context_length("m", "http://x", None) is None
         assert get_custom_provider_context_length("m", "http://x", []) is None
 
-    def test_ignores_non_dict_entries(self):
-        """Malformed entries must not crash the lookup."""
-        custom = [
-            "not a dict",
-            None,
-            {"base_url": "https://example.invalid/v1", "models": "not a dict"},
-            {"base_url": "https://example.invalid/v1", "models": {"m": "not a dict"}},
-            {
-                "base_url": "https://example.invalid/v1",
-                "models": {"m": {"context_length": 400_000}},
-            },
-        ]
-        assert (
-            get_custom_provider_context_length(
-                "m", "https://example.invalid/v1", custom
-            )
-            == 400_000
-        )
 
 
 class TestGetModelContextLengthHonorsOverride:

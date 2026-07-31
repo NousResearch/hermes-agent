@@ -88,8 +88,7 @@ function rememberedRouteKey(profile?: null | string): string {
   return !key || key === 'default' ? LAST_ROUTE_KEY : `${LAST_ROUTE_KEY}.${key}`
 }
 
-export const getRememberedRoute = (profile?: null | string): null | string =>
-  storedString(rememberedRouteKey(profile))
+export const getRememberedRoute = (profile?: null | string): null | string => storedString(rememberedRouteKey(profile))
 export const setRememberedRoute = (path: null | string, profile?: null | string) =>
   persistString(rememberedRouteKey(profile), path)
 
@@ -192,6 +191,42 @@ export const sessionMatchesStoredId = (
   session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
   storedSessionId: string
 ): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
+
+/** True when two ids name the same conversation across compression tip rotation. */
+export function idsShareLineage(
+  a: string,
+  b: string,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): boolean {
+  if (a === b) {
+    return true
+  }
+
+  return sessions.some(session => sessionMatchesStoredId(session, a) && sessionMatchesStoredId(session, b))
+}
+
+/**
+ * Whether a composer draft/queue key should move from `fromKey` onto `toKey`.
+ *
+ * Only same-conversation rekeys are allowed (compression tip → lineage root).
+ * A session-switch window where the route already points at B while the store
+ * selection still holds A must NOT migrate — that would re-home Session A's
+ * queued prompts onto B and auto-drain them into the wrong chat.
+ */
+export function shouldMigrateComposerScope(
+  fromKey: string | null | undefined,
+  toKey: string | null | undefined,
+  sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id'>[]
+): boolean {
+  const from = fromKey?.trim()
+  const to = toKey?.trim()
+
+  if (!from || !to || from === to) {
+    return false
+  }
+
+  return idsShareLineage(from, to, sessions)
+}
 
 /**
  * Stable composer + `/queue` scope for a selected stored session.

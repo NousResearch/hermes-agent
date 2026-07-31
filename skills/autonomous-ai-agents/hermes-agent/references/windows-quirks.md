@@ -33,13 +33,14 @@ echo `os.environ` inside an `execute_code` block to confirm `SYSTEMROOT` is set.
 
 `scripts/run_tests.sh` is POSIX-only (expects `.venv/bin/activate`); the
 Hermes-installed `venv/Scripts/` has no pip/pytest (stripped for size).
-Install pytest into a system Python and run directly with `-n 0`
-(`pyproject.toml`'s `addopts` already sets `-n`):
+Install pytest into a system Python and run directly (the repo no longer
+uses pytest-xdist; the canonical runner does per-file subprocess isolation,
+which the POSIX-only wrapper handles):
 
 ```bash
-"/c/Program Files/Python311/python" -m pip install --user pytest pytest-xdist pyyaml
+"/c/Program Files/Python311/python" -m pip install --user pytest pyyaml
 export PYTHONPATH="$(pwd)"
-"/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short -n 0
+"/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short
 ```
 
 (POSIX-only tests need skip guards — see the cross-platform guard list in

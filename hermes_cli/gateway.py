@@ -359,7 +359,9 @@ def _scan_gateway_pids(
         looks_like_gateway_runtime_command_line,
     )
     current_home = str(get_hermes_home().resolve())
-    current_home_lc = current_home.lower()
+    # Forward slashes on both sides of the HERMES_HOME= match — see
+    # gateway.status._command_line_belongs_to_profile, which this mirrors.
+    current_home_lc = current_home.lower().replace("\\", "/")
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = (
         current_profile_arg.split()[-1] if current_profile_arg else ""
@@ -367,7 +369,7 @@ def _scan_gateway_pids(
     current_profile_name_lc = current_profile_name.lower()
 
     def _matches_current_profile(command: str) -> bool:
-        command_lc = command.lower()
+        command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
             return (
                 f"--profile {current_profile_name_lc}" in command_lc

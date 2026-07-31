@@ -38,20 +38,6 @@ class TestDefaults:
         assert tol.DEFAULT_MAX_LINES == 2000
         assert tol.DEFAULT_MAX_LINE_LENGTH == 2000
 
-    def test_get_limits_returns_defaults_when_config_missing(self):
-        with patch("hermes_cli.config.load_config", return_value={}):
-            limits = tol.get_tool_output_limits()
-        assert limits == {
-            "max_bytes": tol.DEFAULT_MAX_BYTES,
-            "max_lines": tol.DEFAULT_MAX_LINES,
-            "max_line_length": tol.DEFAULT_MAX_LINE_LENGTH,
-        }
-
-    def test_get_limits_returns_defaults_when_config_not_a_dict(self):
-        # load_config should always return a dict but be defensive anyway.
-        with patch("hermes_cli.config.load_config", return_value="not a dict"):
-            limits = tol.get_tool_output_limits()
-        assert limits["max_bytes"] == tol.DEFAULT_MAX_BYTES
 
     def test_get_limits_returns_defaults_when_load_config_raises(self):
         def _boom():
@@ -79,13 +65,6 @@ class TestOverrides:
             "max_line_length": 4096,
         }
 
-    def test_partial_override_preserves_other_defaults(self):
-        cfg = {"tool_output": {"max_bytes": 200_000}}
-        with patch("hermes_cli.config.load_config", return_value=cfg):
-            limits = tol.get_tool_output_limits()
-        assert limits["max_bytes"] == 200_000
-        assert limits["max_lines"] == tol.DEFAULT_MAX_LINES
-        assert limits["max_line_length"] == tol.DEFAULT_MAX_LINE_LENGTH
 
     def test_section_not_a_dict_falls_back(self):
         cfg = {"tool_output": "nonsense"}

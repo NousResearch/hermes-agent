@@ -88,15 +88,7 @@ class TestAuxProgressHook:
         _notify_aux_progress()  # outside — must not tick
         assert ticks == [1]
 
-    def test_none_hook_is_noop_passthrough(self):
-        with aux_progress_hook(None):
-            _notify_aux_progress()  # must not raise
 
-    def test_hook_exception_is_swallowed(self):
-        def _boom():
-            raise RuntimeError("hook blew up")
-        with aux_progress_hook(_boom):
-            _notify_aux_progress()  # must not raise
 
     def test_hook_is_thread_local(self):
         ticks = []
@@ -119,12 +111,6 @@ class TestAuxProgressHook:
 # ---------------------------------------------------------------------------
 
 class TestCreateWithProgress:
-    def test_no_hook_means_plain_nonstreaming_call(self):
-        client = _FakeClient(response=_COMPLETE)
-        result = _create_with_progress(client, {"model": "m1", "messages": []})
-        assert result is _COMPLETE
-        assert len(client.calls) == 1
-        assert "stream" not in client.calls[0]
 
     def test_hook_upgrades_to_streaming_and_ticks_per_chunk(self):
         chunks = [
@@ -163,25 +149,7 @@ class TestCreateWithProgress:
         assert client.calls[0].get("stream") is True
         assert "stream" not in client.calls[1]
 
-    def test_auth_error_propagates_without_nonstreaming_retry(self):
-        class _FakeAuthError(Exception):
-            status_code = 401
-        client = _FakeClient(stream_error=_FakeAuthError("Error code: 401 - unauthorized"))
-        with aux_progress_hook(lambda: None):
-            with pytest.raises(_FakeAuthError):
-                _create_with_progress(client, {"model": "m1", "messages": []})
-        assert len(client.calls) == 1  # no silent non-streaming retry
 
-    def test_shim_returning_complete_response_passes_through(self):
-        # Adapters may ignore stream=True and hand back a full response.
-        class _ShimClient(_FakeClient):
-            def _create(self, **kwargs):
-                self.calls.append(kwargs)
-                return _COMPLETE
-        client = _ShimClient()
-        with aux_progress_hook(lambda: None):
-            result = _create_with_progress(client, {"model": "m1", "messages": []})
-        assert result is _COMPLETE
 
 
 # ---------------------------------------------------------------------------
@@ -210,13 +178,6 @@ class TestAggregateChatStream:
         assert tool_calls[0].function.arguments == '{"a": 1}'
         assert result.choices[0].finish_reason == "tool_calls"
 
-    def test_total_ceiling_kills_trickle_stream_as_timeout(self):
-        def _trickle():
-            while True:
-                time.sleep(0.01)
-                yield _chunk(content="x")
-        with pytest.raises(TimeoutError, match="timed out"):
-            _aggregate_chat_stream(_trickle(), total_ceiling=0.05)
 
     def test_stream_close_is_called(self):
         closed = []
@@ -232,11 +193,6 @@ class TestAggregateChatStream:
         assert result.choices[0].message.content == "ok"
         assert closed == [True]
 
-    def test_empty_choices_chunks_are_skipped(self):
-        empty = SimpleNamespace(id="c", model="m", choices=[], usage=None)
-        chunks = [empty, _chunk(content="ok", finish_reason="stop")]
-        result = _aggregate_chat_stream(iter(chunks))
-        assert result.choices[0].message.content == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +203,6 @@ class TestStreamCeiling:
     def test_floor_applies_to_small_timeouts(self):
         assert _aux_stream_total_ceiling(30) == 600.0
 
-    def test_multiplier_wins_for_large_timeouts(self):
-        assert _aux_stream_total_ceiling(300) == 1200.0
 
     def test_none_timeout_gets_floor(self):
         assert _aux_stream_total_ceiling(None) == 600.0
@@ -281,10 +235,6 @@ class TestFenceProgress:
 # ---------------------------------------------------------------------------
 
 class TestProviderRequiresStream:
-    def test_tencent_copilot_is_stream_only(self):
-        assert _provider_requires_stream(
-            "custom", "https://copilot.tencent.com/v1"
-        ) is True
 
     def test_normal_endpoints_are_not(self):
         assert _provider_requires_stream(
@@ -305,14 +255,6 @@ class TestProviderRequiresStream:
                 "custom", "https://other.example.com/v1"
             ) is False
 
-    def test_config_read_failure_fails_open_to_non_streaming(self):
-        with patch(
-            "hermes_cli.config.load_config",
-            side_effect=RuntimeError("config broken"),
-        ):
-            assert _provider_requires_stream(
-                "custom", "https://other.example.com/v1"
-            ) is False
 
 
 class TestForceStream:

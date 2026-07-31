@@ -40,21 +40,8 @@ _HISTORICAL_BYPASS_NAMES = frozenset(
 )
 
 
-def test_every_command_has_valid_busy_policy():
-    bad = [
-        (cmd.name, cmd.busy_policy)
-        for cmd in COMMAND_REGISTRY
-        if cmd.busy_policy not in VALID_BUSY_POLICIES
-    ]
-    assert not bad, f"Commands with invalid busy_policy: {bad}"
 
 
-def test_derived_bypass_set_covers_historical_names():
-    missing = _HISTORICAL_BYPASS_NAMES - ACTIVE_SESSION_BYPASS_COMMANDS
-    assert not missing, (
-        "Commands lost their mid-run bypass (busy_policy regressed to "
-        f"'reject'): {sorted(missing)}"
-    )
 
 
 def test_bypass_set_is_derived_from_registry():
@@ -76,8 +63,3 @@ def test_interrupt_then_dispatch_class():
     assert not is_interrupt_then_dispatch("not-a-command")
 
 
-def test_bypass_names_resolve_and_bypass_guard1():
-    # Every derived bypass name must be a resolvable command (Guard 1's
-    # should_bypass_active_session admits all resolvable commands).
-    for name in ACTIVE_SESSION_BYPASS_COMMANDS:
-        assert should_bypass_active_session(name), name

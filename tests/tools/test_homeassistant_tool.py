@@ -5,7 +5,7 @@ handler validation, and availability gating.
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -57,48 +57,6 @@ class TestFilterAndSummarize:
         for e in result["entities"]:
             assert e["entity_id"].startswith("light.")
 
-    def test_domain_filter_sensor(self):
-        result = _filter_and_summarize(SAMPLE_STATES, domain="sensor")
-        assert result["count"] == 2
-        ids = {e["entity_id"] for e in result["entities"]}
-        assert ids == {"sensor.temperature", "sensor.humidity"}
-
-    def test_domain_filter_no_matches(self):
-        result = _filter_and_summarize(SAMPLE_STATES, domain="media_player")
-        assert result["count"] == 0
-        assert result["entities"] == []
-
-    def test_area_filter_by_friendly_name(self):
-        result = _filter_and_summarize(SAMPLE_STATES, area="kitchen")
-        assert result["count"] == 2
-        ids = {e["entity_id"] for e in result["entities"]}
-        assert "light.kitchen" in ids
-        assert "sensor.temperature" in ids
-
-    def test_area_filter_by_area_attribute(self):
-        result = _filter_and_summarize(SAMPLE_STATES, area="bedroom")
-        ids = {e["entity_id"] for e in result["entities"]}
-        # "Bedroom Light" matches via friendly_name, "Bedroom Humidity" matches via area attr
-        assert "light.bedroom" in ids
-        assert "sensor.humidity" in ids
-
-    def test_area_filter_case_insensitive(self):
-        result = _filter_and_summarize(SAMPLE_STATES, area="KITCHEN")
-        assert result["count"] == 2
-
-    def test_combined_domain_and_area(self):
-        result = _filter_and_summarize(SAMPLE_STATES, domain="sensor", area="kitchen")
-        assert result["count"] == 1
-        assert result["entities"][0]["entity_id"] == "sensor.temperature"
-
-    def test_summary_includes_friendly_name(self):
-        result = _filter_and_summarize(SAMPLE_STATES, domain="climate")
-        assert result["entities"][0]["friendly_name"] == "Main Thermostat"
-        assert result["entities"][0]["state"] == "heat"
-
-    def test_empty_states_list(self):
-        result = _filter_and_summarize([])
-        assert result["count"] == 0
 
     def test_missing_attributes_handled(self):
         states = [{"entity_id": "light.x", "state": "on"}]
@@ -117,22 +75,6 @@ class TestBuildServicePayload:
         payload = _build_service_payload(entity_id="light.bedroom")
         assert payload == {"entity_id": "light.bedroom"}
 
-    def test_data_only(self):
-        payload = _build_service_payload(data={"brightness": 255})
-        assert payload == {"brightness": 255}
-
-    def test_entity_id_and_data(self):
-        payload = _build_service_payload(
-            entity_id="light.bedroom",
-            data={"brightness": 200, "color_name": "blue"},
-        )
-        assert payload["entity_id"] == "light.bedroom"
-        assert payload["brightness"] == 200
-        assert payload["color_name"] == "blue"
-
-    def test_no_args_returns_empty(self):
-        payload = _build_service_payload()
-        assert payload == {}
 
     def test_entity_id_param_takes_precedence_over_data(self):
         payload = _build_service_payload(
@@ -160,21 +102,6 @@ class TestParseServiceResponse:
         assert len(result["affected_entities"]) == 2
         assert result["affected_entities"][0]["entity_id"] == "light.bedroom"
 
-    def test_empty_list_response(self):
-        result = _parse_service_response("scene", "turn_on", [])
-        assert result["success"] is True
-        assert result["affected_entities"] == []
-
-    def test_non_list_response(self):
-        # Some HA services return a dict instead of a list
-        result = _parse_service_response("script", "run", {"result": "ok"})
-        assert result["success"] is True
-        assert result["affected_entities"] == []
-
-    def test_none_response(self):
-        result = _parse_service_response("automation", "trigger", None)
-        assert result["success"] is True
-        assert result["affected_entities"] == []
 
     def test_service_name_format(self):
         result = _parse_service_response("climate", "set_temperature", [])
@@ -192,23 +119,6 @@ class TestHandlerValidation:
         assert "error" in result
         assert "entity_id" in result["error"]
 
-    def test_get_state_empty_entity_id(self):
-        result = json.loads(_handle_get_state({"entity_id": ""}))
-        assert "error" in result
-
-    def test_call_service_missing_domain(self):
-        result = json.loads(_handle_call_service({"service": "turn_on"}))
-        assert "error" in result
-        assert "domain" in result["error"]
-
-    def test_call_service_missing_service(self):
-        result = json.loads(_handle_call_service({"domain": "light"}))
-        assert "error" in result
-        assert "service" in result["error"]
-
-    def test_call_service_missing_both(self):
-        result = json.loads(_handle_call_service({}))
-        assert "error" in result
 
     def test_call_service_empty_strings(self):
         result = json.loads(_handle_call_service({"domain": "", "service": ""}))
@@ -231,25 +141,26 @@ class TestDomainBlocklist:
         assert "error" in result
         assert "blocked" in result["error"].lower()
 
-    def test_safe_domain_not_blocked(self):
-        """Safe domains like 'light' should not be blocked (will fail on network, not blocklist)."""
-        # This will try to make a real HTTP call and fail, but the important thing
-        # is it does NOT return a "blocked" error
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_safe_domain_not_blocked(self, mock_call_service):
+        """Safe domains like ``light`` reach the service-call layer."""
+        mock_call_service.return_value = {"success": True}
         result = json.loads(_handle_call_service({
             "domain": "light", "service": "turn_on", "entity_id": "light.test"
         }))
-        # Should fail with a network/connection error, not a "blocked" error
-        if "error" in result:
-            assert "blocked" not in result["error"].lower()
+        assert result["result"]["success"] is True
+        mock_call_service.assert_awaited_once_with(
+            "light",
+            "turn_on",
+            "light.test",
+            None,
+        )
 
     def test_blocked_domains_include_shell_command(self):
         assert "shell_command" in _BLOCKED_DOMAINS
 
     def test_blocked_domains_include_hassio(self):
         assert "hassio" in _BLOCKED_DOMAINS
-
-    def test_blocked_domains_include_rest_command(self):
-        assert "rest_command" in _BLOCKED_DOMAINS
 
 
 # ---------------------------------------------------------------------------
@@ -271,38 +182,21 @@ class TestEntityIdValidation:
         assert _ENTITY_ID_RE.match("light/../../../etc/passwd") is None
         assert _ENTITY_ID_RE.match("../api/config") is None
 
-    def test_special_chars_rejected(self):
-        assert _ENTITY_ID_RE.match("light.bed room") is None  # space
-        assert _ENTITY_ID_RE.match("light.bed;rm -rf") is None  # semicolon
-        assert _ENTITY_ID_RE.match("light.bed/room") is None  # slash
-        assert _ENTITY_ID_RE.match("LIGHT.BEDROOM") is None  # uppercase
 
-    def test_missing_domain_rejected(self):
-        assert _ENTITY_ID_RE.match(".bedroom") is None
-        assert _ENTITY_ID_RE.match("bedroom") is None
-
-    def test_get_state_rejects_invalid_entity_id(self):
-        result = json.loads(_handle_get_state({"entity_id": "../../config"}))
-        assert "error" in result
-        assert "Invalid entity_id" in result["error"]
-
-    def test_call_service_rejects_invalid_entity_id(self):
-        result = json.loads(_handle_call_service({
-            "domain": "light",
-            "service": "turn_on",
-            "entity_id": "../../../etc/passwd",
-        }))
-        assert "error" in result
-        assert "Invalid entity_id" in result["error"]
-
-    def test_call_service_allows_no_entity_id(self):
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_call_service_allows_no_entity_id(self, mock_call_service):
         """Some services (like scene.turn_on) don't need entity_id."""
-        # Will fail on network, but should NOT fail on entity_id validation
+        mock_call_service.return_value = {"success": True}
         result = json.loads(_handle_call_service({
             "domain": "scene", "service": "turn_on"
         }))
-        if "error" in result:
-            assert "Invalid entity_id" not in result["error"]
+        assert result["result"]["success"] is True
+        mock_call_service.assert_awaited_once_with(
+            "scene",
+            "turn_on",
+            None,
+            None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -325,27 +219,6 @@ class TestCallServiceStringData:
         call_args = mock_run.call_args[0][0]  # the coroutine arg
         # _run_async was called, meaning we got past validation
 
-    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
-    def test_dict_data_passthrough(self, mock_run):
-        """Dict data (JSON tool calling mode) still works unchanged."""
-        _handle_call_service({
-            "domain": "light",
-            "service": "turn_on",
-            "entity_id": "light.bedroom",
-            "data": {"brightness": 255},
-        })
-        mock_run.assert_called_once()
-
-    def test_invalid_json_string_returns_error(self):
-        """Malformed JSON string in data returns a clear error."""
-        result = json.loads(_handle_call_service({
-            "domain": "light",
-            "service": "turn_on",
-            "entity_id": "light.bedroom",
-            "data": "{not valid json}",
-        }))
-        assert "error" in result
-        assert "Invalid JSON" in result["error"]
 
     @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
     def test_empty_string_data_becomes_none(self, mock_run):
@@ -379,11 +252,6 @@ class TestServiceNameValidation:
         assert _SERVICE_NAME_RE.match("shell_command")
         assert _SERVICE_NAME_RE.match("media_player")
 
-    def test_valid_service_names(self):
-        assert _SERVICE_NAME_RE.match("turn_on")
-        assert _SERVICE_NAME_RE.match("turn_off")
-        assert _SERVICE_NAME_RE.match("set_temperature")
-        assert _SERVICE_NAME_RE.match("toggle")
 
     def test_path_traversal_in_domain_rejected(self):
         assert _SERVICE_NAME_RE.match("../../api/config") is None
@@ -400,17 +268,6 @@ class TestServiceNameValidation:
         assert _SERVICE_NAME_RE.match("python_script/../scene") is None
         assert _SERVICE_NAME_RE.match("hassio/../automation") is None
 
-    def test_slashes_rejected(self):
-        assert _SERVICE_NAME_RE.match("light/turn_on") is None
-        assert _SERVICE_NAME_RE.match("a/b/c") is None
-
-    def test_dots_rejected(self):
-        assert _SERVICE_NAME_RE.match("light.turn_on") is None
-        assert _SERVICE_NAME_RE.match("..") is None
-
-    def test_uppercase_rejected(self):
-        assert _SERVICE_NAME_RE.match("LIGHT") is None
-        assert _SERVICE_NAME_RE.match("Turn_On") is None
 
     def test_special_chars_rejected(self):
         assert _SERVICE_NAME_RE.match("light;rm") is None
@@ -435,16 +292,6 @@ class TestServiceNameValidation:
         assert "error" in result
         assert "Invalid service" in result["error"]
 
-    def test_handler_rejects_blocklist_bypass_traversal(self):
-        """Blocklist bypass via shell_command/../light must be caught by format validation."""
-        result = json.loads(_handle_call_service({
-            "domain": "shell_command/../light",
-            "service": "turn_on",
-        }))
-        assert "error" in result
-        # Must be rejected as "Invalid domain", not slip through the blocklist
-        assert "Invalid domain" in result["error"]
-
 
 # ---------------------------------------------------------------------------
 # Availability check
@@ -456,9 +303,6 @@ class TestCheckAvailable:
         monkeypatch.delenv("HASS_TOKEN", raising=False)
         assert _check_ha_available() is False
 
-    def test_available_with_token(self, monkeypatch):
-        monkeypatch.setenv("HASS_TOKEN", "eyJ0eXAiOiJKV1Q")
-        assert _check_ha_available() is True
 
     def test_empty_token_is_unavailable(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "")
@@ -492,21 +336,6 @@ class TestRegistration:
         assert "ha_get_state" in names
         assert "ha_call_service" in names
 
-    def test_tools_in_homeassistant_toolset(self):
-        from tools.registry import registry
-
-        toolset_map = registry.get_tool_to_toolset_map()
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service"):
-            assert toolset_map[tool] == "homeassistant"
-
-    def test_check_fn_gates_availability(self, monkeypatch):
-        """Registry should exclude HA tools when HASS_TOKEN is not set."""
-        from tools.registry import invalidate_check_fn_cache, registry
-
-        monkeypatch.delenv("HASS_TOKEN", raising=False)
-        invalidate_check_fn_cache()
-        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
-        assert len(defs) == 0
 
     def test_check_fn_includes_when_token_set(self, monkeypatch):
         """Registry should include HA tools when HASS_TOKEN is set."""

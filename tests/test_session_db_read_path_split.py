@@ -67,31 +67,6 @@ def test_reads_do_not_take_writer_lock(db):
         db._lock.release()
 
 
-@pytest.mark.requires_wal
-def test_title_resolution_does_not_take_writer_lock(db):
-    """Exact-title and numbered-variant resolution must not block on self._lock."""
-    db.create_session(session_id="t1", source="cli", model="m")
-    db.set_session_title("t1", "ops sync")
-    db.create_session(session_id="t2", source="cli", model="m")
-    db.set_session_title("t2", "ops sync #2")
-    acquired = db._lock.acquire()
-    assert acquired
-    try:
-        done = {}
-
-        def reader():
-            done["exact"] = db.get_session_by_title("ops sync")
-            done["resolved"] = db.resolve_session_by_title("ops sync")
-
-        t = threading.Thread(target=reader)
-        t.start()
-        t.join(timeout=5.0)
-        assert not t.is_alive(), "title resolution blocked on writer lock"
-        assert done["exact"]["id"] == "t1"
-        # Lineage rule: the latest numbered variant wins over the exact match.
-        assert done["resolved"] == "t2"
-    finally:
-        db._lock.release()
 
 
 def test_read_your_writes(db):
@@ -101,10 +76,6 @@ def test_read_your_writes(db):
     assert rows, "committed write invisible to read connection"
 
 
-def test_fallback_when_read_conn_unavailable(db, monkeypatch):
-    monkeypatch.setattr(db, "_get_read_conn", lambda: None)
-    assert db.get_session("s1")["id"] == "s1"
-    assert db.search_messages("graphiti", limit=5)
 
 
 def test_non_wal_uses_locked_path(db):

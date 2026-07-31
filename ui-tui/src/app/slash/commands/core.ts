@@ -411,6 +411,7 @@ export const coreCommands: SlashCommand[] = [
 
       if (shouldUseTerminalClipboard) {
         writeOsc52Clipboard(target.text)
+
         return sys('sent OSC52 copy sequence (terminal support required)')
       }
 
@@ -438,7 +439,7 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'attach clipboard image',
     name: 'paste',
-    run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+    run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.attachClipboardImage())
   },
 
   {

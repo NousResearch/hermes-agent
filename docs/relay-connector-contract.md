@@ -711,7 +711,56 @@ per-gateway secret and the same host as `/relay/provision`.
 
 ---
 
-## 8. Versioning policy
+## 8. Gateway-side platform behavior controls (enterprise)
+
+Enterprise deployments configure fronted-platform behavior on the GATEWAY
+side, under `platforms.relay.extra.<platform>` — a supported subset of that
+platform's native options. The native platform block (e.g. `platforms.slack`)
+is not read on the relay lane; the connector receives the *outcome* of these
+controls as frame metadata (§4) and executes mechanically — it holds no
+platform behavior policy of its own.
+
+```yaml
+platforms:
+  relay:
+    extra:
+      slack:
+        reply_in_thread: true   # default
+```
+
+Resolution: nested `extra.<platform>` object wins → legacy flat key on
+`extra` honored as fallback → default. Source of truth:
+`RelayAdapter._effective_reply_in_thread` (`gateway/relay/adapter.py`).
+Values coerce exactly as the native Slack adapter's do — `1/true/yes/on`
+(case-insensitive, whitespace-trimmed) are ON, anything else is OFF — so a
+YAML-quoted `"false"` turns a knob off rather than being read as a truthy
+string.
+
+Current controls (Slack):
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `reply_in_thread` | `true` | `true`: thread-per-message — each top-level DM message anchors its own thread (status, progress, prompts, final reply all carry that `metadata.thread_id`). `false`: flat rolling DM — send-lane frames carry NO thread anchor (stripped, not omitted), one shared session per DM. |
+| `dm_top_level_threads_as_sessions` | `true` | Native-parity escape hatch (mirrors `platforms.slack.extra.dm_top_level_threads_as_sessions`). `true`: in thread-per-message mode each top-level DM message keys its own session, so concurrent messages run in parallel. `false`: threaded reply placement is kept but the session stamp is skipped — one rolling DM session (legacy steer/queue posture). No effect in flat mode, which always keeps the single rolling session. |
+
+Typing/status frames always carry the triggering-ts anchor when one is known
+(liveliness is unconditional, both modes): Slack's status line is
+thread-scoped, and in flat mode the send-side anchor strip guarantees the
+status anchor can never leak into reply placement. Semantics of the native
+key: see `website/docs/user-guide/messaging/slack.md`.
+
+Thread-anchor resolution applies to EVERY send lane — text (`send`) and media
+(`send_media`) alike — through one choke point
+(`RelayAdapter._apply_slack_thread_anchor`). Media frames egress via the same
+connector-side Slack sender, which threads on `metadata.thread_id` only, so an
+attachment resolves its anchor identically to a text reply: promoted into
+metadata in thread-per-message mode, stripped in flat mode.
+
+Changes take effect on gateway restart; no connector involvement.
+
+---
+
+## 9. Versioning policy
 
 - `contract_version` is an int; bump **only** for additive changes during the
   experimental phase (new optional fields, new `op`s).

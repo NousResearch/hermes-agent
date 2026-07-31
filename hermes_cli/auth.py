@@ -36,7 +36,7 @@ import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -364,6 +364,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://integrate.api.nvidia.com/v1",
         api_key_env_vars=("NVIDIA_API_KEY",),
         base_url_env_var="NVIDIA_BASE_URL",
+    ),
+    "ai-gateway": ProviderConfig(
+        id="ai-gateway",
+        name="Vercel AI Gateway",
+        auth_type="api_key",
+        inference_base_url="https://ai-gateway.vercel.sh/v1",
+        api_key_env_vars=("AI_GATEWAY_API_KEY",),
+        base_url_env_var="AI_GATEWAY_BASE_URL",
     ),
     "opencode-zen": ProviderConfig(
         id="opencode-zen",
@@ -1889,6 +1897,7 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",

@@ -38,8 +38,32 @@ reference.
 from __future__ import annotations
 
 import copy
-import os
 from typing import Any, Callable, Dict, List, Tuple
+
+#: Auto-migration support floor. Configs whose on-disk ``_config_version`` is
+#: below this are NOT auto-migrated any more (policy decision, July 2026):
+#: v12 predates roughly two years of releases, and carrying the sub-v12
+#: migration steps (plus the env bridges they consumed, e.g.
+#: HERMES_TOOL_PROGRESS*) forever is not worth it. Below-floor configs are
+#: left byte-for-byte untouched — the process continues with the config as-is
+#: (defaults deep-merged at read time, matching the non-fatal posture used
+#: for unparseable configs) and a clear message tells the user how to
+#: proceed. The removed steps were the <12 targets: v4 (tool-progress .env →
+#: config.yaml), v5 (timezone seed), v9 (clear ANTHROPIC_TOKEN).
+SUPPORT_FLOOR_VERSION = 12
+
+
+def support_floor_message() -> str:
+    """Human-facing explanation shown when a config is below the floor."""
+    from hermes_constants import display_hermes_home
+
+    return (
+        f"This config predates version {SUPPORT_FLOOR_VERSION} (~2 years old) "
+        "and can no longer be auto-migrated. Back up "
+        f"{display_hermes_home()}/config.yaml and run `hermes setup` to "
+        f"regenerate, or manually set _config_version: {SUPPORT_FLOOR_VERSION} "
+        "after reviewing the changelog."
+    )
 
 
 def _cfg():
@@ -47,73 +71,6 @@ def _cfg():
     from hermes_cli import config
 
     return config
-
-
-def _migrate_to_4(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
-    _c = _cfg()
-    read_raw_config = _c.read_raw_config
-    get_env_value = _c.get_env_value
-    _persist_migration = _c._persist_migration
-
-    config = read_raw_config()
-    display = config.get("display", {})
-    if not isinstance(display, dict):
-        display = {}
-    if "tool_progress" not in display:
-        old_enabled = get_env_value("HERMES_TOOL_PROGRESS")
-        old_mode = get_env_value("HERMES_TOOL_PROGRESS_MODE")
-        if old_enabled and old_enabled.lower() in {"false", "0", "no"}:
-            display["tool_progress"] = "off"
-            results["config_added"].append("display.tool_progress=off (from HERMES_TOOL_PROGRESS=false)")
-        elif old_mode and old_mode.lower() in {"new", "all", "verbose"}:
-            display["tool_progress"] = old_mode.lower()
-            results["config_added"].append(f"display.tool_progress={old_mode.lower()} (from HERMES_TOOL_PROGRESS_MODE)")
-        else:
-            display["tool_progress"] = "all"
-            results["config_added"].append("display.tool_progress=all (default)")
-        config["display"] = display
-        _persist_migration(config)
-        if not quiet:
-            print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
-
-
-def _migrate_to_5(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 4 → 5: add timezone field ──
-    _c = _cfg()
-    read_raw_config = _c.read_raw_config
-    _persist_migration = _c._persist_migration
-
-    config = read_raw_config()
-    if "timezone" not in config:
-        old_tz = os.getenv("HERMES_TIMEZONE", "")
-        if old_tz and old_tz.strip():
-            config["timezone"] = old_tz.strip()
-            results["config_added"].append(f"timezone={old_tz.strip()} (from HERMES_TIMEZONE)")
-        else:
-            config["timezone"] = ""
-            results["config_added"].append("timezone= (empty, uses server-local)")
-        _persist_migration(config)
-        if not quiet:
-            tz_display = config["timezone"] or "(server-local)"
-            print(f"  ✓ Added timezone to config.yaml: {tz_display}")
-
-
-def _migrate_to_9(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 8 → 9: clear ANTHROPIC_TOKEN from .env ──
-    # The new Anthropic auth flow no longer uses this env var.
-    _c = _cfg()
-    get_env_value = _c.get_env_value
-    save_env_value = _c.save_env_value
-
-    try:
-        old_token = get_env_value("ANTHROPIC_TOKEN")
-        if old_token:
-            save_env_value("ANTHROPIC_TOKEN", "")
-            if not quiet:
-                print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
-    except Exception:
-        pass
 
 
 def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
@@ -692,9 +649,9 @@ def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
 #: version captured before the ladder started. Order matters: later steps may
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
-    (4, _migrate_to_4),
-    (5, _migrate_to_5),
-    (9, _migrate_to_9),
+    # v12 is the support floor: configs already AT v12 (or newer) still get
+    # every remaining step below. Only configs BELOW 12 are refused by the
+    # floor gate in run_migrations().
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),

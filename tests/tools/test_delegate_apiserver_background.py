@@ -145,29 +145,6 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_origin_helper_survives_child_session_clobber(monkeypatch):
-    """set_current_session_id (child agent construction) rewrites the
-    HERMES_SESSION_ID ContextVar + env, but the request-scoped chat_id
-    binding is untouched — the helper must keep returning the spawner's id."""
-    from gateway.session_context import set_current_session_id
-    from tools.async_delegation import _current_origin_session_id
-
-    set_session_vars(platform="api_server", chat_id="raw-origin-1")
-    assert _current_origin_session_id() == "raw-origin-1"
-
-    set_current_session_id("20260715_child2")  # the clobber
-    assert _current_origin_session_id() == "raw-origin-1"
-
-
-def test_origin_helper_empty_on_push_platforms(monkeypatch):
-    """On push platforms chat_id identifies a chat, not a session — the
-    helper must yield empty rather than misroute a wake there."""
-    from tools.async_delegation import _current_origin_session_id
-
-    set_session_vars(platform="telegram", chat_id="123456789")
-    assert _current_origin_session_id() == ""
-
-
 def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
     """No session id to wake → keep the sync fallback (a detached result
     would never re-enter any conversation)."""

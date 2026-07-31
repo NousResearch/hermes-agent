@@ -543,6 +543,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
     "anthropic": "claude-haiku-4-5-20251001",
+    "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3.6-flash",
@@ -676,15 +677,15 @@ def build_or_headers(or_config: dict | None = None) -> dict:
             Overrides ``openrouter.response_cache_ttl`` in config.yaml.
 
     *or_config* is the ``openrouter`` section from config.yaml.  When *None*,
-    falls back to reading config from disk via ``load_config()``.
+    falls back to reading config from disk via ``load_config_readonly()``.
     """
     headers = dict(_OR_HEADERS_BASE)
 
     # Resolve config from disk if not provided.
     if or_config is None:
         try:
-            from hermes_cli.config import load_config
-            or_config = load_config().get("openrouter", {})
+            from hermes_cli.config import load_config_readonly
+            or_config = load_config_readonly().get("openrouter", {})
         except Exception:
             or_config = {}
 
@@ -729,6 +730,15 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
     return {}
 
 
+# Vercel AI Gateway app attribution headers. HTTP-Referer maps to
+# referrerUrl and X-Title maps to appName in the gateway's analytics.
+from hermes_cli import __version__ as _HERMES_VERSION
+
+_AI_GATEWAY_HEADERS = {
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+    "X-Title": "Hermes Agent",
+    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+}
 
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
@@ -2317,8 +2327,8 @@ def _read_main_model() -> str:
     if isinstance(override, str) and override.strip():
         return override.strip()
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str) and model_cfg.strip():
             return model_cfg.strip()
@@ -2344,8 +2354,8 @@ def _read_main_provider() -> str:
     if isinstance(override, str) and override.strip():
         return override.strip().lower()
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, dict):
             provider = model_cfg.get("provider", "")
@@ -2512,6 +2522,7 @@ def _relay_auxiliary_call(callback):
             "attempt_count": 0,
             "provider": "",
             "model": "",
+            "response_model": None,
             "api_mode": "chat_completions",
         })
         try:
@@ -2537,6 +2548,7 @@ def _relay_auxiliary_call_async(callback):
             "attempt_count": 0,
             "provider": "",
             "model": "",
+            "response_model": None,
             "api_mode": "chat_completions",
         })
         try:
@@ -2560,6 +2572,7 @@ def _set_relay_auxiliary_route(
         return
     context["provider"] = str(provider or "auxiliary")
     context["model"] = str(model or "unknown")
+    context["response_model"] = None
     context["api_mode"] = str(api_mode or "chat_completions")
 
 
@@ -3040,12 +3053,12 @@ def _try_azure_foundry(
     try:
         from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
         from hermes_cli.auth import AuthError
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
     except ImportError:
         return None, None
 
     try:
-        cfg = load_config()
+        cfg = load_config_readonly()
         model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
         if not isinstance(model_cfg, dict):
             model_cfg = {}
@@ -3159,8 +3172,8 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     # see issue #52608.
     base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
         model_cfg = cfg.get("model")
         if isinstance(model_cfg, dict):
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -4764,10 +4777,10 @@ def _try_main_fallback_chain(
     participate in the same order as the main agent.
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain
 
-        chain = get_fallback_chain(load_config())
+        chain = get_fallback_chain(load_config_readonly())
     except Exception as exc:
         logger.debug("Auxiliary %s: could not load main fallback chain: %s", task or "call", exc)
         return None, None, ""
@@ -5725,7 +5738,8 @@ def resolve_provider_client(
         else:
             # Fall back to profile.default_headers for providers that declare
             # client-level attribution headers on their profile (e.g. GMI
-            # User-Agent for traffic identification).
+            # User-Agent for traffic identification, Vercel AI Gateway
+            # Referer/Title for analytics).
             try:
                 from providers import get_provider_profile as _gpf_main
                 _ph_main = _gpf_main(provider)
@@ -5986,11 +6000,11 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     """
     try:
         from agent.image_routing import _lookup_supports_vision
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
     except ImportError:
         return True
     try:
-        supports = _lookup_supports_vision(provider, model, load_config())
+        supports = _lookup_supports_vision(provider, model, load_config_readonly())
     except Exception:  # pragma: no cover - defensive
         return True
     if supports is None:
@@ -6959,8 +6973,8 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     if not task:
         return {}
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
     except ImportError:
         return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
@@ -7463,6 +7477,7 @@ def _validate_llm_response(
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
         if recovered is not None:
+            _record_relay_auxiliary_response_model(response)
             _complete_relay_auxiliary_call()
             return recovered
         response_type = type(response).__name__
@@ -7473,6 +7488,7 @@ def _validate_llm_response(
             f"Expected object with .choices[0].message — check provider "
             f"adapter or custom endpoint compatibility."
         ) from exc
+    _record_relay_auxiliary_response_model(response)
     _complete_relay_auxiliary_call()
     return response
 
@@ -7487,7 +7503,23 @@ def _complete_relay_auxiliary_call(*, outcome: str = "success") -> None:
     relay_llm.complete_logical_call(
         str(context.get("request_id") or ""),
         outcome=outcome,
+        model_name=str(context.get("model") or "unknown"),
+        provider_name=str(context.get("provider") or "auxiliary"),
+        response_model_name=context.get("response_model"),
     )
+
+
+def _record_relay_auxiliary_response_model(response: Any) -> None:
+    """Retain the provider-reported model for terminal route attribution."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is None:
+        return
+    if isinstance(response, dict):
+        model = response.get("model")
+    else:
+        model = getattr(response, "model", None)
+    if isinstance(model, str) and model.strip():
+        context["response_model"] = model
 
 
 def _fail_relay_auxiliary_call() -> None:

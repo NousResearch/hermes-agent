@@ -96,7 +96,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   if (failed && image) {
     return (
       <a
-        className="mt-2 link-chip inline-block wrap-anywhere"
+        className="mt-2 ref inline-block wrap-anywhere"
         href="#"
         onClick={event => {
           event.preventDefault()

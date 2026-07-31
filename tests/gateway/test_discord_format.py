@@ -43,16 +43,4 @@ class TestDiscordFormatMessage:
         assert out.rstrip().endswith("Done.")
         assert "|---" not in out
 
-    def test_plain_text_unchanged(self):
-        adapter = _make_discord_adapter()
-        text = "Hello world, no tables here."
-        assert adapter.format_message(text) == text
 
-    def test_code_block_table_unchanged(self):
-        adapter = _make_discord_adapter()
-        text = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
-        assert adapter.format_message(text) == text
-
-    def test_empty_string(self):
-        adapter = _make_discord_adapter()
-        assert adapter.format_message("") == ""

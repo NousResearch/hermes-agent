@@ -10,6 +10,16 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # SQLite journal mode used by every Hermes database opener. WAL is the
+    # normal default; set DELETE for weak-fsync/shared filesystems where WAL is
+    # not crash-safe (for example macOS virtiofs, NFS, or SMB).
+    "database": {
+        "journal_mode": "wal",
+        # Optional WAL sizing pragmas, applied when set to integers.
+        # None = SQLite defaults (autocheckpoint 1000 pages, no size limit).
+        "wal_autocheckpoint": None,
+        "journal_size_limit": None,
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
@@ -284,7 +294,10 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        # Vercel Sandbox runtime (vercel_sandbox backend only).
+        # Supported: node24, node22, python3.13.
+        "vercel_runtime": "node24",
+        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -565,6 +578,29 @@ DEFAULT_CONFIG = {
                                       # prompt-cache invalidation amortized: one big
                                       # episodic break instead of a tiny break every
                                       # tool iteration. 0 = commit any non-zero prune.
+        "micro_compact": False,       # opt-in: after each completed turn, fold the
+                                      # oldest un-absorbed exchange into a rolling
+                                      # summary, amortizing compression cost instead
+                                      # of paying it in one batch stall. Default False
+                                      # because a pass rewrites already-sent history
+                                      # and so breaks the provider prompt-cache prefix
+                                      # EVERY turn — the per-turn cache break that
+                                      # `proactive_prune_min_reclaim_tokens` above
+                                      # exists to avoid. Enable only when you have
+                                      # measured that the amortized stall is worth
+                                      # more to you than the cached-prefix discount.
+                                      # See docs/micro-compaction.md.
+        "micro_compact_every_n_turns": 1,  # cadence: run a pass every Nth completed
+                                      # turn. Since each pass costs one prompt-cache
+                                      # break, this is the dial for how often that
+                                      # cost is paid — 1 reclaims most aggressively
+                                      # at one break per turn, 5 trades reclaim rate
+                                      # for a fifth of the breaks. Clamped to >= 1.
+                                      # Ignored unless `micro_compact` is true.
+        "micro_compact_defrag_threshold_tokens": 2000,  # once the rolling summary
+                                      # exceeds this many tokens, the next pass
+                                      # re-summarizes the summary itself instead of
+                                      # letting it grow without bound.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
                                       # WITHOUT forward progress. The summary call streams, so
@@ -1089,7 +1125,10 @@ DEFAULT_CONFIG = {
         # only visible when show_reasoning is enabled.
         "show_commentary": True,
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
-        "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
+        # NOTE: display.tool_progress_overrides is deprecated and no longer
+        # seeded here — use display.platforms. A user-set value is still
+        # honored at runtime (gateway display_config back-compat read) and
+        # folded into display.platforms by the v15→16 migration.
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
         # Human-phrased tool status labels for built-in tools: "Searching the
         # web for ...", "Reading <file>", "Browsing <url>" instead of the raw
@@ -1464,6 +1503,7 @@ DEFAULT_CONFIG = {
     "wake_word": {
         "enabled": False,
         "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
+        "input_device": None,          # PortAudio input device index/name; null uses the process default
         "provider": "openwakeword",   # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
         "phrase": "hey hermes",       # for "sherpa" this IS the detected phrase (any text works); for other engines it's a cosmetic label — detection is keyed by the model/keyword below
         "sensitivity": 0.6,           # 0.0-1.0 detection threshold, consistent across engines (higher = stricter, fewer false triggers)
@@ -4142,13 +4182,15 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "setting",
     },
-    # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
-    # now configured via display.tool_progress in config.yaml (off|new|all|verbose|log).
-    # The gateway still falls back to these env vars for backward compatibility,
-    # so they live in _EXTRA_ENV_KEYS (known to reload and compatibility paths) but
-    # are intentionally NOT listed here: OPTIONAL_ENV_VARS feeds user-facing
-    # surfaces (dashboard keys page, setup checklists) and deprecated knobs
-    # shouldn't be offered there.
+    # HERMES_TOOL_PROGRESS_MODE is deprecated — tool progress is configured via
+    # display.tool_progress in config.yaml (off|new|all|verbose|log). The
+    # gateway still falls back to HERMES_TOOL_PROGRESS_MODE for backward
+    # compatibility, so it lives in _EXTRA_ENV_KEYS (known to reload and
+    # compatibility paths) but is intentionally NOT listed here:
+    # OPTIONAL_ENV_VARS feeds user-facing surfaces (dashboard keys page, setup
+    # checklists) and deprecated knobs shouldn't be offered there. The boolean
+    # HERMES_TOOL_PROGRESS is fully unsupported since the v12 config support
+    # floor retired its only consumer (the v3→4 migration).
     "HERMES_PREFILL_MESSAGES_FILE": {
         "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
         "prompt": "Prefill messages file path",

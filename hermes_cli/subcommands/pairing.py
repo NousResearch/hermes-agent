@@ -21,12 +21,16 @@ def build_pairing_parser(subparsers, *, cmd_pairing: Callable) -> None:
     pairing_sub.add_parser("list", help="Show pending + approved users")
 
     pairing_approve_parser = pairing_sub.add_parser(
-        "approve", help="Approve a pairing code"
+        "approve", help="Approve a pairing request"
     )
     pairing_approve_parser.add_argument(
         "platform", help="Platform name (telegram, discord, slack, whatsapp)"
     )
-    pairing_approve_parser.add_argument("code", help="Pairing code to approve")
+    pairing_approve_parser.add_argument(
+        "code",
+        metavar="request-id|code",
+        help="Request ID from 'pairing list', or the code the bot DM'd the user",
+    )
 
     pairing_revoke_parser = pairing_sub.add_parser("revoke", help="Revoke user access")
     pairing_revoke_parser.add_argument("platform", help="Platform name")

@@ -141,6 +141,13 @@ def _refresh_native_session_sync(
     unreachable_provider)`` when no provider succeeds and at least one
     provider was unreachable.
     """
+    providers = list_session_providers()
+    # An unrecognized hint can't affect provider ordering, so it must not be
+    # allowed to affect the cache/lock key either — otherwise a caller could
+    # bypass coalescing and negative-cache protection by varying an unknown
+    # hint while reusing the same old refresh token and client IP.
+    if provider_hint and not any(p.name == provider_hint for p in providers):
+        provider_hint = ""
     cache_key = _native_refresh_cache_key(refresh_token, provider_hint, client_ip)
 
     with _native_refresh_replay_guard:
@@ -170,7 +177,6 @@ def _refresh_native_session_sync(
                 if cached is not None and cached[0] > now:
                     return cached[1], None
 
-            providers = list_session_providers()
             if provider_hint:
                 providers.sort(key=lambda p: p.name != provider_hint)
 

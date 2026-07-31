@@ -500,7 +500,9 @@ function EstimateSection({ id }: { id: string }) {
               ~{compactNumber(result.est_tokens)} {k.tokUnit}
             </span>
             {result.complexity && (
-              <span className="text-(--ui-text-tertiary)">· {k.complexity[result.complexity] ?? result.complexity}</span>
+              <span className="text-(--ui-text-tertiary)">
+                · {k.complexity[result.complexity] ?? result.complexity}
+              </span>
             )}
             <Tip label={k.reEstimate}>
               <Button

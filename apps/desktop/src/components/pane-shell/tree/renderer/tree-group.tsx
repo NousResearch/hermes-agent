@@ -328,9 +328,7 @@ export function TreeGroup({
       // PREVIOUS target, and landing on the uncloseable workspace dropped
       // Close from the menu for a pane that closes fine.
       onContextMenu={e => {
-        setMenuPane(
-          (e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined
-        )
+        setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
       }}
       ref={ref}
       style={wcOverlap ? { paddingTop: wcOverlap.y + wcOverlap.height } : undefined}

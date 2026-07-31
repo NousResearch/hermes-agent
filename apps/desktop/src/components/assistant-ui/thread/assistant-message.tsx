@@ -4,7 +4,7 @@ import {
   ErrorPrimitive,
   MessagePrimitive,
   useAui,
-  useAuiState,
+  useAuiState
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'

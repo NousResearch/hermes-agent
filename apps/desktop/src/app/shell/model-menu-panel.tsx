@@ -239,14 +239,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       ...groups.flatMap(group =>
         collapsedProviders.includes(group.provider.slug) && !search
           ? []
-          : group.families.map(
-              (family): KbRow => ({
-                family,
-                key: `${group.provider.slug}:${family.id}`,
-                kind: 'family',
-                provider: group.provider
-              })
-            )
+          : group.families.map((family): KbRow => ({
+              family,
+              key: `${group.provider.slug}:${family.id}`,
+              kind: 'family',
+              provider: group.provider
+            }))
       ),
       ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset }))
     ],

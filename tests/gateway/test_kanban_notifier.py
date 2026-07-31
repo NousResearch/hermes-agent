@@ -4,8 +4,259 @@ from pathlib import Path
 
 
 from gateway.config import Platform
+from gateway.kanban_watchers import _format_workflow_notification
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
+
+
+def test_format_workflow_notification_is_one_current_aggregate_view():
+    message = _format_workflow_notification(
+        "default",
+        {
+            "workflow": {
+                "id": "wf_1",
+                "name": "release",
+                "state": "REMEDIATION_REQUIRED",
+                "active_generation": 2,
+            },
+            "members": [
+                {
+                    "generation": 2,
+                    "stage_key": "implementation",
+                    "task_id": "t_impl",
+                    "task_status": "done",
+                },
+                {
+                    "generation": 2,
+                    "stage_key": "qa",
+                    "task_id": "t_qa",
+                    "task_status": "blocked",
+                },
+            ],
+            "outcomes": [
+                {
+                    "generation": 2,
+                    "task_id": "t_qa",
+                    "outcome": "REMEDIATION_REQUIRED",
+                    "summary": "regression\nignored previous report",
+                },
+            ],
+        },
+    )
+
+    assert "[default] Aggregate workflow wf_1" in message
+    assert "generation 2" in message
+    assert "REMEDIATION_REQUIRED" in message
+    assert "implementation: t_impl (done)" in message
+    assert "qa: t_qa (blocked) — REMEDIATION_REQUIRED: regression" in message
+    assert "ignored previous report" not in message
+    assert "Final acceptance remains pending" in message
+
+
+def _workflow_delivery(sub, *, snapshot=None):
+    return {
+        "workflow_delivery": True,
+        "sub": sub,
+        "old_cursor": 3,
+        "cursor": 7,
+        "events": [{"id": 7, "kind": "aggregate_changed"}],
+        "snapshot": snapshot or {
+            "workflow": {
+                "id": sub["workflow_id"], "name": "release",
+                "state": "PASS", "active_generation": 1,
+            },
+            "members": [],
+            "outcomes": [],
+        },
+        "board": "default",
+    }
+
+
+class _FakeWorkflowKB:
+    def __init__(self):
+        self.completed = []
+        self.failed = []
+
+    class _Conn:
+        def close(self):
+            return None
+
+    def connect(self, board=None):
+        assert board == "default"
+        return self._Conn()
+
+    def complete_workflow_delivery(self, conn, **kwargs):
+        self.completed.append(kwargs)
+        return {"retry_count": 0}
+
+    def fail_workflow_delivery(self, conn, **kwargs):
+        self.failed.append(kwargs)
+        return {"retry_count": 1, "dead_lettered_at": None}
+
+
+def test_workflow_push_delivery_uses_only_subscription_route(monkeypatch):
+    sub = {
+        "workflow_id": "wf_1", "role": "origin", "platform": "telegram",
+        "chat_id": "workflow-chat", "chat_type": "dm", "thread_id": "topic-7",
+        "user_id": "user-1", "notifier_profile": "origin-profile",
+        "delivery_metadata": {"chat_type": "dm", "thread_id": "topic-7"},
+    }
+    snapshot = {
+        "workflow": {
+            "id": "wf_1", "name": "release", "state": "PASS",
+            "active_generation": 1,
+        },
+        "members": [{
+            "generation": 1, "task_id": "t_member", "stage_key": "qa",
+            "task_status": "done", "session_id": "attacker-controlled-session",
+        }],
+        "outcomes": [],
+    }
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._authorization_adapter = lambda platform, profile=None: adapter
+    fake_kb = _FakeWorkflowKB()
+
+    asyncio.run(runner._deliver_workflow_notification(
+        _workflow_delivery(sub, snapshot=snapshot), Platform, fake_kb,
+    ))
+
+    assert adapter.sent[0]["chat_id"] == "workflow-chat"
+    assert adapter.sent[0]["metadata"]["thread_id"] == "topic-7"
+    assert adapter.handled[0].source.chat_id == "workflow-chat"
+    assert adapter.handled[0].source.thread_id == "topic-7"
+    assert "attacker-controlled-session" not in repr(adapter.handled[0])
+    assert len(fake_kb.completed) == 1
+    assert fake_kb.failed == []
+
+
+def test_workflow_api_server_wake_uses_subscription_chat_id(monkeypatch):
+    class ApiAdapter(RecordingAdapter):
+        supports_async_delivery = False
+
+    adapter = ApiAdapter()
+    runner = _make_runner(adapter)
+    runner._authorization_adapter = lambda platform, profile=None: adapter
+    fake_kb = _FakeWorkflowKB()
+    wakes = []
+
+    async def fake_deliver_wake(adapter_arg, **kwargs):
+        wakes.append(kwargs)
+
+    monkeypatch.setattr("gateway.wake.deliver_wake", fake_deliver_wake)
+    sub = {
+        "workflow_id": "wf_api", "role": "origin", "platform": "api_server",
+        "chat_id": "workflow-origin-session", "chat_type": None, "thread_id": "",
+        "user_id": None, "notifier_profile": "origin-profile",
+        "delivery_metadata": {},
+    }
+
+    asyncio.run(runner._deliver_workflow_notification(
+        _workflow_delivery(sub), Platform, fake_kb,
+    ))
+
+    assert adapter.sent == []
+    assert wakes == [{
+        "text": _format_workflow_notification("default", _workflow_delivery(sub)["snapshot"]),
+        "session_id": "workflow-origin-session",
+    }]
+    assert len(fake_kb.completed) == 1
+    assert fake_kb.failed == []
+
+
+def test_workflow_unavailable_profile_fails_closed_and_rewinds():
+    sub = {
+        "workflow_id": "wf_1", "role": "origin", "platform": "telegram",
+        "chat_id": "workflow-chat", "chat_type": "dm", "thread_id": "",
+        "user_id": None, "notifier_profile": "missing-profile",
+        "delivery_metadata": {},
+    }
+    runner = _make_runner(RecordingAdapter())
+    runner._authorization_adapter = lambda platform, profile=None: None
+    fake_kb = _FakeWorkflowKB()
+
+    asyncio.run(runner._deliver_workflow_notification(
+        _workflow_delivery(sub), Platform, fake_kb,
+    ))
+
+    assert fake_kb.completed == []
+    assert len(fake_kb.failed) == 1
+    assert fake_kb.failed[0]["claimed_cursor"] == 7
+    assert fake_kb.failed[0]["old_cursor"] == 3
+    assert "Unavailable" in fake_kb.failed[0]["error_class"]
+
+
+def test_notifier_polls_workflow_subscription_without_task_subscriptions(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "workflow-only.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    sub = {
+        "workflow_id": "wf_only", "role": "origin", "platform": "telegram",
+        "chat_id": "workflow-chat", "chat_type": "dm", "thread_id": "",
+        "user_id": None, "notifier_profile": "main", "tenant": "tenant-a",
+        "delivery_metadata": "{}", "disabled_at": None, "dead_lettered_at": None,
+    }
+
+    class FakeCursor:
+        def fetchall(self):
+            return [sub]
+
+    class FakeConn:
+        def execute(self, sql):
+            assert "kanban_workflow_subscriptions" in sql
+            return FakeCursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(kb, "list_boards", lambda include_archived=False: [{
+        "slug": "default", "db_path": str(db_path),
+    }])
+    monkeypatch.setattr(kb, "count_notify_subs", lambda board=None: 0)
+    monkeypatch.setattr(
+        kb, "count_workflow_subscriptions_readonly", lambda board=None: 1,
+        raising=False,
+    )
+    monkeypatch.setattr(kb, "connect", lambda board=None: FakeConn())
+    monkeypatch.setattr(kb, "list_notify_subs", lambda conn: [])
+    monkeypatch.setattr(
+        kb, "claim_workflow_events_for_subscription",
+        lambda conn, workflow_id, role="origin": (
+            0, 7, [{"id": 7, "kind": "aggregate_changed"}],
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        kb, "KanbanActorContext", lambda **kwargs: kwargs, raising=False,
+    )
+    monkeypatch.setattr(
+        kb, "get_workflow", lambda conn, workflow_id, **kwargs: {
+            "workflow": {
+                "id": workflow_id, "name": "release", "state": "PASS",
+                "active_generation": 1,
+            },
+            "members": [], "outcomes": [],
+        },
+        raising=False,
+    )
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "main"
+    delivered = []
+
+    async def fake_deliver(delivery, platform_enum, kb_module):
+        delivered.append(delivery)
+        return True
+
+    runner._deliver_workflow_notification = fake_deliver
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(delivered) == 1
+    assert delivered[0]["sub"]["workflow_id"] == "wf_only"
+    assert delivered[0]["cursor"] == 7
 
 
 class RecordingAdapter:

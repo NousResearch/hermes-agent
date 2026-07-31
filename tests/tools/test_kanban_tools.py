@@ -1023,3 +1023,159 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+def test_workflow_worker_actor_is_derived_from_active_db_binding(monkeypatch):
+    from types import SimpleNamespace
+    from tools import kanban_tools as kt
+
+    task = SimpleNamespace(
+        id="t_qa", tenant="tenant-a", status="running",
+        current_run_id=42, claim_lock="claim-a",
+    )
+    run = SimpleNamespace(id=42, status="running")
+
+    class FakeKB:
+        KanbanActorContext = SimpleNamespace
+        get_task = staticmethod(lambda conn, task_id: task)
+        latest_run = staticmethod(lambda conn, task_id: run)
+
+        @staticmethod
+        def kanban_db_path(board=None):
+            from pathlib import Path
+            return Path("/trusted/board.db")
+
+    monkeypatch.setenv("HERMES_PROFILE", "qa-profile")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_qa")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "claim-a")
+    monkeypatch.setenv("HERMES_TENANT", "body-minted-tenant")
+
+    actor = kt._workflow_worker_actor(FakeKB, object(), board=None)
+
+    assert actor.tenant == "tenant-a"
+    assert actor.task_scope == "t_qa"
+    assert actor.run_id == 42
+    assert actor.claim_lock == "claim-a"
+    assert actor.capabilities == frozenset({"workflow.read", "workflow.outcome"})
+
+
+def test_workflow_worker_actor_rejects_stale_run_or_claim(monkeypatch):
+    from types import SimpleNamespace
+    from tools import kanban_tools as kt
+
+    task = SimpleNamespace(
+        id="t_qa", tenant="tenant-a", status="running",
+        current_run_id=42, claim_lock="claim-a",
+    )
+    run = SimpleNamespace(id=42, status="running")
+
+    class FakeKB:
+        KanbanActorContext = SimpleNamespace
+        get_task = staticmethod(lambda conn, task_id: task)
+        latest_run = staticmethod(lambda conn, task_id: run)
+
+        @staticmethod
+        def kanban_db_path(board=None):
+            from pathlib import Path
+            return Path("/trusted/board.db")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_qa")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "999")
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "forged")
+
+    with pytest.raises(PermissionError, match="active run/claim"):
+        kt._workflow_worker_actor(FakeKB, object(), board=None)
+
+
+def test_workflow_orchestrator_actor_derives_tenant_from_db(monkeypatch):
+    from types import SimpleNamespace
+    from tools import kanban_tools as kt
+
+    class FakeConn:
+        def execute(self, sql, params):
+            assert "kanban_workflows" in sql
+            assert params == ("wf_1",)
+            return SimpleNamespace(fetchone=lambda: {"tenant": "tenant-a"})
+
+    class FakeKB:
+        KanbanActorContext = SimpleNamespace
+
+        @staticmethod
+        def kanban_db_path(board=None):
+            from pathlib import Path
+            return Path("/trusted/board.db")
+
+    monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+    monkeypatch.setenv("HERMES_TENANT", "body-minted-tenant")
+    actor = kt._workflow_existing_actor(
+        FakeKB,
+        FakeConn(),
+        workflow_id="wf_1",
+        board=None,
+        capabilities=frozenset({"workflow.read"}),
+    )
+    assert actor.tenant == "tenant-a"
+    assert actor.capabilities == frozenset({"workflow.read"})
+
+
+def test_workflow_tool_schemas_do_not_accept_authority_fields():
+    from tools import kanban_tools as kt
+
+    for schema in (
+        kt.KANBAN_WORKFLOW_SHOW_SCHEMA,
+        kt.KANBAN_WORKFLOW_MANAGE_SCHEMA,
+        kt.KANBAN_WORKFLOW_OUTCOME_SCHEMA,
+    ):
+        properties = schema["parameters"]["properties"]
+        assert "tenant" not in properties
+        assert "capabilities" not in properties
+        assert "profile_name" not in properties
+        assert "notifier_profile" not in properties
+    outcome_properties = kt.KANBAN_WORKFLOW_OUTCOME_SCHEMA["parameters"]["properties"]
+    assert "task_id" not in outcome_properties
+    manage_properties = kt.KANBAN_WORKFLOW_MANAGE_SCHEMA["parameters"]["properties"]
+    assert manage_properties["members"]["items"]["properties"] == {
+        "task_id": {"type": "string"},
+        "stage_key": {"type": "string"},
+        "stage_role": {"type": "string"},
+        "required": {"type": "boolean"},
+    }
+
+
+def test_workflow_resume_does_not_require_a_version_or_body_authority(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from tools import kanban_tools as kt
+
+    class FakeConn:
+        def execute(self, sql, params):
+            return SimpleNamespace(fetchone=lambda: {"tenant": "tenant-a"})
+
+        def close(self):
+            return None
+
+    class FakeKB:
+        KanbanActorContext = SimpleNamespace
+
+        @staticmethod
+        def kanban_db_path(board=None):
+            from pathlib import Path
+            return Path("/trusted/board.db")
+
+        @staticmethod
+        def resume_workflow_subscription(conn, *, workflow_id, actor):
+            return {"workflow_id": workflow_id, "retry_count": 0}
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setattr(kt, "_connect", lambda board=None: (FakeKB, FakeConn()))
+
+    result = json.loads(kt._handle_workflow_manage({
+        "action": "resume_subscription",
+        "workflow_id": "wf_1",
+        "tenant": "body-minted-tenant",
+        "capabilities": ["workflow.admin"],
+    }))
+
+    assert result == {"workflow_id": "wf_1", "retry_count": 0}

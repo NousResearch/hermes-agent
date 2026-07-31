@@ -11,6 +11,7 @@ behavior-neutral move that lifts ~1,000 LOC out of run.py.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -23,6 +24,52 @@ from agent.i18n import t
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+class WorkflowAdapterUnavailable(RuntimeError):
+    """The subscription's stamped notifier profile has no live adapter."""
+
+
+def _format_workflow_notification(board: str, snapshot: dict[str, Any]) -> str:
+    """Render exactly one current workflow aggregate, never prior reports."""
+    workflow = snapshot.get("workflow") or {}
+    workflow_id = str(workflow.get("id") or "<unknown>")
+    name = str(workflow.get("name") or "").strip()
+    state = str(workflow.get("state") or "UNKNOWN")
+    generation = workflow.get("active_generation")
+    generation_suffix = f" (generation {generation})" if generation is not None else ""
+
+    latest: dict[str, dict[str, Any]] = {}
+    for outcome in snapshot.get("outcomes") or []:
+        if generation is not None and outcome.get("generation") != generation:
+            continue
+        task_id = str(outcome.get("task_id") or "")
+        if task_id:
+            latest[task_id] = outcome
+
+    title_suffix = f" — {name}" if name else ""
+    lines = [
+        f"🧭 [{board}] Aggregate workflow {workflow_id}{title_suffix}{generation_suffix}",
+        f"State: {state}",
+    ]
+    for member in snapshot.get("members") or []:
+        if generation is not None and member.get("generation") != generation:
+            continue
+        task_id = str(member.get("task_id") or "")
+        stage = str(member.get("stage_key") or member.get("stage_role") or "stage")
+        status = str(member.get("task_status") or "unknown")
+        line = f"- {stage}: {task_id} ({status})"
+        outcome = latest.get(task_id)
+        if outcome:
+            line += f" — {outcome.get('outcome')}"
+            if outcome.get("summary"):
+                line += f": {str(outcome['summary']).splitlines()[0][:180]}"
+        lines.append(line)
+    if state == "PASS":
+        lines.append("Final acceptance is recorded for this workflow generation.")
+    else:
+        lines.append("Final acceptance remains pending for this workflow generation.")
+    return "\n".join(lines)
 
 
 def _resolve_auto_decompose_settings(
@@ -111,6 +158,124 @@ def _release_singleton_lock(handle) -> None:
 
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
+
+    async def _deliver_workflow_notification(self, delivery, platform_enum, kb) -> bool:
+        """Deliver one claimed aggregate event and persist success or retry state.
+
+        Every routing fact comes from the workflow subscription. Member task
+        fields are display provenance only and are never consulted for delivery.
+        """
+        sub = delivery["sub"]
+        board = delivery.get("board")
+        role = sub.get("role") or "origin"
+        text = _format_workflow_notification(
+            board or getattr(kb, "DEFAULT_BOARD", "default"),
+            delivery["snapshot"],
+        )
+
+        def _complete():
+            conn = kb.connect(board=board)
+            try:
+                return kb.complete_workflow_delivery(
+                    conn, workflow_id=sub["workflow_id"], role=role,
+                )
+            finally:
+                conn.close()
+
+        def _fail(error_class: str):
+            conn = kb.connect(board=board)
+            try:
+                return kb.fail_workflow_delivery(
+                    conn,
+                    workflow_id=sub["workflow_id"],
+                    role=role,
+                    claimed_cursor=delivery["cursor"],
+                    old_cursor=delivery.get("old_cursor", 0),
+                    error_class=error_class,
+                )
+            finally:
+                conn.close()
+
+        try:
+            platform = platform_enum((sub.get("platform") or "").lower())
+            profile = sub.get("notifier_profile") or None
+            adapter = self._authorization_adapter(platform, profile)
+            if adapter is None:
+                raise WorkflowAdapterUnavailable(
+                    f"notifier profile {profile or '<default>'} has no "
+                    f"{sub.get('platform') or '<missing>'} adapter"
+                )
+
+            metadata = sub.get("delivery_metadata")
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (TypeError, ValueError):
+                    metadata = {}
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            if sub.get("thread_id") and not metadata.get("thread_id"):
+                metadata["thread_id"] = sub["thread_id"]
+
+            from gateway.wake import adapter_supports_push, deliver_wake
+
+            if adapter_supports_push(adapter):
+                result = await adapter.send(sub["chat_id"], text, metadata=metadata)
+                if getattr(result, "success", True) is False:
+                    raise RuntimeError(
+                        getattr(result, "error", None)
+                        or "adapter reported workflow delivery failure"
+                    )
+                from gateway.session import SessionSource
+
+                source = SessionSource(
+                    platform=platform,
+                    chat_id=sub["chat_id"],
+                    chat_type=str(sub.get("chat_type") or "group"),
+                    thread_id=sub.get("thread_id") or None,
+                    user_id=sub.get("user_id"),
+                    profile=profile,
+                )
+                await deliver_wake(adapter, text=text, source=source)
+            else:
+                await deliver_wake(
+                    adapter,
+                    text=text,
+                    session_id=sub["chat_id"],
+                )
+
+            await asyncio.to_thread(_complete)
+            logger.info(
+                "kanban workflow notifier: delivered workflow=%s event=%s "
+                "board=%s destination=%s/%s profile=%s",
+                sub["workflow_id"], delivery["cursor"], board,
+                sub.get("platform"), sub.get("chat_id"), profile or "default",
+            )
+            return True
+        except Exception as exc:
+            try:
+                retry_state = await asyncio.to_thread(_fail, type(exc).__name__)
+            except Exception as state_exc:
+                logger.error(
+                    "kanban workflow notifier: failed to persist retry state for "
+                    "workflow=%s board=%s: %s",
+                    sub.get("workflow_id"), board, state_exc, exc_info=True,
+                )
+                return False
+            if retry_state.get("dead_lettered_at") is not None:
+                logger.error(
+                    "kanban workflow notifier: DEAD-LETTERED workflow=%s board=%s "
+                    "event=%s profile=%s error=%s",
+                    sub.get("workflow_id"), board, delivery.get("cursor"),
+                    sub.get("notifier_profile") or "default", exc,
+                )
+            else:
+                logger.warning(
+                    "kanban workflow notifier: retained workflow=%s board=%s "
+                    "event=%s for retry %s: %s",
+                    sub.get("workflow_id"), board, delivery.get("cursor"),
+                    retry_state.get("retry_count"), exc,
+                )
+            return False
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -262,7 +427,16 @@ class GatewayKanbanWatchersMixin:
                         # checkpoint traffic) is exactly the per-tick cost
                         # this skip avoids.
                         try:
-                            if _kb.count_notify_subs(board=slug) == 0:
+                            workflow_counter = getattr(
+                                _kb, "count_workflow_subscriptions_readonly", None,
+                            )
+                            workflow_sub_count = (
+                                workflow_counter(board=slug) if workflow_counter else 0
+                            )
+                            if (
+                                _kb.count_notify_subs(board=slug) == 0
+                                and workflow_sub_count == 0
+                            ):
                                 logger.debug(
                                     "kanban notifier: board %s has no subscriptions; skipping open",
                                     slug,
@@ -344,12 +518,74 @@ class GatewayKanbanWatchersMixin:
                                         "kanban notifier: subscription for %s on board %s failed: %s",
                                         sub.get("task_id"), slug, sub_exc,
                                     )
+
+                            try:
+                                workflow_rows = conn.execute(
+                                    "SELECT * FROM kanban_workflow_subscriptions "
+                                    "WHERE disabled_at IS NULL AND dead_lettered_at IS NULL"
+                                ).fetchall()
+                            except sqlite3.OperationalError as workflow_table_exc:
+                                if "no such table" not in str(workflow_table_exc).lower():
+                                    raise
+                                workflow_rows = []
+                            for workflow_row in workflow_rows:
+                                workflow_sub = dict(workflow_row)
+                                try:
+                                    old_cursor, cursor, events = (
+                                        _kb.claim_workflow_events_for_subscription(
+                                            conn,
+                                            workflow_id=workflow_sub["workflow_id"],
+                                            role=workflow_sub.get("role") or "origin",
+                                        )
+                                    )
+                                    if not events:
+                                        continue
+                                    actor = _kb.KanbanActorContext(
+                                        principal_id=f"gateway:{notifier_profile}",
+                                        profile_name=notifier_profile,
+                                        board_identity=resolved_db_path,
+                                        tenant=workflow_sub["tenant"],
+                                        capabilities=frozenset({"workflow.read"}),
+                                        source_kind="gateway_publisher",
+                                    )
+                                    snapshot = _kb.get_workflow(
+                                        conn,
+                                        workflow_sub["workflow_id"],
+                                        actor=actor,
+                                        include_events=False,
+                                    )
+                                    if snapshot is None:
+                                        raise RuntimeError("workflow disappeared after event claim")
+                                    for member in snapshot.get("members") or []:
+                                        task_row = _kb.get_task(conn, member["task_id"])
+                                        member["task_status"] = (
+                                            task_row.status if task_row else "missing"
+                                        )
+                                    deliveries.append({
+                                        "workflow_delivery": True,
+                                        "sub": workflow_sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "snapshot": snapshot,
+                                        "board": slug,
+                                    })
+                                except Exception as workflow_exc:
+                                    logger.warning(
+                                        "kanban workflow notifier: subscription for %s "
+                                        "on board %s failed during claim: %s",
+                                        workflow_sub.get("workflow_id"), slug,
+                                        workflow_exc,
+                                    )
                         finally:
                             conn.close()
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
                 for d in deliveries:
+                    if d.get("workflow_delivery"):
+                        await self._deliver_workflow_notification(d, _Platform, _kb)
+                        continue
                     sub = d["sub"]
                     task = d["task"]
                     board_slug = d.get("board")

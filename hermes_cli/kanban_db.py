@@ -1128,6 +1128,42 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class KanbanActorContext:
+    """Trusted workflow mutation identity stamped by a local adapter.
+
+    ``profile_name`` is audit metadata only. Authorization is derived from
+    ``capabilities`` and, for worker outcomes, the transactionally reloaded
+    task/run/claim binding.
+    """
+
+    principal_id: str
+    profile_name: str
+    board_identity: str
+    tenant: str
+    capabilities: frozenset[str]
+    source_kind: str
+    task_scope: Optional[str] = None
+    run_id: Optional[int] = None
+    claim_lock: Optional[str] = None
+
+
+class WorkflowError(RuntimeError):
+    """Base class for native workflow contract failures."""
+
+
+class WorkflowConflictError(WorkflowError):
+    """Optimistic-version or mutation-id conflict."""
+
+
+class WorkflowAuthorizationError(PermissionError, WorkflowError):
+    """Trusted actor context is absent or insufficient."""
+
+
+class WorkflowIntegrityError(WorkflowError):
+    """Durable workflow facts are malformed or violate isolation."""
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1309,6 +1345,164 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
+
+-- Native workflow aggregation is opt-in and deliberately separate from
+-- task_links. Links remain scheduling prerequisites; these rows are the
+-- durable membership, outcome, event, and delivery model.
+CREATE TABLE IF NOT EXISTS kanban_workflows (
+    id                   TEXT PRIMARY KEY,
+    root_task_id         TEXT,
+    name                 TEXT NOT NULL,
+    tenant               TEXT NOT NULL CHECK (length(trim(tenant)) > 0),
+    board_identity       TEXT NOT NULL CHECK (length(trim(board_identity)) > 0),
+    state                TEXT NOT NULL CHECK (state IN
+        ('ACTIVE','NEEDS_INPUT','REMEDIATION_REQUIRED','PASS','CANCELLED','SUPERSEDED')),
+    active_generation    INTEGER NOT NULL DEFAULT 1 CHECK (active_generation >= 1),
+    version              INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+    created_by_principal TEXT NOT NULL CHECK (length(trim(created_by_principal)) > 0),
+    created_at           INTEGER NOT NULL CHECK (created_at >= 0),
+    updated_at           INTEGER NOT NULL CHECK (updated_at >= created_at),
+    terminal_at          INTEGER CHECK (terminal_at IS NULL OR terminal_at >= created_at),
+    last_event_id        INTEGER NOT NULL DEFAULT 0 CHECK (last_event_id >= 0),
+    FOREIGN KEY (root_task_id) REFERENCES tasks(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS kanban_workflow_generations (
+    workflow_id                   TEXT NOT NULL,
+    generation                    INTEGER NOT NULL CHECK (generation >= 1),
+    generation_state              TEXT NOT NULL CHECK (generation_state IN
+        ('ACTIVE','NEEDS_INPUT','REMEDIATION_REQUIRED','PASS','CANCELLED','SUPERSEDED')),
+    designated_acceptance_task_id TEXT NOT NULL,
+    opened_event_id               INTEGER NOT NULL CHECK (opened_event_id >= 0),
+    terminal_event_id             INTEGER CHECK (terminal_event_id IS NULL OR terminal_event_id >= opened_event_id),
+    superseded_by_generation      INTEGER CHECK (superseded_by_generation IS NULL OR superseded_by_generation > generation),
+    created_at                    INTEGER NOT NULL CHECK (created_at >= 0),
+    terminal_at                   INTEGER CHECK (terminal_at IS NULL OR terminal_at >= created_at),
+    PRIMARY KEY (workflow_id, generation),
+    UNIQUE (workflow_id, generation, designated_acceptance_task_id),
+    FOREIGN KEY (workflow_id) REFERENCES kanban_workflows(id) ON DELETE RESTRICT,
+    FOREIGN KEY (designated_acceptance_task_id) REFERENCES tasks(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS kanban_workflow_members (
+    workflow_id          TEXT NOT NULL,
+    task_id              TEXT NOT NULL,
+    generation           INTEGER NOT NULL CHECK (generation >= 1),
+    stage_key            TEXT NOT NULL CHECK (length(trim(stage_key)) > 0),
+    stage_role           TEXT NOT NULL CHECK (stage_role IN
+        ('implementation','qa','review','acceptance','remediation','reverification','decision','other')),
+    required             INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0,1)),
+    joined_event_id      INTEGER NOT NULL CHECK (joined_event_id >= 0),
+    removed_event_id     INTEGER CHECK (removed_event_id IS NULL OR removed_event_id >= joined_event_id),
+    superseded_by_task_id TEXT,
+    tenant_snapshot      TEXT NOT NULL CHECK (length(trim(tenant_snapshot)) > 0),
+    board_identity       TEXT NOT NULL CHECK (length(trim(board_identity)) > 0),
+    task_session_id      TEXT,
+    PRIMARY KEY (workflow_id, task_id, generation),
+    UNIQUE (workflow_id, generation, stage_key),
+    FOREIGN KEY (workflow_id, generation)
+        REFERENCES kanban_workflow_generations(workflow_id, generation) ON DELETE RESTRICT,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
+    FOREIGN KEY (superseded_by_task_id) REFERENCES tasks(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS kanban_workflow_events (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id            TEXT NOT NULL,
+    generation             INTEGER NOT NULL CHECK (generation >= 1),
+    kind                   TEXT NOT NULL CHECK (length(trim(kind)) > 0),
+    mutation_id            TEXT NOT NULL CHECK (length(trim(mutation_id)) > 0),
+    batch_seq              INTEGER NOT NULL CHECK (batch_seq >= 0),
+    event_role             TEXT NOT NULL CHECK (event_role IN ('canonical','derived')),
+    actor_principal        TEXT NOT NULL CHECK (length(trim(actor_principal)) > 0),
+    expected_version       INTEGER CHECK (expected_version IS NULL OR expected_version >= 0),
+    payload_schema_version INTEGER NOT NULL DEFAULT 1 CHECK (payload_schema_version >= 1),
+    payload                TEXT NOT NULL,
+    created_at             INTEGER NOT NULL CHECK (created_at >= 0),
+    UNIQUE (workflow_id, mutation_id, batch_seq),
+    FOREIGN KEY (workflow_id, generation)
+        REFERENCES kanban_workflow_generations(workflow_id, generation) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS kanban_workflow_outcomes (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id           TEXT NOT NULL,
+    task_id               TEXT NOT NULL,
+    generation            INTEGER NOT NULL CHECK (generation >= 1),
+    run_id                INTEGER,
+    outcome               TEXT NOT NULL CHECK (outcome IN
+        ('PASS','REMEDIATION_REQUIRED','NEEDS_INPUT','SUPERSEDED','CANCELLED')),
+    supersedes_outcome_id INTEGER,
+    actor_principal       TEXT NOT NULL CHECK (length(trim(actor_principal)) > 0),
+    source_event_id       INTEGER NOT NULL UNIQUE,
+    summary               TEXT,
+    metadata              TEXT,
+    created_at            INTEGER NOT NULL CHECK (created_at >= 0),
+    FOREIGN KEY (workflow_id, task_id, generation)
+        REFERENCES kanban_workflow_members(workflow_id, task_id, generation) ON DELETE RESTRICT,
+    FOREIGN KEY (run_id) REFERENCES task_runs(id) ON DELETE RESTRICT,
+    FOREIGN KEY (source_event_id) REFERENCES kanban_workflow_events(id) ON DELETE RESTRICT,
+    FOREIGN KEY (supersedes_outcome_id) REFERENCES kanban_workflow_outcomes(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS kanban_workflow_mutations (
+    workflow_id       TEXT NOT NULL,
+    mutation_id       TEXT NOT NULL,
+    request_digest    TEXT NOT NULL,
+    canonical_event_id INTEGER NOT NULL UNIQUE,
+    first_event_id    INTEGER NOT NULL,
+    last_event_id     INTEGER NOT NULL CHECK (last_event_id >= first_event_id),
+    committed_version INTEGER NOT NULL CHECK (committed_version >= 0),
+    response_json     TEXT NOT NULL,
+    created_at        INTEGER NOT NULL CHECK (created_at >= 0),
+    PRIMARY KEY (workflow_id, mutation_id),
+    FOREIGN KEY (workflow_id) REFERENCES kanban_workflows(id) ON DELETE RESTRICT,
+    FOREIGN KEY (canonical_event_id) REFERENCES kanban_workflow_events(id) ON DELETE RESTRICT,
+    FOREIGN KEY (first_event_id) REFERENCES kanban_workflow_events(id) ON DELETE RESTRICT,
+    FOREIGN KEY (last_event_id) REFERENCES kanban_workflow_events(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS kanban_workflow_subscriptions (
+    workflow_id       TEXT NOT NULL,
+    role              TEXT NOT NULL DEFAULT 'origin' CHECK (role = 'origin'),
+    platform          TEXT NOT NULL,
+    chat_id           TEXT NOT NULL,
+    chat_type         TEXT,
+    thread_id         TEXT NOT NULL DEFAULT '',
+    user_id           TEXT,
+    notifier_profile  TEXT NOT NULL,
+    delivery_metadata TEXT,
+    target_states     TEXT NOT NULL DEFAULT '["PASS","CANCELLED","SUPERSEDED","NEEDS_INPUT","REMEDIATION_REQUIRED"]',
+    tenant            TEXT NOT NULL CHECK (length(trim(tenant)) > 0),
+    created_at        INTEGER NOT NULL CHECK (created_at >= 0),
+    last_event_id     INTEGER NOT NULL DEFAULT 0 CHECK (last_event_id >= 0),
+    retry_count       INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    next_attempt_at   INTEGER,
+    dead_lettered_at  INTEGER,
+    last_error_class  TEXT,
+    disabled_at       INTEGER,
+    PRIMARY KEY (workflow_id, role),
+    FOREIGN KEY (workflow_id) REFERENCES kanban_workflows(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_generations_designated
+    ON kanban_workflow_generations(workflow_id, generation, designated_acceptance_task_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_members_reduce
+    ON kanban_workflow_members(workflow_id, generation, required, removed_event_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_members_role
+    ON kanban_workflow_members(workflow_id, generation, stage_role, required, removed_event_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_members_task
+    ON kanban_workflow_members(task_id, workflow_id, generation);
+CREATE INDEX IF NOT EXISTS idx_workflow_outcomes_member
+    ON kanban_workflow_outcomes(workflow_id, task_id, generation, id);
+CREATE INDEX IF NOT EXISTS idx_workflow_outcomes_supersedes
+    ON kanban_workflow_outcomes(supersedes_outcome_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_events_tail
+    ON kanban_workflow_events(workflow_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_events_canonical
+    ON kanban_workflow_events(workflow_id, mutation_id) WHERE event_role = 'canonical';
+CREATE INDEX IF NOT EXISTS idx_workflow_subscriptions_due
+    ON kanban_workflow_subscriptions(disabled_at, dead_lettered_at, next_attempt_at);
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
@@ -2532,6 +2726,53 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    # FR #7 pre-release copied boards may already contain workflow tables
+    # without the immutable board binding. Recover it only from the canonical
+    # versioned create event; never infer it from profile names or environment.
+    workflow_tables = {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('kanban_workflows','kanban_workflow_events')"
+        )
+    }
+    if "kanban_workflows" in workflow_tables:
+        workflow_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(kanban_workflows)")
+        }
+        if "board_identity" not in workflow_cols:
+            _add_column_if_missing(
+                conn, "kanban_workflows", "board_identity", "board_identity TEXT"
+            )
+        if "kanban_workflow_events" in workflow_tables:
+            missing_board = conn.execute(
+                "SELECT id FROM kanban_workflows "
+                "WHERE board_identity IS NULL OR trim(board_identity)=''"
+            ).fetchall()
+            for workflow_row in missing_board:
+                event = conn.execute(
+                    "SELECT payload FROM kanban_workflow_events "
+                    "WHERE workflow_id=? AND kind='workflow_created' "
+                    "AND event_role='canonical' ORDER BY id LIMIT 1",
+                    (workflow_row["id"],),
+                ).fetchone()
+                if event is None:
+                    continue
+                try:
+                    payload = json.loads(event["payload"])
+                except Exception:
+                    continue
+                board_identity = payload.get("board_identity") if isinstance(payload, dict) else None
+                if isinstance(board_identity, str) and board_identity.strip():
+                    conn.execute(
+                        "UPDATE kanban_workflows SET board_identity=? WHERE id=?",
+                        (board_identity, workflow_row["id"]),
+                    )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workflows_tenant_board_state "
+            "ON kanban_workflows(tenant, board_identity, state, updated_at)"
+        )
+
     _rebuild_drifted_tables(conn)
 
 
@@ -3128,6 +3369,11 @@ def create_task(
                         except Exception:
                             branch_name = None
 
+                for pid in parents:
+                    _validate_enrolled_link(
+                        conn, pid, None, child_tenant=tenant
+                    )
+
                 conn.execute(
                     """
                     INSERT INTO tasks (
@@ -3209,6 +3455,52 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
     ).fetchall()
     present = {r["id"] for r in rows}
     return [p for p in parents if p not in present]
+
+
+def _validate_enrolled_link(
+    conn: sqlite3.Connection, parent_id: str, child_id: Optional[str],
+    *, child_tenant: Optional[str] = None,
+) -> None:
+    """Fail closed before a prerequisite touches an enrolled task.
+
+    This helper is called by both legacy kernel insertion paths. Adapters
+    therefore cannot bypass the non-null same-tenant invariant, and notify
+    subscription inheritance never runs for a rejected link.
+    """
+    parent = conn.execute("SELECT tenant FROM tasks WHERE id = ?", (parent_id,)).fetchone()
+    child = (
+        conn.execute("SELECT tenant FROM tasks WHERE id = ?", (child_id,)).fetchone()
+        if child_id is not None else None
+    )
+    parent_tenant = parent["tenant"] if parent is not None else None
+    effective_child_tenant = child["tenant"] if child is not None else child_tenant
+    ids = [parent_id] + ([child_id] if child_id is not None else [])
+    placeholders = ",".join("?" for _ in ids)
+    enrollments = conn.execute(
+        "SELECT m.task_id,m.tenant_snapshot,m.board_identity,"
+        "w.tenant AS workflow_tenant,w.board_identity AS workflow_board_identity "
+        "FROM kanban_workflow_members m JOIN kanban_workflows w ON w.id=m.workflow_id "
+        f"WHERE m.task_id IN ({placeholders}) AND m.removed_event_id IS NULL",
+        ids,
+    ).fetchall()
+    if not enrollments:
+        return
+    if not parent_tenant or not effective_child_tenant or parent_tenant != effective_child_tenant:
+        raise WorkflowIntegrityError(
+            "prerequisite link touching an enrolled task requires matching non-null tenant"
+        )
+    for row in enrollments:
+        current_tenant = parent_tenant if row["task_id"] == parent_id else effective_child_tenant
+        if (
+            not row["tenant_snapshot"]
+            or not row["board_identity"]
+            or row["board_identity"] != row["workflow_board_identity"]
+            or row["tenant_snapshot"] != row["workflow_tenant"]
+            or row["workflow_tenant"] != current_tenant
+        ):
+            raise WorkflowIntegrityError(
+                "enrolled task tenant/board identity is inconsistent"
+            )
 
 
 def _inherit_notify_subs(
@@ -3412,6 +3704,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
             raise ValueError(f"unknown task(s): {', '.join(missing)}")
+        _validate_enrolled_link(conn, parent_id, child_id)
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
@@ -9384,6 +9677,1803 @@ def task_age(task: Task) -> dict:
         "started_age_seconds": age_since_started,
         "time_to_complete_seconds": time_to_complete,
     }
+
+
+# ---------------------------------------------------------------------------
+# Native workflow aggregation
+# ---------------------------------------------------------------------------
+
+_WORKFLOW_TERMINAL_STATES = frozenset({"PASS", "CANCELLED", "SUPERSEDED"})
+_WORKFLOW_STATES = frozenset(
+    {"ACTIVE", "NEEDS_INPUT", "REMEDIATION_REQUIRED"}
+) | _WORKFLOW_TERMINAL_STATES
+_WORKFLOW_OUTCOMES = frozenset(
+    {"PASS", "REMEDIATION_REQUIRED", "NEEDS_INPUT", "SUPERSEDED", "CANCELLED"}
+)
+_WORKFLOW_ROLES = frozenset(
+    {"implementation", "qa", "review", "acceptance", "remediation", "reverification", "decision", "other"}
+)
+
+
+def _workflow_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _workflow_digest(value: Any) -> str:
+    return hashlib.sha256(_workflow_json(value).encode("utf-8")).hexdigest()
+
+
+def _require_workflow_actor(
+    actor: Optional[KanbanActorContext], capability: str, *,
+    tenant: Optional[str] = None, board_identity: Optional[str] = None,
+) -> KanbanActorContext:
+    if actor is None:
+        raise WorkflowAuthorizationError("trusted actor context is required")
+    if not actor.principal_id.strip() or not actor.board_identity.strip():
+        raise WorkflowAuthorizationError("actor principal and board identity are required")
+    if capability not in actor.capabilities and "workflow.admin" not in actor.capabilities:
+        raise WorkflowAuthorizationError(f"missing trusted capability: {capability}")
+    if tenant is not None and actor.tenant != tenant:
+        raise WorkflowAuthorizationError("actor tenant does not match workflow tenant")
+    if board_identity is not None and actor.board_identity != board_identity:
+        raise WorkflowAuthorizationError("actor board identity does not match workflow board")
+    return actor
+
+
+def _workflow_existing_response(
+    conn: sqlite3.Connection,
+    *,
+    workflow_id: str,
+    mutation_id: str,
+    request_digest: str,
+) -> Optional[dict[str, Any]]:
+    row = conn.execute(
+        "SELECT request_digest, response_json FROM kanban_workflow_mutations "
+        "WHERE workflow_id = ? AND mutation_id = ?",
+        (workflow_id, mutation_id),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["request_digest"] != request_digest:
+        raise WorkflowConflictError(
+            f"mutation_id {mutation_id!r} was already used for a different request"
+        )
+    try:
+        response = json.loads(row["response_json"])
+    except Exception as exc:
+        raise WorkflowIntegrityError("stored workflow mutation response is invalid") from exc
+    if not isinstance(response, dict):
+        raise WorkflowIntegrityError("stored workflow mutation response is not an object")
+    return response
+
+
+def _workflow_event_payload(
+    *, workflow_id: str, generation: int, prior_version: int,
+    resulting_version: int, prior_state: Optional[str], resulting_state: str,
+    tenant: str, board_identity: str, actor: KanbanActorContext,
+    mutation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a replay-complete v1 payload from immutable mutation facts."""
+    return {
+        "workflow_id": workflow_id,
+        "generation": int(generation),
+        "prior_version": int(prior_version),
+        "resulting_version": int(resulting_version),
+        "prior_state": prior_state,
+        "resulting_state": resulting_state,
+        "tenant": tenant,
+        "board_identity": board_identity,
+        "actor": {
+            "principal_id": actor.principal_id,
+            "profile_name": actor.profile_name,
+            "source_kind": actor.source_kind,
+            "capabilities": sorted(actor.capabilities),
+            "task_scope": actor.task_scope,
+            "run_id": actor.run_id,
+            "claim_lock": actor.claim_lock,
+        },
+        "mutation": dict(mutation),
+    }
+
+
+def _insert_workflow_event(
+    conn: sqlite3.Connection, *, workflow_id: str, generation: int,
+    kind: str, mutation_id: str, batch_seq: int, event_role: str,
+    actor: KanbanActorContext, expected_version: Optional[int],
+    payload: Mapping[str, Any], created_at: int,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO kanban_workflow_events (
+            workflow_id, generation, kind, mutation_id, batch_seq, event_role,
+            actor_principal, expected_version, payload_schema_version, payload, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """,
+        (workflow_id, int(generation), kind, mutation_id, int(batch_seq), event_role,
+         actor.principal_id, expected_version, _workflow_json(payload), int(created_at)),
+    )
+    return int(cur.lastrowid)
+
+
+def _workflow_response(
+    conn: sqlite3.Connection, workflow_id: str, *, include_events: bool = False
+) -> dict[str, Any]:
+    workflow = conn.execute(
+        "SELECT * FROM kanban_workflows WHERE id = ?", (workflow_id,)
+    ).fetchone()
+    if workflow is None:
+        raise KeyError(f"unknown workflow: {workflow_id}")
+    generation = conn.execute(
+        "SELECT * FROM kanban_workflow_generations WHERE workflow_id = ? AND generation = ?",
+        (workflow_id, workflow["active_generation"]),
+    ).fetchone()
+    if generation is None:
+        raise WorkflowIntegrityError("active workflow generation is missing")
+    members = conn.execute(
+        "SELECT task_id, stage_key, stage_role, required FROM kanban_workflow_members "
+        "WHERE workflow_id = ? AND generation = ? AND removed_event_id IS NULL "
+        "ORDER BY joined_event_id, task_id",
+        (workflow_id, workflow["active_generation"]),
+    ).fetchall()
+    result: dict[str, Any] = {
+        "workflow": dict(workflow),
+        "generation": dict(generation),
+        "members": [{"task_id": row["task_id"], "stage_key": row["stage_key"],
+                     "stage_role": row["stage_role"], "required": bool(row["required"])}
+                    for row in members],
+    }
+    if include_events:
+        events = conn.execute(
+            "SELECT * FROM kanban_workflow_events WHERE workflow_id = ? ORDER BY id",
+            (workflow_id,),
+        ).fetchall()
+        result["events"] = [{**dict(row), "payload": json.loads(row["payload"])} for row in events]
+        outcomes = conn.execute(
+            "SELECT * FROM kanban_workflow_outcomes WHERE workflow_id = ? ORDER BY id",
+            (workflow_id,),
+        ).fetchall()
+        result["outcomes"] = [
+            {**dict(row), "metadata": json.loads(row["metadata"]) if row["metadata"] else None}
+            for row in outcomes
+        ]
+        sub = conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id = ?", (workflow_id,)
+        ).fetchone()
+        result["subscription"] = dict(sub) if sub is not None else None
+    return result
+
+
+def get_workflow(
+    conn: sqlite3.Connection, workflow_id: str, *,
+    actor: Optional[KanbanActorContext], include_events: bool = True,
+) -> Optional[dict[str, Any]]:
+    row = conn.execute(
+        "SELECT tenant,board_identity FROM kanban_workflows WHERE id = ?", (workflow_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    _require_workflow_actor(
+        actor, "workflow.read", tenant=row["tenant"],
+        board_identity=row["board_identity"],
+    )
+    return _workflow_response(conn, workflow_id, include_events=include_events)
+
+
+def list_workflows(
+    conn: sqlite3.Connection, *, actor: Optional[KanbanActorContext],
+    state: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    actor = _require_workflow_actor(actor, "workflow.read")
+    query = "SELECT id FROM kanban_workflows WHERE tenant=? AND board_identity=?"
+    params: list[Any] = [actor.tenant, actor.board_identity]
+    if state is not None:
+        normalized_state = state.strip().upper()
+        if normalized_state not in _WORKFLOW_STATES:
+            raise ValueError("invalid workflow state")
+        query += " AND state=?"
+        params.append(normalized_state)
+    query += " ORDER BY updated_at DESC,id"
+    return [
+        _workflow_response(conn, row["id"], include_events=False)
+        for row in conn.execute(query, params).fetchall()
+    ]
+
+
+def create_workflow(
+    conn: sqlite3.Connection, *, workflow_id: str, name: str, tenant: str,
+    designated_acceptance_task_id: str, actor: Optional[KanbanActorContext],
+    mutation_id: str, root_task_id: Optional[str] = None,
+    subscription: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Create generation 1 with one required designated acceptance member."""
+    tenant = (tenant or "").strip()
+    workflow_id = (workflow_id or "").strip()
+    mutation_id = (mutation_id or "").strip()
+    if not workflow_id or not mutation_id or not name.strip() or not tenant:
+        raise ValueError("workflow_id, mutation_id, name, and non-null tenant are required")
+    actor = _require_workflow_actor(actor, "workflow.manage", tenant=tenant)
+    request = {
+        "op": "create", "workflow_id": workflow_id, "name": name.strip(),
+        "tenant": tenant, "root_task_id": root_task_id,
+        "designated_acceptance_task_id": designated_acceptance_task_id,
+        "subscription": dict(subscription) if subscription is not None else None,
+        "actor_principal": actor.principal_id, "board_identity": actor.board_identity,
+    }
+    digest = _workflow_digest(request)
+    now = int(time.time())
+    with write_txn(conn):
+        replay = _workflow_existing_response(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id, request_digest=digest
+        )
+        if replay is not None:
+            return replay
+        if conn.execute("SELECT 1 FROM kanban_workflows WHERE id = ?", (workflow_id,)).fetchone():
+            raise WorkflowConflictError(f"workflow already exists: {workflow_id}")
+        task = conn.execute(
+            "SELECT id, tenant, session_id FROM tasks WHERE id = ?",
+            (designated_acceptance_task_id,),
+        ).fetchone()
+        if task is None:
+            raise ValueError("designated acceptance task does not exist")
+        if not task["tenant"] or task["tenant"] != tenant:
+            raise WorkflowIntegrityError(
+                "designated acceptance task must have the workflow's non-null tenant"
+            )
+        if root_task_id is not None:
+            root = conn.execute("SELECT tenant FROM tasks WHERE id = ?", (root_task_id,)).fetchone()
+            if root is None or not root["tenant"] or root["tenant"] != tenant:
+                raise WorkflowIntegrityError(
+                    "workflow root task must have the workflow's non-null tenant"
+                )
+        conn.execute(
+            "INSERT INTO kanban_workflows "
+            "(id,root_task_id,name,tenant,board_identity,state,active_generation,version,"
+            "created_by_principal,created_at,updated_at,last_event_id) "
+            "VALUES (?,?,?,?,?,'ACTIVE',1,0,?,?,?,0)",
+            (workflow_id, root_task_id, name.strip(), tenant, actor.board_identity,
+             actor.principal_id, now, now),
+        )
+        conn.execute(
+            "INSERT INTO kanban_workflow_generations "
+            "(workflow_id,generation,generation_state,designated_acceptance_task_id,"
+            "opened_event_id,created_at) VALUES (?,1,'ACTIVE',?,0,?)",
+            (workflow_id, designated_acceptance_task_id, now),
+        )
+        conn.execute(
+            "INSERT INTO kanban_workflow_members "
+            "(workflow_id,task_id,generation,stage_key,stage_role,required,joined_event_id,"
+            "tenant_snapshot,board_identity,task_session_id) "
+            "VALUES (?,?,1,'acceptance','acceptance',1,0,?,?,?)",
+            (workflow_id, designated_acceptance_task_id, tenant,
+             actor.board_identity, task["session_id"]),
+        )
+        mutation = {
+            "op": "create", "name": name.strip(), "root_task_id": root_task_id,
+            "member": {"task_id": designated_acceptance_task_id,
+                       "stage_key": "acceptance", "stage_role": "acceptance",
+                       "required": True, "tenant": tenant,
+                       "board_identity": actor.board_identity,
+                       "task_session_id": task["session_id"]},
+            "designated_acceptance_task_id": designated_acceptance_task_id,
+            "subscription": dict(subscription) if subscription is not None else None,
+        }
+        payload = _workflow_event_payload(
+            workflow_id=workflow_id, generation=1, prior_version=0,
+            resulting_version=1, prior_state=None, resulting_state="ACTIVE",
+            tenant=tenant, board_identity=actor.board_identity, actor=actor,
+            mutation=mutation,
+        )
+        event_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=1, kind="workflow_created",
+            mutation_id=mutation_id, batch_seq=0, event_role="canonical", actor=actor,
+            expected_version=0, payload=payload, created_at=now,
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_generations SET opened_event_id=? "
+            "WHERE workflow_id=? AND generation=1", (event_id, workflow_id),
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_members SET joined_event_id=? "
+            "WHERE workflow_id=? AND task_id=? AND generation=1",
+            (event_id, workflow_id, designated_acceptance_task_id),
+        )
+        if subscription is not None:
+            platform = str(subscription.get("platform") or "").strip()
+            chat_id = str(subscription.get("chat_id") or "").strip()
+            notifier_profile = str(subscription.get("notifier_profile") or "").strip()
+            if not platform or not chat_id or not notifier_profile:
+                raise ValueError("workflow subscription requires platform, chat_id, and notifier_profile")
+            conn.execute(
+                "INSERT INTO kanban_workflow_subscriptions "
+                "(workflow_id,role,platform,chat_id,chat_type,thread_id,user_id,"
+                "notifier_profile,delivery_metadata,target_states,tenant,created_at,last_event_id) "
+                "VALUES (?,'origin',?,?,?,?,?,?,?,?,?,?,?)",
+                (workflow_id, platform, chat_id, subscription.get("chat_type"),
+                 str(subscription.get("thread_id") or ""), subscription.get("user_id"),
+                 notifier_profile, _encode_notify_delivery_metadata(subscription.get("delivery_metadata")),
+                 _workflow_json(subscription.get("target_states") or sorted(_WORKFLOW_STATES - {"ACTIVE"})),
+                 tenant, now, event_id),
+            )
+        conn.execute(
+            "UPDATE kanban_workflows SET version=1,last_event_id=?,updated_at=? "
+            "WHERE id=? AND version=0", (event_id, now, workflow_id),
+        )
+        response = _workflow_response(conn, workflow_id)
+        response_json = _workflow_json(response)
+        conn.execute(
+            "INSERT INTO kanban_workflow_mutations "
+            "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
+            "last_event_id,committed_version,response_json,created_at) "
+            "VALUES (?,?,?,?,?,?,1,?,?)",
+            (workflow_id, mutation_id, digest, event_id, event_id, event_id,
+             response_json, now),
+        )
+        return json.loads(response_json)
+
+
+def add_workflow_member(
+    conn: sqlite3.Connection, *, workflow_id: str, task_id: str,
+    stage_key: str, stage_role: str, required: bool,
+    actor: Optional[KanbanActorContext], mutation_id: str,
+    expected_version: int,
+) -> dict[str, Any]:
+    """Enroll one task without creating or inferring a prerequisite link."""
+    stage_key = (stage_key or "").strip()
+    stage_role = (stage_role or "").strip().lower()
+    mutation_id = (mutation_id or "").strip()
+    if not stage_key or stage_role not in _WORKFLOW_ROLES or not mutation_id:
+        raise ValueError("valid stage_key, stage_role, and mutation_id are required")
+    request = {
+        "op": "add_member", "workflow_id": workflow_id, "task_id": task_id,
+        "stage_key": stage_key, "stage_role": stage_role, "required": bool(required),
+        "expected_version": int(expected_version),
+    }
+    digest = _workflow_digest(request)
+    now = int(time.time())
+    with write_txn(conn):
+        workflow = conn.execute(
+            "SELECT * FROM kanban_workflows WHERE id = ?", (workflow_id,)
+        ).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        actor = _require_workflow_actor(
+            actor, "workflow.manage", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        replay = _workflow_existing_response(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id, request_digest=digest
+        )
+        if replay is not None:
+            return replay
+        if workflow["state"] in _WORKFLOW_TERMINAL_STATES:
+            raise WorkflowConflictError("terminal workflow generation must be explicitly reopened")
+        if int(workflow["version"]) != int(expected_version):
+            raise WorkflowConflictError(
+                f"expected version {expected_version}, current version {workflow['version']}"
+            )
+        task = conn.execute(
+            "SELECT tenant, session_id FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if task is None:
+            raise ValueError(f"unknown member task: {task_id}")
+        if not task["tenant"] or task["tenant"] != workflow["tenant"]:
+            raise WorkflowIntegrityError(
+                "workflow member task must have the workflow's non-null tenant"
+            )
+        generation = int(workflow["active_generation"])
+        gen = conn.execute(
+            "SELECT designated_acceptance_task_id FROM kanban_workflow_generations "
+            "WHERE workflow_id=? AND generation=?",
+            (workflow_id, generation),
+        ).fetchone()
+        if gen is None:
+            raise WorkflowIntegrityError("active workflow generation is missing")
+        if stage_role == "acceptance":
+            existing_acceptance = conn.execute(
+                "SELECT 1 FROM kanban_workflow_members WHERE workflow_id=? "
+                "AND generation=? AND stage_role='acceptance' AND required=1 "
+                "AND removed_event_id IS NULL LIMIT 1",
+                (workflow_id, generation),
+            ).fetchone()
+            if (not required or task_id != gen["designated_acceptance_task_id"]
+                    or existing_acceptance is not None):
+                raise WorkflowIntegrityError(
+                    "workflow generation requires exactly one required designated acceptance"
+                )
+        next_version = int(workflow["version"]) + 1
+        conn.execute(
+            "INSERT INTO kanban_workflow_members "
+            "(workflow_id,task_id,generation,stage_key,stage_role,required,joined_event_id,"
+            "tenant_snapshot,board_identity,task_session_id) VALUES (?,?,?,?,?,?,0,?,?,?)",
+            (workflow_id, task_id, generation, stage_key, stage_role, 1 if required else 0,
+             workflow["tenant"], actor.board_identity, task["session_id"]),
+        )
+        mutation = {
+            "op": "add_member",
+            "member": {"task_id": task_id, "stage_key": stage_key,
+                       "stage_role": stage_role, "required": bool(required),
+                       "tenant": workflow["tenant"],
+                       "board_identity": actor.board_identity,
+                       "task_session_id": task["session_id"]},
+        }
+        payload = _workflow_event_payload(
+            workflow_id=workflow_id, generation=generation,
+            prior_version=int(workflow["version"]), resulting_version=next_version,
+            prior_state=workflow["state"], resulting_state=workflow["state"],
+            tenant=workflow["tenant"], board_identity=actor.board_identity,
+            actor=actor, mutation=mutation,
+        )
+        event_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation, kind="member_added",
+            mutation_id=mutation_id, batch_seq=0, event_role="canonical", actor=actor,
+            expected_version=int(expected_version), payload=payload, created_at=now,
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_members SET joined_event_id=? "
+            "WHERE workflow_id=? AND task_id=? AND generation=?",
+            (event_id, workflow_id, task_id, generation),
+        )
+        resulting_state, integrity_reason = _reduce_workflow_state(
+            conn, workflow_id, generation
+        )
+        payload["resulting_state"] = resulting_state
+        payload["mutation"]["integrity_reason"] = integrity_reason
+        conn.execute(
+            "UPDATE kanban_workflow_events SET payload=? WHERE id=?",
+            (_workflow_json(payload), event_id),
+        )
+        last_event_id = event_id
+        batch_seq = 1
+        if integrity_reason:
+            integrity_payload = dict(payload)
+            integrity_payload["mutation"] = {
+                "op": "integrity_failed", "reason": integrity_reason
+            }
+            last_event_id = _insert_workflow_event(
+                conn, workflow_id=workflow_id, generation=generation,
+                kind="integrity_failed", mutation_id=mutation_id,
+                batch_seq=batch_seq, event_role="derived", actor=actor,
+                expected_version=int(expected_version), payload=integrity_payload,
+                created_at=now,
+            )
+            batch_seq += 1
+        if resulting_state != workflow["state"]:
+            derived = dict(payload)
+            derived["mutation"] = {
+                "op": "aggregate_changed", "reason": integrity_reason
+            }
+            last_event_id = _insert_workflow_event(
+                conn, workflow_id=workflow_id, generation=generation,
+                kind="aggregate_changed", mutation_id=mutation_id,
+                batch_seq=batch_seq, event_role="derived", actor=actor,
+                expected_version=int(expected_version), payload=derived,
+                created_at=now,
+            )
+        conn.execute(
+            "UPDATE kanban_workflow_generations SET generation_state=? "
+            "WHERE workflow_id=? AND generation=?",
+            (resulting_state, workflow_id, generation),
+        )
+        cur = conn.execute(
+            "UPDATE kanban_workflows SET state=?,version=?,last_event_id=?,updated_at=? "
+            "WHERE id=? AND version=?",
+            (resulting_state, next_version, last_event_id, now,
+             workflow_id, int(expected_version)),
+        )
+        if cur.rowcount != 1:
+            raise WorkflowConflictError("workflow version changed during member mutation")
+        response_json = _workflow_json(
+            _workflow_response(conn, workflow_id, include_events=True)
+        )
+        conn.execute(
+            "INSERT INTO kanban_workflow_mutations "
+            "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
+            "last_event_id,committed_version,response_json,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (workflow_id, mutation_id, digest, event_id, event_id, last_event_id,
+             next_version, response_json, now),
+        )
+        return json.loads(response_json)
+
+
+def remove_workflow_member(
+    conn: sqlite3.Connection, *, workflow_id: str, task_id: str,
+    actor: Optional[KanbanActorContext], mutation_id: str,
+    expected_version: int, reason: str,
+) -> dict[str, Any]:
+    """Remove one current-generation member without changing task links."""
+    mutation_id = (mutation_id or "").strip()
+    reason = (reason or "").strip()
+    if not mutation_id or not reason:
+        raise ValueError("mutation_id and removal reason are required")
+    request = {
+        "op": "remove_member", "workflow_id": workflow_id, "task_id": task_id,
+        "expected_version": int(expected_version), "reason": reason,
+    }
+    digest = _workflow_digest(request)
+    now = int(time.time())
+    with write_txn(conn):
+        workflow = conn.execute(
+            "SELECT * FROM kanban_workflows WHERE id=?", (workflow_id,),
+        ).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        actor = _require_workflow_actor(
+            actor, "workflow.manage", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        replay = _workflow_existing_response(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id, request_digest=digest
+        )
+        if replay is not None:
+            return replay
+        if workflow["state"] in _WORKFLOW_TERMINAL_STATES:
+            raise WorkflowConflictError("terminal workflow generation cannot remove members")
+        if int(workflow["version"]) != int(expected_version):
+            raise WorkflowConflictError(
+                f"expected version {expected_version}, current version {workflow['version']}"
+            )
+        generation = int(workflow["active_generation"])
+        gen = conn.execute(
+            "SELECT designated_acceptance_task_id FROM kanban_workflow_generations "
+            "WHERE workflow_id=? AND generation=?", (workflow_id, generation),
+        ).fetchone()
+        if gen is None:
+            raise WorkflowIntegrityError("active workflow generation is missing")
+        if gen["designated_acceptance_task_id"] == task_id:
+            raise WorkflowIntegrityError("designated acceptance cannot be removed")
+        member = conn.execute(
+            "SELECT * FROM kanban_workflow_members WHERE workflow_id=? AND task_id=? "
+            "AND generation=? AND removed_event_id IS NULL",
+            (workflow_id, task_id, generation),
+        ).fetchone()
+        if member is None:
+            raise ValueError("active workflow member does not exist")
+        next_version = int(workflow["version"]) + 1
+        mutation = {
+            "op": "remove_member", "task_id": task_id, "reason": reason,
+            "member": {"task_id": task_id, "stage_key": member["stage_key"],
+                       "stage_role": member["stage_role"],
+                       "required": bool(member["required"])},
+        }
+        payload = _workflow_event_payload(
+            workflow_id=workflow_id, generation=generation,
+            prior_version=int(workflow["version"]), resulting_version=next_version,
+            prior_state=workflow["state"], resulting_state=workflow["state"],
+            tenant=workflow["tenant"], board_identity=actor.board_identity,
+            actor=actor, mutation=mutation,
+        )
+        event_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation, kind="member_removed",
+            mutation_id=mutation_id, batch_seq=0, event_role="canonical", actor=actor,
+            expected_version=int(expected_version), payload=payload, created_at=now,
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_members SET removed_event_id=? "
+            "WHERE workflow_id=? AND task_id=? AND generation=? AND removed_event_id IS NULL",
+            (event_id, workflow_id, task_id, generation),
+        )
+        new_state, _ = _reduce_workflow_state(conn, workflow_id, generation)
+        payload["resulting_state"] = new_state
+        conn.execute(
+            "UPDATE kanban_workflow_events SET payload=? WHERE id=?",
+            (_workflow_json(payload), event_id),
+        )
+        last_event_id = event_id
+        if new_state != workflow["state"]:
+            derived = dict(payload)
+            derived["mutation"] = {"op": "aggregate_changed", "reason": "member_removed"}
+            last_event_id = _insert_workflow_event(
+                conn, workflow_id=workflow_id, generation=generation,
+                kind="aggregate_changed", mutation_id=mutation_id, batch_seq=1,
+                event_role="derived", actor=actor, expected_version=int(expected_version),
+                payload=derived, created_at=now,
+            )
+        conn.execute(
+            "UPDATE kanban_workflows SET state=?,version=?,last_event_id=?,updated_at=? "
+            "WHERE id=? AND version=?",
+            (new_state, next_version, last_event_id, now, workflow_id, int(expected_version)),
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_generations SET generation_state=? "
+            "WHERE workflow_id=? AND generation=?",
+            (new_state, workflow_id, generation),
+        )
+        response_json = _workflow_json(_workflow_response(conn, workflow_id))
+        conn.execute(
+            "INSERT INTO kanban_workflow_mutations "
+            "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
+            "last_event_id,committed_version,response_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (workflow_id, mutation_id, digest, event_id, event_id, last_event_id,
+             next_version, response_json, now),
+        )
+        return json.loads(response_json)
+
+
+def cancel_workflow(
+    conn: sqlite3.Connection, *, workflow_id: str,
+    actor: Optional[KanbanActorContext], mutation_id: str,
+    expected_version: int, reason: str,
+) -> dict[str, Any]:
+    """Explicitly terminate the active workflow generation as CANCELLED."""
+    mutation_id = (mutation_id or "").strip()
+    reason = (reason or "").strip()
+    if not mutation_id or not reason:
+        raise ValueError("mutation_id and cancellation reason are required")
+    request = {
+        "op": "cancel", "workflow_id": workflow_id,
+        "expected_version": int(expected_version), "reason": reason,
+    }
+    digest = _workflow_digest(request)
+    now = int(time.time())
+    with write_txn(conn):
+        workflow = conn.execute(
+            "SELECT * FROM kanban_workflows WHERE id=?", (workflow_id,),
+        ).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        actor = _require_workflow_actor(
+            actor, "workflow.admin", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        replay = _workflow_existing_response(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id, request_digest=digest
+        )
+        if replay is not None:
+            return replay
+        if workflow["state"] in _WORKFLOW_TERMINAL_STATES:
+            raise WorkflowConflictError("workflow generation is already terminal")
+        if int(workflow["version"]) != int(expected_version):
+            raise WorkflowConflictError(
+                f"expected version {expected_version}, current version {workflow['version']}"
+            )
+        generation = int(workflow["active_generation"])
+        next_version = int(workflow["version"]) + 1
+        payload = _workflow_event_payload(
+            workflow_id=workflow_id, generation=generation,
+            prior_version=int(workflow["version"]), resulting_version=next_version,
+            prior_state=workflow["state"], resulting_state="CANCELLED",
+            tenant=workflow["tenant"], board_identity=actor.board_identity,
+            actor=actor, mutation={"op": "cancel", "reason": reason},
+        )
+        canonical_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation, kind="workflow_cancelled",
+            mutation_id=mutation_id, batch_seq=0, event_role="canonical", actor=actor,
+            expected_version=int(expected_version), payload=payload, created_at=now,
+        )
+        derived = dict(payload)
+        derived["mutation"] = {"op": "aggregate_changed", "reason": "cancelled"}
+        last_event_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation, kind="aggregate_changed",
+            mutation_id=mutation_id, batch_seq=1, event_role="derived", actor=actor,
+            expected_version=int(expected_version), payload=derived, created_at=now,
+        )
+        conn.execute(
+            "UPDATE kanban_workflows SET state='CANCELLED',version=?,last_event_id=?,"
+            "updated_at=?,terminal_at=? WHERE id=? AND version=?",
+            (next_version, last_event_id, now, now, workflow_id, int(expected_version)),
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_generations SET generation_state='CANCELLED',"
+            "terminal_event_id=?,terminal_at=? WHERE workflow_id=? AND generation=?",
+            (last_event_id, now, workflow_id, generation),
+        )
+        response_json = _workflow_json(_workflow_response(conn, workflow_id))
+        conn.execute(
+            "INSERT INTO kanban_workflow_mutations "
+            "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
+            "last_event_id,committed_version,response_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (workflow_id, mutation_id, digest, canonical_id, canonical_id, last_event_id,
+             next_version, response_json, now),
+        )
+        return json.loads(response_json)
+
+
+def set_workflow_subscription(
+    conn: sqlite3.Connection, *, workflow_id: str, platform: str, chat_id: str,
+    notifier_profile: str, actor: Optional[KanbanActorContext], mutation_id: str,
+    expected_version: int, chat_type: Optional[str] = None,
+    thread_id: Optional[str] = None, user_id: Optional[str] = None,
+    delivery_metadata: Optional[Mapping[str, Any]] = None,
+    target_states: Optional[Iterable[str]] = None,
+) -> dict[str, Any]:
+    """Create or replace the single workflow-origin destination."""
+    platform = (platform or "").strip()
+    chat_id = (chat_id or "").strip()
+    notifier_profile = (notifier_profile or "").strip()
+    mutation_id = (mutation_id or "").strip()
+    targets = sorted({str(v).upper() for v in (target_states or (_WORKFLOW_STATES - {"ACTIVE"}))})
+    if (not platform or not chat_id or not notifier_profile or not mutation_id
+            or not set(targets) <= _WORKFLOW_STATES):
+        raise ValueError("valid destination, mutation_id, and target states are required")
+    request = {
+        "op": "set_subscription", "workflow_id": workflow_id, "platform": platform,
+        "chat_id": chat_id, "chat_type": chat_type, "thread_id": thread_id or "",
+        "user_id": user_id, "notifier_profile": notifier_profile,
+        "delivery_metadata": dict(delivery_metadata or {}), "target_states": targets,
+        "expected_version": int(expected_version),
+    }
+    digest = _workflow_digest(request)
+    now = int(time.time())
+    with write_txn(conn):
+        workflow = conn.execute(
+            "SELECT * FROM kanban_workflows WHERE id=?", (workflow_id,),
+        ).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        actor = _require_workflow_actor(
+            actor, "workflow.admin", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        replay = _workflow_existing_response(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id, request_digest=digest
+        )
+        if replay is not None:
+            return replay
+        if int(workflow["version"]) != int(expected_version):
+            raise WorkflowConflictError(
+                f"expected version {expected_version}, current version {workflow['version']}"
+            )
+        generation = int(workflow["active_generation"])
+        next_version = int(workflow["version"]) + 1
+        prior = conn.execute(
+            "SELECT last_event_id FROM kanban_workflow_subscriptions "
+            "WHERE workflow_id=? AND role='origin'", (workflow_id,),
+        ).fetchone()
+        cursor = int(prior["last_event_id"]) if prior is not None else int(workflow["last_event_id"])
+        conn.execute(
+            "INSERT INTO kanban_workflow_subscriptions "
+            "(workflow_id,role,platform,chat_id,chat_type,thread_id,user_id,notifier_profile,"
+            "delivery_metadata,target_states,tenant,created_at,last_event_id) "
+            "VALUES (?,'origin',?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(workflow_id,role) DO UPDATE SET platform=excluded.platform,"
+            "chat_id=excluded.chat_id,chat_type=excluded.chat_type,thread_id=excluded.thread_id,"
+            "user_id=excluded.user_id,notifier_profile=excluded.notifier_profile,"
+            "delivery_metadata=excluded.delivery_metadata,target_states=excluded.target_states,"
+            "retry_count=0,next_attempt_at=NULL,dead_lettered_at=NULL,last_error_class=NULL,"
+            "disabled_at=NULL",
+            (workflow_id, platform, chat_id, chat_type, thread_id or "", user_id,
+             notifier_profile, _encode_notify_delivery_metadata(delivery_metadata),
+             _workflow_json(targets), workflow["tenant"], now, cursor),
+        )
+        mutation = {key: value for key, value in request.items() if key != "expected_version"}
+        payload = _workflow_event_payload(
+            workflow_id=workflow_id, generation=generation,
+            prior_version=int(workflow["version"]), resulting_version=next_version,
+            prior_state=workflow["state"], resulting_state=workflow["state"],
+            tenant=workflow["tenant"], board_identity=actor.board_identity,
+            actor=actor, mutation=mutation,
+        )
+        event_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation,
+            kind="subscription_changed", mutation_id=mutation_id, batch_seq=0,
+            event_role="canonical", actor=actor, expected_version=int(expected_version),
+            payload=payload, created_at=now,
+        )
+        conn.execute(
+            "UPDATE kanban_workflows SET version=?,last_event_id=?,updated_at=? "
+            "WHERE id=? AND version=?",
+            (next_version, event_id, now, workflow_id, int(expected_version)),
+        )
+        response_json = _workflow_json(
+            _workflow_response(conn, workflow_id, include_events=True)
+        )
+        conn.execute(
+            "INSERT INTO kanban_workflow_mutations "
+            "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
+            "last_event_id,committed_version,response_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (workflow_id, mutation_id, digest, event_id, event_id, event_id,
+             next_version, response_json, now),
+        )
+        return json.loads(response_json)
+
+
+def _validate_scoped_outcome_actor(
+    conn: sqlite3.Connection, actor: KanbanActorContext, task_id: str,
+    stage_role: str, outcome: str,
+) -> None:
+    scoped = actor.source_kind == "dispatcher_worker" or actor.task_scope is not None
+    if stage_role in {"qa", "review"} and outcome in {"PASS", "REMEDIATION_REQUIRED"}:
+        scoped = True
+    if not scoped:
+        return
+    if actor.task_scope != task_id or actor.run_id is None or not actor.claim_lock:
+        raise WorkflowAuthorizationError("workflow outcome requires active task/run/claim binding")
+    row = conn.execute(
+        "SELECT t.tenant,t.current_run_id,t.claim_lock,t.claim_expires,r.status AS run_status,"
+        "r.claim_lock AS run_claim_lock FROM tasks t JOIN task_runs r ON r.id=t.current_run_id "
+        "WHERE t.id=? AND r.id=?", (task_id, int(actor.run_id)),
+    ).fetchone()
+    now = int(time.time())
+    if (row is None or row["tenant"] != actor.tenant or row["run_status"] != "running"
+            or row["claim_lock"] != actor.claim_lock
+            or row["run_claim_lock"] != actor.claim_lock
+            or row["claim_expires"] is None or int(row["claim_expires"]) <= now):
+        raise WorkflowAuthorizationError("workflow outcome actor has a stale run/claim")
+
+
+def _reduce_workflow_state(
+    conn: sqlite3.Connection, workflow_id: str, generation: int
+) -> tuple[str, Optional[str]]:
+    """Return deterministic state and an integrity reason, if any."""
+    workflow = conn.execute(
+        "SELECT tenant,board_identity FROM kanban_workflows WHERE id=?", (workflow_id,)
+    ).fetchone()
+    gen = conn.execute(
+        "SELECT designated_acceptance_task_id FROM kanban_workflow_generations "
+        "WHERE workflow_id=? AND generation=?", (workflow_id, generation),
+    ).fetchone()
+    if workflow is None or gen is None:
+        return "NEEDS_INPUT", "missing workflow or active generation"
+    members = conn.execute(
+        "SELECT m.*,t.tenant AS current_tenant FROM kanban_workflow_members m "
+        "LEFT JOIN tasks t ON t.id=m.task_id WHERE m.workflow_id=? AND m.generation=? "
+        "AND m.removed_event_id IS NULL AND m.superseded_by_task_id IS NULL",
+        (workflow_id, generation),
+    ).fetchall()
+    required = [row for row in members if bool(row["required"])]
+    designated = [row for row in required
+                  if row["task_id"] == gen["designated_acceptance_task_id"]
+                  and row["stage_role"] == "acceptance"]
+    if len(designated) != 1:
+        return "NEEDS_INPUT", "designated acceptance is missing, optional, or ambiguous"
+    for row in members:
+        if (row["current_tenant"] != workflow["tenant"]
+                or row["tenant_snapshot"] != workflow["tenant"]
+                or not workflow["board_identity"]
+                or row["board_identity"] != workflow["board_identity"]):
+            return "NEEDS_INPUT", "member tenant/board integrity failure"
+    malformed = conn.execute(
+        "SELECT 1 FROM task_links l JOIN tasks p ON p.id=l.parent_id "
+        "JOIN tasks c ON c.id=l.child_id WHERE (l.parent_id IN "
+        "(SELECT task_id FROM kanban_workflow_members WHERE workflow_id=? AND generation=? "
+        "AND required=1 AND removed_event_id IS NULL) OR l.child_id IN "
+        "(SELECT task_id FROM kanban_workflow_members WHERE workflow_id=? AND generation=? "
+        "AND required=1 AND removed_event_id IS NULL)) "
+        "AND (p.tenant IS NULL OR c.tenant IS NULL OR p.tenant<>? OR c.tenant<>?) LIMIT 1",
+        (workflow_id, generation, workflow_id, generation,
+         workflow["tenant"], workflow["tenant"]),
+    ).fetchone()
+    if malformed is not None:
+        return "NEEDS_INPUT", "prerequisite tenant integrity failure"
+    effective: dict[str, str] = {}
+    for member in required:
+        heads = conn.execute(
+            "SELECT o.id,o.outcome FROM kanban_workflow_outcomes o "
+            "WHERE o.workflow_id=? AND o.task_id=? AND o.generation=? "
+            "AND NOT EXISTS (SELECT 1 FROM kanban_workflow_outcomes n "
+            "WHERE n.supersedes_outcome_id=o.id) ORDER BY o.id",
+            (workflow_id, member["task_id"], generation),
+        ).fetchall()
+        if len(heads) > 1:
+            return "NEEDS_INPUT", "multiple effective outcome heads"
+        if len(heads) == 1:
+            effective[member["task_id"]] = heads[0]["outcome"]
+    values = set(effective.values())
+    if "SUPERSEDED" in values:
+        return "SUPERSEDED", None
+    if "CANCELLED" in values:
+        return "CANCELLED", None
+    if "NEEDS_INPUT" in values:
+        return "NEEDS_INPUT", None
+    if "REMEDIATION_REQUIRED" in values:
+        followup_roles = {"remediation", "reverification", "decision"}
+        if not any(bool(row["required"]) and row["stage_role"] in followup_roles
+                   for row in members):
+            return "NEEDS_INPUT", "remediation outcome has no explicit follow-up member"
+        return "REMEDIATION_REQUIRED", None
+    if len(effective) != len(required):
+        return "ACTIVE", None
+    if values == {"PASS"} and effective.get(gen["designated_acceptance_task_id"]) == "PASS":
+        return "PASS", None
+    return "ACTIVE", None
+
+
+def record_workflow_outcome(
+    conn: sqlite3.Connection, *, workflow_id: str, task_id: str, outcome: str,
+    actor: Optional[KanbanActorContext], mutation_id: str, expected_version: int,
+    run_id: Optional[int] = None, supersedes_outcome_id: Optional[int] = None,
+    summary: Optional[str] = None, metadata: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Append one stage outcome and transactionally reduce the aggregate."""
+    outcome = (outcome or "").strip().upper()
+    mutation_id = (mutation_id or "").strip()
+    if outcome not in _WORKFLOW_OUTCOMES or not mutation_id:
+        raise ValueError("valid workflow outcome and mutation_id are required")
+    clean_metadata = dict(metadata) if metadata is not None else None
+    request = {
+        "op": "outcome", "workflow_id": workflow_id, "task_id": task_id,
+        "outcome": outcome, "run_id": run_id,
+        "supersedes_outcome_id": supersedes_outcome_id, "summary": summary,
+        "metadata": clean_metadata, "expected_version": int(expected_version),
+    }
+    digest = _workflow_digest(request)
+    now = int(time.time())
+    with write_txn(conn):
+        workflow = conn.execute("SELECT * FROM kanban_workflows WHERE id=?", (workflow_id,)).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        actor = _require_workflow_actor(
+            actor, "workflow.outcome", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        replay = _workflow_existing_response(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id, request_digest=digest
+        )
+        if replay is not None:
+            return replay
+        if workflow["state"] in _WORKFLOW_TERMINAL_STATES:
+            raise WorkflowConflictError("terminal workflow generation must be explicitly reopened")
+        if int(workflow["version"]) != int(expected_version):
+            raise WorkflowConflictError(
+                f"expected version {expected_version}, current version {workflow['version']}"
+            )
+        generation = int(workflow["active_generation"])
+        member = conn.execute(
+            "SELECT * FROM kanban_workflow_members WHERE workflow_id=? AND task_id=? "
+            "AND generation=? AND removed_event_id IS NULL AND superseded_by_task_id IS NULL",
+            (workflow_id, task_id, generation),
+        ).fetchone()
+        if member is None:
+            raise WorkflowIntegrityError("outcome task is not an active workflow member")
+        _validate_scoped_outcome_actor(conn, actor, task_id, member["stage_role"], outcome)
+        if run_id is not None:
+            run = conn.execute("SELECT task_id FROM task_runs WHERE id=?", (int(run_id),)).fetchone()
+            if run is None or run["task_id"] != task_id:
+                raise WorkflowIntegrityError("outcome run does not belong to member task")
+        heads = conn.execute(
+            "SELECT o.id FROM kanban_workflow_outcomes o WHERE o.workflow_id=? "
+            "AND o.task_id=? AND o.generation=? AND NOT EXISTS "
+            "(SELECT 1 FROM kanban_workflow_outcomes n WHERE n.supersedes_outcome_id=o.id)",
+            (workflow_id, task_id, generation),
+        ).fetchall()
+        if len(heads) > 1:
+            raise WorkflowIntegrityError("multiple effective outcome heads")
+        current_head = int(heads[0]["id"]) if heads else None
+        if current_head != supersedes_outcome_id:
+            if current_head is not None or supersedes_outcome_id is not None:
+                raise WorkflowConflictError("new outcome must supersede the unique effective head")
+        next_version = int(workflow["version"]) + 1
+        event_payload = _workflow_event_payload(
+            workflow_id=workflow_id, generation=generation,
+            prior_version=int(workflow["version"]), resulting_version=next_version,
+            prior_state=workflow["state"], resulting_state=workflow["state"],
+            tenant=workflow["tenant"], board_identity=actor.board_identity,
+            actor=actor, mutation={"op": "outcome", "task_id": task_id,
+                                   "outcome": outcome, "run_id": run_id,
+                                   "supersedes_outcome_id": supersedes_outcome_id,
+                                   "summary": summary, "metadata": clean_metadata},
+        )
+        canonical_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation,
+            kind="outcome_recorded", mutation_id=mutation_id, batch_seq=0,
+            event_role="canonical", actor=actor, expected_version=int(expected_version),
+            payload=event_payload, created_at=now,
+        )
+        outcome_cur = conn.execute(
+            "INSERT INTO kanban_workflow_outcomes "
+            "(workflow_id,task_id,generation,run_id,outcome,supersedes_outcome_id,"
+            "actor_principal,source_event_id,summary,metadata,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (workflow_id, task_id, generation, run_id, outcome,
+             supersedes_outcome_id, actor.principal_id, canonical_id, summary,
+             _workflow_json(clean_metadata) if clean_metadata is not None else None, now),
+        )
+        outcome_id = outcome_cur.lastrowid
+        if outcome_id is None:
+            raise WorkflowIntegrityError("workflow outcome insert returned no durable id")
+        event_payload["mutation"]["outcome_id"] = int(outcome_id)
+        resulting_state, integrity_reason = _reduce_workflow_state(conn, workflow_id, generation)
+        event_payload["resulting_state"] = resulting_state
+        event_payload["mutation"]["integrity_reason"] = integrity_reason
+        conn.execute(
+            "UPDATE kanban_workflow_events SET payload=? WHERE id=?",
+            (_workflow_json(event_payload), canonical_id),
+        )
+        last_event_id = canonical_id
+        batch_seq = 1
+        if integrity_reason:
+            integrity_payload = dict(event_payload)
+            integrity_payload["mutation"] = {
+                "op": "integrity_failed", "reason": integrity_reason
+            }
+            last_event_id = _insert_workflow_event(
+                conn, workflow_id=workflow_id, generation=generation,
+                kind="integrity_failed", mutation_id=mutation_id,
+                batch_seq=batch_seq, event_role="derived", actor=actor,
+                expected_version=int(expected_version), payload=integrity_payload,
+                created_at=now,
+            )
+            batch_seq += 1
+        if resulting_state != workflow["state"]:
+            derived = dict(event_payload)
+            derived["mutation"] = {"op": "aggregate_changed", "reason": integrity_reason}
+            last_event_id = _insert_workflow_event(
+                conn, workflow_id=workflow_id, generation=generation,
+                kind="aggregate_changed", mutation_id=mutation_id, batch_seq=batch_seq,
+                event_role="derived", actor=actor, expected_version=int(expected_version),
+                payload=derived, created_at=now,
+            )
+        terminal = resulting_state in _WORKFLOW_TERMINAL_STATES
+        conn.execute(
+            "UPDATE kanban_workflow_generations SET generation_state=?,terminal_event_id=?,"
+            "terminal_at=? WHERE workflow_id=? AND generation=?",
+            (resulting_state, last_event_id if terminal else None,
+             now if terminal else None, workflow_id, generation),
+        )
+        cur = conn.execute(
+            "UPDATE kanban_workflows SET state=?,version=?,last_event_id=?,updated_at=?,"
+            "terminal_at=? WHERE id=? AND version=?",
+            (resulting_state, next_version, last_event_id, now,
+             now if terminal else None, workflow_id, int(expected_version)),
+        )
+        if cur.rowcount != 1:
+            raise WorkflowConflictError("workflow version changed during outcome mutation")
+        response_json = _workflow_json(_workflow_response(conn, workflow_id))
+        conn.execute(
+            "INSERT INTO kanban_workflow_mutations "
+            "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
+            "last_event_id,committed_version,response_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (workflow_id, mutation_id, digest, canonical_id, canonical_id,
+             last_event_id, next_version, response_json, now),
+        )
+        return json.loads(response_json)
+
+
+def reopen_workflow(
+    conn: sqlite3.Connection, *, workflow_id: str,
+    designated_acceptance_task_id: str, members: Iterable[Mapping[str, Any]],
+    actor: Optional[KanbanActorContext], mutation_id: str, expected_version: int,
+    reason: str,
+) -> dict[str, Any]:
+    """Start a new explicit generation; terminal generations are immutable."""
+    normalized = [
+        {"task_id": str(m.get("task_id") or "").strip(),
+         "stage_key": str(m.get("stage_key") or "").strip(),
+         "stage_role": str(m.get("stage_role") or "").strip().lower(),
+         "required": bool(m.get("required", True))}
+        for m in members
+    ]
+    if not mutation_id or not reason.strip() or not normalized:
+        raise ValueError("mutation_id, reason, and generation members are required")
+    if any(not m["task_id"] or not m["stage_key"] or not m["stage_role"] for m in normalized):
+        raise ValueError("each generation member requires task_id, stage_key, and stage_role")
+    acceptance = [
+        m for m in normalized
+        if m["stage_role"] == "acceptance" and m["required"]
+    ]
+    if (len(acceptance) != 1
+            or acceptance[0]["task_id"] != designated_acceptance_task_id):
+        raise WorkflowIntegrityError(
+            "new generation requires exactly one required designated acceptance"
+        )
+    required_roles = {m["stage_role"] for m in normalized if m["required"]}
+    if not {"remediation", "reverification"}.issubset(required_roles):
+        raise WorkflowIntegrityError(
+            "reopen requires explicit required remediation and reverification obligations"
+        )
+    request = {"op": "reopen", "workflow_id": workflow_id,
+               "designated_acceptance_task_id": designated_acceptance_task_id,
+               "members": normalized, "reason": reason.strip(),
+               "expected_version": int(expected_version)}
+    digest = _workflow_digest(request)
+    now = int(time.time())
+    with write_txn(conn):
+        workflow = conn.execute("SELECT * FROM kanban_workflows WHERE id=?", (workflow_id,)).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        actor = _require_workflow_actor(
+            actor, "workflow.admin", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        replay = _workflow_existing_response(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id, request_digest=digest
+        )
+        if replay is not None:
+            return replay
+        if workflow["state"] not in _WORKFLOW_TERMINAL_STATES:
+            raise WorkflowConflictError("only a terminal workflow can be reopened")
+        if int(workflow["version"]) != int(expected_version):
+            raise WorkflowConflictError(
+                f"expected version {expected_version}, current version {workflow['version']}"
+            )
+        tasks: dict[str, sqlite3.Row] = {}
+        for member in normalized:
+            row = conn.execute(
+                "SELECT tenant,session_id FROM tasks WHERE id=?", (member["task_id"],)
+            ).fetchone()
+            if row is None or row["tenant"] != workflow["tenant"] or not row["tenant"]:
+                raise WorkflowIntegrityError("reopen members must exist in the workflow tenant")
+            tasks[member["task_id"]] = row
+        prior_generation = int(workflow["active_generation"])
+        generation = prior_generation + 1
+        next_version = int(workflow["version"]) + 1
+        event_members = [
+            {
+                **member,
+                "tenant": workflow["tenant"],
+                "board_identity": actor.board_identity,
+                "task_session_id": tasks[member["task_id"]]["session_id"],
+            }
+            for member in normalized
+        ]
+        payload = _workflow_event_payload(
+            workflow_id=workflow_id, generation=generation,
+            prior_version=int(workflow["version"]), resulting_version=next_version,
+            prior_state=workflow["state"], resulting_state="ACTIVE",
+            tenant=workflow["tenant"], board_identity=actor.board_identity,
+            actor=actor, mutation={"op": "reopen", "reason": reason.strip(),
+                                   "prior_generation": prior_generation,
+                                   "members": event_members,
+                                   "designated_acceptance_task_id": designated_acceptance_task_id},
+        )
+        # The event row references (workflow_id, generation), so create the
+        # generation shell first and fill its opening event after insertion.
+        conn.execute(
+            "INSERT INTO kanban_workflow_generations "
+            "(workflow_id,generation,generation_state,designated_acceptance_task_id,"
+            "opened_event_id,created_at) VALUES (?,?,?,?,0,?)",
+            (workflow_id, generation, "ACTIVE", designated_acceptance_task_id, now),
+        )
+        canonical_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation,
+            kind="workflow_reopened", mutation_id=mutation_id, batch_seq=0,
+            event_role="canonical", actor=actor, expected_version=int(expected_version),
+            payload=payload, created_at=now,
+        )
+        derived = dict(payload)
+        derived["mutation"] = {"op": "aggregate_changed", "reason": reason.strip()}
+        last_event_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation,
+            kind="aggregate_changed", mutation_id=mutation_id, batch_seq=1,
+            event_role="derived", actor=actor, expected_version=int(expected_version),
+            payload=derived, created_at=now,
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_generations SET superseded_by_generation=? "
+            "WHERE workflow_id=? AND generation=?",
+            (generation, workflow_id, prior_generation),
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_generations SET opened_event_id=? "
+            "WHERE workflow_id=? AND generation=?",
+            (canonical_id, workflow_id, generation),
+        )
+        for member in normalized:
+            task = tasks[member["task_id"]]
+            conn.execute(
+                "INSERT INTO kanban_workflow_members "
+                "(workflow_id,task_id,generation,stage_key,stage_role,required,joined_event_id,"
+                "tenant_snapshot,board_identity,task_session_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (workflow_id, member["task_id"], generation, member["stage_key"],
+                 member["stage_role"], 1 if member["required"] else 0, canonical_id,
+                 workflow["tenant"], actor.board_identity, task["session_id"]),
+            )
+        cur = conn.execute(
+            "UPDATE kanban_workflows SET state='ACTIVE',active_generation=?,version=?,"
+            "last_event_id=?,updated_at=?,terminal_at=NULL WHERE id=? AND version=?",
+            (generation, next_version, last_event_id, now, workflow_id, int(expected_version)),
+        )
+        if cur.rowcount != 1:
+            raise WorkflowConflictError("workflow version changed during reopen")
+        response_json = _workflow_json(_workflow_response(conn, workflow_id))
+        conn.execute(
+            "INSERT INTO kanban_workflow_mutations "
+            "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
+            "last_event_id,committed_version,response_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (workflow_id, mutation_id, digest, canonical_id, canonical_id,
+             last_event_id, next_version, response_json, now),
+        )
+        return json.loads(response_json)
+
+
+def replay_workflow_events(
+    conn: sqlite3.Connection, *, workflow_id: str,
+    actor: Optional[KanbanActorContext],
+) -> dict[str, Any]:
+    """Reconstruct aggregate data from ordered immutable mutation batches."""
+    workflow = conn.execute(
+        "SELECT tenant,board_identity FROM kanban_workflows WHERE id=?", (workflow_id,)
+    ).fetchone()
+    if workflow is None:
+        raise KeyError(f"unknown workflow: {workflow_id}")
+    _require_workflow_actor(
+        actor, "workflow.read", tenant=workflow["tenant"],
+        board_identity=workflow["board_identity"],
+    )
+    rows = conn.execute(
+        "SELECT * FROM kanban_workflow_events WHERE workflow_id=? ORDER BY id",
+        (workflow_id,),
+    ).fetchall()
+    if not rows:
+        raise WorkflowIntegrityError("workflow event log is empty")
+
+    required_payload = {
+        "workflow_id", "generation", "prior_version", "resulting_version",
+        "prior_state", "resulting_state", "tenant", "board_identity",
+        "actor", "mutation",
+    }
+    batches: dict[str, list[tuple[sqlite3.Row, dict[str, Any]]]] = {}
+    normalized_events: list[dict[str, Any]] = []
+    for row in rows:
+        if int(row["payload_schema_version"]) != 1:
+            raise WorkflowIntegrityError(
+                f"unsupported workflow payload schema {row['payload_schema_version']}"
+            )
+        try:
+            payload = json.loads(row["payload"])
+        except Exception as exc:
+            raise WorkflowIntegrityError("invalid workflow event JSON") from exc
+        if not isinstance(payload, dict) or not required_payload.issubset(payload):
+            raise WorkflowIntegrityError("workflow event payload is incomplete")
+        if (payload["workflow_id"] != workflow_id
+                or payload["tenant"] != workflow["tenant"]
+                or payload["board_identity"] != workflow["board_identity"]
+                or int(payload["generation"]) != int(row["generation"])):
+            raise WorkflowIntegrityError("workflow event identity/tenant/board mismatch")
+        batches.setdefault(row["mutation_id"], []).append((row, payload))
+        normalized_events.append({
+            "id": int(row["id"]), "generation": int(row["generation"]),
+            "kind": row["kind"], "mutation_id": row["mutation_id"],
+            "batch_seq": int(row["batch_seq"]), "event_role": row["event_role"],
+            "payload": payload,
+        })
+
+    state: Optional[str] = None
+    version = 0
+    generation = 0
+    generations: dict[str, dict[str, Any]] = {}
+    members: dict[str, dict[str, Any]] = {}
+    outcomes: dict[str, dict[str, Any]] = {}
+    outcome_history: dict[str, dict[str, Any]] = {}
+    outcome_heads: dict[str, int] = {}
+    subscription: Optional[dict[str, Any]] = None
+    for mutation_id, batch in batches.items():
+        seqs = [int(row["batch_seq"]) for row, _ in batch]
+        canonical = [(row, payload) for row, payload in batch
+                     if row["event_role"] == "canonical"]
+        if (seqs != list(range(len(batch))) or len(canonical) != 1
+                or int(canonical[0][0]["batch_seq"]) != 0):
+            raise WorkflowIntegrityError(f"invalid event batch for mutation {mutation_id}")
+        canonical_row, payload = canonical[0]
+        if (int(payload["prior_version"]) != version
+                or payload["prior_state"] != state
+                or int(payload["resulting_version"]) != version + 1):
+            raise WorkflowIntegrityError(
+                f"invalid version/state transition for mutation {mutation_id}"
+            )
+        for _, batch_payload in batch:
+            if any(batch_payload[field] != payload[field] for field in (
+                "generation", "prior_version", "resulting_version",
+                "prior_state", "resulting_state", "tenant", "board_identity",
+            )):
+                raise WorkflowIntegrityError(
+                    f"inconsistent derived event batch for mutation {mutation_id}"
+                )
+        mutation = payload["mutation"]
+        if not isinstance(mutation, dict) or not isinstance(mutation.get("op"), str):
+            raise WorkflowIntegrityError("workflow event mutation is invalid")
+        op = mutation["op"]
+        generation = int(payload["generation"])
+        generation_key = str(generation)
+        if op == "create":
+            member = dict(mutation["member"])
+            generations[generation_key] = {
+                "designated_acceptance_task_id": mutation["designated_acceptance_task_id"],
+                "opened_event_id": int(canonical_row["id"]),
+            }
+            member["removed"] = False
+            member["joined_event_id"] = int(canonical_row["id"])
+            members[f"{generation}:{member['task_id']}"] = member
+            subscription = mutation.get("subscription")
+        elif op == "reopen":
+            generations[generation_key] = {
+                "designated_acceptance_task_id": mutation["designated_acceptance_task_id"],
+                "opened_event_id": int(canonical_row["id"]),
+                "prior_generation": mutation["prior_generation"],
+                "reason": mutation["reason"],
+            }
+            for raw_member in mutation["members"]:
+                member = dict(raw_member)
+                member["removed"] = False
+                member["joined_event_id"] = int(canonical_row["id"])
+                members[f"{generation}:{member['task_id']}"] = member
+        elif op == "add_member":
+            member = dict(mutation["member"])
+            member["removed"] = False
+            member["joined_event_id"] = int(canonical_row["id"])
+            members[f"{generation}:{member['task_id']}"] = member
+        elif op == "remove_member":
+            key = f"{generation}:{mutation['task_id']}"
+            if key not in members:
+                raise WorkflowIntegrityError("remove event references unknown member")
+            members[key]["removed"] = True
+            members[key]["removed_event_id"] = int(canonical_row["id"])
+        elif op == "outcome":
+            key = f"{generation}:{mutation['task_id']}"
+            if key not in members or members[key].get("removed"):
+                raise WorkflowIntegrityError("outcome event references inactive member")
+            try:
+                outcome_id = int(mutation["outcome_id"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise WorkflowIntegrityError("outcome event is missing its durable id") from exc
+            if str(outcome_id) in outcome_history:
+                raise WorkflowIntegrityError("duplicate workflow outcome id in replay")
+            supersedes = mutation.get("supersedes_outcome_id")
+            current_head = outcome_heads.get(key)
+            if supersedes is None:
+                if current_head is not None:
+                    raise WorkflowIntegrityError("outcome replay fork has multiple heads")
+            else:
+                try:
+                    supersedes = int(supersedes)
+                except (TypeError, ValueError) as exc:
+                    raise WorkflowIntegrityError("outcome supersession id is invalid") from exc
+                prior = outcome_history.get(str(supersedes))
+                if (prior is None or prior["member_key"] != key
+                        or current_head != supersedes):
+                    raise WorkflowIntegrityError(
+                        "outcome replay supersession is cross-member, stale, or missing"
+                    )
+            outcome_record = {
+                "id": outcome_id, "workflow_id": workflow_id,
+                "task_id": mutation["task_id"], "generation": generation,
+                "run_id": mutation.get("run_id"), "outcome": mutation["outcome"],
+                "supersedes_outcome_id": supersedes,
+                "actor_principal": canonical_row["actor_principal"],
+                "source_event_id": int(canonical_row["id"]),
+                "summary": mutation.get("summary"),
+                "metadata": mutation.get("metadata"),
+                "created_at": int(canonical_row["created_at"]),
+                "member_key": key,
+            }
+            outcome_history[str(outcome_id)] = outcome_record
+            outcome_heads[key] = outcome_id
+            outcomes[key] = {
+                "outcome": mutation["outcome"],
+                "run_id": mutation.get("run_id"),
+                "supersedes_outcome_id": supersedes,
+                "summary": mutation.get("summary"),
+                "metadata": mutation.get("metadata"),
+                "source_event_id": int(canonical_row["id"]),
+            }
+        elif op == "set_subscription":
+            subscription = mutation.get("subscription")
+        elif op not in {"cancel", "skip_subscription_event"}:
+            raise WorkflowIntegrityError(f"unsupported workflow replay operation: {op}")
+        state = str(payload["resulting_state"])
+        version = int(payload["resulting_version"])
+
+    return {
+        "workflow_id": workflow_id,
+        "state": state,
+        "version": version,
+        "active_generation": generation,
+        "last_event_id": int(rows[-1]["id"]),
+        "event_count": len(rows),
+        "event_log_hash": _workflow_digest(normalized_events),
+        "generations": generations,
+        "members": members,
+        "outcomes": outcomes,
+        "outcome_history": outcome_history,
+        "subscription": subscription,
+    }
+
+
+def workflow_integrity_report(
+    conn: sqlite3.Connection, *, workflow_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return actionable workflow integrity diagnostics for doctor/CLI."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    fk = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if fk:
+        errors.append(f"foreign-key violations: {len(fk)}")
+    child_tables = (
+        "kanban_workflow_generations", "kanban_workflow_members",
+        "kanban_workflow_outcomes", "kanban_workflow_events",
+        "kanban_workflow_mutations", "kanban_workflow_subscriptions",
+    )
+    for table in child_tables:
+        orphan = conn.execute(
+            f"SELECT COUNT(*) FROM {table} c LEFT JOIN kanban_workflows w "
+            "ON w.id=c.workflow_id WHERE w.id IS NULL"
+        ).fetchone()
+        if orphan is not None and int(orphan[0]):
+            errors.append(f"orphan rows in {table}: {int(orphan[0])}")
+    ids = ([workflow_id] if workflow_id else
+           [row["id"] for row in conn.execute("SELECT id FROM kanban_workflows ORDER BY id")])
+    checked = 0
+    for wid in ids:
+        row = conn.execute("SELECT * FROM kanban_workflows WHERE id=?", (wid,)).fetchone()
+        if row is None:
+            errors.append(f"workflow {wid}: missing materialized row")
+            continue
+        checked += 1
+        if not row["board_identity"]:
+            errors.append(f"workflow {wid}: immutable board identity is missing")
+            continue
+        internal_actor = KanbanActorContext(
+            principal_id="system:doctor", profile_name="doctor",
+            board_identity=row["board_identity"], tenant=row["tenant"],
+            capabilities=frozenset({"workflow.read"}), source_kind="system",
+        )
+        try:
+            replay = replay_workflow_events(conn, workflow_id=wid, actor=internal_actor)
+        except WorkflowError as exc:
+            errors.append(f"workflow {wid}: replay failed: {exc}")
+            continue
+        if (replay["state"] != row["state"] or replay["version"] != int(row["version"])
+                or replay["active_generation"] != int(row["active_generation"])
+                or replay["last_event_id"] != int(row["last_event_id"])):
+            errors.append(f"workflow {wid}: replay head differs from materialized state")
+        materialized_members = {}
+        for member in conn.execute(
+            "SELECT * FROM kanban_workflow_members WHERE workflow_id=?",
+            (wid,),
+        ):
+            materialized_members[f"{int(member['generation'])}:{member['task_id']}"] = {
+                "task_id": member["task_id"], "stage_key": member["stage_key"],
+                "stage_role": member["stage_role"], "required": bool(member["required"]),
+                "tenant": member["tenant_snapshot"],
+                "board_identity": member["board_identity"],
+                "task_session_id": member["task_session_id"],
+                "removed": member["removed_event_id"] is not None,
+                "joined_event_id": int(member["joined_event_id"]),
+                **({"removed_event_id": int(member["removed_event_id"])}
+                   if member["removed_event_id"] is not None else {}),
+            }
+        if replay["members"] != materialized_members:
+            errors.append(f"workflow {wid}: replay members differ from materialized members")
+        materialized_outcomes = {}
+        for outcome in conn.execute(
+            "SELECT * FROM kanban_workflow_outcomes WHERE workflow_id=? ORDER BY id",
+            (wid,),
+        ):
+            materialized_outcomes[str(int(outcome["id"]))] = {
+                "id": int(outcome["id"]), "workflow_id": outcome["workflow_id"],
+                "task_id": outcome["task_id"], "generation": int(outcome["generation"]),
+                "run_id": outcome["run_id"], "outcome": outcome["outcome"],
+                "supersedes_outcome_id": outcome["supersedes_outcome_id"],
+                "actor_principal": outcome["actor_principal"],
+                "source_event_id": int(outcome["source_event_id"]),
+                "summary": outcome["summary"],
+                "metadata": json.loads(outcome["metadata"]) if outcome["metadata"] else None,
+                "created_at": int(outcome["created_at"]),
+                "member_key": f"{int(outcome['generation'])}:{outcome['task_id']}",
+            }
+        if replay["outcome_history"] != materialized_outcomes:
+            errors.append(f"workflow {wid}: replay outcomes differ from materialized outcomes")
+        for generation_row in conn.execute(
+            "SELECT generation,designated_acceptance_task_id FROM "
+            "kanban_workflow_generations WHERE workflow_id=?",
+            (wid,),
+        ):
+            replay_generation = replay["generations"].get(str(generation_row["generation"]))
+            if (replay_generation is None
+                    or replay_generation["designated_acceptance_task_id"]
+                    != generation_row["designated_acceptance_task_id"]):
+                errors.append(
+                    f"workflow {wid}: replay designation differs for generation "
+                    f"{generation_row['generation']}"
+                )
+        reduced_state, reason = _reduce_workflow_state(
+            conn, wid, int(row["active_generation"])
+        )
+        if reduced_state != row["state"]:
+            errors.append(
+                f"workflow {wid}: reducer={reduced_state}, materialized={row['state']}"
+                + (f" ({reason})" if reason else "")
+            )
+        cycles = conn.execute(
+            "WITH RECURSIVE chain(id,supersedes,path,cycle) AS ("
+            "SELECT id,supersedes_outcome_id,printf(',%d,',id),0 FROM kanban_workflow_outcomes "
+            "WHERE workflow_id=? UNION ALL SELECT o.id,o.supersedes_outcome_id,"
+            "chain.path||printf('%d,',o.id),instr(chain.path,printf(',%d,',o.id))>0 "
+            "FROM kanban_workflow_outcomes o JOIN chain ON o.id=chain.supersedes "
+            "WHERE chain.cycle=0) SELECT 1 FROM chain WHERE cycle=1 LIMIT 1",
+            (wid,),
+        ).fetchone()
+        if cycles is not None:
+            errors.append(f"workflow {wid}: outcome supersession cycle")
+    return {"ok": not errors, "checked": checked, "errors": errors, "warnings": warnings}
+
+
+def count_workflow_subscriptions(conn: sqlite3.Connection) -> int:
+    """Return the number of durable workflow-origin subscriptions."""
+    row = conn.execute("SELECT COUNT(*) FROM kanban_workflow_subscriptions").fetchone()
+    return int(row[0]) if row else 0
+
+
+def count_workflow_subscriptions_readonly(
+    db_path: Optional[Path] = None, *, board: Optional[str] = None,
+) -> int:
+    """Cheap read-only probe for the gateway publisher's zero-work fast path."""
+    path = db_path if db_path is not None else kanban_db_path(board=board)
+    if not path.exists():
+        return 0
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM kanban_workflow_subscriptions").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def claim_workflow_events_for_subscription(
+    conn: sqlite3.Connection, *, workflow_id: str, role: str = "origin",
+) -> tuple[int, int, list[dict[str, Any]]]:
+    """Atomically claim aggregate-transition events for one due subscription."""
+    now = int(time.time())
+    with write_txn(conn):
+        sub = conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions "
+            "WHERE workflow_id=? AND role=?", (workflow_id, role),
+        ).fetchone()
+        if (sub is None or sub["disabled_at"] is not None
+                or sub["dead_lettered_at"] is not None
+                or (sub["next_attempt_at"] is not None
+                    and int(sub["next_attempt_at"]) > now)):
+            cursor = int(sub["last_event_id"]) if sub is not None else 0
+            return cursor, cursor, []
+        old_cursor = int(sub["last_event_id"])
+        rows = conn.execute(
+            "SELECT * FROM kanban_workflow_events "
+            "WHERE workflow_id=? AND id>? ORDER BY id",
+            (workflow_id, old_cursor),
+        ).fetchall()
+        if not rows:
+            return old_cursor, old_cursor, []
+        try:
+            targets = set(json.loads(sub["target_states"]))
+        except Exception as exc:
+            raise WorkflowIntegrityError("workflow subscription target states are invalid") from exc
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            if row["kind"] != "aggregate_changed":
+                continue
+            try:
+                payload = json.loads(row["payload"])
+            except Exception as exc:
+                raise WorkflowIntegrityError("workflow event payload is invalid") from exc
+            if payload.get("resulting_state") not in targets:
+                continue
+            events.append({**dict(row), "payload": payload})
+        new_cursor = int(rows[-1]["id"])
+        cur = conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET last_event_id=? "
+            "WHERE workflow_id=? AND role=? AND last_event_id=?",
+            (new_cursor, workflow_id, role, old_cursor),
+        )
+        if cur.rowcount != 1:
+            raise WorkflowConflictError("workflow subscription cursor changed during claim")
+        return old_cursor, new_cursor, events
+
+
+def complete_workflow_delivery(
+    conn: sqlite3.Connection, *, workflow_id: str, role: str = "origin",
+) -> dict[str, Any]:
+    """Clear retry state after the publisher successfully sends a claimed event."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET retry_count=0,next_attempt_at=NULL,"
+            "dead_lettered_at=NULL,last_error_class=NULL "
+            "WHERE workflow_id=? AND role=? AND disabled_at IS NULL",
+            (workflow_id, role),
+        )
+        if cur.rowcount != 1:
+            raise KeyError(f"unknown or disabled workflow subscription: {workflow_id}/{role}")
+        return dict(conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
+            (workflow_id, role),
+        ).fetchone())
+
+
+def fail_workflow_delivery(
+    conn: sqlite3.Connection, *, workflow_id: str, role: str = "origin",
+    claimed_cursor: int, old_cursor: int, error_class: str,
+    max_retries: int = 5, retry_delay_seconds: int = 30,
+) -> dict[str, Any]:
+    """Rewind a failed claim and persist retry/dead-letter state."""
+    if max_retries < 1 or retry_delay_seconds < 0:
+        raise ValueError("max_retries must be positive and retry delay nonnegative")
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT retry_count FROM kanban_workflow_subscriptions "
+            "WHERE workflow_id=? AND role=? AND last_event_id=?",
+            (workflow_id, role, int(claimed_cursor)),
+        ).fetchone()
+        if row is None:
+            current = conn.execute(
+                "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
+                (workflow_id, role),
+            ).fetchone()
+            if current is None:
+                raise KeyError(f"unknown workflow subscription: {workflow_id}/{role}")
+            return dict(current)
+        retries = int(row["retry_count"]) + 1
+        dead_lettered_at = now if retries >= int(max_retries) else None
+        next_attempt_at = None if dead_lettered_at is not None else now + int(retry_delay_seconds)
+        conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET last_event_id=?,retry_count=?,"
+            "next_attempt_at=?,dead_lettered_at=?,last_error_class=? "
+            "WHERE workflow_id=? AND role=? AND last_event_id=?",
+            (int(old_cursor), retries, next_attempt_at, dead_lettered_at,
+             str(error_class or "DeliveryError"), workflow_id, role, int(claimed_cursor)),
+        )
+        return dict(conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
+            (workflow_id, role),
+        ).fetchone())
+
+
+def disable_workflow_subscription(
+    conn: sqlite3.Connection, *, workflow_id: str, role: str = "origin",
+    actor: Optional[KanbanActorContext], reason: str,
+) -> dict[str, Any]:
+    """Disable a workflow subscription without deleting its durable cursor."""
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("subscription disable reason is required")
+    with write_txn(conn):
+        workflow = conn.execute(
+            "SELECT tenant,board_identity FROM kanban_workflows WHERE id=?", (workflow_id,),
+        ).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        _require_workflow_actor(
+            actor, "workflow.admin", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        now = int(time.time())
+        cur = conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET disabled_at=?,next_attempt_at=NULL "
+            "WHERE workflow_id=? AND role=? AND disabled_at IS NULL",
+            (now, workflow_id, role),
+        )
+        if cur.rowcount != 1:
+            raise KeyError(f"unknown or disabled workflow subscription: {workflow_id}/{role}")
+        return dict(conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
+            (workflow_id, role),
+        ).fetchone())
+
+
+def skip_workflow_subscription_event(
+    conn: sqlite3.Connection, *, workflow_id: str, event_id: int,
+    actor: Optional[KanbanActorContext], mutation_id: str,
+    expected_version: int, reason: str, role: str = "origin",
+) -> dict[str, Any]:
+    """Audit an administrative disposition and advance past one aggregate event."""
+    mutation_id = (mutation_id or "").strip()
+    reason = (reason or "").strip()
+    if not mutation_id or not reason:
+        raise ValueError("mutation_id and skip reason are required")
+    request = {
+        "op": "skip_subscription_event", "workflow_id": workflow_id,
+        "role": role, "event_id": int(event_id),
+        "expected_version": int(expected_version), "reason": reason,
+    }
+    digest = _workflow_digest(request)
+    now = int(time.time())
+    with write_txn(conn):
+        workflow = conn.execute(
+            "SELECT * FROM kanban_workflows WHERE id=?", (workflow_id,),
+        ).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        actor = _require_workflow_actor(
+            actor, "workflow.admin", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        replay = _workflow_existing_response(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id,
+            request_digest=digest,
+        )
+        if replay is not None:
+            return replay
+        if int(workflow["version"]) != int(expected_version):
+            raise WorkflowConflictError(
+                f"expected version {expected_version}, current version {workflow['version']}"
+            )
+        subscription = conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
+            (workflow_id, role),
+        ).fetchone()
+        if subscription is None or subscription["disabled_at"] is not None:
+            raise KeyError(f"unknown or disabled workflow subscription: {workflow_id}/{role}")
+        event = conn.execute(
+            "SELECT id,generation,kind FROM kanban_workflow_events "
+            "WHERE workflow_id=? AND id=?",
+            (workflow_id, int(event_id)),
+        ).fetchone()
+        if event is None or event["kind"] != "aggregate_changed":
+            raise WorkflowIntegrityError("only an existing aggregate transition event may be skipped")
+        if int(event["id"]) <= int(subscription["last_event_id"]):
+            raise WorkflowConflictError("workflow subscription event is already disposed")
+        prior_version = int(workflow["version"])
+        next_version = prior_version + 1
+        generation = int(workflow["active_generation"])
+        mutation = {
+            "op": "skip_subscription_event", "role": role,
+            "event_id": int(event_id), "reason": reason,
+        }
+        payload = _workflow_event_payload(
+            workflow_id=workflow_id, generation=generation,
+            prior_version=prior_version, resulting_version=next_version,
+            prior_state=workflow["state"], resulting_state=workflow["state"],
+            tenant=workflow["tenant"], board_identity=workflow["board_identity"],
+            actor=actor, mutation=mutation,
+        )
+        audit_event_id = _insert_workflow_event(
+            conn, workflow_id=workflow_id, generation=generation,
+            kind="subscription_event_skipped", mutation_id=mutation_id,
+            batch_seq=0, event_role="canonical", actor=actor,
+            expected_version=prior_version, payload=payload, created_at=now,
+        )
+        conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET last_event_id=?,retry_count=0,"
+            "next_attempt_at=NULL,dead_lettered_at=NULL,last_error_class=NULL "
+            "WHERE workflow_id=? AND role=? AND last_event_id=?",
+            (int(event_id), workflow_id, role, int(subscription["last_event_id"])),
+        )
+        cur = conn.execute(
+            "UPDATE kanban_workflows SET version=?,last_event_id=?,updated_at=? "
+            "WHERE id=? AND version=?",
+            (next_version, audit_event_id, now, workflow_id, prior_version),
+        )
+        if cur.rowcount != 1:
+            raise WorkflowConflictError("workflow version changed during subscription skip")
+        response = _workflow_response(conn, workflow_id, include_events=True)
+        response["subscription"] = dict(conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
+            (workflow_id, role),
+        ).fetchone())
+        response_json = _workflow_json(response)
+        conn.execute(
+            "INSERT INTO kanban_workflow_mutations "
+            "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
+            "last_event_id,committed_version,response_json,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (workflow_id, mutation_id, digest, audit_event_id, audit_event_id,
+             audit_event_id, next_version, response_json, now),
+        )
+        return json.loads(response_json)
+
+
+def resume_workflow_subscription(
+    conn: sqlite3.Connection, *, workflow_id: str, role: str = "origin",
+    actor: Optional[KanbanActorContext],
+) -> dict[str, Any]:
+    """Resume a dead-lettered workflow subscription without moving its cursor."""
+    with write_txn(conn):
+        workflow = conn.execute(
+            "SELECT tenant,board_identity FROM kanban_workflows WHERE id=?", (workflow_id,),
+        ).fetchone()
+        if workflow is None:
+            raise KeyError(f"unknown workflow: {workflow_id}")
+        _require_workflow_actor(
+            actor, "workflow.admin", tenant=workflow["tenant"],
+            board_identity=workflow["board_identity"],
+        )
+        cur = conn.execute(
+            "UPDATE kanban_workflow_subscriptions SET retry_count=0,next_attempt_at=NULL,"
+            "dead_lettered_at=NULL,last_error_class=NULL "
+            "WHERE workflow_id=? AND role=? AND disabled_at IS NULL",
+            (workflow_id, role),
+        )
+        if cur.rowcount != 1:
+            raise KeyError(f"unknown or disabled workflow subscription: {workflow_id}/{role}")
+        return dict(conn.execute(
+            "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
+            (workflow_id, role),
+        ).fetchone())
 
 
 # ---------------------------------------------------------------------------

@@ -125,6 +125,14 @@ def _check_kanban_orchestrator_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
+def _check_kanban_worker_mode() -> bool:
+    """Worker-only tools require dispatcher task scope and no delegation."""
+    return bool(
+        os.environ.get("HERMES_KANBAN_TASK")
+        and not _is_delegated_child_context()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -2611,6 +2619,6 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_WORKFLOW_OUTCOME_SCHEMA,
     handler=_handle_workflow_outcome,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_worker_mode,
     emoji="🧭",
 )

@@ -41,6 +41,45 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    ("worker_task", "orchestrator", "delegated_child", "expected"),
+    [
+        ("t_worker", False, False, True),
+        (None, True, False, False),
+        (None, False, False, False),
+        ("t_worker", False, True, False),
+    ],
+    ids=["worker", "orchestrator", "ordinary", "delegated-child"],
+)
+def test_workflow_outcome_is_available_only_to_dispatcher_workers(
+    monkeypatch,
+    worker_task,
+    orchestrator,
+    delegated_child,
+    expected,
+):
+    from tools import kanban_tools as kt
+    from tools.registry import invalidate_check_fn_cache, registry
+
+    if worker_task is None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", worker_task)
+    monkeypatch.setattr(kt, "_profile_has_kanban_toolset", lambda: orchestrator)
+    monkeypatch.setattr(kt, "_is_delegated_child_context", lambda: delegated_child)
+    invalidate_check_fn_cache()
+
+    entry = registry.get_entry("kanban_workflow_outcome")
+    assert entry is not None
+    assert entry.handler is kt._handle_workflow_outcome
+    assert entry.check_fn() is expected
+
+    definitions = registry.get_definitions({"kanban_workflow_outcome"}, quiet=True)
+    assert bool(definitions) is expected
+    if expected:
+        assert definitions[0]["function"] == kt.KANBAN_WORKFLOW_OUTCOME_SCHEMA
+
+
 # ---------------------------------------------------------------------------
 # Handler happy paths
 # ---------------------------------------------------------------------------

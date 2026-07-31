@@ -1106,9 +1106,9 @@ class TestVenvPythonUpdateBoundary:
 
 
 class TestStageCandidateVenvLockedSync:
-    """#75655: locked sync must not pass --no-config (exclude-newer)."""
+    """#75655: locked sync must see project config (no --no-config / UV_NO_CONFIG)."""
 
-    def test_locked_sync_omits_no_config(self, tmp_path):
+    def test_locked_sync_omits_no_config_flag_and_env(self, tmp_path):
         from hermes_cli.managed_uv import _stage_candidate_venv
 
         root = tmp_path / "checkout"
@@ -1120,10 +1120,10 @@ class TestStageCandidateVenvLockedSync:
         python.parent.mkdir(parents=True)
         python.write_text("py", encoding="utf-8")
 
-        calls: list[list[str]] = []
+        calls: list[tuple[list[str], dict]] = []
 
         def fake_run(cmd, **kwargs):
-            calls.append(list(cmd))
+            calls.append((list(cmd), kwargs))
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
@@ -1141,11 +1141,17 @@ class TestStageCandidateVenvLockedSync:
 
         assert path is not None
         assert detail == ""
-        sync_cmds = [c for c in calls if len(c) > 1 and c[1] == "sync"]
-        assert len(sync_cmds) == 1
-        sync = sync_cmds[0]
-        assert "--locked" in sync
-        assert "--no-config" not in sync
+        venv_calls = [(c, kw) for c, kw in calls if len(c) > 1 and c[1] == "venv"]
+        sync_calls = [(c, kw) for c, kw in calls if len(c) > 1 and c[1] == "sync"]
+        assert len(venv_calls) == 1
+        assert len(sync_calls) == 1
+        venv_cmd, venv_kw = venv_calls[0]
+        sync_cmd, sync_kw = sync_calls[0]
+        assert "--no-config" in venv_cmd
+        assert (venv_kw.get("env") or {}).get("UV_NO_CONFIG") == "1"
+        assert "--locked" in sync_cmd
+        assert "--no-config" not in sync_cmd
+        assert "UV_NO_CONFIG" not in (sync_kw.get("env") or {})
 
     def test_sync_failure_detail_not_smoke(self, tmp_path):
         from hermes_cli.managed_uv import _stage_candidate_venv

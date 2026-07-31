@@ -782,11 +782,11 @@ def _stage_candidate_venv(
         logger.warning("candidate dependency sync refused: uv.lock is missing")
         _remove_tree(candidate, boundary=runtime_root)
         return None, "replacement environment dependency sync refused: uv.lock is missing"
-    # Do NOT pass ``--no-config`` with ``--locked``. ``[tool.uv] exclude-newer``
-    # (and related project settings) live in pyproject.toml; dropping them
-    # makes uv treat a valid lockfile as stale and hard-fail under --locked
-    # (#75655). Venv creation above still uses --no-config; only locked sync
-    # must see project config so resolution matches how uv.lock was written.
+    # Locked sync must see project config (``[tool.uv] exclude-newer`` etc.) so
+    # resolution matches how ``uv.lock`` was written (#75655). ``managed_python_env``
+    # sets ``UV_NO_CONFIG=1`` (env equivalent of ``--no-config``) for managed
+    # Python install/venv paths; that must not leak into this sync. Venv create
+    # above keeps the sanitized env + ``--no-config`` argv.
     sync_env = dict(env)
     sync_env.pop("UV_NO_CONFIG", None)
     synced = subprocess.run(

@@ -69,6 +69,101 @@ def _clear_provider_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+def test_auth_list_discovers_runtime_only_config_and_env_pools(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from agent.credential_pool import list_custom_pool_providers
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth_commands import auth_list_command
+    from hermes_cli.config import invalidate_env_cache
+
+    runtime_home = tmp_path / "hermes"
+    residence = tmp_path / "auth-residence"
+    runtime_home.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "operator"))
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.setenv("HERMES_AUTH_HOME", str(residence))
+    for provider in PROVIDER_REGISTRY.values():
+        for env_var in provider.api_key_env_vars:
+            monkeypatch.delenv(env_var, raising=False)
+    residence.mkdir()
+    (residence / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "credential_pool": {
+                    "copilot": [
+                        {
+                            "id": "copilot-manual",
+                            "label": "manual Copilot",
+                            "auth_type": "api_key",
+                            "priority": 0,
+                            "source": "manual",
+                            "access_token": "copilot-persisted-key",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    subprocess_calls = []
+
+    def forbidden_gh_lookup():
+        subprocess_calls.append("gh auth token")
+        raise RuntimeError("subprocess discovery is forbidden")
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth._try_gh_cli_token",
+        forbidden_gh_lookup,
+    )
+
+    (runtime_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "custom_providers": [
+                    {
+                        "name": "Foo",
+                        "base_url": "https://foo.example/v1",
+                        "api_key": "foo-runtime-key",
+                    },
+                    {
+                        "name": "Empty",
+                        "base_url": "https://empty.example/v1",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_home / ".env").write_text(
+        "OPENROUTER_API_KEY=openrouter-runtime-key\n",
+        encoding="utf-8",
+    )
+    invalidate_env_cache()
+
+    assert list_custom_pool_providers() == ["custom:foo"]
+    auth_list_command(type("Args", (), {"provider": ""})())
+
+    headers = [
+        line.split(" (", 1)[0]
+        for line in capsys.readouterr().out.splitlines()
+        if " credentials):" in line
+    ]
+    assert headers == ["copilot", "custom:foo", "openrouter"]
+    assert subprocess_calls == []
+    persisted = (
+        (residence / "auth.json").read_text(encoding="utf-8")
+        if (residence / "auth.json").exists()
+        else ""
+    )
+    assert "copilot-persisted-key" in persisted
+    assert "config:Foo" not in persisted
+    assert "env:OPENROUTER_API_KEY" not in persisted
+
+
 def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -689,7 +784,11 @@ def test_credential_sources_registry_has_expected_steps():
     from agent.credential_sources import _REGISTRY
 
     descriptions = [step.description for step in _REGISTRY]
-    # No empty descriptions, no duplicates.
+    identities = [(step.provider, step.source_id) for step in _REGISTRY]
+    # Every step has a distinct machine identity and useful display prose.
+    assert len(identities) == len(set(identities)), (
+        f"Registry has duplicate provider/source identities: {identities}"
+    )
     assert all(d for d in descriptions), "Every removal step must have a description"
     assert len(descriptions) == len(set(descriptions)), (
         f"Registry has duplicate step descriptions: {descriptions}"
@@ -697,17 +796,17 @@ def test_credential_sources_registry_has_expected_steps():
     # Core steps must be present — these are the ones the rest of the code
     # assumes exist. When deliberately dropping one, update this list.
     required = {
-        "gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
-        "Any env-seeded credential (XAI_API_KEY, DEEPSEEK_API_KEY, etc.)",
-        "~/.claude/.credentials.json",
-        "~/.hermes/.anthropic_oauth.json",
-        "auth.json providers.nous",
-        "auth.json providers.openai-codex + ~/.codex/auth.json",
-        "auth.json providers.minimax-oauth",
-        "~/.qwen/oauth_creds.json",
-        "Custom provider config.yaml api_key field",
+        ("copilot", "gh_cli"),
+        ("*", "env:"),
+        ("anthropic", "claude_code"),
+        ("anthropic", "hermes_pkce"),
+        ("nous", "device_code"),
+        ("openai-codex", "device_code"),
+        ("minimax-oauth", "oauth"),
+        ("qwen-oauth", "qwen-cli"),
+        ("*", "config:"),
     }
-    missing = required - set(descriptions)
+    missing = required - set(identities)
     assert not missing, f"Registry missing required steps: {missing}"
 
 
@@ -767,5 +866,3 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     assert is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")
     assert is_source_suppressed("copilot", "env:GH_TOKEN")
     assert is_source_suppressed("copilot", "env:GITHUB_TOKEN")
-
-

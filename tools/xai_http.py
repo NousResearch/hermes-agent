@@ -26,8 +26,9 @@ def has_xai_credentials() -> bool:
     Resolution order, fast-to-slow:
 
     1. ``XAI_API_KEY`` env var (cheapest; covers explicit-key users).
-    2. ``~/.hermes/auth.json`` has a non-empty ``providers.xai-oauth.tokens.access_token``
-       (single file read, no expiry check, no refresh).
+    2. The resolved Hermes ``auth.json`` has a non-empty
+       ``providers.xai-oauth.tokens.access_token`` (single file read, no expiry
+       check, no refresh).
     3. ``credential_pool.xai-oauth`` has any entry with a non-empty
        ``access_token`` (covers multi-account ``hermes auth add xai-oauth``
        grants that are pool-only / ``manual:device_code``).
@@ -39,9 +40,9 @@ def has_xai_credentials() -> bool:
     if os.environ.get("XAI_API_KEY", "").strip():
         return True
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_auth_home_strict
 
-        auth_path = get_hermes_home() / "auth.json"
+        auth_path = get_hermes_auth_home_strict() / "auth.json"
         if not auth_path.exists():
             return False
         store = json.loads(auth_path.read_text(encoding="utf-8"))

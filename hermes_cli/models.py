@@ -3055,11 +3055,10 @@ def _credential_fingerprint(provider: str) -> str:
     Rotating any of the relevant env vars invalidates the cached entry
     for that provider. We hash AT LEAST the api-key + base-url env vars
     declared in ``PROVIDER_REGISTRY``. For OAuth-backed providers
-    (codex, copilot, anthropic-via-claude-code, nous portal), the
-    relevant tokens live in ``$HERMES_HOME/auth.json`` and external
-    credential files. Rather than parse every shape, we additionally
-    fold the mtime of those files into the fingerprint so refreshes
-    after re-auth bust the cache.
+    (codex, copilot, anthropic-via-claude-code, nous portal), the relevant
+    tokens live in the resolved Hermes ``auth.json`` and external credential
+    files. Rather than parse every shape, we additionally fold the mtime of
+    those files into the fingerprint so refreshes after re-auth bust the cache.
     """
     import hashlib
     import os as _os
@@ -3081,9 +3080,12 @@ def _credential_fingerprint(provider: str) -> str:
 
     # OAuth / external-file mtimes that change on re-auth
     try:
-        from hermes_constants import get_hermes_home
-        for rel in ("auth.json", "credentials.json"):
-            p = get_hermes_home() / rel
+        from hermes_constants import get_hermes_auth_home_strict, get_hermes_home
+        credential_paths = (
+            ("auth.json", get_hermes_auth_home_strict() / "auth.json"),
+            ("credentials.json", get_hermes_home() / "credentials.json"),
+        )
+        for rel, p in credential_paths:
             try:
                 parts.append(f"{rel}@{p.stat().st_mtime_ns}")
             except FileNotFoundError:

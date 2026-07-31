@@ -39,7 +39,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path, PurePath
 from typing import Any, Optional
 
 # Env var the orchestrator sets to the re-seed payload. Deliberately DISTINCT
@@ -48,6 +50,133 @@ from typing import Any, Optional
 # overwrites a terminally-dead Nous entry on an existing volume.
 REBOOTSTRAP_ENV = "HERMES_AUTH_JSON_REBOOTSTRAP"
 BOOTSTRAP_CLIENT_ID = "hermes-cli-vps"
+
+
+def _is_filesystem_anchor(path: PurePath) -> bool:
+    """Return whether *path* is a POSIX, Windows drive, or UNC root."""
+    return path.parent == path
+
+
+def _path_is_within(path: Path, directory: Path) -> bool:
+    """Return whether *path* is equal to or below *directory*."""
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
+def _real_user_home(runtime_home: Path) -> Path:
+    profile_home = runtime_home / "home"
+    candidates = [
+        os.environ.get("HERMES_REAL_HOME", ""),
+        os.environ.get("HOME", ""),
+    ]
+    try:
+        import pwd
+
+        candidates.append(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        pass
+    candidates.append(os.path.expanduser("~"))
+
+    for raw in candidates:
+        if not raw:
+            continue
+        candidate = Path(raw).resolve(strict=False)
+        if profile_home.is_dir() and candidate == profile_home.resolve(strict=False):
+            continue
+        return candidate
+    return Path("/tmp")
+
+
+def resolve_auth_layout(
+    hermes_home: str,
+    auth_home_is_set: bool,
+    auth_home_raw: str = "",
+) -> tuple[Path, Path]:
+    """Resolve the Docker credential residence root and active auth directory.
+
+    This stays stdlib-only because stage2 uses it before importing Hermes.
+    Invalid explicit overrides raise instead of falling back into
+    ``HERMES_HOME``.
+    """
+    runtime_path = Path(hermes_home)
+    if not auth_home_is_set:
+        return runtime_path, runtime_path
+    try:
+        runtime_home = runtime_path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"HERMES_HOME cannot be resolved: {exc}") from exc
+
+    raw = auth_home_raw
+    if not raw.strip():
+        raise ValueError("HERMES_AUTH_HOME is set but empty")
+    if raw != raw.strip():
+        raise ValueError(
+            "HERMES_AUTH_HOME must not have leading or trailing whitespace"
+        )
+    if raw.startswith("~"):
+        raise ValueError("HERMES_AUTH_HOME must not use '~' expansion")
+    if any(ord(char) < 32 or ord(char) == 127 for char in raw):
+        raise ValueError("HERMES_AUTH_HOME must not contain control characters")
+
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        raise ValueError("HERMES_AUTH_HOME must be an absolute path")
+    try:
+        residence = candidate.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"HERMES_AUTH_HOME cannot be resolved: {exc}") from exc
+    if _is_filesystem_anchor(residence):
+        raise ValueError(
+            "HERMES_AUTH_HOME must not be a filesystem root; "
+            "use a dedicated directory below the root"
+        )
+    if os.path.lexists(candidate) and not candidate.is_dir():
+        raise ValueError(
+            f"HERMES_AUTH_HOME must be a directory (got {str(residence)!r})"
+        )
+
+    if residence == runtime_home:
+        return residence, residence
+    if runtime_home.parent.name == "profiles":
+        auth_dir = residence / "profiles" / runtime_home.name
+    else:
+        auth_dir = residence
+    if os.path.lexists(auth_dir) and not auth_dir.is_dir():
+        raise ValueError(
+            f"mapped credential path must be a directory (got {str(auth_dir)!r})"
+        )
+    if auth_dir == runtime_home:
+        return residence, auth_dir
+
+    try:
+        user_home = _real_user_home(runtime_home)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(
+            f"HERMES_AUTH_HOME cannot be checked against the OS user home: {exc}"
+        ) from exc
+    if _path_is_within(user_home, residence):
+        raise ValueError(
+            "HERMES_AUTH_HOME must not be the OS user home or one of its "
+            "ancestors; use a dedicated directory"
+        )
+    if _path_is_within(runtime_home, residence):
+        raise ValueError(
+            "HERMES_AUTH_HOME must not contain HERMES_HOME; "
+            "use a dedicated directory"
+        )
+    return residence, auth_dir
+
+
+def resolve_auth_layout_from_env() -> tuple[Path, Path]:
+    """Resolve the Docker auth layout from the current process environment."""
+    return resolve_auth_layout(
+        os.environ.get("HERMES_HOME", ""),
+        "HERMES_AUTH_HOME" in os.environ,
+        os.environ.get("HERMES_AUTH_HOME", ""),
+    )
 
 
 def _nous_entry_is_terminal(nous_state: Any) -> bool:
@@ -137,6 +266,63 @@ def _seed_is_newer(local_nous: Any, seed_nous: dict) -> bool:
     )
 
 
+def _replace_auth_store_atomically(auth_path: str, store: dict) -> None:
+    """Durably replace one auth store via a unique owner-only temp file.
+
+    The spelling matches Hermes' primary auth writer so stage2 ownership
+    repair and backup/uninstall artifact classifiers recognize crash residue.
+    Exclusive creation plus ``O_NOFOLLOW`` where available prevents a
+    preplanted temp symlink from redirecting credential output.
+    """
+    target = Path(auth_path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = -1
+    tmp_path: Path | None = None
+    for _attempt in range(100):
+        candidate = target.with_name(
+            f"{target.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        try:
+            fd = os.open(str(candidate), flags, 0o600)
+        except FileExistsError:
+            continue
+        tmp_path = candidate
+        break
+    if tmp_path is None:
+        raise FileExistsError(
+            f"could not allocate a unique temporary file beside {target}"
+        )
+
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        else:
+            os.chmod(tmp_path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            json.dump(store, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, target)
+        try:
+            dir_fd = os.open(str(target.parent), os.O_RDONLY)
+        except OSError:
+            dir_fd = -1
+        if dir_fd >= 0:
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
     """Core logic. Returns a short status string for logging/testing:
 
@@ -187,22 +373,44 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
     # Surgical replacement: swap ONLY providers.nous, preserve everything else.
     providers["nous"] = seed_nous
 
-    tmp_path = f"{auth_path}.rebootstrap.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        json.dump(store, fh)
-    os.replace(tmp_path, auth_path)
-    try:
-        os.chmod(auth_path, 0o600)
-    except OSError:
-        pass
+    _replace_auth_store_atomically(auth_path, store)
     return "reseeded" if terminal else "reseeded_newer"
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--resolve-auth-layout"]:
+        try:
+            residence, auth_dir = resolve_auth_layout_from_env()
+        except ValueError as exc:
+            print(f"[rebootstrap] invalid auth residence: {exc}", file=sys.stderr)
+            return 2
+        print(residence)
+        print(auth_dir)
+        runtime_home = Path(os.environ.get("HERMES_HOME", "")).resolve(strict=False)
+        is_distinct = (
+            "HERMES_AUTH_HOME" in os.environ and auth_dir != runtime_home
+        )
+        print("distinct" if is_distinct else "same")
+        if is_distinct:
+            shared_auth_dir = residence / "shared"
+        else:
+            runtime_root = (
+                runtime_home.parent.parent
+                if runtime_home.parent.name == "profiles"
+                else runtime_home
+            )
+            shared_auth_dir = runtime_root / "shared"
+        print(shared_auth_dir)
+        return 0
+
     auth_path = sys.argv[1] if len(sys.argv) > 1 else ""
     if not auth_path:
-        home = os.environ.get("HERMES_HOME", "")
-        auth_path = os.path.join(home, "auth.json") if home else "auth.json"
+        try:
+            _residence, auth_dir = resolve_auth_layout_from_env()
+        except ValueError as exc:
+            print(f"[rebootstrap] invalid auth residence: {exc}", file=sys.stderr)
+            return 2
+        auth_path = str(auth_dir / "auth.json")
     seed_raw = os.environ.get(REBOOTSTRAP_ENV, "")
 
     try:

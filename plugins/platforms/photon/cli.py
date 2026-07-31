@@ -149,7 +149,7 @@ def _run_device_login(args: argparse.Namespace) -> int:
     # Don't print any portion of the token — even a prefix can help a
     # shoulder-surfer or accidentally leak into a screen recording.
     _ = token
-    print(f"✓ logged in — token saved to {photon_auth._auth_json_path()}")
+    print(f"✓ logged in — token saved to {photon_auth.auth_json_path()}")
     return 0
 
 

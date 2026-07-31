@@ -24,7 +24,7 @@ from agent.credential_pool import (
     _normalize_custom_pool_name,
     get_pool_strategy,
     label_from_token,
-    list_custom_pool_providers,
+    list_pool_providers,
     load_pool,
 )
 import hermes_cli.auth as auth_mod
@@ -185,11 +185,10 @@ def auth_add_command(args) -> None:
     if not provider.startswith(CUSTOM_POOL_PREFIX):
         try:
             from hermes_cli.auth import (
-                _load_auth_store,
+                get_suppressed_credential_sources,
                 unsuppress_credential_source,
             )
-            suppressed = _load_auth_store().get("suppressed_sources", {})
-            for src in list(suppressed.get(provider, []) or []):
+            for src in get_suppressed_credential_sources(provider):
                 unsuppress_credential_source(provider, src)
         except Exception:
             pass
@@ -439,13 +438,9 @@ def auth_list_command(args) -> None:
     if provider_filter:
         providers = [provider_filter]
     else:
-        providers = sorted({
-            *PROVIDER_REGISTRY.keys(),
-            "openrouter",
-            *list_custom_pool_providers(),
-        })
+        providers = list_pool_providers()
     for provider in providers:
-        pool = load_pool(provider)
+        pool = load_pool(provider, passive=True)
         entries = pool.entries()
         if not entries:
             continue

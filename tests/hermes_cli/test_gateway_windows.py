@@ -223,6 +223,260 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_gateway_vbs_script_sets_strict_auth_home(monkeypatch, tmp_path):
+    auth_home = tmp_path / 'auth "residence"'
+    monkeypatch.setenv("HERMES_AUTH_HOME", str(auth_home))
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_preserve_hermes_home_path",
+        lambda path: str(path),
+    )
+
+    content = gateway_windows._build_gateway_vbs_script(
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Hermes",
+        r"C:\Hermes",
+        "",
+    )
+
+    escaped = str(auth_home.resolve()).replace('"', '""')
+    assert f'env.Item("HERMES_AUTH_HOME") = "{escaped}"' in content
+
+
+def test_persistent_windows_launchers_run_auth_aware_vbs(
+    monkeypatch, tmp_path
+):
+    runtime_home = tmp_path / "runtime"
+    auth_home = tmp_path / "auth-residence"
+    runtime_home.mkdir()
+    script_path = tmp_path / "Hermes_Gateway.cmd"
+    startup_path = tmp_path / "Startup" / "Hermes_Gateway.vbs"
+    startup_path.parent.mkdir()
+
+    monkeypatch.setenv("HERMES_AUTH_HOME", str(auth_home))
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "get_task_script_path",
+        lambda: script_path,
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "get_startup_entry_path",
+        lambda: startup_path,
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_legacy_startup_entry_path",
+        lambda: startup_path.with_suffix(".cmd"),
+    )
+    monkeypatch.setattr(gateway, "get_python_path", lambda: r"C:\venv\python.exe")
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(gateway, "_profile_arg", lambda home: "")
+    monkeypatch.setattr(
+        "hermes_cli.config.get_hermes_home",
+        lambda: runtime_home,
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_stable_gateway_working_dir",
+        lambda project_root: str(runtime_home),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (exe, Path(r"C:\venv"), []),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_preserve_hermes_home_path",
+        lambda path: str(path),
+    )
+
+    written_script = gateway_windows._write_task_script()
+    vbs_path = written_script.with_suffix(".vbs")
+    vbs = vbs_path.read_text(encoding="utf-8")
+    assert (
+        f'env.Item("HERMES_AUTH_HOME") = "{auth_home.resolve()}"'
+        in vbs
+    )
+
+    task_xml = gateway_windows._build_scheduled_task_xml(
+        "Hermes Gateway",
+        vbs_path,
+        r"DOMAIN\alice",
+    )
+    assert "<Command>wscript.exe</Command>" in task_xml
+    assert str(vbs_path) in task_xml
+
+    startup_entry = gateway_windows._install_startup_entry(written_script)
+    startup = startup_entry.read_text(encoding="utf-8")
+    assert str(vbs_path) in startup
+    assert "wscript.exe" in startup
+
+
+@pytest.mark.parametrize("operation", ("start", "restart"))
+@pytest.mark.parametrize("explicit_override", (False, True))
+def test_windows_manual_service_actions_preserve_auth_home(
+    monkeypatch,
+    tmp_path,
+    operation,
+    explicit_override,
+):
+    runtime_home = tmp_path / "runtime"
+    installed_auth_home = tmp_path / "installed-auth"
+    caller_auth_home = tmp_path / "caller-auth"
+    runtime_home.mkdir()
+    script_path = tmp_path / "Hermes_Gateway.cmd"
+    spawned = []
+
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.setenv("HERMES_AUTH_HOME", str(installed_auth_home))
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "get_task_script_path",
+        lambda: script_path,
+    )
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(tmp_path / "python.exe"))
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(gateway, "_profile_arg", lambda home: "")
+    monkeypatch.setattr(
+        "hermes_cli.config.get_hermes_home",
+        lambda: runtime_home,
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_stable_gateway_working_dir",
+        lambda project_root: str(runtime_home),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (exe, tmp_path / "venv", []),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_preserve_hermes_home_path",
+        lambda path: str(path),
+    )
+    gateway_windows._write_task_script()
+
+    if explicit_override:
+        monkeypatch.setenv("HERMES_AUTH_HOME", str(caller_auth_home))
+        expected_auth_home = caller_auth_home.resolve()
+    else:
+        monkeypatch.delenv("HERMES_AUTH_HOME")
+        expected_auth_home = installed_auth_home.resolve()
+
+    class SpawnedProcess:
+        pid = 4321
+
+    def fake_popen(argv, **kwargs):
+        spawned.append((argv, kwargs))
+        return SpawnedProcess()
+
+    monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(gateway_windows, "windows_detach_flags", lambda: 0)
+    monkeypatch.setattr(
+        gateway_windows,
+        "windows_detach_flags_without_breakaway",
+        lambda: 0,
+    )
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows,
+        "is_startup_entry_installed",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_report_gateway_start",
+        lambda via: None,
+    )
+
+    if operation == "restart":
+        monkeypatch.setattr(gateway_windows, "stop", lambda: None)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_wait_for_gateway_absent",
+            lambda timeout_s: True,
+        )
+        monkeypatch.setattr(
+            gateway_windows,
+            "_wait_for_gateway_ready",
+            lambda timeout_s: True,
+        )
+        monkeypatch.setattr(gateway_windows.time, "sleep", lambda seconds: None)
+        gateway_windows.restart()
+    else:
+        gateway_windows.start()
+
+    assert len(spawned) == 1
+    assert (
+        spawned[0][1]["env"]["HERMES_AUTH_HOME"]
+        == str(expected_auth_home)
+    )
+
+
+def test_windows_direct_spawn_falls_back_to_installed_cmd_pin(
+    monkeypatch,
+    tmp_path,
+):
+    runtime_home = tmp_path / "runtime"
+    auth_home = tmp_path / "auth%residence"
+    runtime_home.mkdir()
+    script_path = tmp_path / "Hermes_Gateway.cmd"
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.setenv("HERMES_AUTH_HOME", str(auth_home))
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows,
+        "get_task_script_path",
+        lambda: script_path,
+    )
+    monkeypatch.setattr(gateway, "get_python_path", lambda: str(tmp_path / "python.exe"))
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(gateway, "_profile_arg", lambda home: "")
+    monkeypatch.setattr(
+        "hermes_cli.config.get_hermes_home",
+        lambda: runtime_home,
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_stable_gateway_working_dir",
+        lambda project_root: str(runtime_home),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (exe, tmp_path / "venv", []),
+    )
+    monkeypatch.setattr(
+        gateway_windows,
+        "_preserve_hermes_home_path",
+        lambda path: str(path),
+    )
+    gateway_windows._write_task_script()
+    vbs_path = script_path.with_suffix(".vbs")
+    vbs_without_pin = "\r\n".join(
+        line
+        for line in vbs_path.read_text(encoding="utf-8").splitlines()
+        if "HERMES_AUTH_HOME" not in line
+    )
+    vbs_path.write_text(vbs_without_pin, encoding="utf-8")
+    monkeypatch.delenv("HERMES_AUTH_HOME")
+
+    assert gateway_windows._installed_auth_home_for_service() == str(
+        auth_home.resolve()
+    )
+
 
 
 
@@ -245,8 +499,6 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # the gateway's marker-watcher thread to drain + exit cleanly, then escalates
 # to taskkill if drain times out.
 # ---------------------------------------------------------------------------
-
-
 
 
 

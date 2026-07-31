@@ -28,8 +28,9 @@ def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
-    monkeypatch.setattr(base, "_HERMES_HOME", hermes_home)
-    monkeypatch.setattr(base, "_HERMES_ROOT", hermes_home)
+    # The denylist resolves the active home per call (profile-context aware),
+    # so the env var — not the import-time module constant — is the seam.
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     path = hermes_home / "cache" / "bws_cache.enc.json"
     path.parent.mkdir()
     path.write_text("encrypted-secret-cache")
@@ -623,14 +624,7 @@ class TestMediaDeliveryDefaultMode:
         secret = hermes_dir / rel
         secret.write_text('{"access_token": "live-bearer-abc123"}')
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setattr(
-            "gateway.platforms.base._HERMES_HOME",
-            hermes_dir,
-        )
-        monkeypatch.setattr(
-            "gateway.platforms.base._HERMES_ROOT",
-            hermes_dir,
-        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -650,8 +644,7 @@ class TestMediaDeliveryDefaultMode:
         token = hermes_dir / "google_token.json"
         token.write_text('{"access_token": "***", "refresh_token": "***"}')
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
-        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
 
@@ -672,8 +665,7 @@ class TestMediaDeliveryDefaultMode:
         artifact = hermes_dir / "adhoc_report.pdf"
         artifact.write_bytes(b"%PDF-1.4")  # fresh mtime
         monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
-        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
 

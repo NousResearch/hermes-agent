@@ -923,8 +923,8 @@ def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
     """Parse the gateway unit's ``Environment=`` directives.
 
     ``systemctl show -p Environment`` returns a single line of
-    space-separated ``KEY=VALUE`` pairs; values are not quoted in the output
-    even when the unit file quoted them. We split on whitespace and ``=``.
+    shell-escaped ``KEY=VALUE`` words. Parse that quoting before splitting
+    each assignment so paths containing whitespace remain intact.
     """
     selected_system = _select_systemd_scope(system)
     try:
@@ -943,14 +943,18 @@ def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
         )
     except (RuntimeError, subprocess.TimeoutExpired, OSError):
         return {}
-    if result.returncode != 0:
+    if result is None or getattr(result, "returncode", 1) != 0:
         return {}
     parsed: dict[str, str] = {}
-    for line in result.stdout.splitlines():
+    for line in getattr(result, "stdout", "").splitlines():
         if not line.startswith("Environment="):
             continue
         body = line[len("Environment=") :].strip()
-        for token in body.split():
+        try:
+            tokens = shlex.split(body, comments=False, posix=True)
+        except ValueError:
+            tokens = body.split()
+        for token in tokens:
             if "=" not in token:
                 continue
             key, value = token.split("=", 1)
@@ -958,8 +962,8 @@ def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
     return parsed
 
 
-def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
-    """Read ``HERMES_HOME`` from the on-disk unit file (not ``systemctl show``).
+def _systemd_unit_environment_from_file(system: bool = False) -> dict[str, str]:
+    """Read environment values from the on-disk gateway unit.
 
     Prefer the file when refreshing/comparing: under ``sudo``, ``systemctl``
     may be slow/unavailable in tests, and the on-disk unit is what
@@ -968,44 +972,91 @@ def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
     """
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
-        return None
+        return {}
     try:
         text = unit_path.read_text(encoding="utf-8")
     except OSError:
-        return None
+        return {}
+    parsed: dict[str, str] = {}
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped.startswith("Environment="):
             continue
-        body = stripped[len("Environment=") :].strip().strip('"')
-        if body.startswith("HERMES_HOME="):
-            value = body.split("=", 1)[1].strip().strip('"')
-            return value or None
-    return None
+        body = stripped[len("Environment=") :].strip()
+        if len(body) >= 2 and body[0] == body[-1] == '"':
+            body = body[1:-1]
+        if "=" not in body:
+            continue
+        key, value = body.split("=", 1)
+        if key != "HERMES_AUTH_HOME":
+            if key and value:
+                parsed[key] = value
+            continue
+        value = value.replace("%%", "%")
+        unescaped: list[str] = []
+        index = 0
+        while index < len(value):
+            if value[index] == "\\" and index + 1 < len(value):
+                index += 1
+            unescaped.append(value[index])
+            index += 1
+        if key and value:
+            parsed[key] = "".join(unescaped)
+    return parsed
 
 
-def _sync_hermes_home_from_systemd_unit(system: bool) -> None:
-    """When acting on a system-scope unit, adopt its ``HERMES_HOME``.
+def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
+    return _systemd_unit_environment_from_file(system=system).get("HERMES_HOME")
+
+
+def _sync_hermes_home_from_systemd_unit(
+    system: bool,
+    *,
+    adopt_auth_home: bool = True,
+) -> None:
+    """Adopt service-owned paths that automatic maintenance must preserve.
 
     Under ``sudo``, ``HERMES_HOME`` is stripped and ``HOME=/root``, so
     :func:`get_hermes_home` falls back to ``/root/.hermes`` — the wrong
     profile. The unit file pins ``HERMES_HOME`` for the actual gateway
     process, so we mirror that into our own environment to make
     ``read_runtime_status`` / ``get_running_pid`` read the correct files.
+
+    A separately pinned auth residence must survive automatic refreshes in
+    both user and system scope. An explicit caller value remains authoritative,
+    and install/reinstall callers can disable adoption at their mutation
+    boundary.
     """
-    if not system:
-        return
     # Prefer the on-disk unit (source of truth for refresh/compare). Fall
     # back to ``systemctl show`` for units that only exist in the manager.
-    unit_home = (_hermes_home_from_systemd_unit_file(system=True) or "").strip()
-    if not unit_home:
-        unit_home = _read_systemd_unit_environment(system=True).get("HERMES_HOME", "").strip()
-    if not unit_home:
-        return
-    current = os.environ.get("HERMES_HOME", "").strip()
-    if current == unit_home:
-        return
-    os.environ["HERMES_HOME"] = unit_home
+    unit_environment = _systemd_unit_environment_from_file(system=system)
+    manager_environment: dict[str, str] = {}
+    needs_manager_home = system and not unit_environment.get("HERMES_HOME")
+    needs_manager_auth_home = (
+        adopt_auth_home
+        and "HERMES_AUTH_HOME" not in os.environ
+        and not unit_environment.get("HERMES_AUTH_HOME")
+    )
+    if needs_manager_home or needs_manager_auth_home:
+        manager_environment = _read_systemd_unit_environment(system=system)
+
+    if system:
+        unit_home = (
+            unit_environment.get("HERMES_HOME")
+            or manager_environment.get("HERMES_HOME")
+            or ""
+        ).strip()
+        if unit_home and os.environ.get("HERMES_HOME", "").strip() != unit_home:
+            os.environ["HERMES_HOME"] = unit_home
+
+    if adopt_auth_home and "HERMES_AUTH_HOME" not in os.environ:
+        auth_home = (
+            unit_environment.get("HERMES_AUTH_HOME")
+            or manager_environment.get("HERMES_AUTH_HOME")
+            or ""
+        ).strip()
+        if auth_home:
+            os.environ["HERMES_AUTH_HOME"] = auth_home
 
 
 def _read_systemd_unit_properties(
@@ -2740,6 +2791,22 @@ def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
             reset_home_override(override_token)
 
 
+def _service_auth_home_directive() -> str:
+    """Return the strictly resolved auth-residence systemd directive."""
+    from hermes_constants import get_hermes_auth_home_override_strict
+
+    override = get_hermes_auth_home_override_strict()
+    if override is None:
+        return ""
+    escaped = (
+        str(override)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("%", "%%")
+    )
+    return f'Environment="HERMES_AUTH_HOME={escaped}"\n'
+
+
 def _systemd_watchdog_service_fields(
     hermes_home: str | Path | None = None,
 ) -> tuple[str, str]:
@@ -2807,6 +2874,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+        auth_home_directive = _service_auth_home_directive()
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2825,7 +2893,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{auth_home_directive}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
@@ -2850,6 +2918,7 @@ WantedBy=multi-user.target
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    auth_home_directive = _service_auth_home_directive()
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2863,7 +2932,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Restart=always
+{auth_home_directive}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
@@ -2926,7 +2995,11 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     )
 
 
-def systemd_unit_is_current(system: bool = False) -> bool:
+def systemd_unit_is_current(
+    system: bool = False,
+    *,
+    preserve_installed_auth_home: bool = True,
+) -> bool:
     # ── HERMES_HOME sync chokepoint ──────────────────────────────────────
     # Every path that compares OR regenerates the unit funnels through here:
     # ``refresh_systemd_unit_if_needed`` gates on this before rewriting, and
@@ -2943,7 +3016,13 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     # ``_sync_...`` is idempotent (early-returns once os.environ matches), so
     # the mutation persists for callers that read runtime state after this
     # (e.g. ``systemd_restart``'s post-refresh get_running_pid / drain-timeout).
-    _sync_hermes_home_from_systemd_unit(system=system)
+    if preserve_installed_auth_home:
+        _sync_hermes_home_from_systemd_unit(system=system)
+    else:
+        _sync_hermes_home_from_systemd_unit(
+            system=system,
+            adopt_auth_home=False,
+        )
 
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
@@ -2964,31 +3043,26 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     return norm_installed == norm_expected
 
 
-def _temp_home_in_service_definition(definition: str) -> str | None:
-    """Return the temp-dir HERMES_HOME baked into a service definition, or None.
+def _temp_home_environment_in_service_definition(
+    definition: str,
+) -> tuple[str, str] | None:
+    """Return a temp-dir Hermes home variable baked into a service definition.
 
-    A generated systemd unit / launchd plist carries the resolved HERMES_HOME
-    in its environment block. If that path lives under the system temp dir,
-    the definition was almost certainly generated by a test/E2E harness that
-    exported a throwaway ``HERMES_HOME=/tmp/...`` — writing it to the real
-    service file silently breaks the user's gateway on the next (re)start:
-    the gateway comes back "active (running)" but pointed at an empty temp
-    home ("No messaging platforms enabled"), deaf to every platform.
+    Generated systemd units and launchd plists carry the resolved runtime and
+    auth homes in their environment blocks. A path under the system temp dir
+    was almost certainly exported by a test or E2E harness; writing it to the
+    real service definition makes the next launch use disposable state.
     Seen live 2026-06-11: an E2E guard probe ran ``hermes gateway restart``
     with ``HERMES_HOME=/tmp/hermes-e2e-<pr>`` exported; the restart path's
     unit refresh baked the temp path into the production unit and the
     post-update restart produced a zombie gateway for 7+ hours.
 
-    Matches both systemd ``Environment="HERMES_HOME=..."`` lines and launchd
-    ``<key>HERMES_HOME</key><string>...</string>`` pairs.
+    Runtime-home checks run first to preserve the established diagnostic when
+    both variables point into temporary storage.
     """
     import re
     import tempfile
 
-    candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
-    candidates += re.findall(
-        r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.S
-    )
     temp_roots = {
         Path(tempfile.gettempdir()).resolve(),
         Path("/tmp"),
@@ -2996,34 +3070,55 @@ def _temp_home_in_service_definition(definition: str) -> str | None:
         Path("/private/tmp"),
         Path("/private/var/tmp"),
     }
-    for raw in candidates:
-        try:
-            resolved = Path(raw.strip().strip('"')).resolve()
-        except (OSError, ValueError):
-            continue
-        for root in temp_roots:
-            if resolved == root or root in resolved.parents:
-                return raw.strip()
+    for variable in ("HERMES_HOME", "HERMES_AUTH_HOME"):
+        candidates = re.findall(
+            rf"{re.escape(variable)}=([^\"\n]+)",
+            definition,
+        )
+        candidates += re.findall(
+            rf"<key>{re.escape(variable)}</key>\s*<string>(.*?)</string>",
+            definition,
+            flags=re.S,
+        )
+        for raw in candidates:
+            try:
+                resolved = Path(raw.strip().strip('"')).resolve()
+            except (OSError, ValueError):
+                continue
+            for root in temp_roots:
+                if resolved == root or root in resolved.parents:
+                    return variable, raw.strip()
     return None
 
 
+def _temp_home_in_service_definition(definition: str) -> str | None:
+    """Return a temp-dir Hermes home baked into a service definition."""
+    match = _temp_home_environment_in_service_definition(definition)
+    return match[1] if match is not None else None
+
+
 def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
-    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
-    temp_home = _temp_home_in_service_definition(definition)
-    if temp_home is None:
+    """Refuse when a service definition carries a temporary Hermes home."""
+    match = _temp_home_environment_in_service_definition(definition)
+    if match is None:
         return False
+    variable, temp_home = match
     print(
-        f"✗ Refusing to write the gateway {kind}: HERMES_HOME resolves to a "
+        f"✗ Refusing to write the gateway {kind}: {variable} resolves to a "
         f"temporary directory ({temp_home})."
     )
     print(
-        "  This usually means a test/E2E environment exported HERMES_HOME. "
+        f"  This usually means a test/E2E environment exported {variable}. "
         "Unset it (or run from a clean shell) and retry."
     )
     return True
 
 
-def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
+def refresh_systemd_unit_if_needed(
+    system: bool = False,
+    *,
+    preserve_installed_auth_home: bool = True,
+) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
@@ -3033,7 +3128,14 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     # single HERMES_HOME-sync chokepoint (adopts the unit's pinned home before
     # any compare/regenerate). No separate pre-sync needed here — and the env
     # mutation it performs persists for the regenerate path below.
-    if systemd_unit_is_current(system=system):
+    if preserve_installed_auth_home:
+        is_current = systemd_unit_is_current(system=system)
+    else:
+        is_current = systemd_unit_is_current(
+            system=system,
+            preserve_installed_auth_home=False,
+        )
+    if is_current:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
@@ -3227,14 +3329,23 @@ def systemd_install(
     # ``sudo hermes gateway install --system --force`` would bake /root/.hermes
     # into an already-correct unit. Keep it to protect that bypass path.
     if unit_path.exists():
-        _sync_hermes_home_from_systemd_unit(system=system)
+        _sync_hermes_home_from_systemd_unit(
+            system=system,
+            adopt_auth_home=False,
+        )
 
     if unit_path.exists() and not force:
-        if not systemd_unit_is_current(system=system):
+        if not systemd_unit_is_current(
+            system=system,
+            preserve_installed_auth_home=False,
+        ):
             print(
                 f"↻ Repairing outdated {_service_scope_label(system)} systemd service at: {unit_path}"
             )
-            refresh_systemd_unit_if_needed(system=system)
+            refresh_systemd_unit_if_needed(
+                system=system,
+                preserve_installed_auth_home=False,
+            )
             if enable_on_startup:
                 _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
             print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
@@ -3942,6 +4053,9 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
 
 
 def generate_launchd_plist() -> str:
+    from hermes_constants import get_hermes_auth_home_override_strict
+    from xml.sax.saxutils import escape
+
     python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
@@ -3996,6 +4110,17 @@ def generate_launchd_plist() -> str:
         ]
     )
     prog_args_xml = "\n        ".join(prog_args)
+    auth_home = get_hermes_auth_home_override_strict()
+    auth_home_xml = ""
+    if auth_home is not None:
+        escaped_auth_home = escape(
+            str(auth_home),
+            {'"': "&quot;", "'": "&apos;"},
+        )
+        auth_home_xml = (
+            "        <key>HERMES_AUTH_HOME</key>\n"
+            f"        <string>{escaped_auth_home}</string>\n"
+        )
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -4020,6 +4145,7 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+{auth_home_xml}\
     </dict>
 
     <key>LimitLoadToSessionType</key>
@@ -4054,12 +4180,44 @@ def generate_launchd_plist() -> str:
 """
 
 
-def launchd_plist_is_current() -> bool:
+def _auth_home_from_launchd_plist() -> str | None:
+    import plistlib
+
+    plist_path = get_launchd_plist_path()
+    if not plist_path.exists():
+        return None
+    try:
+        plist = plistlib.loads(plist_path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    environment = plist.get("EnvironmentVariables", {})
+    if not isinstance(environment, dict):
+        return None
+    auth_home = environment.get("HERMES_AUTH_HOME")
+    if not isinstance(auth_home, str):
+        return None
+    return auth_home.strip() or None
+
+
+def _sync_auth_home_from_launchd_plist() -> None:
+    if "HERMES_AUTH_HOME" in os.environ:
+        return
+    auth_home = _auth_home_from_launchd_plist()
+    if auth_home:
+        os.environ["HERMES_AUTH_HOME"] = auth_home
+
+
+def launchd_plist_is_current(
+    *,
+    preserve_installed_auth_home: bool = True,
+) -> bool:
     """Check if the installed launchd plist matches the currently generated one."""
     plist_path = get_launchd_plist_path()
     if not plist_path.exists():
         return False
 
+    if preserve_installed_auth_home:
+        _sync_auth_home_from_launchd_plist()
     installed = plist_path.read_text(encoding="utf-8")
     expected = generate_launchd_plist()
     return _normalize_launchd_plist_for_comparison(
@@ -4067,7 +4225,10 @@ def launchd_plist_is_current() -> bool:
     ) == _normalize_launchd_plist_for_comparison(expected)
 
 
-def refresh_launchd_plist_if_needed() -> bool:
+def refresh_launchd_plist_if_needed(
+    *,
+    preserve_installed_auth_home: bool = True,
+) -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
@@ -4075,7 +4236,15 @@ def refresh_launchd_plist_if_needed() -> bool:
     bootstrap to make launchd re-read the updated plist immediately.
     """
     plist_path = get_launchd_plist_path()
-    if not plist_path.exists() or launchd_plist_is_current():
+    if not plist_path.exists():
+        return False
+    if preserve_installed_auth_home:
+        is_current = launchd_plist_is_current()
+    else:
+        is_current = launchd_plist_is_current(
+            preserve_installed_auth_home=False,
+        )
+    if is_current:
         return False
 
     new_plist = generate_launchd_plist()
@@ -4237,9 +4406,13 @@ def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
 
     if plist_path.exists() and not force:
-        if not launchd_plist_is_current():
+        if not launchd_plist_is_current(
+            preserve_installed_auth_home=False,
+        ):
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            refresh_launchd_plist_if_needed()
+            refresh_launchd_plist_if_needed(
+                preserve_installed_auth_home=False,
+            )
             print("✓ Service definition updated")
             return
         print(f"Service already installed at: {plist_path}")

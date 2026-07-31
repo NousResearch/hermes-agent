@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -157,6 +158,46 @@ class TestTempHomeServiceDefinitionGuard:
         monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(tmp_path))
         unit = f'[Service]\nEnvironment="HERMES_HOME={tmp_path}/hermes-home"\n'
         assert gateway_cli._temp_home_in_service_definition(unit) is not None
+
+    @pytest.mark.parametrize(
+        ("kind", "definition"),
+        (
+            (
+                "systemd unit",
+                '[Service]\nEnvironment="HERMES_AUTH_HOME=/tmp/hermes-auth-e2e"\n',
+            ),
+            (
+                "launchd plist",
+                (
+                    "<key>HERMES_AUTH_HOME</key>\n"
+                    "<string>/tmp/hermes-auth-e2e</string>\n"
+                ),
+            ),
+        ),
+    )
+    def test_refuses_temporary_auth_home(self, kind, definition, capsys):
+        assert (
+            gateway_cli._temp_home_in_service_definition(definition)
+            == "/tmp/hermes-auth-e2e"
+        )
+        assert gateway_cli._refuse_temp_home_service_write(definition, kind)
+        output = capsys.readouterr().out
+        assert f"gateway {kind}" in output
+        assert "HERMES_AUTH_HOME resolves to a temporary directory" in output
+
+    def test_runtime_home_diagnostic_remains_authoritative(self, capsys):
+        definition = (
+            '[Service]\nEnvironment="HERMES_HOME=/tmp/runtime"\n'
+            'Environment="HERMES_AUTH_HOME=/tmp/auth"\n'
+        )
+
+        assert gateway_cli._refuse_temp_home_service_write(
+            definition,
+            "systemd unit",
+        )
+        output = capsys.readouterr().out
+        assert "HERMES_HOME resolves to a temporary directory" in output
+        assert "exported HERMES_HOME" in output
 
 
 
@@ -767,6 +808,404 @@ class TestSystemUnitRefreshSyncsHermesHome:
                 f"{entry} should delegate sync to the chokepoint, not pre-sync "
                 f"at the callsite; got {calls}"
             )
+
+
+class TestServiceAuthHomePersistence:
+    @pytest.mark.parametrize("system", (False, True))
+    def test_systemd_manager_auth_home_with_spaces_round_trips(
+        self, system, tmp_path, monkeypatch
+    ):
+        unit_path = tmp_path / f"{'system' if system else 'user'}.service"
+        unit_path.write_text(
+            '[Service]\nEnvironment="HERMES_HOME=/srv/file runtime"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    'Environment=HERMES_HOME=/srv/manager '
+                    '"HERMES_AUTH_HOME=/srv/drop in/auth" OTHER=value\n'
+                ),
+                stderr="",
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", "/srv/caller")
+        monkeypatch.delenv("HERMES_AUTH_HOME", raising=False)
+
+        gateway_cli._sync_hermes_home_from_systemd_unit(system=system)
+
+        assert os.environ["HERMES_AUTH_HOME"] == "/srv/drop in/auth"
+        assert os.environ["HERMES_HOME"] == (
+            "/srv/file runtime" if system else "/srv/caller"
+        )
+
+    @pytest.mark.parametrize("system", (False, True))
+    def test_systemd_main_unit_auth_home_precedes_manager(
+        self, system, tmp_path, monkeypatch
+    ):
+        unit_path = tmp_path / f"{'system' if system else 'user'}.service"
+        unit_path.write_text(
+            (
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/runtime"\n'
+                'Environment="HERMES_AUTH_HOME=/srv/file auth"\n'
+            ),
+            encoding="utf-8",
+        )
+        manager_reads = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_environment",
+            lambda system=False: manager_reads.append(system)
+            or {"HERMES_AUTH_HOME": "/srv/manager auth"},
+        )
+        monkeypatch.delenv("HERMES_AUTH_HOME", raising=False)
+
+        gateway_cli._sync_hermes_home_from_systemd_unit(system=system)
+
+        assert os.environ["HERMES_AUTH_HOME"] == "/srv/file auth"
+        assert manager_reads == []
+
+    @pytest.mark.parametrize("system", (False, True))
+    def test_systemd_maintenance_reads_auth_home_from_manager_drop_in(
+        self, system, tmp_path, monkeypatch
+    ):
+        unit_path = tmp_path / f"{'system' if system else 'user'}.service"
+        unit_path.write_text(
+            (
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/file-runtime"\n'
+            ),
+            encoding="utf-8",
+        )
+        manager_reads = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_environment",
+            lambda system=False: manager_reads.append(system)
+            or {
+                "HERMES_HOME": "/srv/manager-runtime",
+                "HERMES_AUTH_HOME": "/srv/drop-in-auth",
+            },
+        )
+        monkeypatch.setenv("HERMES_HOME", "/srv/caller-runtime")
+        monkeypatch.delenv("HERMES_AUTH_HOME", raising=False)
+
+        gateway_cli._sync_hermes_home_from_systemd_unit(system=system)
+
+        assert manager_reads == [system]
+        assert os.environ["HERMES_AUTH_HOME"] == "/srv/drop-in-auth"
+        assert os.environ["HERMES_HOME"] == (
+            "/srv/file-runtime" if system else "/srv/caller-runtime"
+        )
+
+    @pytest.mark.parametrize("system", (False, True))
+    def test_systemd_maintenance_adopts_installed_auth_home(
+        self, system, tmp_path, monkeypatch
+    ):
+        unit_path = tmp_path / f"{'system' if system else 'user'}.service"
+        runtime_home = "/srv/hermes"
+        auth_home = "/srv/hermes-auth"
+
+        def generated(system=False, run_as_user=None):
+            auth = os.environ.get("HERMES_AUTH_HOME")
+            auth_line = (
+                f'Environment="HERMES_AUTH_HOME={auth}"\n' if auth else ""
+            )
+            return (
+                "[Service]\n"
+                f'Environment="HERMES_HOME={runtime_home}"\n'
+                f"{auth_line}"
+            )
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit_path,
+        )
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", generated)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_user_from_unit",
+            lambda path: "alice" if system else None,
+        )
+        unit_path.write_text(
+            (
+                "[Service]\n"
+                f'Environment="HERMES_HOME={runtime_home}"\n'
+                f'Environment="HERMES_AUTH_HOME={auth_home}"\n'
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("HERMES_AUTH_HOME", raising=False)
+        if system:
+            monkeypatch.setenv("HERMES_HOME", "/root/.hermes")
+
+        assert gateway_cli.refresh_systemd_unit_if_needed(system=system) is False
+        assert os.environ["HERMES_AUTH_HOME"] == auth_home
+        if system:
+            assert os.environ["HERMES_HOME"] == runtime_home
+        assert gateway_cli.systemd_unit_is_current(system=system) is True
+
+    @pytest.mark.parametrize("system", (False, True))
+    def test_systemd_refresh_keeps_installed_auth_home(
+        self, system, tmp_path, monkeypatch
+    ):
+        unit_path = tmp_path / f"{'system' if system else 'user'}.service"
+        auth_home = "/srv/hermes-auth"
+        unit_path.write_text(
+            (
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/hermes"\n'
+                f'Environment="HERMES_AUTH_HOME={auth_home}"\n'
+                "OldDirective=yes\n"
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_user_from_unit",
+            lambda path: "alice" if system else None,
+        )
+
+        def generated(system=False, run_as_user=None):
+            return (
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/hermes"\n'
+                f'Environment="HERMES_AUTH_HOME={os.environ["HERMES_AUTH_HOME"]}"\n'
+                "NewDirective=yes\n"
+            )
+
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", generated)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout="", stderr=""
+            ),
+        )
+        monkeypatch.delenv("HERMES_AUTH_HOME", raising=False)
+        if system:
+            monkeypatch.setenv("HERMES_HOME", "/root/.hermes")
+
+        assert gateway_cli.refresh_systemd_unit_if_needed(system=system) is True
+        refreshed = unit_path.read_text(encoding="utf-8")
+        assert f'HERMES_AUTH_HOME={auth_home}"' in refreshed
+        assert "NewDirective=yes" in refreshed
+
+    @pytest.mark.parametrize("system", (False, True))
+    def test_systemd_explicit_auth_home_remains_authoritative(
+        self, system, tmp_path, monkeypatch
+    ):
+        unit_path = tmp_path / f"{'system' if system else 'user'}.service"
+        unit_path.write_text(
+            (
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/hermes"\n'
+                'Environment="HERMES_AUTH_HOME=/srv/old-auth"\n'
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_user_from_unit",
+            lambda path: "alice" if system else None,
+        )
+
+        def generated(system=False, run_as_user=None):
+            return (
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/hermes"\n'
+                f'Environment="HERMES_AUTH_HOME={os.environ["HERMES_AUTH_HOME"]}"\n'
+            )
+
+        monkeypatch.setattr(gateway_cli, "generate_systemd_unit", generated)
+        monkeypatch.setenv("HERMES_AUTH_HOME", "/srv/new-auth")
+
+        assert gateway_cli.systemd_unit_is_current(system=system) is False
+        assert os.environ["HERMES_AUTH_HOME"] == "/srv/new-auth"
+
+    def test_systemd_reinstall_can_remove_installed_auth_home(
+        self, tmp_path, monkeypatch
+    ):
+        unit_path = tmp_path / "user.service"
+        unit_path.write_text(
+            (
+                "[Service]\n"
+                'Environment="HERMES_HOME=/srv/hermes"\n'
+                'Environment="HERMES_AUTH_HOME=/srv/old-auth"\n'
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit_path,
+        )
+        monkeypatch.setattr(gateway_cli, "has_legacy_hermes_units", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_ensure_linger_enabled", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "print_systemd_scope_conflict_warning",
+            lambda: None,
+        )
+        monkeypatch.setattr(gateway_cli, "print_legacy_unit_warning", lambda: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout="", stderr=""
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: (
+                "[Service]\nEnvironment=\"HERMES_HOME=/srv/hermes\"\n"
+            ),
+        )
+        monkeypatch.delenv("HERMES_AUTH_HOME", raising=False)
+
+        gateway_cli.systemd_install(
+            force=True,
+            enable_on_startup=False,
+        )
+
+        assert "HERMES_AUTH_HOME" not in unit_path.read_text(encoding="utf-8")
+
+    def test_launchd_plist_escapes_and_round_trips_auth_home(
+        self, tmp_path, monkeypatch
+    ):
+        runtime_home = tmp_path / "runtime"
+        runtime_home.mkdir()
+        auth_home = tmp_path / "auth&<residence>"
+        monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+        monkeypatch.setenv("HERMES_AUTH_HOME", str(auth_home))
+
+        plist_text = gateway_cli.generate_launchd_plist()
+        assert "auth&amp;&lt;residence&gt;" in plist_text
+        plist = plistlib.loads(plist_text.encode())
+        assert (
+            plist["EnvironmentVariables"]["HERMES_AUTH_HOME"]
+            == str(auth_home.resolve())
+        )
+
+    def test_launchd_maintenance_adopts_installed_auth_home(
+        self, tmp_path, monkeypatch
+    ):
+        runtime_home = tmp_path / "runtime"
+        runtime_home.mkdir()
+        auth_home = tmp_path / "auth-residence"
+        plist_path = tmp_path / "gateway.plist"
+        monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+        monkeypatch.setenv("HERMES_AUTH_HOME", str(auth_home))
+        plist_path.write_text(
+            gateway_cli.generate_launchd_plist(),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_plist_path",
+            lambda: plist_path,
+        )
+        monkeypatch.delenv("HERMES_AUTH_HOME")
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is False
+        assert os.environ["HERMES_AUTH_HOME"] == str(auth_home.resolve())
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_explicit_auth_home_remains_authoritative(
+        self, tmp_path, monkeypatch
+    ):
+        runtime_home = tmp_path / "runtime"
+        runtime_home.mkdir()
+        old_auth_home = tmp_path / "old-auth"
+        new_auth_home = tmp_path / "new-auth"
+        plist_path = tmp_path / "gateway.plist"
+        monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+        monkeypatch.setenv("HERMES_AUTH_HOME", str(old_auth_home))
+        plist_path.write_text(
+            gateway_cli.generate_launchd_plist(),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_plist_path",
+            lambda: plist_path,
+        )
+        monkeypatch.setenv("HERMES_AUTH_HOME", str(new_auth_home))
+
+        assert gateway_cli.launchd_plist_is_current() is False
+        assert os.environ["HERMES_AUTH_HOME"] == str(new_auth_home)
+
+    def test_launchd_reinstall_can_remove_installed_auth_home(
+        self, tmp_path, monkeypatch
+    ):
+        runtime_home = tmp_path / "runtime"
+        runtime_home.mkdir()
+        old_auth_home = tmp_path / "old-auth"
+        plist_path = tmp_path / "gateway.plist"
+        monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+        monkeypatch.setenv("HERMES_AUTH_HOME", str(old_auth_home))
+        plist_path.write_text(
+            gateway_cli.generate_launchd_plist(),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_plist_path",
+            lambda: plist_path,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchctl_bootstrap",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "user/501")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_clear_launchd_unsupported_marker",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_refuse_temp_home_service_write",
+            lambda definition, kind: False,
+        )
+        monkeypatch.delenv("HERMES_AUTH_HOME")
+
+        gateway_cli.launchd_install(force=True)
+
+        plist = plistlib.loads(plist_path.read_bytes())
+        assert "HERMES_AUTH_HOME" not in plist["EnvironmentVariables"]
 
 
 class TestHermesHomeForTargetUser:
@@ -1755,4 +2194,3 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
         )
         assert ok is True
         assert attempts["bootstrap"] >= 2  # the timeout was retried, not raised
-

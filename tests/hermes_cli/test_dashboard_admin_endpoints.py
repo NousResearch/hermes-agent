@@ -148,6 +148,80 @@ class TestCredentialPoolEndpoints:
         self.client, _ = _client()
 
 
+    def test_list_discovers_runtime_only_config_and_env_pools(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from hermes_constants import get_hermes_home
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.config import invalidate_env_cache
+
+        runtime_home = get_hermes_home()
+        residence = tmp_path / "auth-residence"
+        monkeypatch.setenv("HOME", str(tmp_path / "operator"))
+        monkeypatch.setenv("HERMES_AUTH_HOME", str(residence))
+        for provider in PROVIDER_REGISTRY.values():
+            for env_var in provider.api_key_env_vars:
+                monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_passive-dashboard")
+        network_calls = []
+
+        def forbidden_exchange(*_args, **_kwargs):
+            network_calls.append("copilot token exchange")
+            raise RuntimeError("network discovery is forbidden")
+
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.exchange_copilot_token",
+            forbidden_exchange,
+        )
+
+        (runtime_home / "config.yaml").write_text(
+            """
+custom_providers:
+  - name: Foo
+    base_url: https://foo.example/v1
+    api_key: foo-runtime-key
+  - name: Empty
+    base_url: https://empty.example/v1
+""".lstrip(),
+            encoding="utf-8",
+        )
+        (runtime_home / ".env").write_text(
+            "OPENROUTER_API_KEY=openrouter-runtime-key\n"
+            "COPILOT_GITHUB_TOKEN=gho_passive-dashboard\n",
+            encoding="utf-8",
+        )
+        invalidate_env_cache()
+
+        response = self.client.get("/api/credentials/pool")
+
+        assert response.status_code == 200
+        providers = response.json()["providers"]
+        assert [item["provider"] for item in providers] == [
+            "copilot",
+            "custom:foo",
+            "openrouter",
+        ]
+        assert [
+            entry["source"]
+            for item in providers
+            for entry in item["entries"]
+        ] == [
+            "env:COPILOT_GITHUB_TOKEN",
+            "config:Foo",
+            "env:OPENROUTER_API_KEY",
+        ]
+        assert network_calls == []
+        persisted = (
+            (residence / "auth.json").read_text(encoding="utf-8")
+            if (residence / "auth.json").exists()
+            else ""
+        )
+        assert "config:Foo" not in persisted
+        assert "env:OPENROUTER_API_KEY" not in persisted
+
+
 
     def test_env_seeded_delete_stays_deleted(self):
         """#55217: DELETE must suppress the source or load_pool() resurrects it.
@@ -177,7 +251,10 @@ class TestCredentialPoolEndpoints:
         # rewriting .env), the removal must stay sticky.
         save_env_value("OPENROUTER_API_KEY", fake_key)
         assert load_pool("openrouter").entries() == []
-        assert self.client.get("/api/credentials/pool").json()["providers"] == []
+        providers = self.client.get("/api/credentials/pool").json()["providers"]
+        assert "openrouter" not in {
+            item["provider"] for item in providers
+        }
 
     def test_post_readd_lifts_suppression(self):
         """Re-adding via POST is an explicit re-engagement — suppressions lift.

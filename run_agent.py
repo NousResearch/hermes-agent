@@ -31,6 +31,24 @@ except ModuleNotFoundError:
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
     pass
 
+# A direct ``python run_agent.py`` must reject an invalid credential residence
+# before the library module loads dotenv, tools, caches, or session state.
+# Library imports deliberately skip this guard; the installed command uses the
+# lightweight ``hermes_agent_entry`` wrapper for the same early validation.
+if __name__ == "__main__":
+    import sys as _early_sys
+
+    from hermes_constants import (
+        HermesAuthHomeError as _EarlyHermesAuthHomeError,
+        validate_hermes_auth_home as _early_validate_hermes_auth_home,
+    )
+
+    try:
+        _early_validate_hermes_auth_home()
+    except _EarlyHermesAuthHomeError as _early_auth_home_error:
+        print(f"Error: {_early_auth_home_error}", file=_early_sys.stderr)
+        raise SystemExit(2)
+
 import asyncio
 import base64
 import copy
@@ -7233,6 +7251,14 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    from hermes_constants import HermesAuthHomeError, get_hermes_auth_home_strict
+
+    try:
+        get_hermes_auth_home_strict()
+    except HermesAuthHomeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     

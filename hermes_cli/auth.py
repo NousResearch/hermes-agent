@@ -2,8 +2,8 @@
 Multi-provider authentication system for Hermes Agent.
 
 Supports OAuth device code flows (Nous Portal, future: OpenAI Codex) and
-traditional API key providers (OpenRouter, custom endpoints). Auth state
-is persisted in ~/.hermes/auth.json with cross-process file locking.
+traditional API key providers (OpenRouter, custom endpoints). Auth state is
+persisted in the resolved Hermes ``auth.json`` with cross-process file locking.
 
 Architecture:
 - ProviderConfig registry defines known OAuth providers
@@ -44,14 +44,30 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from hermes_cli.config import (
-    get_hermes_home,
     get_config_path,
     read_raw_config,
     require_readable_config_before_write,
 )
-from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
-from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
+from hermes_constants import (
+    OPENROUTER_BASE_URL,
+    get_hermes_home,
+    get_hermes_auth_home_strict,
+    get_hermes_auth_home_override,
+    get_hermes_auth_home_override_strict,
+    is_hermes_auth_home_relocated_strict,
+    secure_parent_dir,
+)
+from agent.credential_persistence import (
+    is_runtime_local_credential_source,
+    sanitize_borrowed_credential_payload,
+)
+from utils import (
+    atomic_json_write,
+    atomic_replace,
+    atomic_yaml_write,
+    env_float,
+    is_truthy_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -899,11 +915,12 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 
 
 # =============================================================================
-# Auth Store — persistence layer for ~/.hermes/auth.json
+# Auth Store — persistence layer for the resolved Hermes auth.json
 # =============================================================================
 
 def _auth_file_path() -> Path:
-    path = get_hermes_home() / "auth.json"
+    pinned = getattr(_auth_default_target, "path", None)
+    path = pinned if isinstance(pinned, Path) else get_hermes_auth_home_strict() / "auth.json"
     # Seat belt: if pytest is running and HERMES_HOME resolves to the real
     # user's auth store, refuse rather than silently corrupt it. This catches
     # tests that forgot to monkeypatch HERMES_HOME, tests invoked without the
@@ -918,7 +935,8 @@ def _auth_file_path() -> Path:
         if resolved == real_home_auth:
             raise RuntimeError(
                 f"Refusing to touch real user auth store during test run: {path}. "
-                "Set HERMES_HOME to a tmp_path in your test fixture, or run "
+                "Set HERMES_HOME and HERMES_AUTH_HOME to tmp_path directories "
+                "in your test fixture, or run "
                 "via scripts/run_tests.sh for hermetic CI-parity env."
             )
     return path
@@ -932,6 +950,15 @@ def _global_auth_file_path() -> Optional[Path]:
     Used by read-only fallback paths so providers authed at the root are
     visible to profile processes that haven't configured them locally.
 
+    Under ``HERMES_AUTH_HOME`` the residence mirrors the whole layout, root
+    included, so the fallback becomes the residence root rather than the
+    Hermes root — credentials never cross the residence boundary, but
+    profile-to-root write-through of rotated single-use refresh tokens keeps
+    working inside it (#43589, #48415).  Note this is decided by comparing
+    resolved paths, not by whether the env var is merely set: pointing the
+    residence at the directory it already resolves to is a no-op and must not
+    tear down the fallback.
+
     See issue #18594 follow-up (credential_pool shadowing).
     """
     try:
@@ -939,12 +966,20 @@ def _global_auth_file_path() -> Optional[Path]:
         global_root = get_default_hermes_root()
     except Exception:
         return None
-    profile_home = get_hermes_home()
+    from hermes_constants import get_hermes_home
+
+    override = get_hermes_auth_home_override_strict()
+    # Only a residence that actually relocates the store moves the fallback
+    # root. Spelling out the directory Hermes already uses is a no-op and must
+    # leave the global-root fallback exactly where it was.
+    if override is not None and not _same_path(override, get_hermes_home()):
+        global_root = override
+    auth_home = get_hermes_auth_home_strict()
     try:
-        if profile_home.resolve(strict=False) == global_root.resolve(strict=False):
+        if auth_home.resolve(strict=False) == global_root.resolve(strict=False):
             return None
     except Exception:
-        if profile_home == global_root:
+        if auth_home == global_root:
             return None
     # No pytest seat belt here: this is a pure read-only path, and
     # ``_load_global_auth_store()`` wraps the read in a try/except so an
@@ -997,6 +1032,8 @@ def _auth_lock_path() -> Path:
 
 _auth_target_lock_holders: Dict[str, threading.local] = {}
 _auth_target_lock_holders_guard = threading.Lock()
+_auth_default_target = threading.local()
+_AUTH_TARGET_UNSET = object()
 
 
 def _same_path(left: Path, right: Path) -> bool:
@@ -1006,14 +1043,43 @@ def _same_path(left: Path, right: Path) -> bool:
         return left == right
 
 
-def _auth_lock_holder_for(target_path: Path) -> threading.local:
+def _auth_lock_holder_for(
+    target_path: Path,
+    *,
+    target_is_pinned: bool = False,
+) -> threading.local:
     """Return a reentrancy tracker keyed to one canonical auth-store path."""
-    try:
-        key = str(target_path.resolve(strict=False))
-    except Exception:
+    if target_is_pinned:
         key = str(target_path)
+    else:
+        try:
+            key = str(target_path.resolve(strict=False))
+        except Exception:
+            key = str(target_path)
     with _auth_target_lock_holders_guard:
         return _auth_target_lock_holders.setdefault(key, threading.local())
+
+
+_no_file_locking_warned = False
+
+
+def _warn_no_file_locking_once(lock_path: Path) -> None:
+    """Warn once when the platform offers no cross-process file locking.
+
+    Silent degradation to a thread-local guard is the dangerous case: the
+    credential store still appears to serialize while concurrent processes
+    can lose each other's writes entirely.
+    """
+    global _no_file_locking_warned
+    if _no_file_locking_warned:
+        return
+    _no_file_locking_warned = True
+    logger.warning(
+        "auth: neither fcntl nor msvcrt is available — credential writes at %s "
+        "are serialized within this process only. Concurrent Hermes processes "
+        "sharing this store can silently lose updates.",
+        lock_path.parent,
+    )
 
 
 @contextmanager
@@ -1041,8 +1107,14 @@ def _file_lock(
         return
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    # This is usually what first creates a fresh credential residence — the
+    # lock is taken before the store is written — so tighten it to 0o700 now
+    # rather than leaving it world-traversable at the default umask until
+    # _save_auth_store() gets there (and forever, for a read-only session).
+    secure_parent_dir(lock_path)
 
     if fcntl is None and msvcrt is None:
+        _warn_no_file_locking_once(lock_path)
         holder.depth = 1
         try:
             yield
@@ -1093,6 +1165,7 @@ def _auth_store_lock(
     timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
     *,
     target_path: Optional[Path] = None,
+    target_is_pinned: bool = False,
 ):
     """Cross-process advisory lock for one auth.json read/write transaction.
 
@@ -1106,20 +1179,137 @@ def _auth_store_lock(
     refresh paths follow this order; violating it risks deadlock
     against a concurrent import on the shared store.
     """
-    auth_path = target_path if target_path is not None else _auth_file_path()
-    lock_path = auth_path.with_suffix(".lock") if target_path is not None else _auth_lock_path()
+    if target_is_pinned:
+        if target_path is None:
+            raise ValueError("target_is_pinned requires target_path")
+        auth_path = Path(target_path)
+        if not auth_path.is_absolute() or ".." in auth_path.parts:
+            raise ValueError("pinned auth store target must be absolute")
+    elif target_path is not None:
+        auth_path = Path(target_path).resolve(strict=False)
+    else:
+        auth_path = (
+            get_hermes_auth_home_strict() / "auth.json"
+        ).resolve(strict=False)
+    previous = _AUTH_TARGET_UNSET
+    if target_path is None:
+        previous = getattr(_auth_default_target, "path", _AUTH_TARGET_UNSET)
+        _auth_default_target.path = auth_path
+    try:
+        with _file_lock(
+            auth_path.with_suffix(".lock"),
+            _auth_lock_holder_for(
+                auth_path,
+                target_is_pinned=target_is_pinned,
+            ),
+            timeout_seconds,
+            "Timed out waiting for auth store lock",
+        ):
+            yield auth_path
+    finally:
+        if target_path is None:
+            if previous is _AUTH_TARGET_UNSET:
+                try:
+                    del _auth_default_target.path
+                except AttributeError:
+                    pass
+            else:
+                _auth_default_target.path = previous
+
+
+@contextmanager
+def anthropic_oauth_store_lock(
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+    *,
+    target_path: Optional[Path] = None,
+    target_is_pinned: bool = False,
+):
+    """Cross-process lock for one ``.anthropic_oauth.json`` transaction.
+
+    Public because every reader and writer of that file lives outside this
+    module (``agent.credential_sources``, ``hermes_cli.web_server``).  Before
+    ``HERMES_AUTH_HOME`` each home held its own copy so sessions never
+    contended; a residence puts one file behind every concurrent session,
+    where an unlocked ``auth remove anthropic`` racing a PKCE save silently
+    discards a freshly minted grant.
+
+    Only mutators need this.  Reads are a single ``read_text`` against a file
+    replaced by ``rename``, so a reader always sees one whole version.
+    """
+    if target_is_pinned:
+        if target_path is None:
+            raise ValueError("target_is_pinned requires target_path")
+        oauth_path = Path(target_path)
+        if not oauth_path.is_absolute() or ".." in oauth_path.parts:
+            raise ValueError("pinned Anthropic store target must be absolute")
+    elif target_path is not None:
+        oauth_path = Path(target_path).resolve(strict=False)
+    else:
+        oauth_path = (
+            get_hermes_auth_home_strict() / ".anthropic_oauth.json"
+        ).resolve(strict=False)
     with _file_lock(
-        lock_path,
-        _auth_lock_holder_for(auth_path),
+        oauth_path.with_suffix(".lock"),
+        _auth_lock_holder_for(
+            oauth_path,
+            target_is_pinned=target_is_pinned,
+        ),
         timeout_seconds,
-        "Timed out waiting for auth store lock",
+        "Timed out waiting for Anthropic OAuth store lock",
     ):
-        yield
+        yield oauth_path
+
+
+def remove_anthropic_oauth_store(
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+) -> bool:
+    """Remove Hermes-managed Anthropic OAuth credentials."""
+    with anthropic_oauth_store_lock(timeout_seconds) as oauth_path:
+        try:
+            oauth_path.unlink()
+        except FileNotFoundError:
+            return False
+    return True
+
+
+_legacy_auth_notice_shown = False
+
+
+def _notify_legacy_auth_store_once(auth_file: Path) -> None:
+    """Point the operator at credentials stranded outside the residence.
+
+    Enabling ``HERMES_AUTH_HOME`` deliberately does not import the previous
+    ``HERMES_HOME`` store: silently copying credentials into a launcher-owned
+    directory is the very leak the residence exists to prevent, and the
+    isolation tests assert it never happens. But presenting as logged-out with
+    no explanation is its own failure, so name the old store and the fix.
+    """
+    global _legacy_auth_notice_shown
+    if _legacy_auth_notice_shown or get_hermes_auth_home_override() is None:
+        return
+    try:
+        from hermes_constants import get_hermes_home
+
+        legacy = get_hermes_home() / "auth.json"
+        if auth_file.exists() or not legacy.is_file():
+            return
+    except Exception:
+        return
+    _legacy_auth_notice_shown = True
+    logger.warning(
+        "auth: no credentials in the residence %s, but an earlier store exists "
+        "at %s. HERMES_AUTH_HOME does not import it automatically — re-run "
+        "`hermes auth add <provider>`, or copy that file into the residence if "
+        "you mean to keep those credentials.",
+        auth_file.parent,
+        legacy,
+    )
 
 
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
+        _notify_legacy_auth_store_once(auth_file)
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     try:
@@ -1159,6 +1349,30 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
+_AUTH_TMP_MAX_AGE_SECONDS = 6 * 3600
+
+
+def _sweep_stale_auth_temp_files(auth_file: Path) -> None:
+    """Delete abandoned ``auth.json.tmp.*`` files left behind by killed writers.
+
+    A crash between the ``os.open`` and the ``atomic_replace`` below strands a
+    0o600 temp holding a full credential copy.  Nothing collected these, so a
+    long-lived residence accumulated them forever.  Age-gated so a temp
+    belonging to a writer currently mid-transaction is never touched.
+    """
+    cutoff = time.time() - _AUTH_TMP_MAX_AGE_SECONDS
+    try:
+        stale_candidates = list(auth_file.parent.glob(f"{auth_file.name}.tmp.*"))
+    except OSError:
+        return
+    for stale in stale_candidates:
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            continue
+
+
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
     # target_path=None preserves the existing contract (write the active
     # store at _auth_file_path()). An explicit path lets callers persist a
@@ -1171,6 +1385,7 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
     # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
     secure_parent_dir(auth_file)
+    _sweep_stale_auth_temp_files(auth_file)
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     payload = json.dumps(auth_store, indent=2) + "\n"
@@ -1263,15 +1478,15 @@ def _provider_state_transaction(provider_id: str):
             yield auth_store, state, source_path
             return
 
-        with _auth_store_lock(target_path=source_path):
-            source_store = _load_auth_store(source_path)
+        with _auth_store_lock(target_path=source_path) as locked_source_path:
+            source_store = _load_auth_store(locked_source_path)
             source_providers = source_store.get("providers")
             source_state = None
             if isinstance(source_providers, dict):
                 raw_state = source_providers.get(provider_id)
                 if isinstance(raw_state, dict):
                     source_state = dict(raw_state)
-            yield auth_store, source_state, source_path
+            yield auth_store, source_state, locked_source_path
 
 
 def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Optional[Dict[str, Any]]:
@@ -1349,15 +1564,15 @@ def _persist_provider_state_to_store(
     set_active: bool = False,
 ) -> Path:
     """Merge one provider into a specific auth store under that store's lock."""
-    with _auth_store_lock(target_path=target_path):
-        auth_store = _load_auth_store(target_path)
+    with _auth_store_lock(target_path=target_path) as locked_target_path:
+        auth_store = _load_auth_store(locked_target_path)
         _store_provider_state(
             auth_store,
             provider_id,
             dict(state),
             set_active=set_active,
         )
-        return _save_auth_store(auth_store, target_path=target_path)
+        return _save_auth_store(auth_store, target_path=locked_target_path)
 
 
 def mark_provider_active_if_unset(provider_id: str) -> None:
@@ -1411,7 +1626,9 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
+def _read_credential_pool_unfiltered(
+    provider_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
     In profile mode, the profile's credential pool is authoritative. If a
@@ -1456,6 +1673,32 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     # Profile has no entries for this provider — fall back to global.
     global_entries = global_pool.get(provider_id)
     return list(global_entries) if isinstance(global_entries, list) else []
+
+
+def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
+    """Return persisted pool rows visible to the active runtime home."""
+    pool = _read_credential_pool_unfiltered(provider_id)
+    if not is_hermes_auth_home_relocated_strict():
+        return pool
+
+    def visible(entries: Any) -> Any:
+        if not isinstance(entries, list):
+            return entries
+        return [
+            entry
+            for entry in entries
+            if not (
+                isinstance(entry, dict)
+                and is_runtime_local_credential_source(entry.get("source"))
+            )
+        ]
+
+    if provider_id is None:
+        return {
+            pool_provider: visible(entries)
+            for pool_provider, entries in pool.items()
+        }
+    return visible(pool)
 
 
 _POOL_STATUS_FIELDS = (
@@ -1550,6 +1793,16 @@ def write_credential_pool(
     merge does not resurrect them from the on-disk copy.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
+    shared_residence = is_hermes_auth_home_relocated_strict()
+
+    def persistable(entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return True
+        return not (
+            shared_residence
+            and is_runtime_local_credential_source(entry.get("source"))
+        )
+
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
@@ -1560,12 +1813,16 @@ def write_credential_pool(
             sanitize_borrowed_credential_payload(entry, provider_id)
             if isinstance(entry, dict) else entry
             for entry in entries
+            if persistable(entry)
         ]
         existing = pool.get(provider_id)
         existing_list = existing if isinstance(existing, list) else []
+        persistable_existing = [
+            entry for entry in existing_list if persistable(entry)
+        ]
         existing_by_id = {
             entry.get("id"): entry
-            for entry in existing_list
+            for entry in persistable_existing
             if isinstance(entry, dict) and entry.get("id")
         }
         new_ids = {
@@ -1581,19 +1838,211 @@ def write_credential_pool(
             else entry
             for entry in sanitized_entries
         ]
-        for disk_entry in existing_list:
+        for disk_entry in persistable_existing:
             if not isinstance(disk_entry, dict):
                 continue
             disk_id = disk_entry.get("id")
             if not disk_id or disk_id in new_ids or disk_id in removed:
                 continue
             merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+        if merged == existing_list:
+            return _auth_file_path()
         pool[provider_id] = merged
         return _save_auth_store(auth_store)
 
 
+_RUNTIME_SUPPRESSION_STORE_VERSION = 1
+_runtime_suppression_migrations_checked: set[Tuple[str, str]] = set()
+_runtime_suppression_migration_guard = threading.Lock()
+
+
+def _runtime_suppression_file_path() -> Path:
+    return get_hermes_home() / ".credential_suppressions.json"
+
+
+@contextmanager
+def _runtime_suppression_store_lock(
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+):
+    state_path = _runtime_suppression_file_path()
+    with _file_lock(
+        state_path.with_suffix(".lock"),
+        _auth_lock_holder_for(state_path),
+        timeout_seconds,
+        "Timed out waiting for runtime credential suppression lock",
+    ):
+        yield state_path
+
+
+def _load_runtime_suppression_store(
+    state_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    path = state_path or _runtime_suppression_file_path()
+    if not path.exists():
+        return {"version": _RUNTIME_SUPPRESSION_STORE_VERSION}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning(
+            "auth: failed to parse runtime credential suppressions at %s: %s",
+            path,
+            exc,
+        )
+        return {"version": _RUNTIME_SUPPRESSION_STORE_VERSION}
+    if not isinstance(raw, dict):
+        return {"version": _RUNTIME_SUPPRESSION_STORE_VERSION}
+    suppressed = raw.get("suppressed_sources")
+    if suppressed is not None and not isinstance(suppressed, dict):
+        raw.pop("suppressed_sources", None)
+    return raw
+
+
+def _save_runtime_suppression_store(
+    state: Dict[str, Any],
+    state_path: Optional[Path] = None,
+) -> Path:
+    path = state_path or _runtime_suppression_file_path()
+    state["version"] = _RUNTIME_SUPPRESSION_STORE_VERSION
+    atomic_json_write(path, state, indent=2, mode=0o600)
+    return path
+
+
+def _suppression_is_runtime_local(source: str) -> bool:
+    return (
+        is_runtime_local_credential_source(source)
+        and is_hermes_auth_home_relocated_strict()
+    )
+
+
+def _suppressed_sources_for_provider(
+    store: Dict[str, Any],
+    provider_id: str,
+) -> List[str]:
+    suppressed = store.get("suppressed_sources")
+    if not isinstance(suppressed, dict):
+        return []
+    provider_list = suppressed.get(provider_id)
+    if not isinstance(provider_list, list):
+        return []
+    return [source for source in provider_list if isinstance(source, str)]
+
+
+def _remove_source_suppression(
+    store: Dict[str, Any],
+    provider_id: str,
+    source: str,
+) -> bool:
+    suppressed = store.get("suppressed_sources")
+    if not isinstance(suppressed, dict):
+        return False
+    provider_list = suppressed.get(provider_id)
+    if not isinstance(provider_list, list) or source not in provider_list:
+        return False
+    provider_list.remove(source)
+    if not provider_list:
+        suppressed.pop(provider_id, None)
+    if not suppressed:
+        store.pop("suppressed_sources", None)
+    return True
+
+
+def _migrate_runtime_suppressions_from_auth_store() -> None:
+    try:
+        if not is_hermes_auth_home_relocated_strict():
+            return
+        migration_key = (
+            str(get_hermes_home().resolve(strict=False)),
+            str(get_hermes_auth_home_strict().resolve(strict=False)),
+        )
+    except Exception:
+        return
+
+    with _runtime_suppression_migration_guard:
+        if migration_key in _runtime_suppression_migrations_checked:
+            return
+        with _runtime_suppression_store_lock() as state_path:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                suppressed = auth_store.get("suppressed_sources")
+                legacy_sources: Dict[str, List[str]] = {}
+                if isinstance(suppressed, dict):
+                    for provider_id, sources in suppressed.items():
+                        if not isinstance(provider_id, str) or not isinstance(
+                            sources,
+                            list,
+                        ):
+                            continue
+                        runtime_sources = [
+                            source
+                            for source in sources
+                            if isinstance(source, str)
+                            and is_runtime_local_credential_source(source)
+                        ]
+                        if runtime_sources:
+                            legacy_sources[provider_id] = runtime_sources
+
+                if legacy_sources:
+                    local_store = _load_runtime_suppression_store(state_path)
+                    local_suppressed = local_store.setdefault(
+                        "suppressed_sources",
+                        {},
+                    )
+                    for provider_id, sources in legacy_sources.items():
+                        provider_list = local_suppressed.get(provider_id)
+                        if not isinstance(provider_list, list):
+                            provider_list = []
+                            local_suppressed[provider_id] = provider_list
+                        for source in sources:
+                            if source not in provider_list:
+                                provider_list.append(source)
+                    _save_runtime_suppression_store(local_store, state_path)
+                    for provider_id, sources in legacy_sources.items():
+                        for source in sources:
+                            _remove_source_suppression(
+                                auth_store,
+                                provider_id,
+                                source,
+                            )
+                    _save_auth_store(auth_store)
+        _runtime_suppression_migrations_checked.add(migration_key)
+
+
+def get_suppressed_credential_sources(provider_id: str) -> List[str]:
+    """Return the active runtime's suppression markers for one provider."""
+    _migrate_runtime_suppressions_from_auth_store()
+    sources = _suppressed_sources_for_provider(_load_auth_store(), provider_id)
+    try:
+        if is_hermes_auth_home_relocated_strict():
+            local_sources = _suppressed_sources_for_provider(
+                _load_runtime_suppression_store(),
+                provider_id,
+            )
+            sources = [
+                source
+                for source in sources
+                if not is_runtime_local_credential_source(source)
+            ]
+            sources.extend(local_sources)
+    except Exception:
+        pass
+    return list(dict.fromkeys(sources))
+
+
 def suppress_credential_source(provider_id: str, source: str) -> None:
     """Mark a credential source as suppressed so it won't be re-seeded."""
+    if _suppression_is_runtime_local(source):
+        with _runtime_suppression_store_lock() as state_path:
+            state = _load_runtime_suppression_store(state_path)
+            suppressed = state.setdefault("suppressed_sources", {})
+            provider_list = suppressed.setdefault(provider_id, [])
+            if source not in provider_list:
+                provider_list.append(source)
+                _save_runtime_suppression_store(state, state_path)
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            if _remove_source_suppression(auth_store, provider_id, source):
+                _save_auth_store(auth_store)
+        return
     with _auth_store_lock():
         auth_store = _load_auth_store()
         suppressed = auth_store.setdefault("suppressed_sources", {})
@@ -1606,9 +2055,16 @@ def suppress_credential_source(provider_id: str, source: str) -> None:
 def is_source_suppressed(provider_id: str, source: str) -> bool:
     """Check if a credential source has been suppressed by the user."""
     try:
-        auth_store = _load_auth_store()
-        suppressed = auth_store.get("suppressed_sources", {})
-        return source in suppressed.get(provider_id, [])
+        if _suppression_is_runtime_local(source):
+            _migrate_runtime_suppressions_from_auth_store()
+            return source in _suppressed_sources_for_provider(
+                _load_runtime_suppression_store(),
+                provider_id,
+            )
+        return source in _suppressed_sources_for_provider(
+            _load_auth_store(),
+            provider_id,
+        )
     except Exception:
         return False
 
@@ -1618,21 +2074,19 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
 
     Returns True if a marker was cleared, False if no marker existed.
     """
+    removed = False
+    if _suppression_is_runtime_local(source):
+        with _runtime_suppression_store_lock() as state_path:
+            state = _load_runtime_suppression_store(state_path)
+            if _remove_source_suppression(state, provider_id, source):
+                _save_runtime_suppression_store(state, state_path)
+                removed = True
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        suppressed = auth_store.get("suppressed_sources")
-        if not isinstance(suppressed, dict):
-            return False
-        provider_list = suppressed.get(provider_id)
-        if not isinstance(provider_list, list) or source not in provider_list:
-            return False
-        provider_list.remove(source)
-        if not provider_list:
-            suppressed.pop(provider_id, None)
-        if not suppressed:
-            auth_store.pop("suppressed_sources", None)
-        _save_auth_store(auth_store)
-        return True
+        if _remove_source_suppression(auth_store, provider_id, source):
+            _save_auth_store(auth_store)
+            removed = True
+    return removed
 
 
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
@@ -3435,7 +3889,7 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 
 
 # =============================================================================
-# OpenAI Codex auth — tokens stored in ~/.hermes/auth.json (not ~/.codex/)
+# OpenAI Codex auth — tokens stored in Hermes' resolved auth.json (not ~/.codex/)
 #
 # Hermes maintains its own Codex OAuth session separate from the Codex CLI
 # and VS Code extension. This prevents refresh token rotation conflicts
@@ -3443,7 +3897,7 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 # =============================================================================
 
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
-    """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
+    """Read Codex OAuth tokens from Hermes' resolved auth store.
     
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
     Raises AuthError if no Codex tokens are stored.
@@ -3593,7 +4047,7 @@ def _sync_codex_pool_entries(
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
-    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
+    """Save Codex OAuth tokens to Hermes' resolved auth store."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
@@ -4292,7 +4746,7 @@ def _pool_codex_access_token() -> str:
 
 
 # =============================================================================
-# xAI Grok OAuth — tokens stored in ~/.hermes/auth.json
+# xAI Grok OAuth — tokens stored in Hermes' resolved auth.json
 # =============================================================================
 
 def _xai_oauth_state_from_store(auth_store: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -5083,10 +5537,11 @@ def _poll_for_token(
 # -----------------------------------------------------------------------------
 
 NOUS_SHARED_STORE_FILENAME = "nous_auth.json"
-_nous_shared_lock_holder = threading.local()
+_nous_shared_target = threading.local()
+_NOUS_TARGET_UNSET = object()
 
 
-def _nous_shared_auth_dir() -> Path:
+def _nous_shared_auth_dir(home: str | Path | None = None) -> Path:
     """Resolve the directory that holds the shared Nous token store.
 
     Honors ``HERMES_SHARED_AUTH_DIR`` so tests can redirect it to a tmp
@@ -5098,16 +5553,57 @@ def _nous_shared_auth_dir() -> Path:
     Docker / custom ``HERMES_HOME`` deployments at
     ``<HERMES_HOME>/shared/``. Sits outside any named profile so all
     profiles under the same root share the store.
+
+    Under ``HERMES_AUTH_HOME`` the store moves to ``<residence>/shared/``
+    rather than being disabled.  Disabling it would strand each profile with
+    its own Nous refresh-token chain, which is how single-use refresh tokens
+    get replayed (#48415); relocating keeps the cross-profile sharing this
+    store exists for, inside the residence boundary.  A path-equal override —
+    including one equal to an active named profile's home — changes nothing:
+    the store stays at the default root's ``shared/``.
+
+    ``home`` scopes the resolution to an explicit runtime home instead of the
+    ambient process state, for lifecycle/backup operations that must not
+    depend on the active profile. Relocation is then judged against that
+    home; without a genuinely distinct residence, the shared directory is the
+    explicit home's own root (``<root>`` for a ``<root>/profiles/<name>``
+    home, the home itself otherwise) plus ``shared/``.
     """
     override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
     if override:
         return Path(override).expanduser()
-    from hermes_constants import get_default_hermes_root
-    return get_default_hermes_root() / "shared"
+    auth_home_override = get_hermes_auth_home_override_strict()
+    if home is None:
+        if (
+            auth_home_override is not None
+            and is_hermes_auth_home_relocated_strict()
+        ):
+            return auth_home_override / "shared"
+        from hermes_constants import get_default_hermes_root
+        return get_default_hermes_root() / "shared"
+
+    runtime_home = Path(home)
+    if (
+        auth_home_override is not None
+        and is_hermes_auth_home_relocated_strict(runtime_home)
+    ):
+        return auth_home_override / "shared"
+    try:
+        resolved_home = runtime_home.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        resolved_home = runtime_home
+    if resolved_home.parent.name == "profiles":
+        return resolved_home.parent.parent / "shared"
+    return resolved_home / "shared"
 
 
 def _nous_shared_store_path() -> Path:
-    path = _nous_shared_auth_dir() / NOUS_SHARED_STORE_FILENAME
+    pinned = getattr(_nous_shared_target, "path", None)
+    path = (
+        pinned
+        if isinstance(pinned, Path)
+        else _nous_shared_auth_dir() / NOUS_SHARED_STORE_FILENAME
+    )
     # Seat belt: if pytest is running and this resolves to a path under the
     # real user's Hermes root, refuse rather than silently corrupt cross-profile
     # state. Tests must set HERMES_SHARED_AUTH_DIR to a tmp_path (conftest
@@ -5132,7 +5628,12 @@ def _nous_shared_store_path() -> Path:
 
 
 @contextmanager
-def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+def _nous_shared_store_lock(
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+    *,
+    target_path: Optional[Path] = None,
+    target_is_pinned: bool = False,
+):
     """Cross-profile lock for the shared Nous OAuth store.
 
     Lock ordering invariant: if both this and ``_auth_store_lock`` need
@@ -5144,19 +5645,42 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     NOT be called with ``_auth_store_lock`` already held.
     """
     try:
-        lock_path = _nous_shared_store_path().with_suffix(".lock")
+        if target_is_pinned:
+            if target_path is None:
+                raise ValueError("target_is_pinned requires target_path")
+            shared_path = Path(target_path)
+            if not shared_path.is_absolute() or ".." in shared_path.parts:
+                raise ValueError("pinned shared store target must be absolute")
+        elif target_path is not None:
+            shared_path = Path(target_path).resolve(strict=False)
+        else:
+            shared_path = _nous_shared_store_path().resolve(strict=False)
     except RuntimeError:
         # No HERMES_HOME yet (pre-setup): fall through without locking.
-        yield
+        yield target_path
         return
 
-    with _file_lock(
-        lock_path,
-        _nous_shared_lock_holder,
-        timeout_seconds,
-        "Timed out waiting for shared Nous auth lock",
-    ):
-        yield
+    previous = getattr(_nous_shared_target, "path", _NOUS_TARGET_UNSET)
+    _nous_shared_target.path = shared_path
+    try:
+        with _file_lock(
+            shared_path.with_suffix(".lock"),
+            _auth_lock_holder_for(
+                shared_path,
+                target_is_pinned=target_is_pinned,
+            ),
+            timeout_seconds,
+            "Timed out waiting for shared Nous auth lock",
+        ):
+            yield shared_path
+    finally:
+        if previous is _NOUS_TARGET_UNSET:
+            try:
+                del _nous_shared_target.path
+            except AttributeError:
+                pass
+        else:
+            _nous_shared_target.path = previous
 
 
 def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
@@ -7597,8 +8121,7 @@ def _login_openai_codex(
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
     print("Login successful!")
-    from hermes_constants import display_hermes_home as _dhh
-    print(f"  Auth state: {_dhh()}/auth.json")
+    print(f"  Auth state: {get_hermes_auth_home_strict()}/auth.json")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
 
 
@@ -7665,8 +8188,7 @@ def _login_xai_oauth(
     config_path = _update_config_for_provider("xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL))
     print()
     print("Login successful!")
-    from hermes_constants import display_hermes_home as _dhh
-    print(f"  Auth state: {_dhh()}/auth.json")
+    print(f"  Auth state: {get_hermes_auth_home_strict()}/auth.json")
     print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
 
 

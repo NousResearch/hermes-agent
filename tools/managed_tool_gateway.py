@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_auth_home_strict
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 _DEFAULT_TOOL_GATEWAY_DOMAIN = "nousresearch.com"
@@ -30,7 +30,7 @@ class ManagedToolGatewayConfig:
 
 def auth_json_path():
     """Return the Hermes auth store path, respecting HERMES_HOME overrides."""
-    return get_hermes_home() / "auth.json"
+    return get_hermes_auth_home_strict() / "auth.json"
 
 
 def _read_nous_provider_state() -> Optional[dict]:

@@ -3839,8 +3839,12 @@ def run_conversation(
                     # Credential refresh didn't help — show diagnostic info.
                     # Most common causes: Portal OAuth expired/revoked,
                     # account out of credits, or agent key blocked.
-                    from hermes_constants import display_hermes_home as _dhh_fn
-                    _dhh = _dhh_fn()
+                    from hermes_constants import get_hermes_auth_home_strict as _gah_fn
+                    # auth.json follows the credential residence, which is not
+                    # HERMES_HOME when a launcher pins HERMES_AUTH_HOME —
+                    # pointing the user at the wrong file wastes the whole
+                    # troubleshooting step.
+                    _auth_dir = _gah_fn()
                     _body_text = ""
                     try:
                         _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
@@ -3856,7 +3860,7 @@ def run_conversation(
                     print(f"{agent.log_prefix}   Troubleshooting:")
                     print(f"{agent.log_prefix}     • Re-authenticate: hermes auth add nous")
                     print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
-                    print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
+                    print(f"{agent.log_prefix}     • Verify stored credentials: {_auth_dir}/auth.json")
                     print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
                 if (
                     agent.provider == "copilot"

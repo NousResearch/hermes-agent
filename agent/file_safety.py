@@ -25,10 +25,67 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _hermes_auth_home_path() -> Path:
+    """Resolve the provider credential residence (falls back to HERMES_HOME)."""
+    try:
+        from hermes_constants import get_hermes_auth_home  # local import to avoid cycles
+        return get_hermes_auth_home()
+    except Exception:
+        return _hermes_home_path()
+
+
+def _distinct_auth_residence_path() -> Optional[Path]:
+    try:
+        from hermes_constants import (
+            get_hermes_auth_home_override,
+            is_hermes_auth_home_relocated,
+        )
+
+        override = get_hermes_auth_home_override()
+        if override is not None and is_hermes_auth_home_relocated():
+            return override
+    except Exception:
+        pass
+    return None
+
+
+_WRITE_DENIED_AUTH_NAMES = (
+    "auth.lock",
+    "auth.json.corrupt",
+    ".anthropic_oauth.json",
+)
+
+# Prefix of the atomic-write temp files _save_auth_store() creates.
+_AUTH_TMP_PREFIX = "auth.json.tmp."
+
+# Credential-store basenames for the name-only fallback deny. Matched by
+# basename alone, so this catches the store wherever it lives — runtime home,
+# global root, or a relocated residence.
+_AUTH_STORE_FILE_NAMES: frozenset[str] = frozenset({
+    "auth.json",
+    "auth.lock",
+    "auth.json.corrupt",
+    ".anthropic_oauth.json",
+    "nous_auth.json",
+    "webhook_subscriptions.json",
+})
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
     hermes_root = _hermes_root_path()
+
+    auth_bases: list[Path] = []
+    for base in (hermes_home, hermes_root):
+        if base not in auth_bases:
+            auth_bases.append(base)
+    auth_home_paths = [
+        str(base / name) for base in auth_bases for name in _WRITE_DENIED_AUTH_NAMES
+    ]
+    residence = _distinct_auth_residence_path()
+    if residence is not None:
+        auth_home_paths.append(str(residence))
     return {
         os.path.realpath(p)
         for p in [
@@ -57,13 +114,13 @@ def build_write_denied_paths(home: str) -> set[str]:
             "/etc/sudoers",
             "/etc/passwd",
             "/etc/shadow",
-        ]
+        ] + auth_home_paths
     }
 
 
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
-    return [
+    prefixes = [
         os.path.realpath(p) + os.sep
         for p in [
             os.path.join(home, ".ssh"),
@@ -78,6 +135,10 @@ def build_write_denied_prefixes(home: str) -> list[str]:
             os.path.join(home, ".config", "gcloud"),
         ]
     ]
+    residence = _distinct_auth_residence_path()
+    if residence is not None:
+        prefixes.append(os.path.realpath(residence) + os.sep)
+    return prefixes
 
 
 def get_safe_write_roots() -> set[str]:
@@ -144,6 +205,14 @@ def _classify_write_denial(path: str) -> Optional[str]:
                 return "credential"
         except Exception:
             pass
+        # In-flight atomic-write temps for the auth store carry the same
+        # plaintext tokens under names (auth.json.tmp.<pid>.<hex>) that no
+        # exact-path list can enumerate.
+        if (
+            os.path.dirname(resolved) == base_real
+            and os.path.basename(resolved).startswith(_AUTH_TMP_PREFIX)
+        ):
+            return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots:
@@ -237,6 +306,20 @@ def get_read_block_error(path: str) -> Optional[str]:
     terminal cwd differs from the process cwd.
     """
     resolved = Path(path).expanduser().resolve()
+    residence = _distinct_auth_residence_path()
+    if residence is not None:
+        try:
+            residence = residence.resolve()
+            if resolved == residence or resolved.is_relative_to(residence):
+                return (
+                    f"Access denied: {path} is inside the Hermes credential "
+                    "residence and cannot be read directly. Provider tools "
+                    "consume these credentials through internal channels. "
+                    "(Defense-in-depth — not a security boundary; the "
+                    "terminal tool can still bypass.)"
+                )
+        except (OSError, RuntimeError, ValueError):
+            pass
 
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global
     # Hermes root so credential stores at <root>/auth.json etc. are also
@@ -244,7 +327,11 @@ def get_read_block_error(path: str) -> Optional[str]:
     # <root>/profiles/<name> in profile mode). Same shape as the write
     # deny widening (#15981, #14157).
     hermes_dirs: list[Path] = []
-    for base in (_hermes_home_path(), _hermes_root_path()):
+    for base in (
+        _hermes_home_path(),
+        _hermes_root_path(),
+        _hermes_auth_home_path(),
+    ):
         try:
             real = base.resolve()
             if real not in hermes_dirs:
@@ -274,6 +361,9 @@ def get_read_block_error(path: str) -> Optional[str]:
     credential_file_names = (
         "auth.json",
         "auth.lock",
+        # Verbatim copy of an unparseable auth.json, written by
+        # _load_auth_store() — same plaintext tokens, same sensitivity.
+        "auth.json.corrupt",
         ".anthropic_oauth.json",
         ".env",
         "webhook_subscriptions.json",
@@ -297,6 +387,16 @@ def get_read_block_error(path: str) -> Optional[str]:
                     "(Defense-in-depth — not a security boundary; the "
                     "terminal tool can still bypass.)"
                 )
+
+    # In-flight atomic-write temps for the auth store (auth.json.tmp.<pid>.<hex>):
+    # same plaintext tokens, names no exact-match list can enumerate.
+    for hd in hermes_dirs:
+        if resolved.parent == hd and resolved.name.startswith(_AUTH_TMP_PREFIX):
+            return (
+                f"Access denied: {path} is a Hermes credential store "
+                "and cannot be read directly. (Defense-in-depth — not a "
+                "security boundary; the terminal tool can still bypass.)"
+            )
 
     # mcp-tokens/: directory prefix match — anything inside is OAuth
     # token material.
@@ -337,6 +437,34 @@ def get_read_block_error(path: str) -> Optional[str]:
     return None
 
 
+def _fallback_read_block_error(path: str) -> Optional[str]:
+    """Name-only credential deny, used when path resolution itself fails.
+
+    Needs no filesystem access and no Hermes home resolution, so it still
+    answers when the machinery :func:`get_read_block_error` relies on is
+    broken. Deliberately narrower than the full check — it can miss a
+    credential file under an unusual name, but it never fails open on the
+    common ones.
+    """
+    try:
+        name = os.path.basename(path.rstrip("/\\").strip()).lower()
+    except Exception:  # noqa: BLE001 - a non-path input is simply not a match
+        return None
+    if not name:
+        return None
+    if (
+        name in _AUTH_STORE_FILE_NAMES
+        or name in _BLOCKED_PROJECT_ENV_BASENAMES
+        or name.startswith(_AUTH_TMP_PREFIX)
+    ):
+        return (
+            f"Access denied: {path} is a Hermes credential store and cannot "
+            "be read directly. (Defense-in-depth — not a security boundary; "
+            "the terminal tool can still bypass.)"
+        )
+    return None
+
+
 def raise_if_read_blocked(path: str) -> None:
     """Raise ``ValueError`` if ``path`` is a denied Hermes read (see
     :func:`get_read_block_error`), else return.
@@ -347,16 +475,17 @@ def raise_if_read_blocked(path: str) -> None:
     enforces the same read boundary with identical semantics instead of each
     open-coding the try/except block (#57698).
 
-    Best-effort by design: if ``agent.file_safety`` machinery is somehow
-    unavailable at the call site the guard no-ops rather than breaking local
-    image loading — consistent with the defense-in-depth (not security
-    boundary) framing of the denylist itself. The blocking ``ValueError`` from
-    a real hit still propagates; only unexpected internal errors are swallowed.
+    Degrades to :func:`_fallback_read_block_error` rather than to "allowed" if
+    the resolution machinery raises. Returning early on an unexpected error
+    would let anything that breaks home resolution — a malformed
+    ``HERMES_AUTH_HOME``, an unreadable home — silently disable the credential
+    read-deny at every provider input-loading site at once, which is the one
+    failure mode this chokepoint exists to prevent.
     """
     try:
         blocked = get_read_block_error(path)
-    except Exception:  # noqa: BLE001 - guard must never break local-file loading
-        return
+    except Exception:  # noqa: BLE001 - fall back to the name-only check below
+        blocked = _fallback_read_block_error(path)
     if blocked:
         raise ValueError(blocked)
 

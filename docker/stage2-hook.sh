@@ -204,7 +204,8 @@ path_has_symlink_component() {
 refuse_symlinked_path() {
     action="$1"
     target="$2"
-    if path_has_symlink_component "$target"; then
+    root="${3:-$HERMES_HOME}"
+    if path_has_symlink_component "$target" "$root"; then
         echo "[stage2] Warning: refusing $action through symlinked path $target — continuing"
         return 0
     fi
@@ -335,7 +336,7 @@ fi
 # entries of hermes_cli.profile_distribution.USER_OWNED_EXCLUDE plus the
 # runtime lock files; keep them in sync if that set changes.
 for f in \
-    auth.json auth.lock .env \
+    auth.json auth.lock .anthropic_oauth.json .anthropic_oauth.lock .env \
     state.db state.db-shm state.db-wal \
     hermes_state.db \
     response_store.db response_store.db-shm response_store.db-wal \
@@ -445,16 +446,100 @@ if [ -f "$HERMES_HOME/config.yaml" ]; then
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
 
+# Resolve credential seeding with the same stdlib-only helper used by the
+# rebootstrap path. An explicitly invalid override must not fall back into
+# HERMES_HOME, while an unset override keeps the legacy flat layout.
+HERMES_AUTH_ROOT=""
+HERMES_AUTH_DIR=""
+HERMES_AUTH_LAYOUT="invalid"
+HERMES_SHARED_AUTH_DIR=""
+if auth_layout="$(
+    "$INSTALL_DIR/.venv/bin/python" \
+        "$INSTALL_DIR/scripts/docker_rebootstrap_nous_session.py" \
+        --resolve-auth-layout
+)"; then
+    HERMES_AUTH_ROOT="$(printf '%s\n' "$auth_layout" | sed -n '1p')"
+    HERMES_AUTH_DIR="$(printf '%s\n' "$auth_layout" | sed -n '2p')"
+    HERMES_AUTH_LAYOUT="$(printf '%s\n' "$auth_layout" | sed -n '3p')"
+    HERMES_SHARED_AUTH_DIR="$(printf '%s\n' "$auth_layout" | sed -n '4p')"
+else
+    echo "[stage2] Warning: invalid HERMES_AUTH_HOME; credential bootstrap disabled"
+fi
+
+repair_auth_entry() {
+    target="$1"
+    mode="$2"
+    [ -e "$target" ] || [ -L "$target" ] || return 0
+    if refuse_symlinked_path "credential ownership repair" "$target" "/"; then
+        return 0
+    fi
+    if [ "$mode" = 600 ] && [ ! -f "$target" ]; then
+        return 0
+    fi
+    if [ "$mode" = 700 ] && [ ! -d "$target" ]; then
+        return 0
+    fi
+    chown hermes:hermes "$target" 2>/dev/null || true
+    chmod "$mode" "$target" 2>/dev/null || true
+}
+
+repair_auth_store_entries() {
+    store_dir="$1"
+    for name in \
+        auth.json auth.lock .anthropic_oauth.json .anthropic_oauth.lock; do
+        repair_auth_entry "$store_dir/$name" 600
+    done
+    for artifact in \
+        "$store_dir/auth.json.corrupt" \
+        "$store_dir"/auth.json.tmp.* \
+        "$store_dir"/.anthropic_oauth.tmp.* \
+        "$store_dir"/..anthropic_oauth_*.tmp; do
+        repair_auth_entry "$artifact" 600
+    done
+}
+
+if [ -n "$HERMES_AUTH_DIR" ]; then
+    if refuse_symlinked_path "credential residence creation" "$HERMES_AUTH_DIR" "/"; then
+        HERMES_AUTH_DIR=""
+    elif mkdir -p "$HERMES_AUTH_DIR"; then
+        # Repair only the residence path and known credential leaves. Never
+        # recurse through the residence or the runtime-state tree.
+        if [ "$HERMES_AUTH_LAYOUT" = "distinct" ]; then
+            for dir in \
+                "$HERMES_AUTH_ROOT" \
+                "$HERMES_AUTH_ROOT/profiles" \
+                "$HERMES_AUTH_DIR"; do
+                [ -d "$dir" ] || continue
+                repair_auth_entry "$dir" 700
+            done
+        fi
+        repair_auth_entry "$HERMES_SHARED_AUTH_DIR" 700
+        repair_auth_store_entries "$HERMES_AUTH_DIR"
+        if [ "$HERMES_AUTH_LAYOUT" = "distinct" ] && [ "$HERMES_AUTH_ROOT" != "$HERMES_AUTH_DIR" ]; then
+            repair_auth_store_entries "$HERMES_AUTH_ROOT"
+        fi
+        for name in nous_auth.json nous_auth.lock; do
+            repair_auth_entry "$HERMES_SHARED_AUTH_DIR/$name" 600
+        done
+        for artifact in "$HERMES_SHARED_AUTH_DIR"/nous_auth.json.tmp.*; do
+            repair_auth_entry "$artifact" 600
+        done
+    else
+        echo "[stage2] Warning: could not create credential residence $HERMES_AUTH_DIR"
+        HERMES_AUTH_DIR=""
+    fi
+fi
+
 # auth.json: bootstrap from env on first boot only. Same semantics as the
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering
 # rotated refresh tokens on container restart.
-if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]; then
-    if refuse_symlinked_path "seed" "$HERMES_HOME/auth.json"; then
+if [ -n "$HERMES_AUTH_DIR" ] && [ ! -f "$HERMES_AUTH_DIR/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]; then
+    if refuse_symlinked_path "seed" "$HERMES_AUTH_DIR/auth.json"; then
         :
     else
-        printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
-        chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
-        chmod 600 "$HERMES_HOME/auth.json"
+        printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_AUTH_DIR/auth.json"
+        chown hermes:hermes "$HERMES_AUTH_DIR/auth.json" 2>/dev/null || true
+        chmod 600 "$HERMES_AUTH_DIR/auth.json"
     fi
 fi
 
@@ -473,13 +558,13 @@ fi
 # local session. Older/incomparable seeds remain no-ops, so leaving the env set
 # cannot roll a healthy rotated token backward. Runs as its own stdlib-only
 # subprocess (no app imports) and always exits 0.
-if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]; then
-    if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
+if [ -n "$HERMES_AUTH_DIR" ] && [ -f "$HERMES_AUTH_DIR/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]; then
+    if refuse_symlinked_path "reseed" "$HERMES_AUTH_DIR/auth.json"; then
         :
     else
         s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" \
             "$INSTALL_DIR/scripts/docker_rebootstrap_nous_session.py" \
-            "$HERMES_HOME/auth.json" \
+            "$HERMES_AUTH_DIR/auth.json" \
             || echo "[stage2] Warning: docker_rebootstrap_nous_session.py failed; continuing"
     fi
 fi

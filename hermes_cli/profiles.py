@@ -28,11 +28,16 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli.auth_artifacts import (
+    PRIMARY_AUTH_FILENAMES,
+    is_primary_auth_artifact,
+)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -125,6 +130,8 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "checkpoints",
 })
 
+_PROFILE_CREDENTIAL_FILES = PRIMARY_AUTH_FILENAMES
+
 # Marker file written by `hermes profile create --no-skills`.  When present in
 # a profile's root, callers of seed_profile_skills() (fresh-create, `hermes
 # update`'s all-profile sync, the web dashboard) skip bundled-skill seeding
@@ -184,6 +191,9 @@ def _clone_all_copytree_ignore(source_dir: Path):
                 # over-copy than silently drop user data.
                 at_root = False
             if at_root:
+                if entry == "shared" or is_primary_auth_artifact(entry):
+                    ignored.append(entry)
+                    continue
                 # History artifacts: excluded for ANY source profile.
                 if entry in _CLONE_ALL_HISTORY_EXCLUDE_ROOT:
                     ignored.append(entry)
@@ -284,6 +294,99 @@ def _get_default_hermes_home() -> Path:
     """
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
+
+
+def _paths_equal(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return left == right
+
+
+def _path_lexists(path: Path) -> bool:
+    try:
+        return os.path.lexists(path)
+    except (OSError, ValueError):
+        return False
+
+
+def _atomic_write_private(path: Path, payload: bytes) -> None:
+    from hermes_constants import secure_parent_dir
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secure_parent_dir(path)
+    temporary = path.with_name(
+        f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+    )
+    fd = os.open(
+        str(temporary),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        try:
+            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _copy_profile_credentials(source_home: Path, target_home: Path) -> None:
+    """Securely copy the two credential stores included by ``--clone-all``."""
+    from hermes_cli.auth import _auth_store_lock, anthropic_oauth_store_lock
+    from hermes_constants import get_hermes_auth_home_for
+
+    source_auth_home = get_hermes_auth_home_for(source_home)
+    target_auth_home = get_hermes_auth_home_for(target_home)
+    locks = {
+        "auth.json": _auth_store_lock,
+        ".anthropic_oauth.json": anthropic_oauth_store_lock,
+    }
+
+    for filename in _PROFILE_CREDENTIAL_FILES:
+        source_path = source_auth_home / filename
+        if not _path_lexists(source_path):
+            continue
+        if not source_path.is_file():
+            raise IsADirectoryError(
+                f"Credential store is not a regular file: {source_path}"
+            )
+
+        lock = locks[filename]
+        with lock(target_path=source_path) as locked_source:
+            source = Path(locked_source)
+            try:
+                payload = source.read_bytes()
+            except FileNotFoundError:
+                continue
+
+        target_path = target_auth_home / filename
+        with lock(target_path=target_path) as locked_target:
+            _atomic_write_private(Path(locked_target), payload)
+
+
+def _remove_tree_or_link(path: Path) -> None:
+    if path.is_symlink():
+        try:
+            entries = list(path.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            entries = []
+        for entry in entries:
+            if is_primary_auth_artifact(entry.name):
+                if entry.is_file() or entry.is_symlink():
+                    entry.unlink()
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
 def _get_active_profile_path() -> Path:
@@ -1038,8 +1141,18 @@ def create_profile(
         )
 
     profile_dir = get_profile_dir(canon)
-    if profile_dir.exists():
+    if _path_lexists(profile_dir):
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+
+    from hermes_constants import get_hermes_auth_home_for
+
+    profile_auth_dir = get_hermes_auth_home_for(profile_dir)
+    separate_auth_dir = not _paths_equal(profile_auth_dir, profile_dir)
+    if separate_auth_dir and _path_lexists(profile_auth_dir):
+        raise FileExistsError(
+            f"Profile '{canon}' already has credential data at {profile_auth_dir}. "
+            "Remove or rename that credential mirror before recreating the profile."
+        )
 
     # Resolve clone source
     source_dir = None
@@ -1058,16 +1171,29 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
-        shutil.copytree(
-            source_dir,
-            profile_dir,
-            symlinks=True,
-            ignore=_clone_all_copytree_ignore(source_dir),
-        )
-        # Strip runtime files
-        for stale in _CLONE_ALL_STRIP:
-            (profile_dir / stale).unlink(missing_ok=True)
+        try:
+            # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
+            shutil.copytree(
+                source_dir,
+                profile_dir,
+                symlinks=True,
+                ignore=_clone_all_copytree_ignore(source_dir),
+            )
+            # Strip runtime files
+            for stale in _CLONE_ALL_STRIP:
+                (profile_dir / stale).unlink(missing_ok=True)
+            _copy_profile_credentials(source_dir, profile_dir)
+        except Exception:
+            try:
+                _remove_tree_or_link(profile_dir)
+            except OSError:
+                pass
+            if separate_auth_dir:
+                try:
+                    _remove_tree_or_link(profile_auth_dir)
+                except OSError:
+                    pass
+            raise
     else:
         # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1482,6 +1608,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"Profile '{canon}' does not exist.")
 
+    from hermes_constants import get_hermes_auth_home_for
+
+    profile_auth_dir = get_hermes_auth_home_for(profile_dir)
+    separate_auth_dir = not _paths_equal(profile_auth_dir, profile_dir)
+
     # Show what will be deleted
     model, provider = _read_config_model(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
@@ -1545,12 +1676,25 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # guard — resurrected the deleted tree.
     _stop_profile_backends(canon, profile_dir)
 
-    # 3. Remove wrapper script
+    # 3. Remove the credential mirror before the runtime tree. If this fails,
+    # keep the runtime profile in place so recreating the same name cannot
+    # silently reattach credentials that the delete claimed to remove.
+    if separate_auth_dir and _path_lexists(profile_auth_dir):
+        try:
+            _remove_tree_or_link(profile_auth_dir)
+            print(f"✓ Removed {profile_auth_dir}")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not remove profile credential directory "
+                f"{profile_auth_dir}: {exc}"
+            ) from exc
+
+    # 4. Remove wrapper script
     if has_wrapper:
         if remove_wrapper_script(canon):
             print(f"✓ Removed {wrapper_path}")
 
-    # 4. Remove profile directory
+    # 5. Remove profile directory
     remove_error: Exception | None = None
     try:
         def _make_writable(func, path, exc):
@@ -1596,7 +1740,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         print(f"⚠ Could not remove {profile_dir}: {e}")
         remove_error = e
 
-    # 5. Clear active_profile if it pointed to this profile
+    # 6. Clear active_profile if it pointed to this profile
     try:
         active = get_active_profile()
         if active == canon:
@@ -1933,12 +2077,15 @@ def export_profile(name: str, output_path: str) -> Path:
     # Named profiles — stage a filtered copy to exclude credentials
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / canon
-        _CREDENTIAL_FILES = {"auth.json", ".env"}
         shutil.copytree(
             profile_dir,
             staged,
             symlinks=True,
-            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+            ignore=lambda _directory, contents: {
+                entry
+                for entry in contents
+                if entry == ".env" or is_primary_auth_artifact(entry)
+            },
         )
         result = shutil.make_archive(base, "gztar", tmpdir, canon)
         return Path(result)
@@ -2058,8 +2205,20 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         )
 
     profile_dir = get_profile_dir(canon)
-    if profile_dir.exists():
+    if _path_lexists(profile_dir):
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+
+    from hermes_constants import get_hermes_auth_home_for
+
+    profile_auth_dir = get_hermes_auth_home_for(profile_dir)
+    if (
+        not _paths_equal(profile_auth_dir, profile_dir)
+        and _path_lexists(profile_auth_dir)
+    ):
+        raise FileExistsError(
+            f"Profile '{canon}' already has credential data at {profile_auth_dir}. "
+            "Remove or rename that credential mirror before importing the profile."
+        )
 
     profiles_root = _get_profiles_root()
     profiles_root.mkdir(parents=True, exist_ok=True)
@@ -2168,16 +2327,46 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
     if not old_dir.is_dir():
         raise FileNotFoundError(f"Profile '{old_canon}' does not exist.")
-    if new_dir.exists():
+    if _path_lexists(new_dir):
         raise FileExistsError(f"Profile '{new_canon}' already exists.")
+
+    from hermes_constants import get_hermes_auth_home_for
+
+    old_auth_dir = get_hermes_auth_home_for(old_dir)
+    new_auth_dir = get_hermes_auth_home_for(new_dir)
+    separate_auth_dir = not _paths_equal(old_auth_dir, old_dir)
+    if separate_auth_dir and _path_lexists(new_auth_dir):
+        raise FileExistsError(
+            f"Profile '{new_canon}' already has credential data at {new_auth_dir}."
+        )
+    auth_source_exists = separate_auth_dir and _path_lexists(old_auth_dir)
+    if auth_source_exists:
+        new_auth_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. Stop gateway if running
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
 
-    # 2. Rename directory
-    old_dir.rename(new_dir)
+    # 2. Move runtime and credential trees as one logical operation.
+    runtime_moved = False
+    try:
+        old_dir.rename(new_dir)
+        runtime_moved = True
+        if auth_source_exists:
+            old_auth_dir.rename(new_auth_dir)
+    except Exception as exc:
+        if runtime_moved:
+            try:
+                new_dir.rename(old_dir)
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    "Profile rename left split runtime/auth state: "
+                    f"credential move failed ({exc}); runtime rollback failed "
+                    f"({rollback_exc})."
+                ) from exc
+        raise
+
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity

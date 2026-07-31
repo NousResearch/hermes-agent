@@ -201,6 +201,7 @@ class TestEntryPointsImportBootstrap:
     # import hermes_bootstrap before doing any file I/O or stdout writes.
     ENTRY_POINTS = [
         "hermes_cli/main.py",   # hermes CLI (console_script)
+        "hermes_agent_entry.py", # hermes-agent lightweight console wrapper
         "run_agent.py",          # hermes-agent (console_script)
         "acp_adapter/entry.py",  # hermes-acp (console_script)
         "gateway/run.py",        # gateway
@@ -367,4 +368,3 @@ class TestSuppressPlatformVerConsole:
         finally:
             if original is not None:
                 platform._syscmd_ver = original
-

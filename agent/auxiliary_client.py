@@ -8,7 +8,7 @@ Resolution order for text tasks (auto mode):
   1. User's main provider + main model (used regardless of provider type —
      aggregators, direct API-key providers, native Anthropic, Codex, etc.)
   2. OpenRouter  (OPENROUTER_API_KEY)
-  3. Nous Portal (~/.hermes/auth.json active provider)
+  3. Nous Portal (active provider in the resolved Hermes auth store)
   4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
   5. Native Anthropic
   6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
@@ -774,7 +774,10 @@ _OPENROUTER_MODEL = "google/gemini-3.6-flash"
 _NOUS_MODEL = "google/gemini-3.6-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_AUTH_JSON_PATH = get_hermes_home() / "auth.json"
+def _auth_json_path() -> Path:
+    from hermes_constants import get_hermes_auth_home_strict
+
+    return get_hermes_auth_home_strict() / "auth.json"
 
 # Codex OAuth endpoint used when a caller explicitly requests
 # provider="openai-codex".  There is deliberately no hardcoded default
@@ -1792,7 +1795,7 @@ def _maybe_wrap_anthropic(
 
 
 def _read_nous_auth() -> Optional[dict]:
-    """Read and validate ~/.hermes/auth.json for an active Nous provider.
+    """Read and validate the resolved Hermes auth store for an active Nous provider.
 
     Returns the provider state dict if Nous is active with tokens,
     otherwise None.
@@ -1814,9 +1817,10 @@ def _read_nous_auth() -> Optional[dict]:
         }
 
     try:
-        if not _AUTH_JSON_PATH.is_file():
+        auth_json_path = _auth_json_path()
+        if not auth_json_path.is_file():
             return None
-        data = json.loads(_AUTH_JSON_PATH.read_text(encoding="utf-8"))
+        data = json.loads(auth_json_path.read_text(encoding="utf-8"))
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})

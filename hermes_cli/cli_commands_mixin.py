@@ -286,7 +286,7 @@ class CLICommandsMixin:
             /snapshot prune [N]        — prune to N snapshots (default 20)
         """
         from hermes_cli.backup import (
-            create_quick_snapshot, list_quick_snapshots,
+            QuickSnapshotStatus, create_quick_snapshot, list_quick_snapshots,
             restore_quick_snapshot, prune_quick_snapshots,
         )
         from hermes_constants import display_hermes_home
@@ -318,7 +318,13 @@ class CLICommandsMixin:
             label = " ".join(parts[2:]) if len(parts) > 2 else None
             snap_id = create_quick_snapshot(label=label)
             if snap_id:
-                print(f"  Snapshot created: {snap_id}")
+                if snap_id.status is QuickSnapshotStatus.COMPLETE:
+                    print(f"  Snapshot created: {snap_id}")
+                else:
+                    print(
+                        f"  Snapshot incomplete: {snap_id} "
+                        f"({len(snap_id.failures)} file(s) not captured)"
+                    )
             else:
                 print("  No state files found to snapshot.")
 
@@ -342,9 +348,15 @@ class CLICommandsMixin:
                     return
             except ValueError:
                 pass
-            if restore_quick_snapshot(snap_id):
+            result = restore_quick_snapshot(snap_id)
+            if result.status is QuickSnapshotStatus.COMPLETE:
                 print(f"  Restored state from: {snap_id}")
                 print("  Restart recommended for state.db changes to take effect.")
+            elif result.status is QuickSnapshotStatus.PARTIAL:
+                print(
+                    f"  Restore incomplete: {snap_id} "
+                    f"({len(result.failures)} file(s) not restored)"
+                )
             else:
                 print(f"  Snapshot not found: {snap_id}")
 

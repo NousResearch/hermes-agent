@@ -1739,6 +1739,8 @@ _FS_READDIR_HIDDEN = {
 _SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
     "auth.json",
     "auth.lock",
+    "auth.json.corrupt",
+    "nous_auth.json",
     "credentials",
     "config.yaml",
     ".anthropic_oauth.json",
@@ -1785,6 +1787,8 @@ def _is_sensitive_filename(name: str) -> bool:
     lowered = name.lower()
     if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
         return True
+    if lowered.startswith("auth.json.tmp."):
+        return True
     return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
 
 
@@ -1807,6 +1811,20 @@ def _is_sensitive_path(path: Path) -> bool:
     """
     if _is_sensitive_filename(path.name):
         return True
+    try:
+        from hermes_constants import (
+            get_hermes_auth_home_override,
+            is_hermes_auth_home_relocated,
+        )
+
+        residence = get_hermes_auth_home_override()
+        if residence is not None and is_hermes_auth_home_relocated():
+            resolved = path.resolve(strict=False)
+            residence = residence.resolve(strict=False)
+            if resolved == residence or resolved.is_relative_to(residence):
+                return True
+    except (OSError, RuntimeError, ValueError):
+        pass
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
 
 
@@ -9374,8 +9392,8 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
     """Status for the "Anthropic API Key" catalog entry.
 
     Two sources, in priority order:
-    1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow (what
-       this entry's Connect button writes)
+    1. The resolved Hermes ``.anthropic_oauth.json`` store — Hermes-managed
+       PKCE flow (what this entry's Connect button writes)
     2. ``ANTHROPIC_API_KEY`` → ``ANTHROPIC_TOKEN`` → ``CLAUDE_CODE_OAUTH_TOKEN``
        env vars (registry order) — from ``.env``, the shell, or an external
        secret source like Bitwarden (whose keys are injected into the process
@@ -9844,19 +9862,16 @@ async def disconnect_oauth_provider(
         if provider_id == "anthropic":
             cleared = False
             try:
-                from agent.anthropic_adapter import _get_hermes_oauth_file
-                oauth_file = _get_hermes_oauth_file()
-                if oauth_file.exists():
-                    oauth_file.unlink()
-                    cleared = True
-            except Exception:
-                pass
-            # Also clear the credential pool entry if present.
-            try:
-                from hermes_cli.auth import clear_provider_auth
+                from hermes_cli.auth import (
+                    clear_provider_auth,
+                    remove_anthropic_oauth_store,
+                )
+
+                cleared = remove_anthropic_oauth_store()
                 cleared = clear_provider_auth("anthropic") or cleared
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.exception("disconnect %s failed", provider_id)
+                raise HTTPException(status_code=500, detail=str(exc))
             _log.info("oauth/disconnect: %s", provider_id)
             return {"ok": bool(cleared), "provider": provider_id}
 
@@ -9886,7 +9901,8 @@ async def disconnect_oauth_provider(
 #     2. UI opens auth_url in a new tab. User authorizes, copies code.
 #     3. POST /api/providers/oauth/anthropic/submit { session_id, code }
 #          → server exchanges (code + verifier) → tokens at console.anthropic.com
-#          → persists to ~/.hermes/.anthropic_oauth.json AND credential pool
+#          → persists to the resolved Hermes Anthropic OAuth store AND
+#            credential pool
 #          → returns { ok: true, status: "approved" }
 #
 #   Device code (Nous, OpenAI Codex):
@@ -9991,8 +10007,6 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     Mirrors what auth_commands.add_command does so the dashboard flow leaves
     the system in the same state as ``hermes auth add anthropic``.
     """
-    from agent.anthropic_adapter import _get_hermes_oauth_file
-    oauth_file = _get_hermes_oauth_file()
     payload = {
         "accessToken": access_token,
         "refreshToken": refresh_token,
@@ -10004,9 +10018,17 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
     # OAuth token file was world-readable at the default umask (0o644 on most
     # hosts) between the rename and the chmod. atomic_json_write also preserves
     # the existing file's owner and cleans up its temp on failure.
+    from hermes_cli.auth import anthropic_oauth_store_lock
+    from hermes_constants import secure_parent_dir
     from utils import atomic_json_write
 
-    atomic_json_write(oauth_file, payload, indent=2, mode=0o600)
+    # Locked against a concurrent ``auth remove anthropic`` in another
+    # session: under HERMES_AUTH_HOME they share this one file, so an
+    # unserialized delete can land on top of the grant we just minted.
+    with anthropic_oauth_store_lock() as oauth_file:
+        oauth_file.parent.mkdir(parents=True, exist_ok=True)
+        secure_parent_dir(oauth_file)
+        atomic_json_write(oauth_file, payload, indent=2, mode=0o600)
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
@@ -12326,16 +12348,12 @@ def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
 
 @app.get("/api/credentials/pool")
 async def list_credential_pool():
-    from agent.credential_pool import load_pool
-    from hermes_cli.auth import read_credential_pool
+    from agent.credential_pool import list_pool_providers, load_pool
 
     providers = []
-    # read_credential_pool(None) lists every provider that has pooled entries;
-    # load_pool() then gives us the rich PooledCredential objects per provider.
-    raw_pool = read_credential_pool()
-    for provider_id in sorted(raw_pool.keys()):
+    for provider_id in list_pool_providers():
         try:
-            pool = load_pool(provider_id)
+            pool = load_pool(provider_id, passive=True)
         except Exception:
             _log.exception("load_pool(%s) failed", provider_id)
             continue
@@ -12387,11 +12405,10 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
         if not provider.startswith(CUSTOM_POOL_PREFIX):
             try:
                 from hermes_cli.auth import (
-                    _load_auth_store,
+                    get_suppressed_credential_sources,
                     unsuppress_credential_source,
                 )
-                suppressed = _load_auth_store().get("suppressed_sources", {})
-                for src in list(suppressed.get(provider, []) or []):
+                for src in get_suppressed_credential_sources(provider):
                     unsuppress_credential_source(provider, src)
             except Exception:
                 _log.exception("unsuppress after pool add failed (non-fatal)")

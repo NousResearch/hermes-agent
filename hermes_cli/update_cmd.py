@@ -2371,7 +2371,10 @@ def _run_pre_update_backup(args) -> Optional[str]:
                         )
                     print()
         if snapshot_id:
-            print(f"◆ Pre-update snapshot: {snapshot_id}")
+            if getattr(snapshot_id, "status", None) == "partial":
+                print(f"⚠ Pre-update snapshot incomplete: {snapshot_id}")
+            else:
+                print(f"◆ Pre-update snapshot: {snapshot_id}")
     except Exception as exc:
         # Never let a snapshot failure block an update.
         logging.getLogger(__name__).debug("Pre-update snapshot failed: %s", exc)

@@ -109,6 +109,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_LOCAL_STT_COMMAND` | Optional local speech-to-text command template. Supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders |
 | `HERMES_LOCAL_STT_LANGUAGE` | Default language hint for STT. Used by the `local` (faster-whisper) provider, `HERMES_LOCAL_STT_COMMAND`, the local `whisper` CLI fallback (default: `en`), Groq, and xAI when no per-provider `language` is set in `config.yaml` |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |
+| `HERMES_AUTH_HOME` | Pin provider credentials to a launcher-owned directory instead of `HERMES_HOME`. Invalid values fail closed at startup. See [Credential residence](#credential-residence-hermes_auth_home) below |
 | `HERMES_GIT_BASH_PATH` | **Windows only.** Override `bash.exe` discovery for the terminal tool. Points at any bash — full Git-for-Windows install, WSL bash via symlink, MSYS2, Cygwin. The installer sets this automatically to the PortableGit it provisioned. See the [Windows (Native) Guide](../user-guide/windows-native.md#how-hermes-runs-shell-commands-on-windows) |
 | `HERMES_DISABLE_WINDOWS_UTF8` | **Windows only.** Set to `1` to disable the UTF-8 stdio shim (`configure_windows_stdio()`) and fall back to the console's locale code page. Useful for bisecting encoding bugs; rarely the right setting in normal operation |
 | `HERMES_KANBAN_HOME` | Override the shared Hermes root that anchors the kanban board (db + workspaces + worker logs). Falls back to `get_default_hermes_root()` (the parent of any active profile). Useful for tests and unusual deployments |
@@ -116,6 +117,65 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `HERMES_KANBAN_DB` | Pin the kanban database file path directly (highest precedence; beats `HERMES_KANBAN_BOARD` and `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env so profile workers converge on the dispatcher's board |
 | `HERMES_KANBAN_WORKSPACES_ROOT` | Pin the kanban workspaces root directly (highest precedence for workspaces; beats `HERMES_KANBAN_HOME`). The dispatcher injects this into worker subprocess env |
 | `HERMES_KANBAN_DISPATCH_IN_GATEWAY` | Runtime override for `kanban.dispatch_in_gateway`. Set to `0`, `false`, `no`, or `off` to keep the gateway from starting the embedded Kanban dispatcher; any other non-empty value enables it. Useful when a separate dispatcher process owns the board. |
+
+## Credential residence (`HERMES_AUTH_HOME`)
+
+By default provider credentials live in `HERMES_HOME` alongside session state.
+`HERMES_AUTH_HOME` separates the two: session state stays in `HERMES_HOME` while
+credentials move to a directory the launcher owns and keeps across sessions.
+This suits deployments that treat `HERMES_HOME` as disposable — a fresh home per
+session, per container, or per job — but need logins to survive.
+
+**What moves.** Only the Hermes-managed provider stores: `auth.json`, its lock
+and atomic-write temp files, `.anthropic_oauth.json`, and the shared Nous token
+store under `shared/`.
+
+**What does not move.** `.env` stays in `HERMES_HOME`, and so do `credentials.json`,
+`auth/google_oauth.json`, and `mcp-tokens/`. Any provider key supplied through
+`.env` — including `ANTHROPIC_TOKEN` written by the Anthropic OAuth setup flow
+and `PHOTON_PROJECT_SECRET` — therefore lives with the session, not the
+residence. **If you wipe `HERMES_HOME` between sessions, those keys are wiped
+with it.** Plan for API keys to be re-supplied by the launcher through the
+environment, and use the residence for the OAuth logins that cannot be
+re-injected that way.
+
+**Requirements and behavior.**
+
+- The value must be a raw absolute path. Empty, whitespace-only, or
+  whitespace-padded values (including `HERMES_AUTH_HOME=${VAR}` where `VAR` is
+  unset), relative paths, tilde paths, control characters, symlink loops, and
+  existing non-directory paths are rejected before credential I/O. A
+  filesystem root (`/`, a Windows drive root, or a UNC share root) is also
+  rejected; use a dedicated directory or mount below it. Hermes does not fall
+  back to `HERMES_HOME` when an explicit override is invalid.
+- The directory is created on first write with mode `0700`; `auth.json` is
+  written `0600` via an atomic `O_EXCL` + `fsync` + `rename` sequence.
+- Existing credentials are **not** migrated. Enabling the residence for the
+  first time presents as logged-out, and Hermes logs where the previous store
+  is. Copy `auth.json` across yourself, or re-run `hermes auth add <provider>`.
+  Nothing is copied automatically, by design — an automatic import would move
+  credentials into a launcher-owned directory without the user's knowledge.
+- Profiles keep their isolation: a profile home of `<root>/profiles/<name>`
+  resolves to `<residence>/profiles/<name>`, so a multiplexing gateway never
+  shares one `auth.json` or one `active_provider` across profiles.
+- Writes are serialized across processes with an advisory lock in the
+  residence. **Advisory locking is unreliable on NFS**; put the residence on a
+  local filesystem or a volume that implements locking correctly. If the
+  platform offers no locking primitive at all, Hermes logs a warning and
+  serializes within the process only.
+- `hermes --version` prints the effective `Auth home:` when a valid override is
+  set. An invalid override prints an actionable error and exits with status 2,
+  including on the Termux fast path.
+
+**Services.** On systemd, `hermes gateway install` propagates a valid
+`HERMES_AUTH_HOME` into the generated unit. The generated Windows `.cmd`
+compatibility wrapper also preserves it. Re-run the install after changing the
+value.
+
+**Docker.** `HERMES_AUTH_JSON_BOOTSTRAP` and `HERMES_AUTH_JSON_REBOOTSTRAP` seed
+the active profile store inside the residence when one is configured. An
+invalid explicit override seeds nowhere. Mount the residence as a durable
+volume; otherwise the seeded credentials vanish with the container.
 
 ## Provider Auth (OAuth)
 

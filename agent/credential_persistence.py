@@ -94,6 +94,16 @@ _SECRET_VALUE_SUFFIXES = (
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
+def is_runtime_local_credential_source(source: Any) -> bool:
+    """Return whether a pool source is derived from the active runtime home."""
+    normalized = str(source or "").strip().lower()
+    return (
+        normalized.startswith("env:")
+        or normalized.startswith("config:")
+        or normalized == "model_config"
+    )
+
+
 def _normalize_key(key: Any) -> str:
     raw = str(key or "").strip()
     raw = _CAMEL_CASE_BOUNDARY.sub("_", raw)

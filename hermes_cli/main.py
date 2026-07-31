@@ -393,11 +393,37 @@ def _print_fast_version_info() -> None:
 
     print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Install directory: {PROJECT_ROOT}")
+    _print_auth_home()
 
     print(f"Python: {sys.version.split()[0]}")
 
     openai_version = _read_openai_version_fast()
     print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
+
+
+def _exit_on_invalid_auth_home() -> None:
+    """Exit with an actionable message when ``HERMES_AUTH_HOME`` is unusable."""
+    from hermes_constants import HermesAuthHomeError, get_hermes_auth_home_strict
+
+    try:
+        get_hermes_auth_home_strict()
+    except HermesAuthHomeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _print_auth_home() -> None:
+    """Print where provider credentials actually resolve to.
+
+    Prints only under ``HERMES_AUTH_HOME``, where the residence diverges from
+    the install/home paths already shown and an operator otherwise has no way
+    to tell which store a box is reading.
+    """
+    from hermes_constants import get_hermes_auth_home_strict
+
+    if "HERMES_AUTH_HOME" not in os.environ:
+        return
+    print(f"Auth home: {get_hermes_auth_home_strict()} (HERMES_AUTH_HOME)")
 
 
 def _try_termux_ultrafast_version() -> bool:
@@ -409,6 +435,7 @@ def _try_termux_ultrafast_version() -> bool:
     if not _is_termux_fast_version_argv(sys.argv[1:]):
         return False
 
+    _exit_on_invalid_auth_home()
     _print_fast_version_info()
     return True
 
@@ -958,7 +985,7 @@ def _relative_time(ts) -> str:
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
-    from hermes_cli.auth import get_auth_status
+    from hermes_cli.auth import get_active_provider, get_auth_status
 
     # Determine whether Hermes itself has been explicitly configured (model
     # in config that isn't the hardcoded default). Used below to gate external
@@ -1024,20 +1051,15 @@ def _has_any_provider_configured() -> bool:
     except Exception:
         pass
 
-    # Check for Nous Portal OAuth credentials
-    auth_file = get_hermes_home() / "auth.json"
-    if auth_file.exists():
-        try:
-            import json
-
-            auth = json.loads(auth_file.read_text(encoding="utf-8"))
-            active = auth.get("active_provider")
-            if active:
-                status = get_auth_status(active)
-                if status.get("logged_in"):
-                    return True
-        except Exception:
-            pass
+    # Check for an active OAuth provider.
+    try:
+        active = get_active_provider()
+        if active:
+            status = get_auth_status(active)
+            if status.get("logged_in"):
+                return True
+    except Exception:
+        pass
 
     # Check config.yaml — if model is a dict with an explicit provider set,
     # the user has gone through setup (fresh installs have model as a plain
@@ -4908,6 +4930,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
     print(execute_command("version", CommandContext(surface="cli")).text)
     print(f"Install directory: {PROJECT_ROOT}")
     print(f"Install method: {detect_install_method(PROJECT_ROOT)}")
+    _print_auth_home()
 
     # Show Python version
     print(f"Python: {sys.version.split()[0]}")
@@ -11115,6 +11138,14 @@ def main():
         configure_windows_stdio()
     except Exception:
         pass
+
+    # Reject a malformed HERMES_AUTH_HOME here, before anything resolves a
+    # credential path. The resolver itself is deliberately total (it warns and
+    # falls back), so without this check a launcher typo would surface as a
+    # silent fallback to HERMES_HOME rather than an error the operator can act
+    # on. Deliberately ahead of argv parsing: every subcommand touches
+    # credentials eventually.
+    _exit_on_invalid_auth_home()
 
     # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
     # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when

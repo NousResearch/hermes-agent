@@ -114,6 +114,77 @@ def _preserve_hermes_home_path(path: str | Path) -> str:
 # Quoting helpers (two DIFFERENT parsers — do not mix)
 # ---------------------------------------------------------------------------
 
+def _auth_home_for_service() -> str:
+    """Return the strictly resolved auth residence for generated launchers."""
+    from hermes_constants import get_hermes_auth_home_override_strict
+
+    override = get_hermes_auth_home_override_strict()
+    return str(override) if override is not None else ""
+
+
+_VBS_AUTH_HOME_ASSIGNMENT = re.compile(
+    r'^\s*env\.Item\("HERMES_AUTH_HOME"\)\s*=\s*"((?:""|[^"])*)"\s*$',
+    re.IGNORECASE,
+)
+_CMD_AUTH_HOME_ASSIGNMENT = re.compile(
+    r'^\s*set\s+"HERMES_AUTH_HOME=(.*)"\s*$',
+    re.IGNORECASE,
+)
+
+
+def _installed_auth_home_for_service() -> str:
+    """Return the auth residence pinned in the installed gateway launcher."""
+    script_path = get_task_script_path()
+    launcher_paths = (
+        script_path.with_suffix(".vbs"),
+        script_path,
+    )
+    for launcher_path in launcher_paths:
+        try:
+            lines = launcher_path.read_text(
+                encoding="utf-8",
+                errors="strict",
+            ).splitlines()
+        except (OSError, UnicodeError):
+            continue
+        pattern = (
+            _VBS_AUTH_HOME_ASSIGNMENT
+            if launcher_path.suffix.lower() == ".vbs"
+            else _CMD_AUTH_HOME_ASSIGNMENT
+        )
+        for line in lines:
+            match = pattern.match(line)
+            if match is None:
+                continue
+            value = match.group(1)
+            if launcher_path.suffix.lower() == ".vbs":
+                value = value.replace('""', '"')
+            else:
+                value = value.replace("%%", "%")
+            from hermes_constants import (
+                _resolve_auth_home_directory,
+                _validate_auth_home_boundaries,
+            )
+
+            residence = _resolve_auth_home_directory(
+                value,
+                label="installed HERMES_AUTH_HOME",
+            )
+            _validate_auth_home_boundaries(
+                residence,
+                label="installed HERMES_AUTH_HOME",
+            )
+            return str(residence)
+    return ""
+
+
+def _auth_home_for_direct_spawn() -> str:
+    """Resolve the caller's auth residence or preserve the installed pin."""
+    if "HERMES_AUTH_HOME" in os.environ:
+        return _auth_home_for_service()
+    return _installed_auth_home_for_service()
+
+
 def _quote_cmd_script_arg(value: str) -> str:
     """Quote a single argument for use INSIDE a .cmd file, for cmd.exe parsing.
 
@@ -409,6 +480,11 @@ def _build_gateway_cmd_script(
     lines = ["@echo off", f"rem {_TASK_DESCRIPTION}"]
     lines.append(f"cd /d {_quote_cmd_script_arg(working_dir)}")
     lines.append(f'set "HERMES_HOME={hermes_home}"')
+    _service_auth_home = _auth_home_for_service()
+    if _service_auth_home:
+        lines.append(
+            f'set "HERMES_AUTH_HOME={_service_auth_home.replace("%", "%%")}"'
+        )
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
@@ -486,6 +562,7 @@ def _build_gateway_vbs_script(
     static_pythonpath = os.pathsep.join(
         [repo_root, *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath]]
     )
+    service_auth_home = _auth_home_for_service()
 
     lines = [
         f"' {_TASK_DESCRIPTION}",
@@ -494,23 +571,32 @@ def _build_gateway_vbs_script(
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
-        f"env.Item({_quote_vbs_string('PYTHONIOENCODING')}) = {_quote_vbs_string('utf-8')}",
-        f"env.Item({_quote_vbs_string('HERMES_GATEWAY_DETACHED')}) = {_quote_vbs_string('1')}",
-        f"env.Item({_quote_vbs_string('VIRTUAL_ENV')}) = {_quote_vbs_string(_preserve_hermes_home_path(venv_dir))}",
-        # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%``: chain onto
-        # whatever PYTHONPATH the task environment already carries, at runtime.
-        f"existing_pp = env.Item({_quote_vbs_string('PYTHONPATH')})",
-        "If Len(existing_pp) > 0 Then",
-        f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath + os.pathsep)} & existing_pp",
-        "Else",
-        f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
-        "End If",
-        f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
-        # console python's one console is created hidden and inherited by all
-        # descendants, so nothing ever flashes.
-        f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
     ]
+    if service_auth_home:
+        lines.append(
+            f"env.Item({_quote_vbs_string('HERMES_AUTH_HOME')}) = "
+            f"{_quote_vbs_string(service_auth_home)}"
+        )
+    lines.extend(
+        [
+            f"env.Item({_quote_vbs_string('PYTHONIOENCODING')}) = {_quote_vbs_string('utf-8')}",
+            f"env.Item({_quote_vbs_string('HERMES_GATEWAY_DETACHED')}) = {_quote_vbs_string('1')}",
+            f"env.Item({_quote_vbs_string('VIRTUAL_ENV')}) = {_quote_vbs_string(_preserve_hermes_home_path(venv_dir))}",
+            # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%``: chain onto
+            # whatever PYTHONPATH the task environment already carries, at runtime.
+            f"existing_pp = env.Item({_quote_vbs_string('PYTHONPATH')})",
+            "If Len(existing_pp) > 0 Then",
+            f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath + os.pathsep)} & existing_pp",
+            "Else",
+            f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
+            "End If",
+            f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
+            # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
+            # console python's one console is created hidden and inherited by all
+            # descendants, so nothing ever flashes.
+            f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
+        ]
+    )
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -812,6 +898,9 @@ def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
         "HERMES_GATEWAY_DETACHED": "1",
         "VIRTUAL_ENV": _preserve_hermes_home_path(venv_dir),
     }
+    auth_home = _auth_home_for_direct_spawn()
+    if auth_home:
+        env_overlay["HERMES_AUTH_HOME"] = auth_home
     _prepend_pythonpath(
         env_overlay,
         [project_root, *[_preserve_hermes_home_path(entry) for entry in extra_pythonpath]]

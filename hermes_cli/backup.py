@@ -13,15 +13,29 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
+import uuid
 import zipfile
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from hermes_constants import (
+    display_hermes_home,
+    get_default_hermes_root,
+    get_hermes_auth_home_for,
+    get_hermes_home,
+)
+from hermes_cli.auth_artifacts import (
+    is_primary_auth_transient,
+    is_shared_auth_transient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +136,13 @@ _IMPORT_SKIP_NAMES = {
 }
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+_SECRET_FILE_NAMES = {
+    ".env",
+    "auth.json",
+    ".anthropic_oauth.json",
+    "nous_auth.json",
+    "state.db",
+}
 
 # Reserved archive subtree for provider state that lives OUTSIDE HERMES_HOME
 # (e.g. ~/.honcho, ~/.hindsight). The active memory provider declares these via
@@ -130,6 +150,731 @@ _SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
 # relative to the user's home directory, and restored to their original
 # home-relative location on import. Anything not under home is skipped.
 _EXTERNAL_PREFIX = "_external/"
+
+# Provider credentials can live outside HERMES_HOME. Distinct residences use a
+# reserved archive subtree so their root/profile/shared layout stays portable
+# without colliding with legacy credential files left in the runtime tree.
+_AUTH_RESIDENCE_DIR = "_auth-residence"
+_AUTH_RESIDENCE_PREFIX = f"{_AUTH_RESIDENCE_DIR}/"
+_PROFILE_AUTH_FILENAMES = frozenset({"auth.json", ".anthropic_oauth.json"})
+_SHARED_AUTH_REL = Path("shared") / "nous_auth.json"
+
+
+@dataclass(frozen=True)
+class _PathIdentity:
+    exists: bool
+    device: int = 0
+    inode: int = 0
+    mode: int = 0
+    symlink_target: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _PreparedCredential:
+    configured_path: Path
+    pinned_path: Path
+    kind: str
+    endpoint_identity: _PathIdentity
+    referent_identity: _PathIdentity
+    configured_parent: Path
+    configured_parent_identity: _PathIdentity
+    store_parent: Path
+    store_parent_identity: _PathIdentity
+    baseline: Optional[tuple[bool, bytes]] = None
+
+
+@dataclass(frozen=True)
+class _BackupCredential:
+    path: Path
+    archive_path: Path
+    kind: str
+
+
+class QuickSnapshotStatus(str, Enum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    NOT_FOUND = "not_found"
+
+
+class QuickSnapshotCreateResult(str):
+    status: QuickSnapshotStatus
+    failures: tuple[str, ...]
+
+    def __new__(
+        cls,
+        snapshot_id: str,
+        status: QuickSnapshotStatus,
+        failures: tuple[str, ...] = (),
+    ):
+        result = super().__new__(cls, snapshot_id)
+        result.status = status
+        result.failures = failures
+        return result
+
+
+@dataclass(frozen=True)
+class QuickSnapshotRestoreResult:
+    status: QuickSnapshotStatus
+    restored: int = 0
+    failures: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return self.status is QuickSnapshotStatus.COMPLETE
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return left == right
+
+
+def _credential_kind(rel_path: Path) -> Optional[str]:
+    """Classify one portable credential path, or return None."""
+    parts = rel_path.parts
+    if len(parts) == 1 and parts[0] in _PROFILE_AUTH_FILENAMES:
+        return "anthropic" if parts[0] == ".anthropic_oauth.json" else "primary"
+    if (
+        len(parts) == 3
+        and parts[0] == "profiles"
+        and parts[1] not in {"", ".", ".."}
+        and parts[2] in _PROFILE_AUTH_FILENAMES
+    ):
+        return "anthropic" if parts[2] == ".anthropic_oauth.json" else "primary"
+    if rel_path == _SHARED_AUTH_REL:
+        return "shared"
+    return None
+
+
+def _path_identity(path: Path) -> _PathIdentity:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return _PathIdentity(False)
+    link_target = os.readlink(path) if stat.S_ISLNK(info.st_mode) else None
+    return _PathIdentity(
+        True,
+        device=info.st_dev,
+        inode=info.st_ino,
+        mode=stat.S_IFMT(info.st_mode),
+        symlink_target=link_target,
+    )
+
+
+def _handle_identity(fd: int) -> _PathIdentity:
+    info = os.fstat(fd)
+    return _PathIdentity(
+        True,
+        device=info.st_dev,
+        inode=info.st_ino,
+        mode=stat.S_IFMT(info.st_mode),
+    )
+
+
+def _absolute_lexical_path(path: Path) -> Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    return Path(os.path.abspath(expanded))
+
+
+def _prepare_credential(
+    target: Path,
+    kind: str,
+    *,
+    capture_baseline: bool,
+) -> _PreparedCredential:
+    configured_path = _absolute_lexical_path(target)
+    for _attempt in range(3):
+        endpoint_before = _path_identity(configured_path)
+        configured_parent = configured_path.parent.resolve(strict=False)
+        configured_parent_identity = _path_identity(configured_parent)
+        pinned_path = configured_path.resolve(strict=False)
+        store_parent = pinned_path.parent
+        store_parent_identity = _path_identity(store_parent)
+        referent_before = _path_identity(pinned_path)
+        endpoint_after = _path_identity(configured_path)
+        referent_after = _path_identity(pinned_path)
+        if (
+            endpoint_before == endpoint_after
+            and referent_before == referent_after
+        ):
+            baseline = (
+                _credential_value(pinned_path)
+                if capture_baseline
+                else None
+            )
+            if (
+                _path_identity(configured_path) != endpoint_after
+                or _path_identity(pinned_path) != referent_after
+            ):
+                continue
+            return _PreparedCredential(
+                configured_path=configured_path,
+                pinned_path=pinned_path,
+                kind=kind,
+                endpoint_identity=endpoint_after,
+                referent_identity=referent_after,
+                configured_parent=configured_parent,
+                configured_parent_identity=configured_parent_identity,
+                store_parent=store_parent,
+                store_parent_identity=store_parent_identity,
+                baseline=baseline,
+            )
+    raise RuntimeError(f"credential endpoint changed during preparation: {target}")
+
+
+def _prepared_identity_matches(prepared: _PreparedCredential) -> bool:
+    if _path_identity(prepared.configured_path) != prepared.endpoint_identity:
+        return False
+    if _path_identity(prepared.pinned_path) != prepared.referent_identity:
+        return False
+    if (
+        _path_identity(prepared.configured_parent)
+        != prepared.configured_parent_identity
+    ):
+        return False
+    if _path_identity(prepared.store_parent) != prepared.store_parent_identity:
+        return False
+    try:
+        return (
+            prepared.configured_path.resolve(strict=False)
+            == prepared.pinned_path
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _is_credential_transient(rel_path: Path) -> bool:
+    """Return whether a no-override runtime member is auth-store scratch state."""
+    parent = rel_path.parent
+    in_profile_home = (
+        len(parent.parts) == 2
+        and parent.parts[0] == "profiles"
+        and parent.parts[1] not in {"", ".", ".."}
+    )
+    in_primary_home = parent == Path(".") or in_profile_home
+    if in_primary_home:
+        return is_primary_auth_transient(rel_path.name)
+    if parent == Path("shared"):
+        return is_shared_auth_transient(rel_path.name)
+    return False
+
+
+def _configured_shared_store_path(
+    hermes_root: Path,
+    *,
+    ambient_active_home: bool,
+) -> Path:
+    from hermes_cli.auth import _nous_shared_auth_dir
+
+    home = None if ambient_active_home else hermes_root
+    return _nous_shared_auth_dir(home=home) / _SHARED_AUTH_REL.name
+
+
+def _iter_residence_credentials(
+    auth_root: Path,
+    shared_store_path: Path,
+) -> list[tuple[Path, Path]]:
+    """Return the durable credential stores from a distinct residence."""
+    candidates: list[tuple[Path, Path]] = []
+    for name in sorted(_PROFILE_AUTH_FILENAMES):
+        candidates.append((auth_root / name, Path(name)))
+
+    profiles_dir = auth_root / "profiles"
+    try:
+        profile_entries = list(profiles_dir.iterdir())
+    except FileNotFoundError:
+        profile_entries = []
+    profiles = []
+    for profile_path in profile_entries:
+        try:
+            if stat.S_ISDIR(os.stat(profile_path).st_mode):
+                profiles.append(profile_path)
+        except FileNotFoundError:
+            continue
+    profiles.sort()
+    for profile_dir in profiles:
+        for name in sorted(_PROFILE_AUTH_FILENAMES):
+            rel = Path("profiles") / profile_dir.name / name
+            candidates.append((profile_dir / name, rel))
+
+    candidates.append((shared_store_path, _SHARED_AUTH_REL))
+    existing = []
+    for path, rel in candidates:
+        if _path_identity(path).exists:
+            existing.append((path, rel))
+    return existing
+
+
+def _collect_residence_backup_files(
+    hermes_root: Path,
+    *,
+    ambient_active_home: bool,
+) -> tuple[Path, Path, bool, list[_BackupCredential]]:
+    mapped_auth_home = get_hermes_auth_home_for(hermes_root)
+    distinct = not _same_path(mapped_auth_home, hermes_root)
+    if ambient_active_home:
+        active_home = get_hermes_home()
+        active_auth_home = get_hermes_auth_home_for(active_home)
+        if _same_path(active_auth_home, active_home):
+            mapped_auth_home = hermes_root
+            distinct = False
+    try:
+        runtime_home = hermes_root.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        runtime_home = hermes_root
+    auth_root = mapped_auth_home
+    if (
+        distinct
+        and runtime_home.parent.name == "profiles"
+        and mapped_auth_home.parent.name == "profiles"
+        and mapped_auth_home.name == runtime_home.name
+    ):
+        auth_root = mapped_auth_home.parent.parent
+    shared_store_path = _configured_shared_store_path(
+        hermes_root,
+        ambient_active_home=ambient_active_home,
+    )
+    prefix = Path(_AUTH_RESIDENCE_DIR) if distinct else Path()
+    files = []
+    for path, rel in _iter_residence_credentials(
+        auth_root,
+        shared_store_path,
+    ):
+        kind = _credential_kind(rel)
+        if kind is None:
+            continue
+        files.append(
+            _BackupCredential(
+                path=path,
+                archive_path=prefix / rel,
+                kind=kind,
+            )
+        )
+    return auth_root, shared_store_path, distinct, files
+
+
+def _skip_runtime_auth_member(
+    abs_path: Path,
+    rel_path: Path,
+    auth_root: Path,
+    shared_store_path: Path,
+    distinct_residence: bool,
+) -> bool:
+    if rel_path.parts and rel_path.parts[0] == _AUTH_RESIDENCE_DIR:
+        return True
+    if _is_credential_transient(rel_path):
+        return True
+    separate_shared = (
+        distinct_residence
+        or not _same_path(shared_store_path, auth_root / _SHARED_AUTH_REL)
+    )
+    if separate_shared and _same_path(abs_path, shared_store_path):
+        return True
+    try:
+        shared_rel = abs_path.relative_to(shared_store_path.parent)
+    except ValueError:
+        shared_rel = None
+    if separate_shared and shared_rel is not None and _is_credential_transient(
+        Path("shared") / shared_rel
+    ):
+        return True
+    if _credential_kind(rel_path) is not None:
+        return True
+    if not distinct_residence:
+        if separate_shared and rel_path == _SHARED_AUTH_REL:
+            return True
+        return False
+    try:
+        residence_rel = abs_path.relative_to(auth_root)
+    except ValueError:
+        try:
+            residence_rel = abs_path.resolve(strict=False).relative_to(
+                auth_root.resolve(strict=False)
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
+    return (
+        _credential_kind(residence_rel) is not None
+        or _is_credential_transient(residence_rel)
+    )
+
+
+def _archive_credential_rel(rel: str) -> tuple[Optional[Path], bool]:
+    """Return (portable credential path, is_namespaced) for an archive member."""
+    namespaced = rel.startswith(_AUTH_RESIDENCE_PREFIX)
+    candidate = rel[len(_AUTH_RESIDENCE_PREFIX):] if namespaced else rel
+    path = Path(candidate)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return None, namespaced
+    if _credential_kind(path) is None:
+        return None, namespaced
+    return path, namespaced
+
+
+def _credential_restore_target(
+    auth_root: Path,
+    shared_store_path: Path,
+    credential_rel: Path,
+) -> Path:
+    if credential_rel == _SHARED_AUTH_REL:
+        return shared_store_path
+    return auth_root / credential_rel
+
+
+def _credential_value(path: Path) -> tuple[bool, bytes]:
+    try:
+        return True, path.read_bytes()
+    except FileNotFoundError:
+        return False, b""
+
+
+def _prepare_credential_restore(
+    target: Path,
+    kind: str,
+) -> _PreparedCredential:
+    return _prepare_credential(
+        target,
+        kind,
+        capture_baseline=True,
+    )
+
+
+@contextmanager
+def _credential_store_lock(kind: str, target: Path):
+    from hermes_cli.auth import (
+        _auth_store_lock,
+        _nous_shared_store_lock,
+        anthropic_oauth_store_lock,
+    )
+
+    if kind == "primary":
+        lock = _auth_store_lock
+    elif kind == "anthropic":
+        lock = anthropic_oauth_store_lock
+    else:
+        lock = _nous_shared_store_lock
+    with lock(target_path=target, target_is_pinned=True) as locked_path:
+        yield Path(locked_path)
+
+
+def _prepare_restore_parents(
+    prepared_credentials: dict[str, _PreparedCredential],
+) -> dict[str, _PreparedCredential]:
+    for prepared in prepared_credentials.values():
+        if not _prepared_identity_matches(prepared):
+            raise RuntimeError("credential endpoint changed after authorization")
+
+    missing_parents = {
+        prepared.store_parent
+        for prepared in prepared_credentials.values()
+        if not prepared.store_parent_identity.exists
+    }
+    created_dirs: list[Path] = []
+    try:
+        for parent in sorted(missing_parents, key=lambda path: len(path.parts)):
+            absent_chain = []
+            cursor = parent
+            while not _path_identity(cursor).exists:
+                absent_chain.append(cursor)
+                if cursor == cursor.parent:
+                    break
+                cursor = cursor.parent
+            try:
+                parent.mkdir(parents=True, exist_ok=False)
+            finally:
+                for created_dir in reversed(absent_chain):
+                    if (
+                        _path_identity(created_dir).exists
+                        and created_dir not in created_dirs
+                    ):
+                        created_dirs.append(created_dir)
+
+        updated_credentials = {}
+        for key, prepared in prepared_credentials.items():
+            if (
+                _path_identity(prepared.configured_path)
+                != prepared.endpoint_identity
+            ):
+                raise RuntimeError(
+                    "credential endpoint changed after authorization"
+                )
+            try:
+                if (
+                    prepared.configured_path.resolve(strict=False)
+                    != prepared.pinned_path
+                ):
+                    raise RuntimeError(
+                        "credential endpoint changed after authorization"
+                    )
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise RuntimeError(
+                    "credential endpoint changed after authorization"
+                ) from exc
+
+            configured_parent_identity = _path_identity(
+                prepared.configured_parent
+            )
+            store_parent_identity = _path_identity(prepared.store_parent)
+            if (
+                prepared.configured_parent_identity.exists
+                and configured_parent_identity
+                != prepared.configured_parent_identity
+            ):
+                raise RuntimeError(
+                    "credential parent changed after authorization"
+                )
+            if (
+                prepared.store_parent_identity.exists
+                and store_parent_identity != prepared.store_parent_identity
+            ):
+                raise RuntimeError(
+                    "credential store parent changed after authorization"
+                )
+            updated = replace(
+                prepared,
+                configured_parent_identity=configured_parent_identity,
+                store_parent_identity=store_parent_identity,
+            )
+            if not _prepared_identity_matches(updated):
+                raise RuntimeError(
+                    "credential endpoint changed while creating its parent"
+                )
+            updated_credentials[key] = updated
+        return updated_credentials
+    except Exception:
+        for created_dir in reversed(created_dirs):
+            try:
+                created_dir.rmdir()
+            except OSError:
+                pass
+        raise
+
+
+@contextmanager
+def _open_store_parent(
+    prepared: _PreparedCredential,
+    *,
+    require_replace: bool = True,
+):
+    supports_dir_fd = (
+        _supports_credential_dir_fd_replace()
+        if require_replace
+        else os.open in os.supports_dir_fd
+    )
+    if not supports_dir_fd:
+        if not _prepared_identity_matches(prepared):
+            raise RuntimeError("credential store parent identity changed")
+        yield None
+        return
+
+    parent_fd = None
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        parent_fd = os.open(prepared.store_parent, flags)
+        info = os.fstat(parent_fd)
+        identity = _PathIdentity(
+            True,
+            device=info.st_dev,
+            inode=info.st_ino,
+            mode=stat.S_IFMT(info.st_mode),
+        )
+        expected = prepared.store_parent_identity
+        if (
+            identity.device != expected.device
+            or identity.inode != expected.inode
+            or identity.mode != expected.mode
+        ):
+            raise RuntimeError("credential store parent identity changed")
+        yield parent_fd
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
+def _supports_credential_dir_fd_replace() -> bool:
+    replace_support = (
+        os.replace in os.supports_dir_fd
+        or (
+            os.name == "posix"
+            and os.rename in os.supports_dir_fd
+            and getattr(os.replace, "__module__", "") == "posix"
+        )
+    )
+    return (
+        os.open in os.supports_dir_fd
+        and os.unlink in os.supports_dir_fd
+        and replace_support
+    )
+
+
+def _atomic_replace_credential(
+    prepared: _PreparedCredential,
+    payload: bytes,
+    parent_fd: Optional[int],
+) -> None:
+    target = prepared.pinned_path
+    use_dir_fd = (
+        parent_fd is not None
+        and _supports_credential_dir_fd_replace()
+    )
+    if not _prepared_identity_matches(prepared):
+        raise RuntimeError("credential endpoint changed before replacement")
+
+    if use_dir_fd:
+        tmp_name = f".{target.name}.{uuid.uuid4().hex}.tmp"
+        fd = -1
+        try:
+            fd = os.open(
+                tmp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                fd = -1
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if not _prepared_identity_matches(prepared):
+                raise RuntimeError(
+                    "credential endpoint changed before replacement"
+                )
+            os.replace(
+                tmp_name,
+                target.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.fsync(parent_fd)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                os.unlink(tmp_name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+        return
+
+    if not _prepared_identity_matches(prepared):
+        raise RuntimeError("credential endpoint changed before replacement")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent),
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if not _prepared_identity_matches(prepared):
+            raise RuntimeError("credential endpoint changed before replacement")
+        os.replace(tmp_path, target)
+        os.chmod(target, 0o600)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _restore_credential_payload(
+    prepared: _PreparedCredential,
+    payload: bytes,
+) -> tuple[bool, str]:
+    with _open_store_parent(prepared) as parent_fd:
+        with _credential_store_lock(
+            prepared.kind,
+            prepared.pinned_path,
+        ) as locked_path:
+            if locked_path != prepared.pinned_path:
+                return False, "credential store lock changed its pinned target"
+            if not _prepared_identity_matches(prepared):
+                return False, "credential endpoint changed before store lock"
+            if (
+                prepared.baseline is None
+                or _credential_value(locked_path) != prepared.baseline
+            ):
+                return (
+                    False,
+                    "live credential changed while waiting for its store lock",
+                )
+            _atomic_replace_credential(prepared, payload, parent_fd)
+    return True, ""
+
+
+def _read_backup_credential(credential: _BackupCredential) -> bytes:
+    prepared = _prepare_credential(
+        credential.path,
+        credential.kind,
+        capture_baseline=False,
+    )
+    if not prepared.endpoint_identity.exists:
+        raise FileNotFoundError(credential.path)
+    if not prepared.store_parent_identity.exists:
+        raise FileNotFoundError(prepared.store_parent)
+    with _open_store_parent(prepared, require_replace=False) as parent_fd:
+        with _credential_store_lock(
+            credential.kind,
+            prepared.pinned_path,
+        ) as locked_path:
+            if locked_path != prepared.pinned_path:
+                raise RuntimeError(
+                    "credential store lock changed its pinned target"
+                )
+            if not _prepared_identity_matches(prepared):
+                raise RuntimeError(
+                    "credential endpoint changed before store lock"
+                )
+            flags = os.O_RDONLY
+            flags |= getattr(os, "O_BINARY", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            open_path = (
+                prepared.pinned_path.name
+                if parent_fd is not None
+                else prepared.pinned_path
+            )
+            fd = -1
+            try:
+                if parent_fd is None:
+                    fd = os.open(open_path, flags)
+                else:
+                    fd = os.open(open_path, flags, dir_fd=parent_fd)
+                if _handle_identity(fd) != prepared.referent_identity:
+                    raise RuntimeError(
+                        "credential referent changed before its pinned read"
+                    )
+                with os.fdopen(fd, "rb") as handle:
+                    fd = -1
+                    payload = handle.read()
+                    if (
+                        _handle_identity(handle.fileno())
+                        != prepared.referent_identity
+                    ):
+                        raise RuntimeError(
+                            "credential referent changed during its pinned read"
+                        )
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+            if not _prepared_identity_matches(prepared):
+                raise RuntimeError(
+                    "credential endpoint changed during its pinned read"
+                )
+            return payload
 
 
 def _collect_memory_provider_external_paths() -> List[Path]:
@@ -238,9 +983,11 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
     if _should_exclude(rel_path):
         return True
 
-    # zipfile.write() follows file symlinks, so skip links before any archive
-    # write can copy data from outside HERMES_HOME.
-    if abs_path.is_symlink():
+    # Generic runtime symlinks must not pull arbitrary files into an archive.
+    # Known credential-store paths are the narrow exception: symlinked and
+    # mounted credential layouts are supported, and the configured target is
+    # the durable store the backup must capture.
+    if abs_path.is_symlink() and _credential_kind(rel_path) is None:
         return True
 
     try:
@@ -524,6 +1271,17 @@ def run_backup(args) -> None:
     if out_path.suffix.lower() != ".zip":
         out_path = out_path.with_suffix(out_path.suffix + ".zip")
 
+    try:
+        auth_root, shared_store_path, distinct_residence, auth_to_add = (
+            _collect_residence_backup_files(
+                hermes_root,
+                ambient_active_home=True,
+            )
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"Error: Could not inspect provider credentials: {exc}")
+        return
+
     # Ensure parent directory exists
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -543,7 +1301,13 @@ def run_backup(args) -> None:
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
+            if (
+                not (is_root and d == _AUTH_RESIDENCE_DIR)
+                and (
+                    d not in _EXCLUDED_DIRS
+                    or (d == "hermes-agent" and not is_root)
+                )
+            )
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -553,6 +1317,14 @@ def run_backup(args) -> None:
             rel = fpath.relative_to(hermes_root)
 
             if _should_skip_backup_file(fpath, rel, out_path):
+                continue
+            if _skip_runtime_auth_member(
+                fpath,
+                rel,
+                auth_root,
+                shared_store_path,
+                distinct_residence,
+            ):
                 continue
 
             files_to_add.append((fpath, rel))
@@ -581,12 +1353,12 @@ def run_backup(args) -> None:
             arcname = _EXTERNAL_PREFIX + rel_to_home.as_posix()
             external_to_add.append((fpath, arcname))
 
-    if not files_to_add and not external_to_add:
+    if not files_to_add and not auth_to_add and not external_to_add:
         print("No files to back up.")
         return
 
     # Create the zip
-    file_count = len(files_to_add) + len(external_to_add)
+    file_count = len(files_to_add) + len(auth_to_add) + len(external_to_add)
     print(f"Backing up {file_count} files ...")
 
     total_bytes = 0
@@ -634,6 +1406,23 @@ def run_backup(args) -> None:
                 total_bytes += abs_path.stat().st_size
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"  {arcname}: {exc}")
+                continue
+
+        for credential in auth_to_add:
+            try:
+                payload = _read_backup_credential(credential)
+                zf.writestr(
+                    credential.archive_path.as_posix(),
+                    payload,
+                )
+                total_bytes += len(payload)
+            except (
+                PermissionError,
+                OSError,
+                RuntimeError,
+                ValueError,
+            ) as exc:
+                errors.append(f"  {credential.archive_path}: {exc}")
                 continue
 
     elapsed = time.monotonic() - t0
@@ -693,7 +1482,9 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
     if not names:
         return False, "zip archive is empty"
 
-    # Look for telltale files that a hermes home would have
+    # Look for telltale files that a Hermes home would have. A residence-only
+    # backup is also valid: run_backup can create one when the runtime tree is
+    # empty but configured provider credentials exist.
     markers = {"config.yaml", ".env", "state.db"}
     found = set()
     for n in names:
@@ -701,11 +1492,19 @@ def _validate_backup_zip(zf: zipfile.ZipFile) -> tuple[bool, str]:
         basename = Path(n).name
         if basename in markers:
             found.add(basename)
+            continue
+        rel = n
+        first = Path(n).parts[0] if Path(n).parts else ""
+        if first in {".hermes", "hermes"}:
+            rel = n[len(first) + 1:]
+        credential_rel, _namespaced = _archive_credential_rel(rel)
+        if credential_rel is not None:
+            found.add("provider credentials")
 
     if not found:
         return False, (
             "zip does not appear to be a Hermes backup "
-            "(no config.yaml, .env, or state databases found)"
+            "(no configuration, state database, or provider credentials found)"
         )
 
     return True, ""
@@ -748,6 +1547,18 @@ def run_import(args) -> None:
         sys.exit(1)
 
     hermes_root = get_default_hermes_root()
+    active_home = get_hermes_home()
+    active_auth_home = get_hermes_auth_home_for(active_home)
+    if _same_path(active_auth_home, active_home):
+        auth_root = hermes_root
+        distinct_residence = False
+    else:
+        auth_root = get_hermes_auth_home_for(hermes_root)
+        distinct_residence = not _same_path(auth_root, hermes_root)
+    shared_store_path = _configured_shared_store_path(
+        hermes_root,
+        ambient_active_home=True,
+    )
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         # Validate
@@ -759,6 +1570,36 @@ def run_import(args) -> None:
         prefix = _detect_prefix(zf)
         members = [n for n in zf.namelist() if not n.endswith("/")]
         file_count = len(members)
+        credential_members: dict[str, tuple[Path, bool]] = {}
+        namespaced_credentials: set[Path] = set()
+        for member in members:
+            rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
+            credential_rel, namespaced = _archive_credential_rel(rel)
+            if credential_rel is None:
+                continue
+            credential_members[member] = (credential_rel, namespaced)
+            if namespaced:
+                namespaced_credentials.add(credential_rel)
+
+        prepared_credentials: dict[str, _PreparedCredential] = {}
+        for member, (
+            credential_rel,
+            namespaced,
+        ) in credential_members.items():
+            if not namespaced and credential_rel in namespaced_credentials:
+                continue
+            kind = _credential_kind(credential_rel)
+            if kind is None:
+                continue
+            target = _credential_restore_target(
+                auth_root,
+                shared_store_path,
+                credential_rel,
+            )
+            prepared_credentials[member] = _prepare_credential_restore(
+                target,
+                kind,
+            )
 
         print(f"Backup contains {file_count} files")
         print(f"Target: {display_hermes_home()}")
@@ -769,10 +1610,17 @@ def run_import(args) -> None:
         # Check for existing installation
         has_config = (hermes_root / "config.yaml").exists()
         has_env = (hermes_root / ".env").exists()
+        has_credentials = any(
+            prepared.baseline is not None and prepared.baseline[0]
+            for prepared in prepared_credentials.values()
+        )
 
-        if (has_config or has_env) and not args.force:
+        if (has_config or has_env or has_credentials) and not args.force:
             print()
-            print("Warning: Target directory already has Hermes configuration.")
+            print(
+                "Warning: Target already has Hermes configuration "
+                "or provider credentials."
+            )
             print("Importing will overwrite existing files with backup contents.")
             print()
             try:
@@ -784,16 +1632,30 @@ def run_import(args) -> None:
                 print("Aborted.")
                 return
 
+        credential_setup_error = None
+        try:
+            prepared_credentials = _prepare_restore_parents(
+                prepared_credentials
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            credential_setup_error = str(exc)
+            prepared_credentials = {}
+
         # Extract
         print(f"\nImporting {file_count} files ...")
         hermes_root.mkdir(parents=True, exist_ok=True)
 
-        errors = []
+        errors = (
+            [f"  provider credentials: {credential_setup_error}"]
+            if credential_setup_error
+            else []
+        )
         restored = 0
         restored_external = 0
         skipped_runtime: list[str] = []
         home_dir = Path.home().resolve()
         t0 = time.monotonic()
+        processed_credentials: set[str] = set()
 
         for member in members:
             # External memory-provider state captured under the reserved
@@ -835,6 +1697,43 @@ def run_import(args) -> None:
                 rel = member
 
             if not rel:
+                continue
+
+            credential_member = credential_members.get(member)
+            if credential_member is not None:
+                credential_rel, namespaced = credential_member
+                if not namespaced and credential_rel in namespaced_credentials:
+                    continue
+                if member in processed_credentials:
+                    continue
+                processed_credentials.add(member)
+                try:
+                    prepared = prepared_credentials.get(member)
+                    if prepared is None:
+                        continue
+                    payload = zf.read(member)
+                    restored_ok, reason = _restore_credential_payload(
+                        prepared,
+                        payload,
+                    )
+                    if not restored_ok:
+                        errors.append(f"  {rel}: {reason}; preserved live file")
+                        continue
+                    restored += 1
+                except (PermissionError, OSError, RuntimeError, ValueError) as exc:
+                    errors.append(f"  {rel}: {exc}")
+                if restored % 500 == 0:
+                    print(f"  {restored}/{file_count} files ...")
+                continue
+
+            if (
+                rel == _AUTH_RESIDENCE_DIR
+                or rel.startswith(_AUTH_RESIDENCE_PREFIX)
+            ):
+                errors.append(f"  {rel}: unknown reserved auth-residence member")
+                continue
+            if _is_credential_transient(Path(rel)):
+                skipped_runtime.append(rel)
                 continue
 
             # Never overwrite volatile gateway/process runtime state. These are
@@ -968,11 +1867,33 @@ def run_import(args) -> None:
 # platform-specific JSON blobs outside state.db, so it's listed here explicitly
 # — `hermes update` snapshots this set before pulling so approved-user lists
 # are recoverable if anything goes wrong (issue #15733).
+# Entries of _QUICK_STATE_FILES that follow HERMES_AUTH_HOME rather than
+# HERMES_HOME. The archive keeps the flat relative name in both cases, so a
+# snapshot stays portable between a host that pins a credential residence and
+# one that doesn't.
+_AUTH_RESIDENT_NAMES = frozenset({"auth.json", ".anthropic_oauth.json"})
+
+
+def _resolve_state_path(home: Path, rel: str) -> Path:
+    """Map an archive-relative entry to its real on-disk location.
+
+    Without this the snapshot reads (and the restore writes) ``auth.json``
+    under HERMES_HOME while the running system uses the residence, so backups
+    would silently exclude live credentials and a restore would land where
+    nothing reads it.
+    """
+    if rel not in _AUTH_RESIDENT_NAMES:
+        return home / rel
+    return get_hermes_auth_home_for(home) / rel
+
+
 _QUICK_STATE_FILES = (
     "state.db",
     "config.yaml",
     ".env",
+    ".credential_suppressions.json",
     "auth.json",
+    ".anthropic_oauth.json",
     "cron/jobs.json",
     "cron/executions.db",
     "gateway_state.json",
@@ -1008,12 +1929,39 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     return home / _QUICK_SNAPSHOTS_DIR
 
 
+def _write_private_snapshot_file(path: Path, payload: bytes) -> None:
+    tmp_path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    fd = -1
+    try:
+        fd = os.open(
+            tmp_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        os.chmod(path, 0o600)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
     keep: Optional[int] = None,
     max_file_size: Optional[int] = None,
-) -> Optional[str]:
+) -> Optional[QuickSnapshotCreateResult]:
     """Create a quick state snapshot of critical files.
 
     Copies STATE_FILES to a timestamped directory under state-snapshots/.
@@ -1030,10 +1978,23 @@ def create_quick_snapshot(
             behavior.
 
     Returns:
-        Snapshot ID (timestamp-based), or None if no files found.
+        A string-compatible result containing the snapshot ID and completion
+        status, or ``None`` if no files were found.
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
+    credential_sources: dict[str, _BackupCredential] = {}
+    for rel in _AUTH_RESIDENT_NAMES:
+        kind = _credential_kind(Path(rel))
+        if kind is None:
+            continue
+        source = _resolve_state_path(home, rel)
+        if _path_identity(source).exists:
+            credential_sources[rel] = _BackupCredential(
+                path=source,
+                archive_path=Path(rel),
+                kind=kind,
+            )
 
     def _too_large(path: Path, rel_name: str) -> bool:
         """True (and warn) when ``path`` exceeds the max_file_size cap."""
@@ -1069,10 +2030,39 @@ def create_quick_snapshot(
     # to preserve the older complete snapshot that may contain the only
     # recoverable database.
     oversized_skipped: list[str] = []
+    snapshot_failures: list[str] = []
 
     for rel in _QUICK_STATE_FILES:
-        src = home / rel
-        if not src.exists():
+        credential_source = credential_sources.get(rel)
+        src = (
+            credential_source.path
+            if credential_source is not None
+            else _resolve_state_path(home, rel)
+        )
+        if credential_source is None and not src.exists():
+            continue
+
+        if credential_source is not None:
+            dst = snap_dir / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                payload = _read_backup_credential(credential_source)
+                if (
+                    max_file_size is not None
+                    and len(payload) > max_file_size
+                ):
+                    oversized_skipped.append(rel)
+                    print(
+                        f"  ⚠ Snapshot: skipping {rel} "
+                        f"({_format_size(len(payload))} exceeds "
+                        f"{_format_size(max_file_size)} limit)"
+                    )
+                    continue
+                _write_private_snapshot_file(dst, payload)
+                manifest[rel] = len(payload)
+            except (OSError, PermissionError, RuntimeError, ValueError) as exc:
+                logger.warning("Could not snapshot %s: %s", rel, exc)
+                snapshot_failures.append(f"{rel}: {exc}")
             continue
 
         if src.is_dir():
@@ -1089,8 +2079,7 @@ def create_quick_snapshot(
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
                 if _too_large(sub, sub_rel):
-                    if sub.suffix == ".db":
-                        oversized_skipped.append(sub_rel)
+                    oversized_skipped.append(sub_rel)
                     continue
                 dst = snap_dir / sub_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1116,14 +2105,14 @@ def create_quick_snapshot(
                     manifest[sub_rel] = dst.stat().st_size
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+                    snapshot_failures.append(f"{sub_rel}: {exc}")
             continue
 
         if not src.is_file():
             continue
 
         if _too_large(src, rel):
-            if src.suffix == ".db":
-                oversized_skipped.append(rel)
+            oversized_skipped.append(rel)
             continue
 
         dst = snap_dir / rel
@@ -1148,6 +2137,7 @@ def create_quick_snapshot(
             manifest[rel] = dst.stat().st_size
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
+            snapshot_failures.append(f"{rel}: {exc}")
 
     if failed_dbs:
         # Critical: update path used to log-and-continue with exit 0, so a
@@ -1166,14 +2156,14 @@ def create_quick_snapshot(
             ", ".join(failed_dbs),
         )
 
-    if not manifest:
+    snapshot_failures.extend(f"{rel}: database copy failed" for rel in failed_dbs)
+    snapshot_failures.extend(
+        f"{rel}: file exceeded snapshot size limit"
+        for rel in oversized_skipped
+    )
+
+    if not manifest and not snapshot_failures:
         shutil.rmtree(snap_dir, ignore_errors=True)
-        if failed_dbs:
-            # Distinguish "nothing to snapshot" from "state.db present but unreadable"
-            print(
-                "  ⚠ Snapshot aborted: no files captured "
-                f"(failed DBs: {', '.join(failed_dbs)})"
-            )
         return None
 
     # Write manifest
@@ -1186,6 +2176,12 @@ def create_quick_snapshot(
         "files": manifest,
         "failed_dbs": failed_dbs,
         "oversized_skipped": oversized_skipped,
+        "status": (
+            QuickSnapshotStatus.PARTIAL.value
+            if snapshot_failures
+            else QuickSnapshotStatus.COMPLETE.value
+        ),
+        "failures": snapshot_failures,
     }
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -1196,28 +2192,39 @@ def create_quick_snapshot(
     # #68805 review: skip pruning when a present DB failed to capture OR was
     # skipped for size — either way the snapshot is incomplete and the older
     # snapshot may contain the only recoverable database.
-    incomplete = failed_dbs or oversized_skipped
+    incomplete = bool(snapshot_failures)
     if not incomplete:
         _prune_quick_snapshots(root, keep=_QUICK_DEFAULT_KEEP if keep is None else keep)
     else:
         if oversized_skipped:
             print(
-                "  ⚠ Skipping snapshot prune: DB file(s) skipped for size: "
+                "  ⚠ Skipping snapshot prune: file(s) skipped for size: "
                 + ", ".join(oversized_skipped)
             )
             logger.warning(
-                "Quick snapshot skipped oversized DB file(s): %s",
+                "Quick snapshot skipped oversized file(s): %s",
                 ", ".join(oversized_skipped),
             )
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture "
-            "and/or %d were oversized — preserving older snapshots as "
+            "Skipping snapshot prune because %d file(s) failed to capture "
+            "and/or %d were oversized — preserving older snapshots as a "
             "recovery source",
-            len(failed_dbs), len(oversized_skipped),
+            len(failed_dbs) + len(snapshot_failures)
+            - len(oversized_skipped),
+            len(oversized_skipped),
         )
 
     logger.info("State snapshot created: %s (%d files)", snap_id, len(manifest))
-    return snap_id
+    status = (
+        QuickSnapshotStatus.PARTIAL
+        if snapshot_failures
+        else QuickSnapshotStatus.COMPLETE
+    )
+    return QuickSnapshotCreateResult(
+        snap_id,
+        status,
+        tuple(snapshot_failures),
+    )
 
 
 def list_quick_snapshots(
@@ -1249,11 +2256,11 @@ def list_quick_snapshots(
 def restore_quick_snapshot(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
-) -> bool:
+) -> QuickSnapshotRestoreResult:
     """Restore state from a quick snapshot.
 
     Overwrites current state files with the snapshot's copies.
-    Returns True if at least one file was restored.
+    Returns a complete, partial, or not-found result.
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
@@ -1262,7 +2269,7 @@ def restore_quick_snapshot(
     # traversal sequences so that `root / snapshot_id` stays inside root.
     if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in (".", ".."):
         logger.error("Invalid snapshot_id: %s", snapshot_id)
-        return False
+        return QuickSnapshotRestoreResult(QuickSnapshotStatus.NOT_FOUND)
 
     snap_dir = root / snapshot_id
 
@@ -1271,19 +2278,47 @@ def restore_quick_snapshot(
         snap_dir.resolve().relative_to(root.resolve())
     except ValueError:
         logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
-        return False
+        return QuickSnapshotRestoreResult(QuickSnapshotStatus.NOT_FOUND)
 
     if not snap_dir.is_dir():
-        return False
+        return QuickSnapshotRestoreResult(QuickSnapshotStatus.NOT_FOUND)
 
     manifest_path = snap_dir / "manifest.json"
     if not manifest_path.exists():
-        return False
+        return QuickSnapshotRestoreResult(QuickSnapshotStatus.NOT_FOUND)
 
     with open(manifest_path, encoding="utf-8") as f:
         meta = json.load(f)
 
+    prepared_credentials: dict[str, _PreparedCredential] = {}
+    for rel in meta.get("files", {}):
+        kind = _credential_kind(Path(rel))
+        if kind is None:
+            continue
+        prepared_credentials[rel] = _prepare_credential_restore(
+            _resolve_state_path(home, rel),
+            kind,
+        )
+
+    setup_failures: list[str] = [
+        f"snapshot creation: {failure}"
+        for failure in meta.get("failures", [])
+    ]
+    if (
+        meta.get("status") == QuickSnapshotStatus.PARTIAL.value
+        and not setup_failures
+    ):
+        setup_failures.append("snapshot creation was incomplete")
+    try:
+        prepared_credentials = _prepare_restore_parents(
+            prepared_credentials
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        setup_failures.append(f"provider credentials: {exc}")
+        prepared_credentials = {}
+
     restored = 0
+    failures: list[str] = setup_failures
     for rel in meta.get("files", {}):
         # Security: reject absolute paths and traversals in manifest entries
         src = snap_dir / rel
@@ -1291,35 +2326,66 @@ def restore_quick_snapshot(
             src.resolve().relative_to(snap_dir.resolve())
         except ValueError:
             logger.error("Manifest path traversal blocked: %s", rel)
+            failures.append(f"{rel}: path traversal blocked")
             continue
 
-        dst = home / rel
-        try:
-            dst.resolve().relative_to(home.resolve())
-        except ValueError:
-            logger.error("Manifest path traversal blocked: %s", rel)
-            continue
+        dst = _resolve_state_path(home, rel)
+        if rel not in _AUTH_RESIDENT_NAMES:
+            try:
+                dst.resolve().relative_to(home.resolve())
+            except ValueError:
+                logger.error("Manifest path traversal blocked: %s", rel)
+                failures.append(f"{rel}: path traversal blocked")
+                continue
 
         if not src.exists():
+            failures.append(f"{rel}: snapshot file missing")
             continue
 
-        dst.parent.mkdir(parents=True, exist_ok=True)
-
         try:
-            if dst.suffix == ".db":
+            kind = _credential_kind(Path(rel))
+            if kind is not None:
+                prepared = prepared_credentials.get(rel)
+                if prepared is None:
+                    continue
+                restored_ok, reason = _restore_credential_payload(
+                    prepared,
+                    src.read_bytes(),
+                )
+                if not restored_ok:
+                    logger.error(
+                        "Failed to restore %s: %s; preserved live file",
+                        rel,
+                        reason,
+                    )
+                    failures.append(f"{rel}: {reason}")
+                    continue
+            elif dst.suffix == ".db":
                 # Atomic-ish replace for databases
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 tmp = dst.parent / f".{dst.name}.snap_restore"
                 shutil.copy2(src, tmp)
                 dst.unlink(missing_ok=True)
                 shutil.move(str(tmp), str(dst))
             else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
             restored += 1
-        except (OSError, PermissionError) as exc:
+        except (OSError, PermissionError, RuntimeError, ValueError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)
+            failures.append(f"{rel}: {exc}")
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
-    return restored > 0
+    status = (
+        QuickSnapshotStatus.COMPLETE
+        if restored > 0 and not failures
+        else QuickSnapshotStatus.PARTIAL
+    )
+    return QuickSnapshotRestoreResult(
+        status,
+        restored=restored,
+        failures=tuple(failures),
+    )
 
 
 # Relative path of the cron job database inside HERMES_HOME. Kept in sync with
@@ -1469,7 +2535,13 @@ def run_quick_backup(args) -> None:
     label = getattr(args, "label", None)
     snap_id = create_quick_snapshot(label=label)
     if snap_id:
-        print(f"State snapshot created: {snap_id}")
+        if snap_id.status is QuickSnapshotStatus.COMPLETE:
+            print(f"State snapshot created: {snap_id}")
+        else:
+            print(
+                f"State snapshot incomplete: {snap_id} "
+                f"({len(snap_id.failures)} file(s) not captured)"
+            )
         snaps = list_quick_snapshots()
         print(f"  {len(snaps)} snapshot(s) stored in {display_hermes_home()}/state-snapshots/")
         print(f"  Restore with: /snapshot restore {snap_id}")
@@ -1481,7 +2553,13 @@ def run_quick_backup(args) -> None:
 # Shared full-zip backup helper
 # ---------------------------------------------------------------------------
 
-def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
+def _write_full_zip_backup(
+    out_path: Path,
+    hermes_root: Path,
+    credential_layout: Optional[
+        tuple[Path, Path, bool, list[_BackupCredential]]
+    ] = None,
+) -> Optional[Path]:
     """Write a full zip snapshot of ``hermes_root`` to ``out_path``.
 
     Uses the same exclusion rules and SQLite safe-copy as :func:`run_backup`.
@@ -1490,10 +2568,28 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     """
     files_to_add: list[tuple[Path, Path]] = []
     try:
+        if credential_layout is None:
+            credential_layout = _collect_residence_backup_files(
+                hermes_root,
+                ambient_active_home=False,
+            )
+        auth_root, shared_store_path, distinct_residence, auth_to_add = (
+            credential_layout
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Full-zip backup: credential inspection failed: %s", exc)
+        return None
+    try:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
             # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            rel_dir = dp.relative_to(hermes_root)
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in _EXCLUDED_DIRS
+                and not (rel_dir == Path(".") and d == _AUTH_RESIDENCE_DIR)
+            ]
 
             for fname in filenames:
                 fpath = dp / fname
@@ -1504,16 +2600,24 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
 
                 if _should_skip_backup_file(fpath, rel, out_path):
                     continue
+                if _skip_runtime_auth_member(
+                    fpath,
+                    rel,
+                    auth_root,
+                    shared_store_path,
+                    distinct_residence,
+                ):
+                    continue
 
                 files_to_add.append((fpath, rel))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None
 
-    if not files_to_add:
+    if not files_to_add and not auth_to_add:
         return None
 
-    sqlite_snapshot_failed = False
+    backup_failed = False
     try:
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             for abs_path, rel_path in files_to_add:
@@ -1533,7 +2637,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                                     "Full-zip backup aborted: SQLite snapshot failed for %s",
                                     rel_path,
                                 )
-                                sqlite_snapshot_failed = True
+                                backup_failed = True
                                 break
                             zf.write(tmp_db, arcname=str(rel_path))
                         finally:
@@ -1543,6 +2647,28 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 except (PermissionError, OSError, ValueError) as exc:
                     logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
                     continue
+            if not backup_failed:
+                for credential in auth_to_add:
+                    try:
+                        payload = _read_backup_credential(credential)
+                        zf.writestr(
+                            credential.archive_path.as_posix(),
+                            payload,
+                        )
+                    except (
+                        PermissionError,
+                        OSError,
+                        RuntimeError,
+                        ValueError,
+                    ) as exc:
+                        logger.warning(
+                            "Full-zip backup aborted: credential capture "
+                            "failed for %s: %s",
+                            credential.archive_path,
+                            exc,
+                        )
+                        backup_failed = True
+                        break
     except OSError as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         # Best-effort cleanup of partial file
@@ -1552,7 +2678,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
             pass
         return None
 
-    if sqlite_snapshot_failed:
+    if backup_failed:
         try:
             out_path.unlink(missing_ok=True)
         except OSError:
@@ -1631,6 +2757,15 @@ def create_pre_update_backup(
     if not hermes_root.is_dir():
         return None
 
+    try:
+        credential_layout = _collect_residence_backup_files(
+            hermes_root,
+            ambient_active_home=False,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Could not inspect provider credentials: %s", exc)
+        return None
+
     backup_dir = _pre_update_backup_dir(hermes_root)
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -1641,7 +2776,11 @@ def create_pre_update_backup(
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     out_path = backup_dir / f"{_PRE_UPDATE_PREFIX}{stamp}.zip"
 
-    result = _write_full_zip_backup(out_path, hermes_root)
+    result = _write_full_zip_backup(
+        out_path,
+        hermes_root,
+        credential_layout=credential_layout,
+    )
     if result is None:
         return None
 
@@ -1706,6 +2845,15 @@ def create_pre_migration_backup(
     if not hermes_root.is_dir():
         return None
 
+    try:
+        credential_layout = _collect_residence_backup_files(
+            hermes_root,
+            ambient_active_home=False,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Could not inspect provider credentials: %s", exc)
+        return None
+
     # Reuses the shared backups/ directory so `hermes import` and the
     # update-backup listing pick up pre-migration archives too.
     backup_dir = _pre_update_backup_dir(hermes_root)
@@ -1718,7 +2866,11 @@ def create_pre_migration_backup(
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     out_path = backup_dir / f"{_PRE_MIGRATION_PREFIX}{stamp}.zip"
 
-    result = _write_full_zip_backup(out_path, hermes_root)
+    result = _write_full_zip_backup(
+        out_path,
+        hermes_root,
+        credential_layout=credential_layout,
+    )
     if result is None:
         return None
 

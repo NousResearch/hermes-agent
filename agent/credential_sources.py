@@ -4,7 +4,7 @@ Hermes seeds its credential pool from many places:
 
     env:<VAR>     — os.environ / ~/.hermes/.env
     claude_code   — ~/.claude/.credentials.json
-    hermes_pkce   — ~/.hermes/.anthropic_oauth.json
+    hermes_pkce   — .anthropic_oauth.json in the resolved Hermes auth residence
     device_code   — auth.json providers.<provider> (nous, openai-codex, ...)
     qwen-cli      — ~/.qwen/oauth_creds.json
     gh_cli        — gh auth token
@@ -29,8 +29,9 @@ in the same shape:
 
     1. Clean up whatever externally-readable state the source reads from
        (.env line, auth.json block, OAuth file, etc.)
-    2. Suppress the ``(provider, source_id)`` in auth.json so the
-       corresponding ``_seed_from_*`` branch skips the upsert on re-load
+    2. Suppress the ``(provider, source_id)`` in the source-appropriate
+       persistence scope so the corresponding ``_seed_from_*`` branch skips
+       the upsert on re-load
     3. Return ``RemovalResult`` describing what was cleaned and any
        diagnostic hints the user should see (shell-exported env vars,
        external credential files we deliberately don't delete, etc.)
@@ -205,17 +206,15 @@ def _remove_claude_code(provider: str, removed) -> RemovalResult:
 
 
 def _remove_hermes_pkce(provider: str, removed) -> RemovalResult:
-    """~/.hermes/.anthropic_oauth.json is ours — delete it outright."""
-    from hermes_constants import get_hermes_home
+    """Hermes' resolved Anthropic OAuth store is ours — delete it outright."""
+    from hermes_cli.auth import remove_anthropic_oauth_store
 
     result = RemovalResult()
-    oauth_file = get_hermes_home() / ".anthropic_oauth.json"
-    if oauth_file.exists():
-        try:
-            oauth_file.unlink()
+    try:
+        if remove_anthropic_oauth_store():
             result.cleaned.append("Cleared Hermes Anthropic OAuth credentials")
-        except OSError as exc:
-            result.hints.append(f"Could not delete {oauth_file}: {exc}")
+    except (OSError, TimeoutError) as exc:
+        result.hints.append(f"Could not delete Anthropic OAuth credentials: {exc}")
     return result
 
 
@@ -404,7 +403,7 @@ def _register_all_sources() -> None:
     register(RemovalStep(
         provider="anthropic", source_id="hermes_pkce",
         remove_fn=_remove_hermes_pkce,
-        description="~/.hermes/.anthropic_oauth.json",
+        description=".anthropic_oauth.json in the resolved Hermes auth residence",
     ))
     register(RemovalStep(
         provider="nous", source_id="device_code",

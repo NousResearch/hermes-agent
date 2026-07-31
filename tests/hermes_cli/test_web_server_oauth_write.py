@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -18,8 +19,10 @@ class _DummyPool:
 
 @pytest.fixture
 def oauth_file(monkeypatch, tmp_path):
-    target = tmp_path / '.anthropic_oauth.json'
-    monkeypatch.setattr('agent.anthropic_adapter._get_hermes_oauth_file', lambda: target)
+    runtime_home = tmp_path / "runtime"
+    target = runtime_home / ".anthropic_oauth.json"
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.delenv("HERMES_AUTH_HOME", raising=False)
     monkeypatch.setattr('agent.credential_pool.load_pool', lambda _provider: _DummyPool())
     return target
 
@@ -32,6 +35,9 @@ def test_dashboard_oauth_write_uses_owner_only_permissions(oauth_file):
         os.umask(old_umask)
 
     assert oauth_file.exists()
+    assert json.loads(oauth_file.read_text(encoding="utf-8"))["accessToken"] == (
+        "access-token"
+    )
     mode = oauth_file.stat().st_mode & 0o777
     assert mode == 0o600
 

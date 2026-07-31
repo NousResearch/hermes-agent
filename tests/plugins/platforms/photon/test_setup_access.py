@@ -41,6 +41,29 @@ def test_env_enablement_seeds_home_channel(monkeypatch: pytest.MonkeyPatch) -> N
     }
 
 
+def test_device_login_success_reports_residence_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    runtime_home = tmp_path / "runtime"
+    residence = tmp_path / "auth-residence"
+    monkeypatch.setenv("HERMES_HOME", str(runtime_home))
+    monkeypatch.setenv("HERMES_AUTH_HOME", str(residence))
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "login_device_flow",
+        lambda **_kwargs: "token",
+    )
+
+    rc = cli._run_device_login(argparse.Namespace(no_browser=True))
+
+    assert rc == 0
+    assert f"token saved to {residence.resolve() / 'auth.json'}" in (
+        capsys.readouterr().out
+    )
+
+
 def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
     # Token validation (added for #72763) would otherwise hit the network.

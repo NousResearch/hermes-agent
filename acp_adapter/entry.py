@@ -153,6 +153,16 @@ def _print_version() -> None:
     print(hermes_version)
 
 
+def _validate_auth_home() -> None:
+    from hermes_constants import HermesAuthHomeError, get_hermes_auth_home_strict
+
+    try:
+        get_hermes_auth_home_strict()
+    except HermesAuthHomeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+
 def _run_check() -> None:
     import acp  # noqa: F401
     from acp_adapter.server import HermesACPAgent  # noqa: F401
@@ -217,6 +227,7 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
+    _validate_auth_home()
     args = _parse_args(argv)
     if args.version:
         _print_version()

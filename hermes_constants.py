@@ -9,10 +9,11 @@ import shutil
 import stat
 import sys
 from contextvars import ContextVar, Token
-from pathlib import Path
+from pathlib import Path, PurePath
 
 
 _profile_fallback_warned: bool = False
+_auth_home_invalid_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
@@ -129,6 +130,345 @@ def get_hermes_home() -> Path:
         _warn_profile_fallback_once()
 
     return _hermes_home_from_env()
+
+
+class HermesAuthHomeError(ValueError):
+    """``HERMES_AUTH_HOME`` is set to a value Hermes cannot use."""
+
+
+def _raw_hermes_auth_home() -> str | None:
+    """Return the raw ``HERMES_AUTH_HOME`` value, or ``None`` when unset."""
+    if "HERMES_AUTH_HOME" not in os.environ:
+        return None
+    return os.environ["HERMES_AUTH_HOME"]
+
+
+def _is_filesystem_anchor(path: PurePath) -> bool:
+    """Return whether *path* is its platform filesystem root.
+
+    ``PurePath.parent == PurePath`` covers POSIX ``/``, Windows drive roots,
+    and Windows UNC share roots without rejecting ordinary dedicated mount
+    directories.
+    """
+    return path.parent == path
+
+
+def _resolve_auth_home_directory(raw: str, *, label: str) -> Path:
+    """Validate and canonicalize one credential-residence directory."""
+    if not raw.strip():
+        raise HermesAuthHomeError(
+            f"{label} is set but empty (got {raw!r}). Unset it to keep "
+            "provider credentials in HERMES_HOME, or set it to an absolute path."
+        )
+    if raw != raw.strip():
+        raise HermesAuthHomeError(
+            f"{label} has leading or trailing whitespace (got {raw!r})."
+        )
+    if any(ord(char) < 32 or ord(char) == 127 for char in raw):
+        raise HermesAuthHomeError(
+            f"{label} contains a control character and cannot be used."
+        )
+
+    try:
+        path = Path(raw)
+    except (TypeError, ValueError) as exc:
+        raise HermesAuthHomeError(f"{label} is not a valid path: {exc}") from exc
+    if not path.is_absolute():
+        raise HermesAuthHomeError(
+            f"{label} must be an absolute path (got {raw!r}); "
+            "relative and '~' paths are not accepted."
+        )
+
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HermesAuthHomeError(
+            f"{label} cannot be resolved (got {raw!r}): {exc}"
+        ) from exc
+    if _is_filesystem_anchor(resolved):
+        raise HermesAuthHomeError(
+            f"{label} must not be a filesystem root (got {raw!r}); "
+            "set it to a dedicated directory below the root."
+        )
+
+    try:
+        path_exists = os.path.lexists(path)
+    except (OSError, ValueError) as exc:
+        raise HermesAuthHomeError(
+            f"{label} cannot be inspected (got {raw!r}): {exc}"
+        ) from exc
+    if path_exists:
+        try:
+            is_directory = path.is_dir()
+        except OSError as exc:
+            raise HermesAuthHomeError(
+                f"{label} cannot be inspected (got {raw!r}): {exc}"
+            ) from exc
+        if not is_directory:
+            raise HermesAuthHomeError(f"{label} must name a directory (got {raw!r}).")
+
+    return resolved
+
+
+def _path_is_within(path: Path, directory: Path) -> bool:
+    """Return whether *path* is equal to or below *directory*."""
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolved_runtime_home(home: Path, *, label: str) -> Path:
+    try:
+        return home.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HermesAuthHomeError(f"{label} cannot be resolved: {exc}") from exc
+
+
+def _validate_auth_home_boundaries(residence: Path, *, label: str) -> None:
+    """Reject a relocated residence whose guard would cover broad user state."""
+    process_home = _resolved_runtime_home(
+        get_process_hermes_home(),
+        label="HERMES_HOME",
+    )
+    homes = [process_home]
+    active_home = _resolved_runtime_home(
+        get_hermes_home(),
+        label="active HERMES_HOME",
+    )
+    if active_home != process_home:
+        homes.append(active_home)
+    relocated_homes = [
+        runtime_home
+        for runtime_home in homes
+        if not _same_resolved_path(
+            _mapped_auth_home(runtime_home, residence),
+            runtime_home,
+        )
+    ]
+    if not relocated_homes:
+        return
+
+    try:
+        user_home = Path(get_real_home()).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HermesAuthHomeError(
+            f"{label} cannot be checked against the OS user home: {exc}"
+        ) from exc
+    if _path_is_within(user_home, residence):
+        raise HermesAuthHomeError(
+            f"{label} must not be the OS user home or one of its ancestors "
+            f"(got {str(residence)!r}); set it to a dedicated directory."
+        )
+
+    for runtime_home in relocated_homes:
+        if _path_is_within(runtime_home, residence):
+            raise HermesAuthHomeError(
+                f"{label} must not contain HERMES_HOME "
+                f"{str(runtime_home)!r}; set it to a dedicated directory."
+            )
+
+
+def _validate_auth_home_for_runtime(
+    residence: Path,
+    runtime_home: Path,
+    *,
+    label: str,
+) -> None:
+    resolved_runtime = _resolved_runtime_home(runtime_home, label="HERMES_HOME")
+    if residence != resolved_runtime and _path_is_within(
+        resolved_runtime,
+        residence,
+    ):
+        raise HermesAuthHomeError(
+            f"{label} must not contain HERMES_HOME "
+            f"{str(resolved_runtime)!r}; set it to a dedicated directory."
+        )
+
+
+def validate_hermes_auth_home() -> None:
+    """Raise :class:`HermesAuthHomeError` when ``HERMES_AUTH_HOME`` is unusable.
+
+    Entry points call this once during startup so a mistyped launcher env var
+    fails immediately with an actionable message, instead of surfacing later
+    as a stray traceback out of whichever code path happens to touch
+    credentials first.
+    """
+    get_hermes_auth_home_override_strict()
+
+
+def _warn_auth_home_invalid_once(message: str) -> None:
+    global _auth_home_invalid_warned
+    if _auth_home_invalid_warned:
+        return
+    _auth_home_invalid_warned = True
+    # Direct stderr, for the same reasons as _warn_profile_fallback_once:
+    # this runs from import-time module constants, often before logging is
+    # configured, and root-logger propagation would double-emit.
+    try:
+        sys.stderr.write(f"[HERMES_AUTH_HOME ignored] {message}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def get_hermes_auth_home_override() -> Path | None:
+    """Return the launcher-scoped provider credential residence, or ``None``.
+
+    Total by construction: an unusable ``HERMES_AUTH_HOME`` warns once on
+    stderr and resolves to ``None`` rather than raising.  Callers include
+    import-time module constants and every file-safety guard, where an
+    exception would either abort startup or be swallowed by a best-effort
+    handler and silently turn a credential read-deny into a no-op.  Entry
+    points reject bad values loudly via :func:`validate_hermes_auth_home`
+    long before execution reaches here.
+    """
+    raw = _raw_hermes_auth_home()
+    if raw is None:
+        return None
+    try:
+        return get_hermes_auth_home_override_strict()
+    except HermesAuthHomeError as exc:
+        _warn_auth_home_invalid_once(str(exc))
+        return None
+
+
+def get_hermes_auth_home_override_strict() -> Path | None:
+    """Return the validated credential residence, or ``None`` when unset.
+
+    Unlike :func:`get_hermes_auth_home_override`, this is an actual-I/O
+    boundary: a set-but-unusable value raises :class:`HermesAuthHomeError`
+    instead of falling back to runtime state.
+    """
+    raw = _raw_hermes_auth_home()
+    if raw is None:
+        return None
+    residence = _resolve_auth_home_directory(raw, label="HERMES_AUTH_HOME")
+    _validate_auth_home_boundaries(residence, label="HERMES_AUTH_HOME")
+    return residence
+
+
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    """Compare paths without making total callers depend on resolution."""
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return left == right
+
+
+def _runtime_layout_root(home: Path) -> Path:
+    """Return the lexical root for a default-or-named runtime home."""
+    if home.parent.name == "profiles":
+        return home.parent.parent
+    return home
+
+
+def _belongs_to_runtime_layout(home: Path, process_home: Path) -> bool:
+    """Return whether *home* is the process default root or a direct profile."""
+    process_root = _runtime_layout_root(process_home)
+    if _same_resolved_path(home, process_root):
+        return True
+    return (
+        home.parent.name == "profiles"
+        and _same_resolved_path(home.parent.parent, process_root)
+    )
+
+
+def _mapped_auth_home(home: Path, override: Path | None) -> Path:
+    """Apply the runtime-home-to-auth-home layout without validation."""
+    if override is None:
+        return home
+    # A launcher that spells HERMES_AUTH_HOME as the same directory as its
+    # process HERMES_HOME has not requested a second layout. Treat that as a
+    # no-op for *every* explicit mapping in that launcher layout (default,
+    # active, sibling, clone source/target, and backup), not only for ``home``
+    # itself. An unrelated explicit custom runtime remains independently
+    # mappable to the residence.
+    # get_process_hermes_home() deliberately ignores request-scoped ContextVar
+    # overrides, so multiplexed dashboard requests cannot change this identity.
+    process_home = get_process_hermes_home()
+    if (
+        _same_resolved_path(override, process_home)
+        and _belongs_to_runtime_layout(home, process_home)
+    ):
+        return home
+    if _same_resolved_path(override, home):
+        return home
+    # Profile identity is a lexical layout property. Resolving first would
+    # collapse ``<root>/profiles/work`` when ``work`` is a directory symlink
+    # and route its credentials to the default residence root.
+    if home.parent.name == "profiles":
+        return override / "profiles" / home.name
+    return override
+
+
+def get_hermes_auth_home_for(home: str | Path) -> Path:
+    """Strictly map an explicit runtime home to its credential directory.
+
+    Lifecycle operations use this instead of ambient profile state. Named
+    runtime homes map to ``<residence>/profiles/<name>``; default/custom homes
+    map to the residence root, and a path-equal override is a no-op.
+    """
+    runtime_home = Path(home)
+    override = get_hermes_auth_home_override_strict()
+    mapped = _mapped_auth_home(runtime_home, override)
+    if override is None or _same_resolved_path(mapped, runtime_home):
+        return mapped
+    _validate_auth_home_for_runtime(
+        override,
+        runtime_home,
+        label="HERMES_AUTH_HOME",
+    )
+    _resolve_auth_home_directory(
+        str(mapped),
+        label=f"credential directory mapped from {runtime_home}",
+    )
+    return mapped
+
+
+def get_hermes_auth_home() -> Path:
+    """Return the directory holding Hermes-owned provider credentials.
+
+    Without the override this is :func:`get_hermes_home`, so behavior is
+    unchanged.  With it, the residence mirrors the profile layout: a profile
+    home of ``<root>/profiles/<name>`` resolves to
+    ``<residence>/profiles/<name>``.  That preserves the multiplexing
+    gateway's per-profile credential isolation — a flat process-global
+    residence would collapse every profile onto one ``auth.json`` and one
+    shared ``active_provider``.
+    """
+    return _mapped_auth_home(get_hermes_home(), get_hermes_auth_home_override())
+
+
+def get_hermes_auth_home_strict() -> Path:
+    """Return the active credential directory, failing on an invalid override."""
+    return get_hermes_auth_home_for(get_hermes_home())
+
+
+def is_hermes_auth_home_relocated(home: str | Path | None = None) -> bool:
+    """Return whether auth genuinely lives outside the mapped runtime home.
+
+    This total counterpart is safe in import-time guards. Invalid overrides
+    behave like no override here; operational callers use the strict variant.
+    """
+    runtime_home = Path(home) if home is not None else get_hermes_home()
+    auth_home = _mapped_auth_home(
+        runtime_home,
+        get_hermes_auth_home_override(),
+    )
+    return not _same_resolved_path(auth_home, runtime_home)
+
+
+def is_hermes_auth_home_relocated_strict(
+    home: str | Path | None = None,
+) -> bool:
+    """Strict counterpart of :func:`is_hermes_auth_home_relocated`."""
+    runtime_home = Path(home) if home is not None else get_hermes_home()
+    return not _same_resolved_path(
+        get_hermes_auth_home_for(runtime_home),
+        runtime_home,
+    )
 
 
 def get_process_hermes_home() -> Path:
@@ -670,16 +1010,46 @@ def display_hermes_home() -> str:
 
 
 def secure_parent_dir(path: Path) -> None:
-    """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
+    """Restrict the parent directory of *path* without crossing its owner root.
 
-    Refuses to chmod ``/`` or any top-level directory (resolved parent with
-    fewer than 3 parts, i.e. ``/`` or any direct child like ``/usr``) to
-    prevent catastrophic host bricking when ``HERMES_HOME`` or other path
-    env vars resolve to an unexpected location.
+    A relocated auth residence owns its complete internal directory chain, so
+    tighten the configured root and every existing directory below it. Other
+    paths retain the conservative single-parent behavior and refuse filesystem
+    roots or their direct children.
 
     See https://github.com/NousResearch/hermes-agent/issues/25821.
     """
+    lexical_parent = Path(os.path.abspath(path.parent))
     parent = path.parent.resolve()
+    auth_residence = get_hermes_auth_home_override()
+    if auth_residence is not None and is_hermes_auth_home_relocated():
+        try:
+            lexical_parent.relative_to(auth_residence)
+        except ValueError:
+            pass
+        else:
+            try:
+                os.chmod(auth_residence, 0o700)
+            except OSError:
+                pass
+            try:
+                parent.relative_to(auth_residence)
+            except ValueError:
+                return
+            owned_directories = []
+            current = parent
+            while True:
+                owned_directories.append(current)
+                if current == auth_residence:
+                    break
+                current = current.parent
+            for directory in reversed(owned_directories):
+                try:
+                    os.chmod(directory, 0o700)
+                except OSError:
+                    pass
+            return
+
     # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
     if parent == Path("/") or len(parent.parts) < 3:
         return

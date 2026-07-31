@@ -849,7 +849,11 @@ class TestQuickSnapshotProjectsKanban:
         <root>/kanban/boards/<slug>/kanban.db, not <root>/kanban.db. The
         ``kanban/boards`` dir entry must capture them too, or multi-board
         users still lose every board except ``default`` on upgrade."""
-        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        from hermes_cli.backup import (
+            QuickSnapshotStatus,
+            create_quick_snapshot,
+            restore_quick_snapshot,
+        )
 
         board_dir = hermes_home / "kanban" / "boards" / "work"
         board_dir.mkdir(parents=True)
@@ -872,7 +876,8 @@ class TestQuickSnapshotProjectsKanban:
         conn.commit()
         conn.close()
 
-        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        result = restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+        assert result.status is QuickSnapshotStatus.COMPLETE
         conn = sqlite3.connect(str(board_dir / "kanban.db"))
         rows = conn.execute("SELECT * FROM tasks").fetchall()
         conn.close()
@@ -1242,7 +1247,6 @@ class TestMemoryProviderExternalPaths:
         assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
-
 
 
 

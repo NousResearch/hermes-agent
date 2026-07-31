@@ -549,7 +549,14 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_auth_home,
+    get_hermes_auth_home_override,
+    get_hermes_dir,
+    get_hermes_home,
+    is_hermes_auth_home_relocated,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1350,6 +1357,7 @@ def _media_delivery_denied_paths() -> List[Path]:
         ".env",
         "auth.json",
         "auth.lock",
+        "auth.json.corrupt",
         "credentials",
         "config.yaml",
         # Anthropic PKCE / OAuth refresh credential store.
@@ -1362,6 +1370,7 @@ def _media_delivery_denied_paths() -> List[Path]:
         os.path.join("auth", "google_oauth.json"),
         # Webhook subscription HMAC secrets.
         "webhook_subscriptions.json",
+        os.path.join("shared", "nous_auth.json"),
         # Bitwarden Secrets Manager plaintext and encrypted disk caches.
         os.path.join("cache", "bws_cache.json"),
         os.path.join("cache", "bws_cache.enc.json"),
@@ -1379,11 +1388,31 @@ def _media_delivery_denied_paths() -> List[Path]:
         "pairing",
         "mcp-tokens",
     )
-    for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
+    # The credential residence is resolved per call, not captured at import:
+    # it follows the per-profile home the multiplexer installs for the turn,
+    # so an import-time snapshot would deny the wrong profile's paths.
+    active_home = get_hermes_home()
+    global_root = get_default_hermes_root()
+    hermes_roots = [active_home, global_root, get_hermes_auth_home()]
+    profiles_root = global_root / "profiles"
+    try:
+        hermes_roots.extend(
+            entry for entry in profiles_root.iterdir() if entry.is_dir()
+        )
+    except OSError:
+        pass
+    for hermes_root in dict.fromkeys(hermes_roots):
         for rel in _ROOT_CREDENTIAL_FILES:
             denied.append(hermes_root / rel)
         for rel in _ROOT_CREDENTIAL_DIRS:
             denied.append(hermes_root / rel)
+        try:
+            denied.extend(hermes_root.glob("auth.json.tmp.*"))
+        except OSError:
+            pass
+    residence = get_hermes_auth_home_override()
+    if residence is not None and is_hermes_auth_home_relocated():
+        denied.append(residence)
     return denied
 
 
@@ -1405,6 +1434,13 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
         home = Path(os.path.expanduser("~")).resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         home = None
+    residence = None
+    try:
+        override = get_hermes_auth_home_override()
+        if override is not None and is_hermes_auth_home_relocated():
+            residence = override.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        pass
     for denied in _media_delivery_denied_paths():
         try:
             resolved_denied = denied.expanduser().resolve(strict=False)
@@ -1412,6 +1448,8 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
             continue
         if not (_path_is_within(resolved, resolved_denied) or resolved == resolved_denied):
             continue
+        if residence is not None and resolved_denied == residence:
+            return True
         # Allow the running user's own home tree; its credential sub-dirs are
         # caught by their own (more-specific) denylist entries above.
         if home is not None and resolved_denied == home:

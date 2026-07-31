@@ -26,6 +26,9 @@ class TestCredentialExclusion:
         # Create a profile with credentials
         (profile_dir / "config.yaml").write_text("model: gpt-4\n")
         (profile_dir / "auth.json").write_text('{"tokens": {"access": "sk-secret"}}')
+        (profile_dir / "auth.json.rebootstrap.tmp").write_text(
+            '{"tokens": {"access": "stale-secret"}}'
+        )
         (profile_dir / ".env").write_text("OPENROUTER_API_KEY=sk-secret-key\n")
         (profile_dir / "SOUL.md").write_text("I am helpful.\n")
         (profile_dir / "memories").mkdir()
@@ -45,4 +48,7 @@ class TestCredentialExclusion:
         assert any("config.yaml" in n for n in names), "config.yaml should be in export"
         assert any("SOUL.md" in n for n in names), "SOUL.md should be in export"
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
+        assert not any(
+            "auth.json.rebootstrap.tmp" in n for n in names
+        ), "legacy rebootstrap temp must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"

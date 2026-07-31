@@ -12,8 +12,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_auth_home_for,
+    get_hermes_auth_home_override_strict,
+    get_hermes_home,
+    is_hermes_auth_home_relocated_strict,
+)
 
+from hermes_cli.auth_artifacts import (
+    is_primary_auth_artifact,
+    is_shared_auth_artifact,
+)
 from hermes_cli.colors import Colors, color
 
 def log_info(msg: str):
@@ -429,6 +438,161 @@ def _is_default_hermes_home(hermes_home: Path) -> bool:
         return False
 
 
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return left == right
+
+
+def _is_named_profile_home(home: Path) -> bool:
+    """Recognize the lexical ``<root>/profiles/<name>`` runtime layout."""
+    return home.parent.name == "profiles" and bool(home.name)
+
+
+def _remove_runtime_home_preserving(
+    runtime_home: Path,
+    preserved_roots: list[Path],
+) -> bool:
+    """Remove runtime-owned content without crossing into nested residences.
+
+    Returns ``True`` when a nested launcher-owned root required the runtime
+    directory and its parent chain to remain as containers.  Directory
+    symlinks are never traversed by the removal walk.
+    """
+    runtime_absolute = Path(os.path.abspath(runtime_home))
+    runtime_canonical = runtime_home.resolve(strict=False)
+    nested_relatives: set[Path] = set()
+    for preserved in preserved_roots:
+        candidates = (
+            (Path(os.path.abspath(preserved)), runtime_absolute),
+            (preserved.resolve(strict=False), runtime_canonical),
+        )
+        for candidate, root in candidates:
+            try:
+                relative = candidate.relative_to(root)
+            except ValueError:
+                continue
+            if relative.parts:
+                nested_relatives.add(relative)
+
+    if not nested_relatives:
+        shutil.rmtree(runtime_home)
+        return False
+
+    def _remove_contents(directory: Path, relative_directory: Path) -> None:
+        for entry in list(directory.iterdir()):
+            relative_entry = relative_directory / entry.name
+            if relative_entry in nested_relatives:
+                continue
+            contains_preserved = any(
+                relative_entry in preserved.parents
+                for preserved in nested_relatives
+            )
+            if contains_preserved:
+                if entry.is_symlink() or not entry.is_dir():
+                    raise RuntimeError(
+                        "Cannot preserve credential residence beneath "
+                        f"non-directory runtime entry: {entry}"
+                    )
+                _remove_contents(entry, relative_entry)
+                continue
+            if entry.is_symlink() or not entry.is_dir():
+                entry.unlink()
+            else:
+                shutil.rmtree(entry)
+
+    _remove_contents(runtime_home, Path())
+    return True
+
+
+def _remove_profile_auth_mirror(
+    profile_home: Path,
+    *,
+    preserve_unknown: bool = False,
+) -> Path | None:
+    auth_home = get_hermes_auth_home_for(profile_home)
+    if _same_path(auth_home, profile_home):
+        return None
+    if not os.path.lexists(auth_home):
+        return None
+    if preserve_unknown:
+        _remove_known_files(auth_home, is_primary_auth_artifact)
+        if auth_home.is_symlink():
+            auth_home.unlink()
+        else:
+            _remove_empty_directory(auth_home)
+        return auth_home
+    if auth_home.is_symlink():
+        _remove_known_files(auth_home, is_primary_auth_artifact)
+        auth_home.unlink()
+    elif auth_home.exists():
+        shutil.rmtree(auth_home)
+    return auth_home
+
+
+def _remove_known_files(directory: Path, matcher) -> None:
+    try:
+        entries = list(directory.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return
+    for entry in entries:
+        if not matcher(entry.name):
+            continue
+        try:
+            if entry.is_file() or entry.is_symlink():
+                entry.unlink()
+        except FileNotFoundError:
+            continue
+
+
+def _remove_empty_directory(directory: Path) -> None:
+    if directory.is_symlink():
+        return
+    try:
+        directory.rmdir()
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def _clean_auth_residence(
+    residence: Path | None,
+    *,
+    shared_override: Path | None = None,
+) -> None:
+    """Remove only known credential artifacts, preserving residence roots."""
+    shared_dirs: list[Path] = []
+    if residence is not None:
+        _remove_known_files(residence, is_primary_auth_artifact)
+
+        profiles_dir = residence / "profiles"
+        try:
+            profile_homes = list(profiles_dir.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            profile_homes = []
+        for profile_home in profile_homes:
+            if profile_home.is_symlink():
+                if profile_home.is_dir():
+                    _remove_known_files(profile_home, is_primary_auth_artifact)
+                profile_home.unlink()
+                continue
+            if not profile_home.is_dir():
+                continue
+            _remove_known_files(profile_home, is_primary_auth_artifact)
+            _remove_empty_directory(profile_home)
+        _remove_empty_directory(profiles_dir)
+        shared_dirs.append(residence / "shared")
+
+    if shared_override is not None and all(
+        not _same_path(shared_override, path) for path in shared_dirs
+    ):
+        shared_dirs.append(shared_override)
+
+    for shared_dir in shared_dirs:
+        _remove_known_files(shared_dir, is_shared_auth_artifact)
+        _remove_empty_directory(shared_dir)
+
+
 def _discover_named_profiles():
     """Return a list of ``ProfileInfo`` for every non-default profile, or ``[]``
     if profile support is unavailable or nothing is installed beyond the
@@ -444,7 +608,11 @@ def _discover_named_profiles():
         return []
 
 
-def _uninstall_profile(profile) -> None:
+def _uninstall_profile(
+    profile,
+    *,
+    preserve_unknown_auth: bool = False,
+) -> None:
     """Fully uninstall a single named profile: stop its gateway service,
     remove its alias wrapper, and wipe its HERMES_HOME directory.
 
@@ -455,6 +623,7 @@ def _uninstall_profile(profile) -> None:
     import sys as _sys
     name = profile.name
     profile_home = profile.path
+    profile_auth_home = get_hermes_auth_home_for(profile_home)
 
     log_info(f"Uninstalling profile '{name}'...")
 
@@ -476,7 +645,28 @@ def _uninstall_profile(profile) -> None:
         except Exception as e:
             log_warn(f"  Could not run gateway {subcmd} for '{name}': {e}")
 
-    # 2. Remove the wrapper alias script at ~/.local/bin/<name> (if any).
+    # 2. Remove the credential mirror before the runtime tree. Leaving the
+    # mirror behind would make a later same-name profile silently logged in.
+    try:
+        removed_auth_home = _remove_profile_auth_mirror(
+            profile_home,
+            preserve_unknown=preserve_unknown_auth,
+        )
+        if removed_auth_home is not None:
+            if preserve_unknown_auth and os.path.lexists(profile_auth_home):
+                log_success(
+                    f"  Removed Hermes credential artifacts from "
+                    f"{profile_auth_home}"
+                )
+            else:
+                log_success(f"  Removed {profile_auth_home}")
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not remove profile credential directory "
+            f"{profile_auth_home}: {e}"
+        ) from e
+
+    # 3. Remove the wrapper alias script at ~/.local/bin/<name> (if any).
     alias_path = getattr(profile, "alias_path", None)
     if alias_path and alias_path.exists():
         try:
@@ -485,7 +675,7 @@ def _uninstall_profile(profile) -> None:
         except Exception as e:
             log_warn(f"  Could not remove alias {alias_path}: {e}")
 
-    # 3. Wipe the profile's HERMES_HOME directory.
+    # 4. Wipe the profile's HERMES_HOME directory.
     try:
         if profile_home.exists():
             shutil.rmtree(profile_home)
@@ -754,6 +944,27 @@ def _perform_uninstall(
     delete the code checkout → (Windows) remove PortableGit/Node → optionally
     wipe ``$HERMES_HOME`` data and named profiles on full uninstall.
     """
+    auth_residence: Path | None = None
+    auth_residence_entry: Path | None = None
+    shared_override: Path | None = None
+    shared_override_entry: Path | None = None
+    active_named_profile = _is_named_profile_home(hermes_home)
+    if full_uninstall:
+        if is_hermes_auth_home_relocated_strict(hermes_home):
+            auth_residence = get_hermes_auth_home_override_strict()
+            auth_residence_entry = Path(os.environ["HERMES_AUTH_HOME"])
+        raw_shared_override = os.environ.get("HERMES_SHARED_AUTH_DIR", "")
+        if raw_shared_override.strip():
+            candidate = Path(raw_shared_override).expanduser()
+            if candidate.is_absolute():
+                shared_override_entry = candidate
+                shared_override = candidate.resolve(strict=False)
+            else:
+                log_warn(
+                    "Skipping relative HERMES_SHARED_AUTH_DIR during uninstall: "
+                    f"{raw_shared_override!r}"
+                )
+
     print()
     print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
     print()
@@ -873,18 +1084,79 @@ def _perform_uninstall(
         #     ``<default>/profiles/<name>/`` and will be swept away by the
         #     rmtree below, but services + alias scripts live OUTSIDE the
         #     default root and have to be cleaned up explicitly.
-        if remove_profiles and named_profiles:
+        if not active_named_profile and remove_profiles and named_profiles:
             for prof in named_profiles:
-                _uninstall_profile(prof)
+                _uninstall_profile(prof, preserve_unknown_auth=True)
+
+        # A full uninstall launched inside one named profile remains scoped to
+        # that profile. Clean its mapped credential mirror before deleting the
+        # runtime tree so a cleanup failure cannot leave invisible credentials
+        # ready to attach to a later same-name profile.
+        if active_named_profile and auth_residence is not None:
+            try:
+                _remove_profile_auth_mirror(
+                    hermes_home,
+                    preserve_unknown=True,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Could not remove the active profile credential mirror; "
+                    "the runtime profile was preserved to prevent credential "
+                    f"resurrection: {exc}"
+                ) from exc
 
         log_info("Removing configuration and data...")
         try:
             if hermes_home.exists():
-                shutil.rmtree(hermes_home)
-                log_success(f"Removed {hermes_home}")
+                kept_container = _remove_runtime_home_preserving(
+                    hermes_home,
+                    [
+                        path
+                        for path in (auth_residence, shared_override)
+                        if path is not None
+                    ]
+                    + [
+                        path
+                        for path in (
+                            auth_residence_entry,
+                            shared_override_entry,
+                        )
+                        if path is not None
+                    ],
+                )
+                if kept_container:
+                    log_success(
+                        f"Removed runtime data from {hermes_home} while "
+                        "preserving nested authentication residence roots"
+                    )
+                else:
+                    log_success(f"Removed {hermes_home}")
         except Exception as e:
             log_warn(f"Could not fully remove {hermes_home}: {e}")
             log_info("You may need to manually remove it")
+
+        # Default/custom-root uninstall owns the whole installed runtime
+        # layout and therefore cleans every known store in its residence.
+        # Named-profile uninstall must not delete default, sibling, or shared
+        # credentials whose runtime profiles remain installed.
+        if (
+            not active_named_profile
+            and (auth_residence is not None or shared_override is not None)
+        ):
+            log_info("Removing provider authentication data...")
+            try:
+                _clean_auth_residence(
+                    auth_residence,
+                    shared_override=shared_override,
+                )
+                if auth_residence is not None:
+                    log_success(
+                        "Removed Hermes credential artifacts from "
+                        f"{auth_residence}"
+                    )
+            except Exception as e:
+                log_warn(f"Could not fully remove provider authentication data: {e}")
+                log_info("You may need to manually remove it")
     else:
         log_info(f"Keeping configuration and data in {hermes_home}")
     

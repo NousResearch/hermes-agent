@@ -295,8 +295,7 @@ export function TreeGroup({
   // A pane whose store owns Close keeps the gesture even when the pane itself
   // is uncloseable — the workspace tab empties to a fresh draft rather than
   // leaving the tree.
-  const closeableTab = (paneId: string) =>
-    !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
+  const closeableTab = (paneId: string) => !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
 
   // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
   // chevron + tap gesture, routed so ⌃`/the titlebar toggle stay truthful.

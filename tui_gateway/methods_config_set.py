@@ -6,6 +6,7 @@ Keys match exactly except ``details_mode.<section>`` (prefix) and ``_DISPLAY_TOG
 
 import os
 
+from hermes_cli.config_backend import ConfigWriteError
 from hermes_constants import INDICATOR_STYLES
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -17,11 +18,30 @@ _profile_scoped = _registry.profile_scoped
 
 # ── shared helpers
 
+class ManagedKeyError(ConfigWriteError):
+    """A write to a key the administrator's managed scope pins (the next load would reinstate it).
+    Raised before anything is saved; ``config.set`` answers it with 4030."""
+
+
+def _refuse_managed_keys(*key_paths: str) -> None:
+    """Refuse the whole write when the managed scope pins any of these exact dotted leaves, with
+    the refusal ``hermes config set`` prints for the same key."""
+    from hermes_cli import managed_scope
+    from hermes_cli.config import _managed_source
+    for key_path in key_paths:
+        if managed_scope.is_key_managed(key_path):
+            raise ManagedKeyError(
+                f"Cannot set '{key_path}': it is managed by your administrator ({_managed_source('config.yaml')}) "
+                "and cannot be changed. Contact your administrator to modify it.", code="config_key_managed")
+
+
 def _write_display_sections(*, sections=None, drop_sections=(), **display_fields) -> None:
     """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back.
     Without a config file (remote backend) they are explicit keyed edits, refused as a whole when
     any key is locked (never the bulk save's silent omission of the locked part)."""
     from hermes_cli.config_backend import supports_file_tooling
+    _refuse_managed_keys(*(f"display.{field}" for field in display_fields),
+                         *(f"display.sections.{name}" for name in (*(sections or {}), *drop_sections)))
     if not supports_file_tooling():
         sets = {f"display.{field}": v for field, v in display_fields.items()}
         sets.update({f"display.sections.{name}": v for name, v in (sections or {}).items()})
@@ -469,6 +489,7 @@ def _set_cwd(rid, params, key, value, session):
 @_cfgset_guarded
 def _set_prompt(rid, params, key, value, session):
     from hermes_cli.config_backend import supports_file_tooling
+    _refuse_managed_keys("custom_prompt")
     if not supports_file_tooling():  # one explicit key: refused when locked, never silently dropped
         _write_config_changes({}, ("custom_prompt",)) if value == "clear" else _write_config_changes({"custom_prompt": value})
         return _kv(rid, key, "" if value == "clear" else value)
@@ -483,6 +504,7 @@ def _set_prompt(rid, params, key, value, session):
 
 @_cfgset_guarded
 def _set_personality(rid, params, key, value, session):
+    _refuse_managed_keys("display.personality")  # persist_personality writes it without this check
     pname, new_prompt = _validate_personality(str(value or ""), _load_cfg_raw())
     # Persists via hermes_cli.personality (single owner), never the user-owned system prompt.
     from hermes_cli.personality import persist_personality
@@ -555,6 +577,8 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.config_backend import ConfigWriteError
     try:
         return handler(rid, params, key, value, session)
+    except ManagedKeyError as exc:  # administrator-pinned (`hermes config set` refuses it too): nothing saved
+        return _err(rid, 4030, str(exc))
     except ConfigWriteError as exc:  # a locked key or a value the config backend refused: nothing saved
         return _err(rid, 4002, str(exc))
 

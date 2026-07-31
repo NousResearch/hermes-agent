@@ -11,6 +11,7 @@ These tests cover the two review models that must coexist:
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,37 @@ def _event(events, kind: str):
 
 def _run(runs, outcome: str):
     return [run for run in runs if run.outcome == outcome][-1]
+
+
+def _claimed_review(
+    conn,
+    title: str,
+    *,
+    ttl_seconds: int | None = None,
+    max_runtime_seconds: int | None = None,
+):
+    task_id = kb.create_task(
+        conn,
+        title=title,
+        assignee="builder",
+        max_runtime_seconds=max_runtime_seconds,
+    )
+    implementation = kb.claim_task(conn, task_id, claimer="builder:test")
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        summary="ready for independent review",
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(
+        conn,
+        task_id,
+        ttl_seconds=ttl_seconds,
+    )
+    assert review is not None
+    return task_id, review
 
 
 def test_same_card_review_supports_changes_and_approval_without_block_loop(conn):
@@ -178,6 +210,178 @@ def test_request_changes_fails_closed_on_malformed_review_provenance(conn):
     assert task.status == "running"
     assert task.assignee == "reviewer"
     assert task.current_run_id == review.current_run_id
+
+
+@pytest.mark.parametrize(
+    "reclaim_kind",
+    ["spawn_failure", "expired_claim", "manual_reclaim", "stale_heartbeat"],
+)
+def test_interrupted_review_runs_retry_in_review_phase(
+    conn,
+    reclaim_kind: str,
+) -> None:
+    task_id, review = _claimed_review(
+        conn,
+        f"Retry review after {reclaim_kind}",
+        ttl_seconds=-1 if reclaim_kind == "expired_claim" else None,
+    )
+
+    if reclaim_kind == "spawn_failure":
+        assert not kb._record_spawn_failure(
+            conn,
+            task_id,
+            "reviewer process failed to spawn",
+            failure_limit=3,
+        )
+    elif reclaim_kind == "expired_claim":
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+                (int(time.time()) - 1, task_id),
+            )
+        assert kb.release_stale_claims(conn) == 1
+    elif reclaim_kind == "manual_reclaim":
+        assert kb.reclaim_task(conn, task_id, reason="operator retry")
+    else:
+        old = int(time.time()) - 1_000
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, last_heartbeat_at = NULL "
+                "WHERE id = ?",
+                (old, task_id),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? WHERE id = ?",
+                (old, review.current_run_id),
+            )
+        assert kb.detect_stale_running(conn, stale_timeout_seconds=1) == [task_id]
+
+    retried = kb.get_task(conn, task_id)
+    assert retried is not None
+    assert retried.status == "review"
+    assert retried.current_run_id is None
+    event = kb.list_events(conn, task_id=task_id)[-1]
+    assert event.payload is not None
+    assert event.payload.get("retry_status") == "review"
+
+
+def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
+    task_id, _review = _claimed_review(conn, "Reviewer repeatedly fails")
+    assert kb._record_spawn_failure(
+        conn,
+        task_id,
+        "reviewer cannot start",
+        failure_limit=1,
+    )
+    blocked = kb.get_task(conn, task_id)
+    assert blocked is not None
+    assert blocked.status == "blocked"
+    gave_up = _event(kb.list_events(conn, task_id), "gave_up")
+    assert gave_up.payload is not None
+    assert gave_up.payload["retry_status"] == "review"
+    assert kb.unblock_task(conn, task_id)
+    unblocked = kb.get_task(conn, task_id)
+    assert unblocked is not None
+    assert unblocked.status == "review"
+
+
+def test_review_escalation_unblocks_back_to_review(conn) -> None:
+    task_id, review = _claimed_review(conn, "External review escalation")
+    assert kb.block_task(
+        conn,
+        task_id,
+        reason="needs_input: maintainer decision required",
+        kind="needs_input",
+        expected_run_id=review.current_run_id,
+    )
+    blocked_event = _event(kb.list_events(conn, task_id), "blocked")
+    assert blocked_event.payload is not None
+    assert blocked_event.payload["source_status"] == "review"
+    assert kb.unblock_task(conn, task_id)
+    resumed = kb.get_task(conn, task_id)
+    assert resumed is not None
+    assert resumed.status == "review"
+
+
+def test_review_dependency_wait_reenters_review_after_parent_finishes(conn) -> None:
+    parent_id = kb.create_task(conn, title="Parent", assignee="planner")
+    assert kb.complete_task(conn, parent_id)
+    task_id = kb.create_task(
+        conn,
+        title="Review after dependency refresh",
+        assignee="builder",
+        parents=[parent_id],
+    )
+    implementation = kb.claim_task(conn, task_id)
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        summary="ready",
+        reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (parent_id,))
+    assert kb.block_task(
+        conn,
+        task_id,
+        reason="dependency: parent contract is being refreshed",
+        kind="dependency",
+        expected_run_id=review.current_run_id,
+    )
+    waiting = kb.get_task(conn, task_id)
+    assert waiting is not None
+    assert waiting.status == "todo"
+    assert kb.complete_task(conn, parent_id)
+    resumed = kb.get_task(conn, task_id)
+    assert resumed is not None
+    assert resumed.status == "review"
+
+
+def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
+    conn,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(kb, "_classify_worker_exit", lambda _pid: ("nonzero_exit", 1))
+    old = int(time.time()) - 1_000
+
+    timed_out_id, timed_out_run = _claimed_review(
+        conn,
+        "Timeout during review",
+        max_runtime_seconds=1,
+    )
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ?, started_at = ? WHERE id = ?",
+            (999_998, old, timed_out_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ?, started_at = ? WHERE id = ?",
+            (999_998, old, timed_out_run.current_run_id),
+        )
+    assert timed_out_id in kb.enforce_max_runtime(conn, signal_fn=lambda *_: None)
+    timed_out = kb.get_task(conn, timed_out_id)
+    assert timed_out is not None
+    assert timed_out.status == "review"
+
+    crashed_id, crashed_run = _claimed_review(conn, "Crash during review")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ?, started_at = ? WHERE id = ?",
+            (999_999, old, crashed_id),
+        )
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ?, started_at = ? WHERE id = ?",
+            (999_999, old, crashed_run.current_run_id),
+        )
+    assert crashed_id in kb.detect_crashed_workers(conn)
+    crashed = kb.get_task(conn, crashed_id)
+    assert crashed is not None
+    assert crashed.status == "review"
 
 
 def test_legacy_review_child_deadlock_is_reported_immediately(conn):

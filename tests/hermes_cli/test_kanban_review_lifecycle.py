@@ -365,10 +365,77 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
             summary="ready",
             expected_run_id=implementation.current_run_id,
         )
+        monkeypatch.setattr(
+            kb,
+            "check_respawn_guard",
+            lambda _conn, _task_id: "rate_limit_cooldown",
+        )
+        guarded = kb.dispatch_once(conn, spawn_fn=spawn)
+        assert guarded.respawn_guarded == [(task_id, "rate_limit_cooldown")]
+        assert not guarded.spawned
+        guarded_task = kb.get_task(conn, task_id)
+        assert guarded_task is not None
+        assert guarded_task.status == "review"
+
+        monkeypatch.setattr(kb, "check_respawn_guard", lambda _conn, _task_id: None)
         result = kb.dispatch_once(conn, spawn_fn=spawn)
 
     assert task_id in [task[0] for task in result.spawned]
     assert captured == [["domain-specific-review", "sdlc-review"]]
+
+
+def test_review_dispatch_honors_global_and_per_profile_caps(
+    kanban_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+
+    with kb.connect() as conn:
+        running_id = kb.create_task(conn, title="already running", assignee="builder")
+        assert kb.claim_task(conn, running_id) is not None
+
+        review_ids: list[str] = []
+        for title in ("review one", "review two"):
+            task_id = kb.create_task(conn, title=title, assignee="reviewer")
+            implementation = kb.claim_task(conn, task_id)
+            assert implementation is not None
+            assert kb.request_review(
+                conn,
+                task_id,
+                summary="ready",
+                expected_run_id=implementation.current_run_id,
+            )
+            review_ids.append(task_id)
+
+        globally_capped = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            max_in_progress=1,
+        )
+        assert not [
+            task for task in globally_capped.spawned if task[0] in review_ids
+        ]
+
+        per_profile_capped = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            max_in_progress=10,
+            max_in_progress_per_profile=1,
+        )
+        spawned_reviews = [
+            task for task in per_profile_capped.spawned if task[0] in review_ids
+        ]
+        assert len(spawned_reviews) == 1
+        assert len(per_profile_capped.skipped_per_profile_capped) == 1
+        assert per_profile_capped.skipped_per_profile_capped[0][0] in review_ids
 
 
 # ---------------------------------------------------------------------------

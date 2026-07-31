@@ -1096,12 +1096,49 @@ _COMMAND_WRAPPER_WORDS = {
     "command",
     "builtin",
 }
+_EXTERNAL_TIME_PARENT_WRAPPERS = {
+    "command", "sudo", "env", "exec", "nohup", "setsid", "external-time",
+}
+_COMMAND_WRAPPER_OPTIONS_WITHOUT_ARG = {
+    "command": {"-p"},
+    "exec": {"-c", "-l"},
+    "setsid": {"-c", "--ctty", "-f", "--fork", "-w", "--wait"},
+    "time": {"-p"},
+    "external-time": {
+        "-a", "--append", "-p", "--portability",
+        "-q", "--quiet", "-v", "--verbose",
+    },
+}
+_COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
+    "exec": {"-a"},
+    "external-time": {"-f", "--format", "-o", "--output"},
+}
+_COMMAND_WRAPPER_SHORT_OPTION_GRAMMARS = {
+    "command": (frozenset("p"), frozenset()),
+    "env": (frozenset("i0v"), frozenset("auCS")),
+    "exec": (frozenset("cl"), frozenset("a")),
+    "setsid": (frozenset("cfw"), frozenset()),
+    "time": (frozenset("p"), frozenset()),
+    "external-time": (frozenset("apqv"), frozenset("fo")),
+    "sudo": (frozenset("AbEeHkKnPSVv"), frozenset("CDghpRrTtUu")),
+}
 _SUDO_OPTIONS_WITH_ARG = {
-    "-c", "--close-from",
+    "-c", "--close-from", "--command-timeout",
+    "-D", "--chdir",
     "-g", "--group",
     "-h", "--host",
     "-p", "--prompt",
+    "-R", "--chroot",
+    "-r", "--role",
+    "-T", "--type",
+    "-U", "--other-user",
     "-u", "--user",
+}
+_ENV_OPTIONS_WITH_ARG = {
+    "-a", "--argv0",
+    "-u", "--unset",
+    "-C", "--chdir",
+    "-S", "--split-string",
 }
 
 _INTERPRETER_EXEC_FLAGS = {
@@ -1182,12 +1219,12 @@ def _command_parser_limit_exceeded(command: str) -> bool:
     """
     if len(command) > _MAX_DETECTION_COMMAND_CHARS:
         return True
-    # Long separator-free input has no compound-command utility and otherwise
-    # makes every legacy regex inspect one giant token. Reject it before any
-    # normalization, tokenization, or regex work.
-    if (
-        len(command) > _MAX_SEPARATOR_FREE_COMMAND_CHARS
-        and not any(char in command for char in ";&|\n")
+    # Bound each executable shell segment independently. A trailing separator
+    # must not turn one oversized command into input that bounded scanners only
+    # partially inspect before silently reaching the next segment.
+    if any(
+        len(segment) > _MAX_SEPARATOR_FREE_COMMAND_CHARS
+        for segment in _iter_top_level_shell_segments(command)
     ):
         return True
     separators = 0
@@ -1273,7 +1310,7 @@ def _quoted_grep_pattern_spans(command: str) -> tuple[list[tuple[int, int]], boo
     for segment in _iter_top_level_shell_segments(command):
         segment_at = command.find(segment, offset)
         offset = segment_at + len(segment)
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        for start, _, word, _wrapper in _iter_shell_command_word_spans(segment):
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() not in {
                 "grep", "egrep",
             }:
@@ -1552,10 +1589,43 @@ def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     return None
 
 
+def _env_split_string_requested(args: list[str]) -> bool:
+    """Return whether GNU env will execute argv supplied through -S."""
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return False
+        option, attached = _split_option(token)
+        if option == "--split-string":
+            return True
+        if token.startswith("--"):
+            index += 1 if attached is not None else (
+                2 if option in _ENV_OPTIONS_WITH_ARG else 1
+            )
+            continue
+        if token.startswith("-") and token != "-":
+            chars = token[1:]
+            for char_index, char in enumerate(chars):
+                if char == "S":
+                    return True
+                if char in {"a", "u", "C"}:
+                    index += 2 if char_index == len(chars) - 1 else 1
+                    break
+            else:
+                index += 1
+            continue
+        if _ENV_ASSIGNMENT_RE.fullmatch(token):
+            index += 1
+            continue
+        return False
+    return False
+
+
 def _execution_flag_findings(command: str):
     """Yield scoped execution mechanisms and any executable payloads."""
     for segment in _iter_top_level_shell_segments(command):
-        for start, _, word in _iter_shell_command_word_spans(segment):
+        for start, _, word, _wrapper in _iter_shell_command_word_spans(segment):
             executable = _deobfuscate_shell_word_for_detection(word)
             tokens = _shell_segment_tokens(segment, start)
             executable_name = os.path.basename(executable).lower()
@@ -1568,6 +1638,9 @@ def _execution_flag_findings(command: str):
                     yield (_MALFORMED_EXEC_DESCRIPTION, None)
                 continue
             if not tokens:
+                continue
+            if executable_name == "env" and _env_split_string_requested(tokens[1:]):
+                yield ("arbitrary program execution via env -S/--split-string", None)
                 continue
             if family:
                 flag = _interpreter_exec_flag(family, tokens[1:])
@@ -1918,6 +1991,24 @@ def _mark_command_starts(command: str) -> str:
     return "".join(parts)
 
 
+def _wrapper_short_option_arity(wrapper: str | None, word: str) -> int | None:
+    """Return 0/1 for a recognized short wrapper option's owned argv count."""
+    if not wrapper or not word.startswith("-") or word.startswith("--") or word == "-":
+        return None
+    grammar = _COMMAND_WRAPPER_SHORT_OPTION_GRAMMARS.get(wrapper)
+    if grammar is None:
+        return None
+    without_arg, with_arg = grammar
+    chars = word[1:]
+    for index, char in enumerate(chars):
+        if char in without_arg:
+            continue
+        if char in with_arg:
+            return 0 if index + 1 < len(chars) else 1
+        return None
+    return 0
+
+
 def _iter_shell_command_word_spans(command: str):
     """Yield command-position words that may be executable names."""
     for command_start in _iter_shell_command_starts(command):
@@ -1925,36 +2016,89 @@ def _iter_shell_command_word_spans(command: str):
         prefix_words = 0
         skip_wrapper_options = False
         skip_next_wrapper_arg = False
-        while prefix_words < 12:
+        allow_wrapper_end_of_options = False
+        active_wrapper: str | None = None
+        while prefix_words < _MAX_SEPARATOR_FREE_COMMAND_CHARS:
             word_start, word_end, word = _read_shell_word(command, pos)
             if word_start == word_end:
                 break
             deobfuscated = _deobfuscate_shell_word_for_detection(word)
             lower_word = deobfuscated.lower()
+            wrapper_name = os.path.basename(deobfuscated).lower()
             if skip_next_wrapper_arg:
                 skip_next_wrapper_arg = False
                 pos = word_end
                 prefix_words += 1
                 continue
-            if skip_wrapper_options and lower_word.startswith("-"):
-                option_name = lower_word.split("=", 1)[0]
+            if allow_wrapper_end_of_options and lower_word == "--":
+                allow_wrapper_end_of_options = False
+                pos = word_end
+                prefix_words += 1
+                continue
+            short_option_arity = _wrapper_short_option_arity(
+                active_wrapper, deobfuscated
+            )
+            if short_option_arity is not None:
+                skip_next_wrapper_arg = short_option_arity == 1
+                pos = word_end
+                prefix_words += 1
+                continue
+            wrapper_option = deobfuscated.split("=", 1)[0]
+            no_arg_options = (
+                _COMMAND_WRAPPER_OPTIONS_WITHOUT_ARG.get(active_wrapper, set())
+                if active_wrapper
+                else set()
+            )
+            if wrapper_option in no_arg_options:
+                pos = word_end
+                prefix_words += 1
+                continue
+            arg_options = (
+                _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(active_wrapper, set())
+                if active_wrapper
+                else set()
+            )
+            if wrapper_option in arg_options:
+                skip_next_wrapper_arg = "=" not in deobfuscated
+                pos = word_end
+                prefix_words += 1
+                continue
+            if skip_wrapper_options and deobfuscated.startswith("-"):
+                option_name = deobfuscated.split("=", 1)[0]
+                options_with_arg = (
+                    _ENV_OPTIONS_WITH_ARG
+                    if active_wrapper == "env"
+                    else _SUDO_OPTIONS_WITH_ARG
+                )
                 skip_next_wrapper_arg = (
-                    "=" not in lower_word
-                    and option_name in _SUDO_OPTIONS_WITH_ARG
+                    "=" not in deobfuscated
+                    and option_name in options_with_arg
                 )
                 pos = word_end
                 prefix_words += 1
                 continue
 
-            yield (word_start, word_end, word)
+            wrapper = active_wrapper
+            allow_wrapper_end_of_options = False
+            active_wrapper = None
+            yield (word_start, word_end, word, wrapper)
             prefix_words += 1
 
-            if lower_word in _COMMAND_WRAPPER_WORDS:
-                skip_wrapper_options = lower_word in {"sudo", "env"}
+            if wrapper_name in _COMMAND_WRAPPER_WORDS:
+                skip_wrapper_options = wrapper_name in {"sudo", "env"}
+                allow_wrapper_end_of_options = True
+                time_is_external = wrapper_name == "time" and (
+                    "/" in deobfuscated
+                    or wrapper in _EXTERNAL_TIME_PARENT_WRAPPERS
+                )
+                active_wrapper = (
+                    "external-time" if time_is_external else wrapper_name
+                )
                 pos = word_end
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(deobfuscated):
                 skip_wrapper_options = False
+                active_wrapper = wrapper
                 pos = word_end
                 continue
             break
@@ -2003,7 +2147,7 @@ def _command_detection_variants(command: str):
     # Shell quoting/escaping can spell a dangerous executable name in pieces
     # (for example r\m or r''m). Keep that deobfuscation scoped to command
     # words so similarly shaped arguments do not become false positives.
-    for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
+    for word_start, word_end, word, _wrapper in _iter_shell_command_word_spans(normalized):
         deobfuscated = _deobfuscate_shell_word_for_detection(word)
         if not deobfuscated or deobfuscated == word:
             continue
@@ -2012,6 +2156,137 @@ def _command_detection_variants(command: str):
             continue
         seen.add(variant)
         yield variant
+
+
+def _iter_shell_words(command: str, pos: int):
+    """Yield quote-aware shell words until the current command ends."""
+    for _ in range(_MAX_SEPARATOR_FREE_COMMAND_CHARS):
+        word_start, word_end, raw_word = _read_shell_word(command, pos)
+        if word_start == word_end:
+            break
+        # An unquoted # at a word boundary starts a shell comment. A quoted
+        # value begins with its quote in raw_word and therefore stays data.
+        if raw_word.startswith("#"):
+            break
+        yield raw_word
+        pos = word_end
+
+
+def _literal_kill_pid_operand(word: str) -> str | None:
+    """Return a literal PID operand, tolerating attached shell syntax."""
+    value = _deobfuscate_shell_word_for_detection(word).strip()
+    # Group closers and redirections are shell syntax, not part of the PID:
+    # `(kill 123)` and `kill 123>/dev/null` both target PID 123.
+    match = re.fullmatch(r"\+?(\d+)(?:[)}]+|[<>].*)?", value)
+    if not match:
+        return None
+    # kill(1) accepts leading zeroes as decimal PID spelling. Normalize as a
+    # string to avoid Python's huge-integer conversion limit on hostile input.
+    return match.group(1).lstrip("0") or "0"
+
+
+def _kill_argv_targets_pid(
+    argv: list[str], own_pid: str, *, shell_builtin: bool
+) -> bool:
+    """Parse kill options and report a terminating literal own-PID operand."""
+    signal: str | None = None
+    operands: list[str] = []
+    parse_options = True
+    index = 0
+
+    while index < len(argv):
+        arg = _deobfuscate_shell_word_for_detection(argv[index]).strip()
+        if not arg:
+            index += 1
+            continue
+
+        if parse_options and arg == "--":
+            parse_options = False
+            index += 1
+            continue
+
+        if parse_options and shell_builtin and arg.startswith("--"):
+            # Bash's kill builtin has no GNU long-option grammar. It errors
+            # before reaching the PID, while external procps kill accepts
+            # --signal/--queue/--timeout and their equals forms.
+            return False
+
+        is_list_mode = arg in {"-l", "--list", "-L", "--table"}
+        is_list_mode = is_list_mode or arg.startswith(("-l", "-L", "--list="))
+        if parse_options and is_list_mode:
+            # These modes only print signal names/tables; they do not send.
+            return False
+
+        if parse_options and arg in {"-h", "--help", "-V", "--version"}:
+            return False
+
+        if parse_options and arg in {"-s", "--signal", "-n"}:
+            if index + 1 >= len(argv):
+                return False
+            signal = _deobfuscate_shell_word_for_detection(argv[index + 1]).strip()
+            index += 2
+            continue
+
+        if parse_options and arg.startswith("--signal="):
+            signal = arg.split("=", 1)[1]
+            index += 1
+            continue
+
+        if parse_options and re.fullmatch(r"-[sn].+", arg):
+            signal = arg[2:]
+            index += 1
+            continue
+
+        if parse_options and arg in {"-q", "--queue"}:
+            # sigqueue payload; the following word is a value, not a PID.
+            index += 2
+            continue
+
+        if parse_options and arg.startswith("--queue="):
+            index += 1
+            continue
+
+        if parse_options and arg == "--timeout":
+            # procps-ng: --timeout <milliseconds> <signal>
+            index += 3
+            continue
+
+        if parse_options and arg.startswith("-") and len(arg) > 1:
+            # Traditional compact signal forms: -9, -TERM, -0.
+            signal = arg[1:]
+            index += 1
+            continue
+
+        pid = _literal_kill_pid_operand(argv[index])
+        if pid is not None:
+            operands.append(pid)
+            # Bash's kill builtin does not permute later signal options across
+            # PID operands: `kill PID -0` has already sent default TERM to PID.
+            # Stop option parsing at the first PID so a trailing probe spelling
+            # cannot retroactively make a real self-termination look harmless.
+            if shell_builtin:
+                parse_options = False
+        index += 1
+
+    normalized_signal = (signal or "TERM").strip().upper()
+    signal_number = normalized_signal.removeprefix("SIG").removeprefix("+")
+    if signal_number and not signal_number.strip("0"):
+        return False
+    return own_pid in operands
+
+
+def _command_kills_own_pid(command: str, own_pid: str) -> bool:
+    """Find real command-position kill invocations and parse all operands."""
+    external_wrappers = {"sudo", "env", "exec", "nohup", "setsid", "external-time"}
+    for _word_start, word_end, raw_word, wrapper in _iter_shell_command_word_spans(command):
+        executable = _deobfuscate_shell_word_for_detection(raw_word).strip()
+        if os.path.basename(executable).lower() != "kill":
+            continue
+        argv = list(_iter_shell_words(command, word_end))
+        shell_builtin = "/" not in executable and wrapper not in external_wrappers
+        if _kill_argv_targets_pid(argv, own_pid, shell_builtin=shell_builtin):
+            return True
+    return False
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:
@@ -2035,7 +2310,9 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
-def detect_dangerous_command(command: str) -> tuple:
+def detect_dangerous_command(
+    command: str, *, protect_local_pid: bool = True
+) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
@@ -2052,10 +2329,29 @@ def detect_dangerous_command(command: str) -> tuple:
             if pattern_re.search(command_lower):
                 pattern_key = description
                 return (True, pattern_key, description)
+
+        # Dynamic self-PID guard: parse real command-position `kill`
+        # invocations and every PID operand. Static regex cannot safely
+        # distinguish executable syntax from quoted prose, and one optional
+        # signal fragment misses valid forms such as `kill -n 9 PID`,
+        # `kill -9 -- PID`, and multi-PID commands. Signal 0 remains a
+        # non-terminating liveness probe and is approval-free.
+        own_pid = str(os.getpid())
+        if protect_local_pid and _command_kills_own_pid(command_variant, own_pid):
+            desc = f"kill own Hermes process (self-termination, PID {own_pid})"
+            return (True, desc, desc)
+
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)
     return (False, None, None)
+
+
+def _detect_dangerous_command_for_env(command: str, env_type: str):
+    """Preserve the local call contract; opt out only for other PID namespaces."""
+    if env_type == "local":
+        return detect_dangerous_command(command)
+    return detect_dangerous_command(command, protect_local_pid=False)
 
 
 # =========================================================================
@@ -3107,7 +3403,9 @@ def check_dangerous_command(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = _detect_dangerous_command_for_env(
+        command, env_type
+    )
     if not is_dangerous:
         return {"approved": True, "message": None}
 
@@ -3430,7 +3728,9 @@ def check_all_command_guards(command: str, env_type: str,
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
+                is_dangerous, _pk, description = _detect_dangerous_command_for_env(
+                    command, env_type
+                )
                 if is_dangerous:
                     return {
                         "approved": False,
@@ -3536,7 +3836,9 @@ def check_all_command_guards(command: str, env_type: str,
         # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
 
     # Dangerous command check (detection only, no approval)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = _detect_dangerous_command_for_env(
+        command, env_type
+    )
 
     # --- Phase 2: Decide ---
 

@@ -1397,3 +1397,266 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+class TestRuntimeSelfPidKillGuard:
+    def test_kill_own_pid_requires_approval(self):
+        own_pid = os.getpid()
+
+        dangerous, key, desc = detect_dangerous_command(f"kill {own_pid}")
+
+        assert dangerous is True
+        assert key is not None
+        assert "self-termination" in desc
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill -9 {pid}",
+            "kill -TERM {pid}",
+            "kill -s TERM {pid}",
+            "/bin/kill --signal TERM {pid}",
+            "env kill --signal TERM {pid}",
+            "/usr/bin/env kill --signal TERM {pid}",
+            "env FLAG=1 kill --signal TERM {pid}",
+            "env -vu UNUSED /bin/kill {pid}",
+            "/usr/bin/env -vC /tmp /bin/kill {pid}",
+            "sudo --chdir /tmp /bin/kill {pid}",
+            "sudo --chroot / /bin/kill {pid}",
+            "sudo --role staff_r /bin/kill {pid}",
+            "sudo --command-timeout 5 /bin/kill {pid}",
+            "sudo --type staff_t /bin/kill {pid}",
+            "sudo --other-user root /bin/kill {pid}",
+            "env --unset UNUSED -- kill --signal TERM {pid}",
+            "env --argv0 custom -- kill --signal TERM {pid}",
+            "env -a custom -- kill --signal TERM {pid}",
+            "exec -- kill --signal TERM {pid}",
+            "kill -- {pid}",
+            "kill -n 9 {pid}",
+            "kill -9 -- {pid}",
+            "kill {pid} -0",
+            "kill {pid} -s 0",
+            "kill 999999999 {pid}",
+            "kill 000{pid}",
+            "kill +000{pid}",
+            "/usr/bin/kill -TERM {pid}",
+            "command -- kill {pid}",
+            "command -p kill {pid}",
+            "command -p -- kill {pid}",
+            "builtin -- kill {pid}",
+            "exec -- /bin/kill {pid}",
+            "exec -c /bin/kill {pid}",
+            "exec -c -- /bin/kill {pid}",
+            "exec -l /bin/kill {pid}",
+            "exec -a replacement /bin/kill {pid}",
+            "exec -ca replacement /bin/kill {pid}",
+            "setsid -f /bin/kill {pid}",
+            "/usr/bin/setsid -f /bin/kill {pid}",
+            "setsid -f -- /bin/kill {pid}",
+            "setsid --wait /bin/kill {pid}",
+            "time -p kill {pid}",
+            "/usr/bin/time -p /bin/kill {pid}",
+            "/usr/bin/time -f %e /bin/kill {pid}",
+            "/usr/bin/time -p kill --signal TERM {pid}",
+            "env time kill --signal TERM {pid}",
+            "command time kill --signal TERM {pid}",
+            "exec time kill --signal TERM {pid}",
+            "sudo time kill --signal TERM {pid}",
+            "nohup time kill --signal TERM {pid}",
+            "setsid time kill --signal TERM {pid}",
+            "/usr/bin/nohup /bin/kill {pid}",
+            "env -u UNUSED /bin/kill {pid}",
+            "env -u UNUSED -- /bin/kill {pid}",
+            "env --unset UNUSED -- /bin/kill {pid}",
+            "env -C /tmp /bin/kill {pid}",
+            "env --chdir /tmp -- /bin/kill {pid}",
+            "(kill {pid})",
+            "echo ready; kill {pid} >/dev/null",
+        ],
+    )
+    def test_kill_own_pid_with_signal_forms_requires_approval(self, template):
+        own_pid = os.getpid()
+
+        dangerous, key, desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is True
+        assert key is not None
+        assert "self-termination" in desc
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill --signal TERM {pid}",
+            "kill --queue 7 {pid}",
+            "kill --timeout 100 TERM {pid}",
+            "time -f %e /bin/kill {pid}",
+            "builtin time kill --signal TERM {pid}",
+            "time time kill --signal TERM {pid}",
+        ],
+    )
+    def test_bash_kill_unsupported_long_options_are_not_flagged(self, template):
+        own_pid = os.getpid()
+
+        dangerous, _key, _desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "env -S 'printf ok'",
+            "env --split-string='kill 999999999'",
+            "/usr/bin/env -vS'printf ok'",
+        ],
+    )
+    def test_env_split_string_execution_requires_approval(self, command):
+        dangerous, key, desc = detect_dangerous_command(command)
+
+        assert dangerous is True
+        assert key == desc
+        assert "env -S/--split-string" in desc
+
+    def test_env_split_string_preserves_external_kill_option_ordering(self):
+        dangerous, key, desc = detect_dangerous_command(
+            f"env -S 'kill {os.getpid()} -0'"
+        )
+
+        assert dangerous is True
+        assert key == desc
+        assert "env -S/--split-string" in desc
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill -0 {pid}",
+            "kill -00 {pid}",
+            "kill -s 0 {pid}",
+            "kill -s 00 {pid}",
+            "kill -s +0 {pid}",
+            "kill --signal 0 {pid}",
+            "kill -s0 {pid}",
+            "kill --signal=0 {pid}",
+            "kill --signal=00 {pid}",
+            "kill -n 0 {pid}",
+            "kill -n 00 {pid}",
+            "kill -n0 {pid}",
+            "kill -0 -- {pid}",
+            "/usr/bin/kill -s0 {pid}",
+            "/usr/bin/kill --signal=0 {pid}",
+        ],
+    )
+    def test_kill_own_pid_with_signal_zero_is_not_flagged(self, template):
+        own_pid = os.getpid()
+
+        dangerous, _key, _desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is False
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            'echo "kill {pid}"',
+            "printf '%s' 'kill -9 {pid}'",
+            "echo 'prefix kill {pid} suffix'",
+        ],
+    )
+    def test_quoted_kill_text_is_not_treated_as_a_command(self, template):
+        own_pid = os.getpid()
+
+        dangerous, _key, _desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is False
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "kill -l {pid}",
+            "kill -lTERM {pid}",
+            "kill --list {pid}",
+            "kill --list=TERM {pid}",
+            "kill -L {pid}",
+            "kill -L9 {pid}",
+            "kill -h {pid}",
+            "kill -V {pid}",
+        ],
+    )
+    def test_kill_signal_listing_modes_are_not_flagged(self, template):
+        own_pid = os.getpid()
+
+        dangerous, _key, _desc = detect_dangerous_command(template.format(pid=own_pid))
+
+        assert dangerous is False
+
+    def test_kill_unrelated_pid_is_not_flagged_by_self_pid_guard(self):
+        unrelated_pid = os.getpid() + 1_000_000
+
+        dangerous, _key, _desc = detect_dangerous_command(f"kill {unrelated_pid}")
+
+        assert dangerous is False
+
+    def test_remote_pid_namespace_does_not_apply_local_self_pid_guard(self):
+        dangerous, key, desc = detect_dangerous_command(
+            f"kill {os.getpid()}", protect_local_pid=False
+        )
+
+        assert (dangerous, key, desc) == (False, None, None)
+
+    def test_combined_guard_disables_local_pid_protection_for_ssh(self, monkeypatch):
+        observed = []
+
+        def fake_detect(command, *, protect_local_pid=True):
+            observed.append((command, protect_local_pid))
+            return (False, None, None)
+
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "detect_dangerous_command", fake_detect)
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+
+        result = approval_module.check_all_command_guards("true", "ssh")
+
+        assert result["approved"] is True
+        assert observed == [("true", False)]
+
+    def test_kill_own_pid_after_many_operands_requires_approval(self):
+        own_pid = os.getpid()
+        operands = ["999999999"] * 300 + [str(own_pid)]
+
+        dangerous, key, desc = detect_dangerous_command("kill " + " ".join(operands))
+
+        assert dangerous is True
+        assert key is not None
+        assert "self-termination" in desc
+
+    @pytest.mark.parametrize("kind", ["operands", "assignments"])
+    def test_parser_limit_rejects_oversized_segment_before_separator(self, kind):
+        own_pid = os.getpid()
+        if kind == "operands":
+            command = "kill " + " ".join(["999999999"] * 4096 + [str(own_pid)])
+        else:
+            command = " ".join(["A=1"] * 4096 + ["kill", str(own_pid)])
+
+        dangerous, key, desc = detect_dangerous_command(command + "; :")
+
+        assert dangerous is True
+        assert key == "command parser limit exceeded"
+        assert desc == key
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            " ".join(["command"] * 13),
+            " ".join(f"SELF_PID_GUARD_{index}=1" for index in range(13)),
+        ],
+    )
+    def test_kill_own_pid_after_many_prefix_words_requires_approval(self, prefix):
+        own_pid = os.getpid()
+
+        dangerous, key, desc = detect_dangerous_command(f"{prefix} kill {own_pid}")
+
+        assert dangerous is True
+        assert key is not None
+        assert "self-termination" in desc

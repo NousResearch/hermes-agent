@@ -7,6 +7,7 @@ import { notifyError } from '@/store/notifications'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { ConfigField } from './config-field'
 import { SECTIONS } from './constants'
@@ -41,31 +42,53 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
     staleTime: 5 * 60 * 1000
   })
 
-  // Local editable draft, seeded once from the shared cache (background
-  // refetches must not clobber in-progress edits) — the same shape as
-  // config-settings.tsx's autosave loop.
+  // Local editable draft — the same shape as config-settings.tsx's autosave
+  // loop. Seeded whenever it is empty and the shared record is available: the
+  // guard is the draft state itself (not a one-shot ref), so any path that
+  // clears the draft re-seeds automatically once data lands, while background
+  // refetches still can't clobber in-progress edits (a non-null draft blocks
+  // the seed).
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const seeded = useRef(false)
 
-  // eslint-disable-next-line no-restricted-syntax -- one-shot config seed flag, not an atom mirror
   useEffect(() => {
-    if (loadedConfig && !seeded.current) {
-      seeded.current = true
+    if (loadedConfig && config === null) {
       setConfig(loadedConfig)
     }
-  }, [loadedConfig])
+  }, [loadedConfig, config])
 
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
+
+  // A profile switch swaps the backend under this panel while it stays mounted
+  // (the Capabilities detail is keyed by toolset name, not by profile). Drop
+  // the draft and zero saveVersion so the pending debounced autosave is
+  // cancelled by its effect cleanup — profile A's draft must never be saved
+  // into profile B. The shared record itself is hard-reset centrally at the
+  // switch boundary (invalidateProfileScopedQueries), so the seed effect
+  // re-seeds from B's fresh fetch rather than A's cached record.
+  useOnProfileSwitch(() => {
+    setConfig(null)
+    saveVersionRef.current = 0
+    setSaveVersion(0)
+  })
 
   useEffect(() => {
     if (!config || saveVersion === 0) {
       return
     }
 
+    const v = saveVersion
+
     const timeout = window.setTimeout(() => {
       void saveHermesConfig(config)
-        .then(() => setHermesConfigCache(config))
+        .then(() => {
+          // Version guard, as in config-settings.tsx: a profile switch zeroes
+          // saveVersion while this save is in flight, and mirroring then would
+          // write profile A's record over profile B's freshly-reset cache.
+          if (saveVersionRef.current === v) {
+            setHermesConfigCache(config)
+          }
+        })
         .catch(err => notifyError(err, t.settings.config.autosaveFailed))
     }, 550)
 

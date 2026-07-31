@@ -62,7 +62,11 @@ vi.mock('@/hermes', () => ({
   getHermesConfigRecord: () => getHermesConfigRecord(),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
-  getElevenLabsVoices: () => getElevenLabsVoices()
+  getElevenLabsVoices: () => getElevenLabsVoices(),
+  // Pulled in via VoiceProviderFields → useOnProfileSwitch → @/store/profile.
+  getProfiles: async () => ({ profiles: [] }),
+  setApiRequestProfile: () => {},
+  STARTUP_REQUEST_TIMEOUT_MS: 1000
 }))
 
 vi.mock('@/store/notifications', () => ({

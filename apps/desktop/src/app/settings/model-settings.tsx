@@ -521,6 +521,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         return
       }
 
+      const epoch = profileEpoch.current
       const prev = config
       const next = setNested(config, key, value)
       setConfig(next)
@@ -528,7 +529,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       try {
         await saveHermesConfig(next)
       } catch (err) {
-        setConfig(prev)
+        // Roll back only within the same profile epoch: after a switch the
+        // shared cache holds (or is fetching) profile B's record, and writing
+        // A's `prev` back would stomp it.
+        if (profileEpoch.current === epoch) {
+          setConfig(prev)
+        }
+
         notifyError(err, m.defaultsFailed)
       }
     },

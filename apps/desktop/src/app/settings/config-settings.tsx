@@ -23,7 +23,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
-import { resetHermesConfig, setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
@@ -108,15 +108,15 @@ export function ConfigSettings({
 
   // A profile switch swaps the backend under the mounted panel. Drop the draft
   // and zero saveVersion so the pending debounced autosave is cancelled by its
-  // effect cleanup, and hard-reset the shared record (data → undefined, then
-  // refetch) so the seed effect can't re-seed profile A's cached record into
-  // B's view while B's fetch is in flight.
+  // effect cleanup — profile A's draft must never be saved into profile B. The
+  // shared record itself is hard-reset centrally at the switch boundary
+  // (invalidateProfileScopedQueries), so the seed effect re-seeds from B's
+  // fresh fetch rather than A's cached record.
   useOnProfileSwitch(() => {
     savedDiscoverySignatureRef.current = undefined
     setConfig(null)
     saveVersionRef.current = 0
     setSaveVersion(0)
-    void resetHermesConfig()
   })
 
   useEffect(() => {
@@ -158,11 +158,14 @@ export function ConfigSettings({
             throw new Error(c.autosaveFailed)
           }
 
-          // Mirror the saved record into the shared cache so MCP/model surfaces
-          // reflect the edit without their own refetch.
-          setHermesConfigCache(config)
-
           if (saveVersionRef.current === v) {
+            // Mirror the saved record into the shared cache so MCP/model
+            // surfaces reflect the edit without their own refetch. Inside the
+            // version guard: a profile switch zeroes saveVersion while this
+            // save is in flight, and mirroring then would write profile A's
+            // record over profile B's freshly-reset cache.
+            setHermesConfigCache(config)
+
             const discoverySignature = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(config))
 
             if (savedDiscoverySignatureRef.current !== discoverySignature) {

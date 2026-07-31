@@ -59,27 +59,38 @@ def _diff_ansi() -> dict[str, str]:
         from hermes_cli.skin_engine import get_active_skin
         skin = get_active_skin()
 
+        def _color_rgb(key: str, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+            value = skin.get_color(key, "")
+            if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+                return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
+            return fallback
+
         def _hex_fg(key: str, fallback_rgb: tuple[int, int, int]) -> str:
-            h = skin.get_color(key, "")
-            if h and len(h) == 7 and h[0] == "#":
-                r, g, b = int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
-                return f"\033[38;2;{r};{g};{b}m"
-            r, g, b = fallback_rgb
+            r, g, b = _color_rgb(key, fallback_rgb)
             return f"\033[38;2;{r};{g};{b}m"
+
+        def _hex_fg_bg(
+            fg_key: str,
+            bg_key: str,
+            fallback_fg: tuple[int, int, int],
+            fallback_bg: tuple[int, int, int],
+        ) -> str:
+            fr, fg_channel, fb = _color_rgb(fg_key, fallback_fg)
+            br, bg_channel, bb = _color_rgb(bg_key, fallback_bg)
+            return (
+                f"\033[38;2;{fr};{fg_channel};{fb};"
+                f"48;2;{br};{bg_channel};{bb}m"
+            )
 
         dim = _hex_fg("banner_dim", (150, 150, 150))
         file_c = _hex_fg("session_label", (180, 160, 255))
         hunk = _hex_fg("session_border", (120, 120, 140))
-        # minus/plus use background colors — derive from ui_error/ui_ok
-        err_h = skin.get_color("ui_error", "#ef5350")
-        ok_h = skin.get_color("ui_ok", "#4caf50")
-        if err_h and len(err_h) == 7:
-            er, eg, eb = int(err_h[1:3], 16), int(err_h[3:5], 16), int(err_h[5:7], 16)
-            # Use a dark tinted version as background
-            minus = f"\033[38;2;255;255;255;48;2;{max(er//2,20)};{max(eg//4,10)};{max(eb//4,10)}m"
-        if ok_h and len(ok_h) == 7:
-            or_, og, ob = int(ok_h[1:3], 16), int(ok_h[3:5], 16), int(ok_h[5:7], 16)
-            plus = f"\033[38;2;255;255;255;48;2;{max(or_//4,10)};{max(og//2,20)};{max(ob//4,10)}m"
+        minus = _hex_fg_bg(
+            "diff_removed_word", "diff_removed", (255, 255, 255), (120, 20, 20)
+        )
+        plus = _hex_fg_bg(
+            "diff_added_word", "diff_added", (255, 255, 255), (20, 90, 20)
+        )
     except Exception:
         pass
 

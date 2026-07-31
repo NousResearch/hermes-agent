@@ -86,6 +86,13 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     docsUrl: 'https://console.x.ai/'
   },
   {
+    id: 'eurouter',
+    name: 'EU Router',
+    envKey: 'EUROUTER_API_KEY',
+    docsUrl: 'https://www.eurouter.ai/',
+    description: 'EU-hosted, GDPR-compliant model routing.'
+  },
+  {
     id: 'local',
     name: 'Local / custom endpoint',
     envKey: 'OPENAI_BASE_URL',

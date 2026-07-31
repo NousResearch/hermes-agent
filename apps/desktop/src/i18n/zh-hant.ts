@@ -1837,6 +1837,10 @@ export const zhHant = defineLocale({
       openai: { short: 'GPT 等級模型', description: '直接存取 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接存取 Google Gemini 模型。' },
       xai: { short: 'Grok 模型', description: '直接存取 xAI Grok 模型。' },
+      eurouter: {
+        short: '歐盟託管，符合 GDPR',
+        description: '僅透過歐盟託管的基礎設施路由，確保符合 GDPR 合規要求。'
+      },
       local: {
         short: '自託管',
         description: '將 Hermes 指向本機或自託管的 OpenAI 相容端點（vLLM、llama.cpp、Ollama 等）。'

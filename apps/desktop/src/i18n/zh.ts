@@ -2123,6 +2123,10 @@ export const zh: Translations = {
       openai: { short: 'GPT 级模型', description: '直接访问 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接访问 Google Gemini 模型。' },
       xai: { short: 'Grok 模型', description: '直接访问 xAI Grok 模型。' },
+      eurouter: {
+        short: '欧盟托管，符合 GDPR',
+        description: '仅通过欧盟托管的基础设施路由，确保符合 GDPR 合规要求。'
+      },
       local: {
         short: '自托管',
         description: '将 Hermes 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'

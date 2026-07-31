@@ -1898,6 +1898,10 @@ export const ja = defineLocale({
       openai: { short: 'GPT クラスのモデル', description: 'OpenAI モデルへの直接アクセス。' },
       gemini: { short: 'Gemini モデル', description: 'Google Gemini モデルへの直接アクセス。' },
       xai: { short: 'Grok モデル', description: 'xAI Grok モデルへの直接アクセス。' },
+      eurouter: {
+        short: 'EUホスト、GDPR準拠',
+        description: 'GDPRに準拠するため、EUホストのインフラのみを経由してルーティングします。'
+      },
       local: {
         short: 'セルフホスト',
         description:

@@ -20,6 +20,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
+| **EU Router** | `EUROUTER_API_KEY` in `~/.hermes/.env` (provider: `eurouter`; aliases: `eu-router`, `eur`) — EU-hosted, GDPR-compliant routing |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
@@ -519,6 +520,48 @@ model:
 ```
 
 The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
+
+### EU Router
+
+[EU Router](https://www.eurouter.ai) is an OpenAI/OpenRouter-compatible aggregator that processes **all inference requests entirely within the EU** — a GDPR-relevant option when data residency matters more than picking the absolute cheapest or fastest provider. Same request/response shape as OpenRouter (`/chat/completions`, `/models`), so switching is a base-URL change, not a rewrite.
+
+**CLI:**
+
+```bash
+# 1. Get a key at https://www.eurouter.ai (Get Started / API Keys)
+echo "EUROUTER_API_KEY=your-key-here" >> ~/.hermes/.env
+
+# 2. Pick a model and chat
+hermes chat --provider eurouter --model mistral-large-3
+
+# Or interactively:
+hermes model
+# → pick "EU Router"
+```
+
+**Desktop app:** Settings → Keys shows an **EU Router** card (or use the onboarding "I have an API key" flow) — paste your `EUROUTER_API_KEY` there, same as any other provider.
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "eurouter"
+  default: "mistral-large-3"
+```
+
+Browse the full catalog (Mistral, DeepSeek, GLM, Kimi, Qwen, Claude, GPT, and more — 130+ models at the time of writing) at [eurouter.ai/models](https://www.eurouter.ai/models). Aliases: `eu-router`, `eur`.
+
+:::tip Enforce EU-only routing
+A valid API key is enough to use EU Router like any other aggregator. To additionally **enforce** EU-only infrastructure — required by / recommended for GDPR-sensitive use — add EU Router's compliance fields to your [Provider Routing](/user-guide/features/provider-routing) config:
+
+```yaml
+provider_routing:
+  data_residency: "eu"    # restrict to EU/EEA-hosted infrastructure
+  eu_owned: true          # restrict to EEA-owned providers
+  max_retention_days: 0   # no data retention
+```
+
+These three fields are EU-Router-specific and are automatically dropped if your active model is on a different provider — see [Provider Routing → How It Works](/user-guide/features/provider-routing#how-it-works) for details.
+:::
 
 ### StepFun
 

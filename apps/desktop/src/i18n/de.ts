@@ -1752,6 +1752,10 @@ export const de = defineLocale({
       openai: { short: 'GPT-Klasse-Modelle', description: 'Direkter Zugriff auf OpenAI-Modelle.' },
       gemini: { short: 'Gemini-Modelle', description: 'Direkter Zugriff auf Google-Gemini-Modelle.' },
       xai: { short: 'Grok-Modelle', description: 'Direkter Zugriff auf xAI-Grok-Modelle.' },
+      eurouter: {
+        short: 'EU-gehostet, DSGVO-konform',
+        description: 'Leitet ausschließlich über EU-gehostete Infrastruktur für DSGVO-konforme Inferenz.'
+      },
       local: {
         short: 'selbst gehostet',
         description:

@@ -210,6 +210,13 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     description: 'Authenticate via AWS profile + region',
     docsUrl: 'https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html',
     priority: 23
+  },
+  {
+    prefix: 'EUROUTER_',
+    name: 'EU Router',
+    description: 'EU-hosted, GDPR-compliant model routing',
+    docsUrl: 'https://www.eurouter.ai/',
+    priority: 24
   }
 ]
 

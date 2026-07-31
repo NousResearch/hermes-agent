@@ -7,9 +7,9 @@ sidebar_position: 7
 
 # Provider Routing
 
-When using [OpenRouter](https://openrouter.ai) or [Nous Portal](/integrations/nous-portal) as your LLM provider, Hermes Agent supports **provider routing** — fine-grained control over which underlying AI providers handle your requests and how they're prioritized.
+When using [OpenRouter](https://openrouter.ai), [EU Router](/integrations/providers#eu-router), or [Nous Portal](/integrations/nous-portal) as your LLM provider, Hermes Agent supports **provider routing** — fine-grained control over which underlying AI providers handle your requests and how they're prioritized.
 
-OpenRouter routes requests to many providers (e.g., Anthropic, Google, AWS Bedrock, Together AI). Provider routing lets you optimize for cost, speed, quality, or enforce specific provider requirements.
+These aggregators route requests to many providers (e.g., Anthropic, Google, AWS Bedrock, Together AI, Scaleway, Mistral). Provider routing lets you optimize for cost, speed, quality, or enforce specific provider requirements — and, on EU Router, enforce EU-only data residency.
 
 :::tip
 Traffic routed through Nous Portal respects the same provider preferences — and Portal subscribers get 10% off token-billed providers.
@@ -27,10 +27,16 @@ provider_routing:
   order: []               # Explicit provider priority order
   require_parameters: false  # Only use providers that support all parameters
   data_collection: null   # Control data collection ("allow" or "deny")
+
+  # EU Router only — silently dropped if your active model is on
+  # OpenRouter or Nous Portal instead (see "How It Works" below).
+  data_residency: null    # Restrict to a region: "eu", "eea", "de", "fr", ...
+  eu_owned: false         # Restrict to EEA-owned providers only
+  max_retention_days: null  # Max days a provider may retain request data (0 = none)
 ```
 
 :::info
-Provider routing only applies when using OpenRouter or Nous Portal. It has no effect with direct provider connections (e.g., connecting directly to the Anthropic API).
+Provider routing only applies when using OpenRouter, EU Router, or Nous Portal. It has no effect with direct provider connections (e.g., connecting directly to the Anthropic API). The three EU-only fields (`data_residency`, `eu_owned`, `max_retention_days`) apply only when your active model is on EU Router — see [EU Router](/integrations/providers#eu-router) for setup.
 :::
 
 ## Options
@@ -102,6 +108,33 @@ provider_routing:
   data_collection: "deny"
 ```
 
+### `data_residency` (EU Router only)
+
+Restrict routing to providers hosted in a specific region: `"eu"`, `"eea"`, `"de"`, `"fr"`, and similar region codes. See [EU Router's routing docs](https://www.eurouter.ai/docs/concepts/routing) for the full list of supported values.
+
+```yaml
+provider_routing:
+  data_residency: "eu"
+```
+
+### `eu_owned` (EU Router only)
+
+When `true`, restricts routing to providers that are themselves EEA-owned — a stricter guarantee than `data_residency` alone (which only constrains where the infrastructure is physically located).
+
+```yaml
+provider_routing:
+  eu_owned: true
+```
+
+### `max_retention_days` (EU Router only)
+
+Caps how many days a provider is allowed to retain your request data. `0` means no retention at all — this is a meaningful, explicit value, not "unset".
+
+```yaml
+provider_routing:
+  max_retention_days: 0
+```
+
 ## Practical Examples
 
 ### Optimize for Cost
@@ -165,12 +198,28 @@ provider_routing:
   require_parameters: true
 ```
 
+### EU-Only Routing (GDPR / Data Residency)
+
+Force every request through EU-owned infrastructure — requires [EU Router](/integrations/providers#eu-router) as your model provider:
+
+```yaml
+model:
+  provider: "eurouter"
+  default: "mistral-large-3"
+
+provider_routing:
+  data_residency: "eu"
+  eu_owned: true
+  max_retention_days: 0
+```
+
 ## How It Works
 
-Provider routing preferences are passed to OpenRouter or Nous Portal on agent chat requests and iteration-limit summaries via the `extra_body.provider` field. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Auxiliary tasks such as compression and title generation are configured independently under `auxiliary.<task>.extra_body`.
+Provider routing preferences are passed to OpenRouter, EU Router, or Nous Portal on agent chat requests and iteration-limit summaries via the `extra_body.provider` field. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Auxiliary tasks such as compression and title generation are configured independently under `auxiliary.<task>.extra_body`.
 
 - **CLI mode** — configured in `~/.hermes/config.yaml`, loaded at startup
 - **Gateway mode** — same config file, loaded when the gateway starts
+- **Desktop mode** — same config file, read by the bundled backend
 
 The routing config is read from `config.yaml` and passed as parameters when creating the `AIAgent`:
 
@@ -181,7 +230,14 @@ providers_order    ← from provider_routing.order
 provider_sort      ← from provider_routing.sort
 provider_require_parameters ← from provider_routing.require_parameters
 provider_data_collection    ← from provider_routing.data_collection
+provider_data_residency     ← from provider_routing.data_residency      (EU Router only)
+provider_eu_owned           ← from provider_routing.eu_owned            (EU Router only)
+provider_max_retention_days ← from provider_routing.max_retention_days  (EU Router only)
 ```
+
+:::info Per-provider filtering
+Every field in `provider_routing` is read once and shared across all aggregator-style providers, but each provider only receives the keys it actually understands: `data_residency`, `eu_owned`, and `max_retention_days` are filtered out before a request goes to OpenRouter or Nous Portal, and never sent in the first place if your active model isn't on EU Router. Setting these globally is safe even if you switch between EU Router and other providers.
+:::
 
 :::tip
 You can combine multiple options. For example, sort by price but exclude certain providers and require parameter support:

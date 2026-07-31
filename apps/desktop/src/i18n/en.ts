@@ -1957,6 +1957,10 @@ export const en: Translations = {
       openai: { short: 'GPT-class models', description: 'Direct access to OpenAI models.' },
       gemini: { short: 'Gemini models', description: 'Direct access to Google Gemini models.' },
       xai: { short: 'Grok models', description: 'Direct access to xAI Grok models.' },
+      eurouter: {
+        short: 'EU-hosted, GDPR-compliant',
+        description: 'Routes exclusively through EU-hosted infrastructure for GDPR-compliant inference.'
+      },
       local: {
         short: 'self-hosted',
         description: 'Point Hermes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'

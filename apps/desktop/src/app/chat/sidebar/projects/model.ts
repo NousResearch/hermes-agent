@@ -120,11 +120,15 @@ export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: str
 // Project drill-in lanes are git-driven: source them from `git worktree list` so
 // linked worktrees still appear even when their sessions aren't in the recents
 // payload currently loaded in memory.
+// A repo's entry is the probe's THREE possible answers: the worktrees git
+// listed, `[]` for git's own "not a repository" verdict, and `null` when the
+// probe failed and we know nothing (missing binary, remote backend error).
+// Lane rendering keys off that difference, so it must not be flattened here.
 export function useRepoWorktreeMap(
   repoPaths: string[],
   enabled: boolean
-): [Record<string, HermesGitWorktree[]>, boolean] {
-  const [map, setMap] = useState<Record<string, HermesGitWorktree[]>>({})
+): [Record<string, HermesGitWorktree[] | null>, boolean] {
+  const [map, setMap] = useState<Record<string, HermesGitWorktree[] | null>>({})
   const [loading, setLoading] = useState(false)
   const key = useMemo(() => pathListKey(repoPaths), [repoPaths])
   // Refetch when a worktree is added/removed so a new lane shows immediately.
@@ -148,7 +152,7 @@ export function useRepoWorktreeMap(
       try {
         return [repoPath, await git.worktreeList(repoPath)] as const
       } catch {
-        return [repoPath, []] as const
+        return [repoPath, null] as const
       }
     })
       .then(entries => void (cancelled || setMap(Object.fromEntries(entries))))

@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type * as LayoutStore from '@/store/layout'
+import type * as ProfileStore from '@/store/profile'
 import type * as ProjectsStore from '@/store/projects'
 
 import type * as Model from './model'
@@ -32,8 +34,14 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/store/layout', () => ({ setWorkspaceNodeOpen: vi.fn() }))
-vi.mock('@/store/profile', () => ({ newSessionInProfile: vi.fn() }))
+vi.mock('@/store/layout', async importOriginal => ({
+  ...(await importOriginal<typeof LayoutStore>()),
+  setWorkspaceNodeOpen: vi.fn()
+}))
+vi.mock('@/store/profile', async importOriginal => ({
+  ...(await importOriginal<typeof ProfileStore>()),
+  newSessionInProfile: vi.fn()
+}))
 // Partial mocks: `@/store/projects` and `./model` pull in the coding-status
 // store's subscriptions, so replacing either module wholesale breaks the import
 // graph rather than the behavior under test.

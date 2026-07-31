@@ -443,14 +443,17 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'interview prep',
           isMain: true,
           path: '/docs/interview prep',
-          sessions: [makeSession('/docs/interview prep', { id: 'a' })]
+          sessions: [makeCwdSession('/docs/interview prep', { id: 'a' })]
         }),
         lane({
           id: '/docs/interview prep::branch::main',
           label: 'main',
           isMain: true,
           path: '/docs/interview prep',
-          sessions: [makeSession('/docs/interview prep', { id: 'a' }), makeSession('/docs/interview prep', { id: 'b' })]
+          sessions: [
+            makeCwdSession('/docs/interview prep', { id: 'a' }),
+            makeCwdSession('/docs/interview prep', { id: 'b' })
+          ]
         })
       ]
     }
@@ -502,7 +505,7 @@ describe('overlayRepoLanes (optimistic placement)', () => {
     }
 
     // A fresh row in a non-repo folder records no branch.
-    const fresh = makeSession('/docs/interview prep', { git_branch: null, id: 'new' })
+    const fresh = makeCwdSession('/docs/interview prep', { git_branch: null, id: 'new' })
     const { groups } = overlayRepoLanes(repo, [fresh])
 
     expect(groups).toHaveLength(1)
@@ -519,7 +522,7 @@ describe('overlayRepoLanes (optimistic placement)', () => {
       groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
     }
 
-    const { groups } = overlayRepoLanes(repo, [makeSession('/repo', { git_branch: 'feature', id: 'new' })])
+    const { groups } = overlayRepoLanes(repo, [makeCwdSession('/repo', { git_branch: 'feature', id: 'new' })])
 
     expect(groups.map(g => g.label).sort()).toEqual(['feature', 'main'])
   })

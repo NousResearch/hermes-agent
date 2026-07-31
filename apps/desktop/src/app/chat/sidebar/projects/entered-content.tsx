@@ -43,7 +43,8 @@ export function EnteredProjectContent({
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
   onNewSessionSplit?: NewSessionSplitHandler
-  repoWorktrees?: Record<string, HermesGitWorktree[]>
+  // null = the probe never answered, which is NOT evidence of a plain folder.
+  repoWorktrees?: Record<string, HermesGitWorktree[] | null>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
 }) {
@@ -63,7 +64,9 @@ export function EnteredProjectContent({
     <>
       {project.repos.map(repo => (
         <RepoFlatSection
-          discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
+          // `null` (the probe failed) collapses to "not probed" — only a real
+          // answer from git is allowed to reshape the lanes.
+          discoveredWorktrees={(repo.path ? repoWorktrees?.[repo.path] : undefined) ?? undefined}
           key={repo.id}
           liveSessions={liveSessions}
           onNewSession={onNewSession}

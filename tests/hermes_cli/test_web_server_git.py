@@ -111,6 +111,33 @@ def test_branch_switch_no_ops_on_a_plain_folder(client, tmp_path):
     assert not (folder / ".git").exists()
 
 
+def test_branch_switch_surfaces_a_failed_probe(client, repo, monkeypatch):
+    from hermes_cli import web_git
+
+    # git is unusable, not absent-of-repo. Reporting success here would strand
+    # the session on whatever branch the checkout happens to sit on.
+    monkeypatch.setattr(web_git, "_git", lambda *a, **k: (1, "", "git invocation failed"))
+
+    response = client.post(
+        "/api/git/branch/switch", json={"path": str(repo), "branch": "main"}
+    )
+    assert response.status_code == 400
+
+
+def test_worktrees_empty_only_means_not_a_repository(client, tmp_path, monkeypatch):
+    from hermes_cli import web_git
+
+    plain = tmp_path / "plain-project"
+    plain.mkdir()
+
+    # The sidebar reads an empty list as confirmed evidence the folder is not a
+    # repo, so a probe that never ran must not answer with one.
+    assert client.get("/api/git/worktrees", params={"path": str(plain)}).json()["worktrees"] == []
+
+    monkeypatch.setattr(web_git, "_git", lambda *a, **k: (1, "", "git invocation failed"))
+    assert client.get("/api/git/worktrees", params={"path": str(plain)}).status_code == 400
+
+
 def test_branch_switch_still_switches_a_real_repo(client, repo):
     _git(repo, "branch", "feature")
 

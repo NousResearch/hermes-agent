@@ -97,7 +97,9 @@ function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
     <div className="flex items-center gap-2">
       <span className="w-24 shrink-0 truncate text-[0.75rem] font-medium text-(--ui-text-secondary)">
         {profile.name}
-        {profile.is_default && <span className="ml-1 text-[0.625rem] text-(--ui-text-quaternary)">{k.defaultParen}</span>}
+        {profile.is_default && (
+          <span className="ml-1 text-[0.625rem] text-(--ui-text-quaternary)">{k.defaultParen}</span>
+        )}
       </span>
       <Input
         className="h-7 flex-1 text-[0.71rem]"

@@ -797,7 +797,11 @@ function NewTaskDialog({
                   size="xs"
                   variant="ghost"
                 >
-                  <Codicon name={estMut.isPending ? 'loading' : 'dashboard'} size="0.75rem" spinning={estMut.isPending} />
+                  <Codicon
+                    name={estMut.isPending ? 'loading' : 'dashboard'}
+                    size="0.75rem"
+                    spinning={estMut.isPending}
+                  />
                   {estMut.isPending ? k.estimating : k.estimate}
                 </Button>
               </Tip>
@@ -1357,9 +1361,7 @@ export function KanbanBoardPage() {
         <div className="grid flex-1 place-items-center px-4 text-center">
           <div className="flex flex-col items-center gap-2">
             <Codicon className="text-(--ui-text-quaternary)" name="project" size="1.25rem" />
-            <p className="text-xs text-(--ui-text-tertiary)">
-              {search || tenant || assignee ? k.noMatch : k.noTasks}
-            </p>
+            <p className="text-xs text-(--ui-text-tertiary)">{search || tenant || assignee ? k.noMatch : k.noTasks}</p>
             <Button className="mt-0.5" onClick={() => setAddStatus('triage')} size="sm" variant="outline">
               <Codicon name="add" size="0.75rem" />
               {k.newTask}

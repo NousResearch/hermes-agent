@@ -3114,5 +3114,5 @@ export const zh: Translations = {
       description: '显示移动端侧边栏。',
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
-  },
+  }
 }

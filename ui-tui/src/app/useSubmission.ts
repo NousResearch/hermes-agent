@@ -79,12 +79,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
   }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (
-      text: string,
-      showUserMessage = true,
-      displayText?: string,
-      expandOverride?: (value: string) => string
-    ) => {
+    (text: string, showUserMessage = true, displayText?: string, expandOverride?: (value: string) => string) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
       const expand = expandOverride ?? expandTokens(composerRefs.tokensRef.current)

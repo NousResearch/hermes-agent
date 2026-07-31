@@ -674,6 +674,40 @@ def test_refreshed_state_is_authoritative_when_echo_is_missing(monkeypatch):
     assert result.load_attempted is True
 
 
+def test_refreshed_state_is_authoritative_with_no_explicit_context(monkeypatch):
+    """Dirty state cleanup, an implicit load, and a missing echo all at once.
+
+    Combines the resident-instance contract (a competitor forces unload +
+    reload) with the runtime-context contract (no override means no
+    ``context_length`` in the load body — LM Studio's saved preset decides,
+    and the applied value is read back from a refreshed catalog when the
+    load response carries no echo).
+    """
+    _catalogs(
+        monkeypatch,
+        [
+            _entry(COMPETITOR, loaded=(("competing-instance", 131_072),)),
+            _entry(TARGET),
+        ],
+        [_entry(TARGET, loaded=(("target-instance", 45_000),))],
+    )
+    requests = _record(monkeypatch, load_response={"status": "loaded"})
+
+    result = models.ensure_lmstudio_model_loaded(
+        TARGET,
+        BASE_URL,
+        api_key="lm-secret",
+        target_context_length=None,
+        return_load_result=True,
+    )
+
+    assert result.context_length == 45_000
+    assert result.load_attempted is True
+    load_calls = [call for call in requests if call["url"] == LOAD_URL]
+    assert len(load_calls) == 1
+    assert "context_length" not in load_calls[0]["body"]
+
+
 def test_unverifiable_load_returns_no_context(monkeypatch):
     """Neither an echo nor a refreshed instance means no context is verified."""
     _catalogs(monkeypatch, [_entry(TARGET)])

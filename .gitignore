@@ -29,6 +29,12 @@ compose.hermes.local.yml
 export*
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
+
+# AO-managed Claude config (machine-local; may contain bearer tokens)
+.claude/settings.json
+.claude/settings.local.json
+.claude/metadata-updater.sh
+
 logs/
 data/
 .pytest_cache/

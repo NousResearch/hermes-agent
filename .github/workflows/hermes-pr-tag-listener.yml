@@ -1,0 +1,26 @@
+# Calls the org-owned reusable @hermes listener at an immutable revision.
+name: hermes-pr-tag-listener
+
+on:
+  pull_request:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+  repository_dispatch:
+    types: [hermes-task-completed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  notify:
+    uses: jleechanorg/.github/.github/workflows/hermes-pr-tag-listener.yml@3f9707627da75e55a79d13518c6cfb886a10ead6
+    with:
+      slack_channel: ${{ vars.HERMES_SLACK_CHANNEL || '#ai-general' }}
+      dispatch_ao: 'false'
+    secrets:
+      slack_webhook_url: ${{ secrets.HERMES_SLACK_WEBHOOK_URL }}

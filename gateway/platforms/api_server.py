@@ -6230,7 +6230,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Wire reasoning_callback so the model's real chain-of-thought
         # (reasoning_content / reasoning delta field from GLM/DeepSeek/Kimi/
-        # Qwen thinking models) flows through as reasoning.available events.
+        # Qwen thinking models) flows through as reasoning.delta events.
         # This replaces the old path that emitted content[:500] as a fake
         # "thinking" block (conversation_loop no longer does that for
         # top-level agents). Non-thinking models simply never fire this
@@ -6242,7 +6242,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return
             try:
                 loop.call_soon_threadsafe(_put_event_if_active, {
-                    "event": "reasoning.available",
+                    "event": "reasoning.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "text": text,

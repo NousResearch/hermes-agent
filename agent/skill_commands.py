@@ -54,6 +54,21 @@ _BUNDLE_MARKER = " skill bundle,"
 _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 
+# The skill name sits in the first quoted span of the activation note, for both
+# the single-skill and the bundle header ("work" / "/clean /work").
+_SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
+
+# SQL LIKE pattern matching a skill-expanded turn, for listing queries that
+# have to recognize scaffolding before the row reaches Python. The prefix
+# contains no LIKE wildcards (`%`, `_`), so it needs no ESCAPE clause.
+SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
+
+# Marks where a preview query joined the head and tail of a long scaffolded
+# message. ``describe_skill_invocation`` may hand back a span that runs across
+# the joint (a bundle instruction cut off by the head window); callers cut the
+# description there rather than show the skill body on the far side.
+SKILL_EXCERPT_JOINT = "\x1e"
+
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     """Recover the user's instruction from a slash-skill-expanded turn.
@@ -80,6 +95,45 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
         return _extract_single_skill_user_instruction(content)
 
     return None
+
+
+def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
+    """Render a slash-skill-expanded turn the way the user typed it.
+
+    The expanded message embeds the whole skill body, so any surface that
+    summarizes a user turn from its raw content — session titles, sidebar
+    previews, the ``/rewind`` picker — otherwise shows the skill's own prose
+    as if the user had written it. That is how a skill's opening line ends up
+    as a session title.
+
+    Returns ``"/work — fix the title leak"``, or ``"/work"`` for a bare
+    invocation, or ``None`` when *content* is not skill scaffolding (the
+    caller should then summarize it as an ordinary message).
+
+    *separator* joins the command and the instruction. Previews use the
+    default em dash; pass ``" "`` for the literal invocation the user typed,
+    which is what chat transcripts render.
+    """
+    if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return None
+
+    match = _SKILL_NAME_RE.match(content)
+    name = (match.group(1) if match else "").strip()
+    # Bundle headers already carry their typed "/a /b" keys; a single skill is
+    # a bare name.
+    label = name if name.startswith("/") else f"/{name}"
+
+    instruction = extract_user_instruction_from_skill_message(content)
+    if instruction and instruction is not content:
+        # An excerpted message (head + tail, joined by SKILL_EXCERPT_JOINT) can
+        # put the joint inside the matched span — keep only the side the
+        # instruction marker was found on.
+        instruction = instruction.split(SKILL_EXCERPT_JOINT)[0]
+        instruction = " ".join(instruction.split())
+        if instruction:
+            return f"{label}{separator}{instruction}" if name else instruction
+
+    return label if name else None
 
 
 def _extract_single_skill_user_instruction(message: str) -> Optional[str]:

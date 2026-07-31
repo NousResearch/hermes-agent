@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "note": "Median of 5 runs, darwin-arm64, `--spawn --prod` (PRODUCTION minified renderer, real boot — no fake-boot). Representative shipped numbers, not dev-inflated. cold-start reuses one profile so the V8 code cache is WARM (what users get after first launch, ~1.0s); a fresh-profile first launch is ~+400ms (measure with `--cold-fresh`). Marks are process-spawn wall clock (spawn_to_*) or renderer nav-relative (dom_*). Re-baseline per device with `--update-baseline`; tolerances loose for cross-machine/disk variance.",
+    "note": "Median of 5 runs, darwin-arm64, `--spawn --prod` (PRODUCTION minified renderer, real boot \u2014 no fake-boot). Representative shipped numbers, not dev-inflated. cold-start reuses one profile so the V8 code cache is WARM (what users get after first launch, ~1.0s); a fresh-profile first launch is ~+400ms (measure with `--cold-fresh`). Marks are process-spawn wall clock (spawn_to_*) or renderer nav-relative (dom_*). Re-baseline per device with `--update-baseline`; tolerances loose for cross-machine/disk variance.",
     "platform": "darwin-arm64",
     "node": "v24.11.0",
-    "updated": "2026-07-19T23:16:01.227Z"
+    "updated": "2026-07-27T00:30:11.290Z"
   },
   "scenarios": {
     "stream": {
@@ -54,6 +54,25 @@
         "dom_interactive_ms": 324,
         "dom_content_loaded_ms": 574,
         "nav_to_read_ms": 721
+      }
+    },
+    "multitab": {
+      "metrics": {
+        "longtasks_n": 0,
+        "longtask_max_ms": 0,
+        "frame_p95_ms": 29.1,
+        "frame_p99_ms": 36.2,
+        "slow_frames_33": 9
+      }
+    },
+    "render-churn": {
+      "metrics": {
+        "sidebar_renders": 0,
+        "sidebar_wasted": 0,
+        "wasted_renders": 1704,
+        "total_renders": 8221,
+        "commits": 1352,
+        "wasted_notifies": 0
       }
     }
   }

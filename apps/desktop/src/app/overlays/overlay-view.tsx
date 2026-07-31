@@ -3,11 +3,18 @@ import { type CSSProperties, type ReactNode, useEffect } from 'react'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+
+// Shared top clearance for overlay content that sits *beside* the floating
+// close button (which is absolute at `0.1875rem + titlebar/2`, -translate-y-1/2,
+// so it costs no layout space): a Panel's header and the split layout's left
+// sidebar links. They ride up next to the X on the same line across every
+// overlay (settings, system, agents, cron, …) — change it here, not per-surface.
+// Main content sits *under* the X (top-right) and keeps its own taller pad.
+export const OVERLAY_TOP_CLEARANCE = 'pt-[calc(var(--titlebar-height)/2-0.4375rem)]'
 
 interface OverlayViewProps {
   children: ReactNode
@@ -99,17 +106,15 @@ export function OverlayView({
             </div>
           )}
 
-          <Tip label={closeLabel}>
-            <Button
-              aria-label={closeLabel}
-              className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
-              onClick={closeOverlay}
-              size="icon-titlebar"
-              variant="ghost"
-            >
-              <Codicon name="close" size="1rem" />
-            </Button>
-          </Tip>
+          <Button
+            aria-label={closeLabel}
+            className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
+            onClick={closeOverlay}
+            size="icon-titlebar"
+            variant="ghost"
+          >
+            <Codicon name="close" size="1rem" />
+          </Button>
         </div>
 
         {/* No top padding here: the split-layout columns own their own

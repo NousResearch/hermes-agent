@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [MCP, FastMCP, Python, Tools, Resources, Prompts, Deployment]
     homepage: https://gofastmcp.com
-    related_skills: [native-mcp, mcporter]
+    related_skills: [hermes-agent, mcporter]
 prerequisites:
   commands: [python3]
 ---

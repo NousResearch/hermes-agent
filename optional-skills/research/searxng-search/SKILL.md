@@ -1,7 +1,7 @@
 ---
 name: searxng-search
 description: Free keyless meta-search aggregating 70+ engines.
-version: 1.0.0
+version: 1.0.1
 author: hermes-agent
 license: MIT
 platforms: [linux, macos]
@@ -123,23 +123,6 @@ for r in data.get("results", []):
     print(r.get("content", "")[:200])
     print()
 ```
-
-## Method 3: searxng-data Python Package
-
-For more structured access, install the `searxng-data` package:
-
-```bash
-pip install searxng-data
-```
-
-```python
-from searxng_data import engines
-
-# List available engines
-print(engines.list_engines())
-```
-
-Note: This package only provides engine metadata, not the search API itself.
 
 ## Self-Hosting SearXNG
 

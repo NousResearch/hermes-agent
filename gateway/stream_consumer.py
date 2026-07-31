@@ -19,7 +19,6 @@ import asyncio
 import inspect
 import logging
 import queue
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -675,10 +674,13 @@ class GatewayStreamConsumer:
         # Platform message length limit — leave room for cursor + formatting.
         # Use the adapter's length function (e.g. utf16_len for Telegram) so
         # overflow detection matches what the platform actually enforces.
+        # Both resolve PER-CHAT (max_message_length_for_chat): a relay adapter
+        # fronting N platforms has different caps per chat (Discord 2000 vs
+        # Telegram 4096); native adapters return their scalar unchanged.
         # Gate on isinstance(BasePlatformAdapter) so test MagicMocks (whose
         # auto-attributes return mock objects, not callables) fall back to len.
         _len_fn: "Callable[[str], int]" = (
-            self.adapter.message_len_fn
+            self.adapter.message_len_fn_for_chat(self.chat_id)
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
@@ -1179,40 +1181,13 @@ class GatewayStreamConsumer:
     def _balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
         """Close orphaned ``` fences at each chunk boundary and reopen on the next.
 
-        When a split lands inside a triple-backtick code block, the head chunk
-        would render everything after the orphaned fence as code, and the tail
-        chunk's content would lose its code formatting.  Mirror
-        ``BasePlatformAdapter.truncate_message``'s contract: close the fence at
-        the end of the chunk and reopen it (with the original language tag) at
-        the start of the next one, so EVERY delivered chunk is fence-balanced
-        on its own.
+        Thin delegate to the shared fence-chunker core in
+        :mod:`gateway.platforms.helpers` (``balance_fences_across_chunks``);
+        kept as a method for the existing call sites and tests.
         """
-        if len(chunks) <= 1:
-            return chunks
-        out: "list[str]" = []
-        carry_lang: "Optional[str]" = None
-        for chunk in chunks:
-            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
-            in_code = carry_lang is not None
-            lang = carry_lang or ""
-            for line in chunk.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("```"):
-                    if in_code:
-                        in_code = False
-                        lang = ""
-                    else:
-                        in_code = True
-                        tag = stripped[3:].strip()
-                        lang = tag.split()[0] if tag else ""
-            body = prefix + chunk
-            if in_code:
-                body += "\n```"
-                carry_lang = lang
-            else:
-                carry_lang = None
-            out.append(body)
-        return out
+        from gateway.platforms.helpers import balance_fences_across_chunks
+
+        return balance_fences_across_chunks(chunks)
 
     @staticmethod
     def _split_text_chunks(
@@ -1225,26 +1200,20 @@ class GatewayStreamConsumer:
         Chunks are fence-balanced: a split inside a ``` code block closes the
         fence on the head chunk and reopens it on the tail, so no chunk leaves
         the rest of a message rendering as one giant code block.
+
+        Delegates to the shared fence-chunker core
+        (:func:`gateway.platforms.helpers.split_text_fence_aware`) with this
+        consumer's knobs: newline-preferred splitting + fence balancing.
         """
-        if len_fn(text) <= limit:
-            return [text]
-        # Reserve headroom for the close/reopen fence markers the balancing
-        # pass may add, so balanced chunks stay within the platform limit.
-        split_limit = limit
-        if "```" in text:
-            split_limit = max(limit - 16, limit // 2, 1)
-        chunks: list[str] = []
-        remaining = text
-        while len_fn(remaining) > split_limit:
-            _cp_budget = _custom_unit_to_cp(remaining, split_limit, len_fn)
-            split_at = remaining.rfind("\n", 0, _cp_budget)
-            if split_at < _cp_budget // 2:
-                split_at = _cp_budget
-            chunks.append(remaining[:split_at])
-            remaining = remaining[split_at:].lstrip("\n")
-        if remaining:
-            chunks.append(remaining)
-        return GatewayStreamConsumer._balance_fences_across_chunks(chunks)
+        from gateway.platforms.helpers import split_text_fence_aware
+
+        return split_text_fence_aware(
+            text,
+            limit,
+            len_fn,
+            prefer_paragraphs=False,
+            balance_fences=True,
+        )
 
     def _truncate_for_stream(
         self,
@@ -1359,6 +1328,15 @@ class GatewayStreamConsumer:
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
+        # Per-chat resolution (relay adapter fronting N platforms): the cap and
+        # length unit follow the chat's underlying platform, not the adapter
+        # scalar. Native adapters return their scalar/property unchanged.
+        if isinstance(self.adapter, _BasePlatformAdapter):
+            try:
+                raw_limit = self.adapter.max_message_length_for_chat(self.chat_id)
+                _len_fn = self.adapter.message_len_fn_for_chat(self.chat_id)
+            except Exception as e:
+                logger.debug("per-chat limit resolution failed: %s", e)
         safe_limit = max(500, raw_limit - 100)
         chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
 
@@ -1744,8 +1722,11 @@ class GatewayStreamConsumer:
         """Per-message length budget (in the adapter's ``message_len_fn`` units)
         before the consumer splits an overflowing reply.
 
-        Adapters with a richer send/draft path (e.g. Telegram rich messages)
-        can raise this above ``MAX_MESSAGE_LENGTH`` via
+        Resolved PER-CHAT via ``max_message_length_for_chat`` — a relay adapter
+        fronting N platforms has a different cap per chat (Discord 2000 vs
+        Telegram 4096 vs Slack 39000); native adapters return their scalar
+        ``MAX_MESSAGE_LENGTH`` unchanged. Adapters with a richer send/draft
+        path (e.g. Telegram rich messages) can raise this above the base via
         ``streaming_overflow_limit`` so a reply that fits one rich message isn't
         fragmented at the legacy edit limit.  Falls back to
         ``MAX_MESSAGE_LENGTH`` (4096 default) for everyone else.
@@ -1754,6 +1735,10 @@ class GatewayStreamConsumer:
         # isinstance gate: MagicMock adapters return mock objects (truthy, not
         # ints) for arbitrary attribute access — keep them on the base limit.
         if isinstance(self.adapter, _BasePlatformAdapter):
+            try:
+                base = self.adapter.max_message_length_for_chat(self.chat_id)
+            except Exception as e:
+                logger.debug("max_message_length_for_chat failed: %s", e)
             try:
                 cap = self.adapter.streaming_overflow_limit()
             except Exception as e:

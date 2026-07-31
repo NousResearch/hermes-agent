@@ -1,6 +1,7 @@
 import {
   forceRedraw,
   type ScrollBoxHandle,
+  setDimFallbackColor,
   useApp,
   useHasSelection,
   useSelection,
@@ -15,13 +16,11 @@ import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
-import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
-  ClipboardPasteResponse,
   ConfigSetResponse,
   GatewayEvent,
   SessionActiveListResponse,
@@ -45,7 +44,7 @@ import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
-import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
+import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -222,7 +221,7 @@ export function useMainApp(gw: GatewayClient) {
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
-  const clipboardPasteRef = useRef<(quiet?: boolean) => Promise<void> | void>(() => {})
+  const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
@@ -244,6 +243,14 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
+
+  // Terminals that ignore SGR 2 (Apple_Terminal) get a literal color for
+  // `dim` instead. Feed it the theme's muted tone so dimmed spans stay in
+  // the palette — a hardcoded gray renders as a foreign foreground next to
+  // themed text on the same line.
+  useEffect(() => {
+    setDimFallbackColor(ui.theme.color.muted)
+  }, [ui.theme.color.muted])
 
   // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
   // mouse tracking, so the only reliable native-feeling path is iTerm-style
@@ -287,11 +294,8 @@ export function useMainApp(gw: GatewayClient) {
 
   const composer = useComposerState({
     gw,
-    onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
-    onImageAttached: info => {
-      sys(attachedImageNotice(info))
-    },
-    submitRef
+    submitRef,
+    sys: text => sysRef.current(text)
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
@@ -617,7 +621,12 @@ export function useMainApp(gw: GatewayClient) {
   const tabCwd = ui.info?.cwd
 
   useTerminalTitle(
-    model ? composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '') : 'Hermes'
+    model
+      ? {
+          tab: composeTabTitle(marker, ui.sessionTitle, '', ''),
+          window: composeTabTitle(marker, ui.sessionTitle, model, tabCwd ? shortCwd(tabCwd, 24) : '')
+        }
+      : 'Hermes'
   )
 
   useEffect(() => {
@@ -697,27 +706,7 @@ export function useMainApp(gw: GatewayClient) {
     [appendMessage, overlay.clarify, rpc]
   )
 
-  const paste = useCallback(
-    (quiet = false) =>
-      rpc<ClipboardPasteResponse>('clipboard.paste', { session_id: getUiState().sid }).then(r => {
-        if (!r) {
-          return
-        }
-
-        if (r.attached) {
-          const meta = imageTokenMeta(r)
-
-          return sys(`📎 Image #${r.count} attached from clipboard${meta ? ` · ${meta}` : ''}`)
-        }
-
-        if (!quiet) {
-          sys(r.message || 'No image found in clipboard')
-        }
-      }),
-    [rpc, sys]
-  )
-
-  clipboardPasteRef.current = paste
+  sysRef.current = sys
 
   const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
     appendMessage,
@@ -877,10 +866,11 @@ export function useMainApp(gw: GatewayClient) {
     () =>
       createSlashHandler({
         composer: {
+          attachClipboardImage: composerActions.attachClipboardImage,
+          attachImagePath: composerActions.attachImagePath,
           enqueue: composerActions.enqueue,
           hasSelection,
           openEditor: composerActions.openEditor,
-          paste,
           queueRef: composerRefs.queueRef,
           selection,
           setInput: composerActions.setInput
@@ -919,7 +909,6 @@ export function useMainApp(gw: GatewayClient) {
       maybeWarn,
       page,
       panel,
-      paste,
       selection,
       send,
       session,
@@ -1123,6 +1112,24 @@ export function useMainApp(gw: GatewayClient) {
     ]
   )
 
+  /**
+   * Every keystroke lands here, so this is where attached payloads are
+   * reconciled against the tokens still in the text — deleting an
+   * `[[ Image N ]]` is how the user unattaches it.
+   */
+  const updateInput = useCallback<StateSetter<string>>(
+    next => {
+      composerActions.setInput(prev => {
+        const value = typeof next === 'function' ? next(prev) : next
+
+        composerActions.syncTokens(value)
+
+        return value
+      })
+    },
+    [composerActions]
+  )
+
   const appComposer = useMemo(
     () => ({
       cols,
@@ -1136,10 +1143,10 @@ export function useMainApp(gw: GatewayClient) {
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,
-      updateInput: composerActions.setInput,
+      updateInput,
       voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
+    [cols, composerActions, composerState, empty, pagerPageSize, submit, updateInput, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling

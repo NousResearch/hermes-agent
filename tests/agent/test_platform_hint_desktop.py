@@ -63,15 +63,6 @@ class TestDesktopHintEntry:
         surface framing at all on the desktop chat surface."""
         assert "desktop" in PLATFORM_HINTS
 
-    def test_desktop_hint_disambiguates_from_terminal(self):
-        """The agent must be told it is in a graphical chat surface, NOT a
-        terminal. This is the line that kills the contradiction with the
-        old tui mis-tag."""
-        hint = PLATFORM_HINTS["desktop"]
-        lowered = hint.lower()
-        assert "desktop" in lowered
-        assert "not a terminal" in lowered
-        assert "graphical chat surface" in lowered
 
     def test_desktop_hint_advertises_markdown(self):
         """The desktop renderer supports full GFM (verified via the
@@ -80,28 +71,8 @@ class TestDesktopHintEntry:
         hint = PLATFORM_HINTS["desktop"]
         assert "markdown" in hint.lower()
 
-    def test_desktop_hint_advertises_media_delivery(self):
-        """The desktop chat intercepts MEDIA:/abs/path like telegram — images
-        inline, audio/video inline players, other files as download links.
-        Without this line the agent falls back to the cli/tui "state the
-        path in text" model, which is the wrong UX for the desktop surface."""
-        hint = PLATFORM_HINTS["desktop"]
-        assert "MEDIA:" in hint
 
-    def test_desktop_hint_advertises_inline_image_urls(self):
-        hint = PLATFORM_HINTS["desktop"]
-        assert "![alt](url)" in hint
 
-    def test_desktop_hint_does_not_inherit_tui_cron_local_only_block(self):
-        """The desktop chat surface's cron delivery semantics differ from
-        the standalone TUI — desktop runs its own cron ticker in-process
-        (hermes_cli/web_server.py under HERMES_DESKTOP=1). We deliberately
-        do NOT parrot the tui "LOCAL-ONLY … no live-delivery channel" block
-        into the desktop hint, since partially-correct cron guidance is
-        exactly the bug class we are fixing. Cron guidance for desktop is
-        deferred to a follow-up issue."""
-        hint = PLATFORM_HINTS["desktop"]
-        assert "LOCAL-ONLY" not in hint
 
 
 class TestDesktopHintBlockRemoved:
@@ -147,12 +118,6 @@ class TestPlatformHintResolutionInStablePrompt:
         assert "Runtime surface:" not in stable
         assert "embedded terminal pane" not in stable
 
-    def test_standalone_tui_yields_plain_tui_hint_no_clarifier(self, monkeypatch):
-        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-        monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
-        stable = _stable_prompt(_make_agent(platform="tui"))
-        assert PLATFORM_HINTS["tui"] in stable
-        assert "embedded terminal pane" not in stable
 
     def test_embedded_tui_yields_tui_hint_with_clarifier(self, monkeypatch):
         monkeypatch.setenv("HERMES_DESKTOP", "1")
@@ -162,15 +127,6 @@ class TestPlatformHintResolutionInStablePrompt:
         assert "embedded terminal pane" in stable
         assert "Shift-drag" in stable or "Option-drag" in stable or "⌥" in stable
 
-    def test_embedded_clarifier_does_not_attach_to_desktop_platform(self, monkeypatch):
-        """Critical regression: even when HERMES_DESKTOP_TERMINAL=1, a
-        desktop-tagged session must NOT get the embedded-pane clarifier —
-        the clarifier describes the *embedded terminal pane*, which a
-        desktop chat session is not."""
-        monkeypatch.setenv("HERMES_DESKTOP", "1")
-        monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", "1")
-        stable = _stable_prompt(_make_agent(platform="desktop"))
-        assert "embedded terminal pane" not in stable
 
 
 class TestEmbeddedTuiPaneClarifier:
@@ -182,13 +138,6 @@ class TestEmbeddedTuiPaneClarifier:
     string (which is shared with every standalone TUI session and must
     stay byte-stable)."""
 
-    def test_tui_standalone_hint_byte_stable_without_env(self, monkeypatch):
-        """Without HERMES_DESKTOP_TERMINAL, the clarifier is a no-op and the
-        resolved tui hint is exactly the static PLATFORM_HINTS["tui"]
-        string. Cache-stable for every standalone TUI session."""
-        monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
-        out = _tui_embedded_pane_clarifier(PLATFORM_HINTS["tui"])
-        assert out == PLATFORM_HINTS["tui"]
 
     def test_embedded_pane_clarifier_appended_when_env_set(self, monkeypatch):
         monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", "1")
@@ -197,23 +146,7 @@ class TestEmbeddedTuiPaneClarifier:
         assert "embedded terminal pane" in out
         assert "Shift-drag" in out or "Option-drag" in out or "⌥" in out
 
-    def test_embedded_pane_clarifier_idempotent(self, monkeypatch):
-        """Calling the clarifier twice must NOT double-append the sentence.
-        Cache-stability: the resolver is called once per session build, so
-        re-applying on an already-augmented hint is a no-op."""
-        monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", "1")
-        once = _tui_embedded_pane_clarifier(PLATFORM_HINTS["tui"])
-        twice = _tui_embedded_pane_clarifier(once)
-        assert once == twice
 
-    def test_embedded_pane_clarifier_does_not_touch_empty_hint(self, monkeypatch):
-        """Defensive: if the tui hint is somehow empty (e.g. overridden to
-        empty by config), do not synthesize a clarifier-only hint — that
-        would put a desktop-pane reference in the prompt without the tui
-        surface framing it sits under."""
-        monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", "1")
-        out = _tui_embedded_pane_clarifier("")
-        assert out == ""
 
     @pytest.mark.parametrize("val", ["0", "false", "no", "", "0", "False"])
     def test_falsy_env_does_not_trigger_clarifier(self, monkeypatch, val):

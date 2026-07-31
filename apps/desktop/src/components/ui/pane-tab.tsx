@@ -1,9 +1,7 @@
 import * as React from 'react'
 
+import { middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
-
-/** Inset bottom stroke for a horizontal tab strip — titlebar color, cut by the active tab. */
-export const PANE_TAB_STRIP_LINE = 'shadow-[inset_0_-1px_0_var(--ui-stroke-tertiary)]'
 
 /** Inset stroke for a vertical tab rail — content-facing edge. */
 export const PANE_TAB_STRIP_LINE_LEFT = 'shadow-[inset_1px_0_0_var(--ui-stroke-tertiary)]'
@@ -12,17 +10,26 @@ export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke
 const TAB =
   'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag]'
 
-const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 border-b not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
+// Full height: with the strip's rule removed there is no last-pixel row to
+// leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
+const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
 
 const TAB_VERTICAL =
   'w-full max-h-48 justify-center not-first:border-t not-first:border-t-(--ui-stroke-quaternary) [writing-mode:vertical-rl]'
 
-const TAB_ACTIVE = 'text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
+const TAB_ACTIVE = 'h-full text-foreground [--tab-bg:var(--pane-tab-active-bg,var(--ui-editor-surface-background))]'
 
-// Inactive = gutter. Hover = 4% translucent wash (VS Code/GitHub alpha hover),
-// not an opaque recolor — and never touch borders.
+// Horizontal only: the active tab is the sole seam on the strip — a
+// theme-primary underline drawn as an inset shadow in its own last pixel row,
+// so it costs no layout and can't shift the tab.
+const TAB_ACTIVE_UNDERLINE = 'shadow-[inset_0_-2px_0_var(--pane-tab-active-accent,var(--theme-primary))]'
+
+// Inactive = gutter, defaulting to the shared chrome surface so a strip that
+// sets no vars still matches the sidebar/titlebar instead of falling through to
+// the raw (unmixed) card seed. Hover DARKENS: surfaces this close in value need
+// a darkening wash to register at all.
 const TAB_IDLE =
-  'text-(--ui-text-tertiary) [--tab-bg:var(--pane-tab-strip-bg,var(--theme-card-seed))] hover:shadow-[inset_0_0_0_100vmax_color-mix(in_srgb,var(--ui-base)_4%,transparent)] hover:text-(--ui-text-secondary)'
+  'text-(--ui-text-tertiary) [--tab-bg:var(--pane-tab-strip-bg,var(--ui-sidebar-surface-background))] hover:shadow-[inset_0_0_0_100vmax_color-mix(in_srgb,#000_var(--ui-tab-hover-darken),transparent)] hover:text-(--ui-text-secondary)'
 
 interface PaneTabProps extends React.ComponentProps<'div'> {
   active?: boolean
@@ -45,18 +52,18 @@ const isMetaClose = (event: { button: number; metaKey: boolean }) => event.butto
 /**
  * Editor tab shell — preview rail + zone headers + collapsed vertical rails.
  *
- * Strip sets `--pane-tab-active-bg` (content surface) and `--pane-tab-strip-bg`
- * (gutter; prefer `--theme-card-seed` = VS Code `tab.inactiveBackground`).
- * Active merges into content; inactive sits flush in the gutter.
+ * Defaults need no vars: the active tab takes the editor surface, inactive the
+ * sidebar one. Override `--pane-tab-active-bg` to change what the active tab
+ * merges into, `--pane-tab-strip-bg` for a gutter unlike the bar around it.
  */
 export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function PaneTab(
   {
     active = false,
     dirty = false,
     onClose,
-    onAuxClick,
     onMouseDown,
     onPointerDown,
+    onPointerUp,
     onClickCapture,
     vertical = false,
     side = 'left',
@@ -66,9 +73,10 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
   },
   ref
 ) {
-  // Content-facing edge: horizontal cuts the bottom strip line; vertical cuts
-  // the side that faces the editor (left rail → right edge, right rail → left).
-  const edge = vertical ? (side === 'right' ? 'border-l' : 'border-r') : 'border-b'
+  // Vertical rails only. Horizontal tabs draw no bottom border — the strip owns
+  // that rule, and a per-tab border stacked a second translucent line over it.
+  const edge = vertical ? (side === 'right' ? 'border-l' : 'border-r') : undefined
+  const middle = middleClickHandlers(onClose)
 
   return (
     <div
@@ -76,21 +84,13 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         TAB,
         vertical ? TAB_VERTICAL : TAB_HORIZONTAL,
         edge,
-        active ? TAB_ACTIVE : cn(TAB_IDLE, `${edge}-(--ui-stroke-tertiary)`),
+        active
+          ? cn(TAB_ACTIVE, !vertical && TAB_ACTIVE_UNDERLINE)
+          : cn(TAB_IDLE, edge && `${edge}-(--ui-stroke-tertiary)`),
         className
       )}
       data-active={active}
       data-vertical={vertical || undefined}
-      onAuxClick={event => {
-        // Middle-click closes (browser/IDE). Swallow mousedown so Chromium
-        // doesn't autoscroll.
-        if (onClose && event.button === 1) {
-          event.preventDefault()
-          onClose()
-        }
-
-        onAuxClick?.(event)
-      }}
       onClickCapture={event => {
         // Sites whose tab activates on the label's own onClick (the preview
         // rail) fire it AFTER our pointerdown close — swallow that stray click
@@ -103,13 +103,12 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         onClickCapture?.(event)
       }}
       onMouseDown={event => {
-        if (onClose && event.button === 1) {
-          event.preventDefault()
-        }
-
+        middle.onMouseDown(event)
         onMouseDown?.(event)
       }}
       onPointerDown={event => {
+        middle.onPointerDown(event)
+
         // ⌘-click closes. Preempt here — the tab strips activate/drag on
         // pointerdown (drag-session onTap), so we must claim the press before
         // the shell's own handler starts a drag, and skip it entirely.
@@ -122,6 +121,10 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         }
 
         onPointerDown?.(event)
+      }}
+      onPointerUp={event => {
+        middle.onPointerUp(event)
+        onPointerUp?.(event)
       }}
       ref={ref}
       {...props}

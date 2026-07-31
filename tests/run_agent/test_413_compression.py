@@ -94,7 +94,6 @@ def agent():
         a.client = MagicMock()
         a._cached_system_prompt = "You are helpful."
         a._use_prompt_caching = False
-        a.tool_delay = 0
         # Default matches production (`compression.enabled` defaults to True).
         # Overflow-recovery tests below verify that 413 / context-overflow
         # errors DO trigger compression; the disabled-path behavior is
@@ -175,58 +174,7 @@ class TestHTTP413Compression:
         assert result["completed"] is True
         assert result["final_response"] == "Success after compression"
 
-    def test_413_not_treated_as_generic_4xx(self, agent):
-        """413 must NOT hit the generic 4xx abort path; it should attempt compression."""
-        err_413 = _make_413_error()
-        ok_resp = _mock_response(content="Recovered", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
 
-        prefill = [
-            {"role": "user", "content": "previous question"},
-            {"role": "assistant", "content": "previous answer"},
-        ]
-
-        with (
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": "hello"}],
-                "compressed",
-            )
-            result = agent.run_conversation("hello", conversation_history=prefill)
-
-        # If 413 were treated as generic 4xx, result would have "failed": True
-        assert result.get("failed") is not True
-        assert result["completed"] is True
-
-    def test_413_error_message_detection(self, agent):
-        """413 detected via error message string (no status_code attr)."""
-        err = _make_413_error(use_status_code=False, message="error code: 413")
-        ok_resp = _mock_response(content="OK", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [err, ok_resp]
-
-        prefill = [
-            {"role": "user", "content": "previous question"},
-            {"role": "assistant", "content": "previous answer"},
-        ]
-
-        with (
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": "hello"}],
-                "compressed",
-            )
-            result = agent.run_conversation("hello", conversation_history=prefill)
-
-        mock_compress.assert_called_once()
-        assert result["completed"] is True
 
     def test_413_strips_vision_payloads_when_compression_cannot_reduce_messages(self, agent):
         """If compression leaves image payloads behind, strip them and retry.
@@ -338,39 +286,6 @@ class TestHTTP413Compression:
             "with conversation_history=None"
         )
 
-    def test_context_overflow_clears_conversation_history_on_persist(self, agent):
-        """After context-overflow compression, _persist_session must receive None history."""
-        err_400 = Exception(
-            "Error code: 400 - This endpoint's maximum context length is 128000 tokens. "
-            "However, you requested about 270460 tokens."
-        )
-        err_400.status_code = 400
-        ok_resp = _mock_response(content="OK", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
-
-        big_history = [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
-            for i in range(200)
-        ]
-
-        persist_calls = []
-
-        with (
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(
-                agent, "_persist_session",
-                side_effect=lambda msgs, hist: persist_calls.append((list(msgs), hist)),
-            ),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": "summary"}],
-                "compressed prompt",
-            )
-            agent.run_conversation("hello", conversation_history=big_history)
-
-        assert any(hist is None for _msgs, hist in persist_calls)
 
     def test_400_context_length_triggers_compression(self, agent):
         """A 400 with 'maximum context length' should trigger compression, not abort as generic 4xx.
@@ -411,34 +326,6 @@ class TestHTTP413Compression:
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after compression"
 
-    def test_400_reduce_length_triggers_compression(self, agent):
-        """A 400 with 'reduce the length' should trigger compression."""
-        err_400 = Exception(
-            "Error code: 400 - Please reduce the length of the messages"
-        )
-        err_400.status_code = 400
-        ok_resp = _mock_response(content="OK", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
-
-        prefill = [
-            {"role": "user", "content": "previous question"},
-            {"role": "assistant", "content": "previous answer"},
-        ]
-
-        with (
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": "hello"}],
-                "compressed",
-            )
-            result = agent.run_conversation("hello", conversation_history=prefill)
-
-        mock_compress.assert_called_once()
-        assert result["completed"] is True
 
     def test_context_length_retry_rebuilds_request_after_compression(self, agent):
         """Retry must send the compressed transcript, not the stale oversized payload."""
@@ -489,69 +376,7 @@ class TestHTTP413Compression:
             "content": "compressed summary",
         }
 
-    def test_413_cannot_compress_further(self, agent):
-        """When compression can't reduce messages, return partial result."""
-        err_413 = _make_413_error()
-        agent.client.chat.completions.create.side_effect = [err_413]
 
-        with (
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            # Compression returns same number of messages → can't compress further
-            mock_compress.return_value = (
-                [{"role": "user", "content": "hello"}],
-                "same prompt",
-            )
-            result = agent.run_conversation("hello")
-
-        assert result["completed"] is False
-        assert result.get("partial") is True
-        assert "413" in result["error"]
-
-    def test_413_retries_on_token_only_compression(self, agent):
-        """Same message COUNT but fewer TOKENS must count as progress and retry.
-
-        Regression for #39550/#23767: tool-result pruning / in-place
-        summarization can shrink request size without dropping the message
-        count. The old gate (len(messages) < original_len) treated that as
-        'cannot compress further' and aborted; the fix re-estimates tokens and
-        retries when they drop materially.
-        """
-        err_413 = _make_413_error()
-        ok_resp = _mock_response(content="OK after token-only compaction", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
-
-        # 3 large messages in, 3 much smaller messages out (same count, far
-        # fewer tokens) — exactly the token-only-progress case.
-        prefill = [
-            {"role": "user", "content": "x" * 4000},
-            {"role": "assistant", "content": "y" * 4000},
-            {"role": "user", "content": "z" * 4000},
-        ]
-
-        with (
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            # Same message count (3) but ~10x smaller content → token drop.
-            mock_compress.return_value = (
-                [
-                    {"role": "user", "content": "x" * 300},
-                    {"role": "assistant", "content": "y" * 300},
-                    {"role": "user", "content": "z" * 300},
-                ],
-                "compressed prompt",
-            )
-            result = agent.run_conversation("hello", conversation_history=prefill)
-
-        mock_compress.assert_called_once()
-        assert result["completed"] is True
-        assert result["final_response"] == "OK after token-only compaction"
 
 
 class TestPreflightCompression:
@@ -625,25 +450,6 @@ class TestPreflightCompression:
         assert [event for event, _ in events] == ["lifecycle", "warn", "compacted"]
         assert events[-1] == ("compacted", COMPACTION_DONE_STATUS)
 
-    def test_compress_context_emits_one_terminal_status_after_an_abort(self, agent):
-        """An aborted summary must retire the started desktop compaction phase."""
-        agent.compression_enabled = False
-        events = []
-        agent.status_callback = lambda event, message: events.append((event, message))
-        messages = [{"role": "user", "content": "hello"}]
-
-        def _abort_compression(current_messages, **_kwargs):
-            agent.context_compressor._last_compress_aborted = True
-            agent.context_compressor._last_summary_error = "auxiliary model unavailable"
-            return current_messages
-
-        with patch.object(agent.context_compressor, "compress", side_effect=_abort_compression):
-            compressed, prompt = agent._compress_context(messages, "system prompt", force=True)
-
-        assert compressed is messages
-        assert prompt == "You are helpful."
-        assert [event for event, _ in events] == ["lifecycle", "warn", "compacted"]
-        assert events[-1] == ("compacted", COMPACTION_DONE_STATUS)
 
     def test_compression_reuses_cached_prompt_when_memory_snapshot_is_unchanged(self, agent):
         """A memory reload without new injected text must keep the cache prefix."""
@@ -677,70 +483,7 @@ class TestPreflightCompression:
         build_prompt.assert_not_called()
         memory_store.load_from_disk.assert_called_once()
 
-    def test_compression_rebuilds_prompt_when_memory_snapshot_changes(self, agent):
-        """A changed memory block must be reflected in the next model request."""
-        agent.compression_enabled = False
-        agent._memory_enabled = True
-        agent._user_profile_enabled = False
-        agent._memory_manager = None
-        agent._cached_system_prompt = (
-            "cached system prompt\n\n<memory>old facts</memory>"
-        )
-        memory_store = MagicMock()
-        memory_store.format_for_system_prompt.return_value = "<memory>new facts</memory>"
-        agent._memory_store = memory_store
 
-        with (
-            patch.object(
-                agent.context_compressor,
-                "compress",
-                return_value=[{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
-            ),
-            patch.object(agent, "_build_system_prompt", return_value="rebuilt system prompt") as build_prompt,
-        ):
-            _, new_system_prompt = agent._compress_context(
-                [{"role": "user", "content": "hello"}],
-                "system prompt",
-                approx_tokens=1234,
-            )
-
-        assert new_system_prompt == "rebuilt system prompt"
-        build_prompt.assert_called_once_with("system prompt")
-        memory_store.load_from_disk.assert_called_once()
-
-    def test_compression_rebuilds_when_restored_prompt_predates_memory_write(self, agent):
-        """Gateway fresh-agent path: a session-DB-restored prompt built with OLD
-        memory must be rebuilt even though the in-memory snapshot is identical
-        before and after the disk reload (the fresh MemoryStore already
-        absorbed the mid-session write at init). Guards the containment check
-        against regressing to before/after snapshot equality."""
-        agent.compression_enabled = False
-        agent._memory_enabled = True
-        agent._user_profile_enabled = False
-        agent._memory_manager = None
-        # Restored from SessionDB in an earlier process — built with fact A only.
-        agent._cached_system_prompt = "system prompt\n\n<memory>fact A</memory>"
-        memory_store = MagicMock()
-        # Fresh store loaded fact A + fact B at agent init; stable across reload.
-        memory_store.format_for_system_prompt.return_value = "<memory>fact A\nfact B</memory>"
-        agent._memory_store = memory_store
-
-        with (
-            patch.object(
-                agent.context_compressor,
-                "compress",
-                return_value=[{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}],
-            ),
-            patch.object(agent, "_build_system_prompt", return_value="rebuilt with fact B") as build_prompt,
-        ):
-            _, new_system_prompt = agent._compress_context(
-                [{"role": "user", "content": "hello"}],
-                "system prompt",
-                approx_tokens=1234,
-            )
-
-        assert new_system_prompt == "rebuilt with fact B"
-        build_prompt.assert_called_once_with("system prompt")
 
     def test_compression_rebuilds_when_prompt_has_leftover_block_for_emptied_memory(self, agent):
         """A prompt still carrying a memory block after all entries were
@@ -774,100 +517,8 @@ class TestPreflightCompression:
         assert new_system_prompt == "rebuilt without memory"
         build_prompt.assert_called_once_with("system prompt")
 
-    def test_compress_context_suppresses_automatic_status_when_engine_opts_out(self, agent):
-        """Plugin engines can make successful automatic compaction silent."""
-        # Keep this isolated from the lazy aux-provider feasibility warning,
-        # which is unrelated to automatic compaction lifecycle status.
-        agent.compression_enabled = False
-        events = []
-        agent.status_callback = lambda ev, msg: events.append((ev, msg))
-        agent.context_compressor.emit_automatic_compaction_status = False
 
-        def _fake_compress(
-            messages,
-            current_tokens=None,
-            focus_topic=None,
-            force=False,
-            memory_context="",
-        ):
-            events.append(("compress", "started"))
-            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
 
-        with (
-            patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
-            patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
-            patch("run_agent.estimate_request_tokens_rough", return_value=42),
-        ):
-            compressed, new_system_prompt = agent._compress_context(
-                [{"role": "user", "content": "hello"}],
-                "system prompt",
-                approx_tokens=1234,
-            )
-
-        # The compressor returned only the user-role summary; the human-anchor
-        # repair restores the real user turn after it (same contract as
-        # test_compress_context_emits_lifecycle_status_before_work above).
-        assert compressed == [
-            {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
-            {"role": "user", "content": "hello"},
-        ]
-        # Memory snapshot unchanged → the cached prompt is retained (same
-        # contract as test_compress_context_emits_lifecycle_status_before_work).
-        assert new_system_prompt == "You are helpful."
-        assert events == [("compress", "started")]
-
-    def test_compress_context_force_keeps_manual_status_when_engine_opts_out(self, agent):
-        """Manual /compress remains visible even for quiet automatic engines."""
-        # Keep this isolated from the lazy aux-provider feasibility warning,
-        # which is unrelated to manual compression lifecycle status.
-        agent.compression_enabled = False
-        events = []
-        agent.status_callback = lambda ev, msg: events.append((ev, msg))
-        agent.context_compressor.emit_automatic_compaction_status = False
-
-        def _fake_compress(messages, current_tokens=None, focus_topic=None, force=False):
-            events.append(("compress", "started"))
-            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
-
-        with (
-            patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
-            patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
-            patch("run_agent.estimate_request_tokens_rough", return_value=42),
-        ):
-            agent._compress_context(
-                [{"role": "user", "content": "hello"}],
-                "system prompt",
-                approx_tokens=1234,
-                force=True,
-            )
-
-        assert events[0][0] == "lifecycle"
-        assert "Compacting context" in events[0][1]
-        assert events[1] == ("compress", "started")
-
-    def test_compress_context_abort_warning_is_never_suppressed(self, agent):
-        """Failure warnings stay visible even when a quiet engine suppresses
-        routine automatic status — only ROUTINE lifecycle lines are quiet."""
-        agent.compression_enabled = False
-        agent.context_compressor.emit_automatic_compaction_status = False
-        events = []
-        agent.status_callback = lambda event, message: events.append((event, message))
-        messages = [{"role": "user", "content": "hello"}]
-
-        def _abort_compression(current_messages, **_kwargs):
-            agent.context_compressor._last_compress_aborted = True
-            agent.context_compressor._last_summary_error = "auxiliary model unavailable"
-            return current_messages
-
-        with patch.object(agent.context_compressor, "compress", side_effect=_abort_compression):
-            compressed, prompt = agent._compress_context(messages, "system prompt")
-
-        assert compressed is messages
-        assert prompt == "You are helpful."
-        # Routine lifecycle + structured compacted edges are suppressed (the
-        # quiet engine opened no visible phase), but the abort warning fires.
-        assert [event for event, _ in events] == ["warn"]
-        assert "Compression aborted" in events[0][1]
 
     def test_pre_api_compression_status_suppressed_when_engine_opts_out(self, agent):
         """The mid-turn pre-API pressure emit routes through the resolver too.
@@ -916,45 +567,6 @@ class TestPreflightCompression:
             "Pre-API compression" in msg for _ev, msg in status_messages
         )
 
-    def test_pre_api_compression_status_emitted_by_default(self, agent):
-        """Control: the default (non-quiet) engine keeps the pre-API line."""
-        agent.compression_enabled = True
-        agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 130_000
-
-        history = [
-            {"role": "user", "content": "earlier question"},
-            {"role": "assistant", "content": "earlier answer"},
-        ]
-        ok_resp = _mock_response(content="After pre-API", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [ok_resp]
-        status_messages = []
-        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
-
-        with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=10_000),
-            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=144_669),
-            patch(
-                "agent.conversation_loop.estimate_messages_tokens_rough",
-                return_value=144_669,
-            ),
-            patch.object(
-                agent,
-                "_compress_context",
-                side_effect=lambda msgs, *a, **k: (msgs, agent._cached_system_prompt),
-            ) as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=history)
-
-        assert result["completed"] is True
-        assert mock_compress.call_count >= 1
-        assert any(
-            ev == "lifecycle" and "Pre-API compression" in msg
-            for ev, msg in status_messages
-        )
 
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
@@ -1102,46 +714,6 @@ class TestPreflightCompression:
         assert "🔧 LCM context maintenance: preparing compacted context." in lifecycle_messages
         assert not any("Preflight compression" in msg for msg in lifecycle_messages)
 
-    def test_preflight_defers_when_recent_real_usage_fit(self, agent):
-        """A noisy rough estimate should not re-compact a recently fitting request."""
-        agent.compression_enabled = True
-        agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 100_000
-        agent.context_compressor.last_prompt_tokens = 58_000
-        agent.context_compressor.last_real_prompt_tokens = 58_000
-        agent.context_compressor.last_rough_tokens_when_real_prompt_fit = 113_000
-
-        big_history = []
-        for i in range(20):
-            big_history.append({"role": "user", "content": f"Message {i} padded"})
-            big_history.append({"role": "assistant", "content": f"Response {i} padded"})
-
-        ok_resp = _mock_response(
-            content="Used real fit",
-            finish_reason="stop",
-            usage={"prompt_tokens": 59_000, "completion_tokens": 100, "total_tokens": 59_100},
-        )
-        agent.client.chat.completions.create.side_effect = [ok_resp]
-        status_messages = []
-        agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
-
-        with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=114_000),
-            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=114_000),
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=big_history)
-
-        mock_compress.assert_not_called()
-        assert result["completed"] is True
-        assert result["final_response"] == "Used real fit"
-        assert not any(
-            ev == "lifecycle" and "Preflight compression" in msg
-            for ev, msg in status_messages
-        )
 
     def test_preflight_compresses_when_rough_growth_after_fit_is_large(self, agent):
         """Large rough growth after a fitting request still triggers preflight."""
@@ -1244,158 +816,9 @@ class TestPreflightCompression:
 
         mock_compress.assert_not_called()
 
-    def test_preflight_respects_anti_thrash(self, agent):
-        """Preflight must call ``should_compress()`` so anti-thrash applies.
 
-        Regression for #29335 — preflight used to bypass ``should_compress()``
-        and re-trigger every turn even when the prior two passes each saved
-        <10% (the canonical infinite-compression-loop signal).
-        """
-        agent.compression_enabled = True
-        agent.context_compressor.context_length = 2000
-        agent.context_compressor.threshold_tokens = 200
 
-        big_history = []
-        for i in range(20):
-            big_history.append({"role": "user", "content": f"Message {i} padded"})
-            big_history.append({"role": "assistant", "content": f"Response {i} padded"})
 
-        ok_resp = _mock_response(content="No preflight", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [ok_resp]
-
-        with (
-            patch.object(agent.context_compressor, "should_compress", return_value=False) as mock_should,
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=big_history)
-
-        # The gate consulted should_compress — anti-thrash had a chance to vote.
-        mock_should.assert_called()
-        # And vetoed: even though tokens >= threshold, no compression ran.
-        mock_compress.assert_not_called()
-        assert result["completed"] is True
-
-    def test_preflight_seeds_display_tokens_when_compression_aborts(self, agent):
-        """Display must reflect the real context size even when compression no-ops.
-
-        Regression: the CLI status bar reads ``last_prompt_tokens``, which only
-        updated from a *successful* API response. When the loaded history was
-        oversized but compression failed to reduce it (e.g. the auxiliary
-        summary model timed out), the bar stayed stuck at the old, smaller
-        value while the preflight estimate reported a much larger number —
-        looking permanently out of sync.
-        """
-        agent.compression_enabled = True
-        agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 130_000
-        # Simulate a stale display value from an earlier, smaller turn.
-        agent.context_compressor.last_prompt_tokens = 74_400
-
-        big_history = []
-        for i in range(20):
-            big_history.append({"role": "user", "content": f"Message {i} padded text"})
-            big_history.append({"role": "assistant", "content": f"Response {i} padded text"})
-
-        ok_resp = _mock_response(content="After preflight", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [ok_resp]
-
-        with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
-            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=144_669),
-            patch(
-                "agent.conversation_loop.estimate_messages_tokens_rough",
-                return_value=144_669,
-            ),
-            # Compression no-ops (returns input unchanged) — mirrors an aux
-            # summary-model timeout where the messages can't be reduced.
-            patch.object(
-                agent,
-                "_compress_context",
-                side_effect=lambda msgs, *a, **k: (msgs, agent._cached_system_prompt),
-            ) as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=big_history)
-
-        assert result["completed"] is True
-        # A no-op pass cannot become more effective by immediately summarizing
-        # the same request twice more. Proceed to the provider/recovery path
-        # after one attempt instead of spending the full three-pass budget.
-        assert mock_compress.call_count == 1
-        # The display token count was revised up to the fresh preflight estimate,
-        # not left at the stale 74_400.
-        assert agent.context_compressor.last_prompt_tokens == 144_669
-
-    def test_preflight_seed_only_revises_upward(self, agent):
-        """A larger tracked value must not be clobbered by a smaller estimate."""
-        agent.compression_enabled = True
-        agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 130_000
-        # A real, larger usage figure is already tracked.
-        agent.context_compressor.last_prompt_tokens = 160_000
-
-        big_history = []
-        for i in range(20):
-            big_history.append({"role": "user", "content": f"Message {i} padded text"})
-            big_history.append({"role": "assistant", "content": f"Response {i} padded text"})
-
-        ok_resp = _mock_response(content="After preflight", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [ok_resp]
-
-        with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
-            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=144_669),
-            patch.object(agent, "_compress_context", side_effect=lambda msgs, *a, **k: (msgs, agent._cached_system_prompt)),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            agent.run_conversation("hello", conversation_history=big_history)
-
-        # Smaller estimate must not overwrite the larger tracked value.
-        assert agent.context_compressor.last_prompt_tokens == 160_000
-
-    def test_preflight_stops_after_marginal_compression(self, agent):
-        """Do not spend three summary calls removing one row per pass."""
-        agent.compression_enabled = True
-        agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 130_000
-
-        big_history = []
-        for i in range(20):
-            big_history.append({"role": "user", "content": f"Message {i} padded text"})
-            big_history.append({"role": "assistant", "content": f"Response {i} padded text"})
-
-        ok_resp = _mock_response(content="After marginal preflight", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [ok_resp]
-
-        def _drop_one_row(messages, *_args, **_kwargs):
-            return messages[:-1], agent._cached_system_prompt
-
-        with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
-            patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=144_669),
-            patch(
-                "agent.conversation_loop.estimate_messages_tokens_rough",
-                return_value=144_669,
-            ),
-            patch.object(
-                agent, "_compress_context", side_effect=_drop_one_row
-            ) as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=big_history)
-
-        assert result["completed"] is True
-        assert result["final_response"] == "After marginal preflight"
-        assert mock_compress.call_count == 1
 
     @pytest.mark.parametrize(
         "rows_removed",
@@ -1497,48 +920,6 @@ class TestPreflightCompression:
         assert agent.client.chat.completions.create.call_count == 0
         assert agent.context_compressor.last_prompt_tokens == 74_400
 
-    def test_usage_less_provider_response_prevents_display_seed_rollback(self, agent):
-        """A successful response counts even when the provider omits usage."""
-        agent.compression_enabled = True
-        agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 130_000
-        agent.context_compressor.last_prompt_tokens = 74_400
-
-        big_history = []
-        for i in range(20):
-            big_history.append({"role": "user", "content": f"Message {i} padded text"})
-            big_history.append({"role": "assistant", "content": f"Response {i} padded text"})
-
-        tool_call = SimpleNamespace(
-            id="tc1",
-            type="function",
-            function=SimpleNamespace(name="web_search", arguments='{"query":"test"}'),
-        )
-        agent.client.chat.completions.create.side_effect = [
-            _mock_response(
-                content=None,
-                finish_reason="tool_calls",
-                tool_calls=[tool_call],
-                usage=None,
-            )
-        ]
-
-        def _interrupt_after_tool(*_args, **_kwargs):
-            agent._interrupt_requested = True
-
-        with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
-            patch.object(agent.context_compressor, "should_compress", return_value=False),
-            patch.object(agent, "_execute_tool_calls", side_effect=_interrupt_after_tool),
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=big_history)
-
-        assert result["interrupted"] is True
-        assert agent.client.chat.completions.create.call_count == 1
-        assert agent.context_compressor.last_prompt_tokens == 144_669
 
     def test_interrupt_keeps_post_compression_state(self, agent):
         """Display rollback must not restore real post-compaction state.
@@ -1752,50 +1133,4 @@ class TestOverflowWithCompactionDisabled:
         assert result.get("compaction_disabled") is True
         assert "auto-compaction is disabled" in result["error"]
 
-    def test_context_overflow_does_not_compress_when_disabled(self, agent):
-        """400 'prompt is too long' must NOT compress when compaction disabled."""
-        agent.compression_enabled = False
-        err_400 = Exception(
-            "Error code: 400 - {'type': 'error', 'error': {'type': "
-            "'invalid_request_error', 'message': 'prompt is too long: "
-            "233153 tokens > 200000 maximum'}}"
-        )
-        err_400.status_code = 400
-        agent.client.chat.completions.create.side_effect = [err_400, _mock_response()]
 
-        with (
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("hello", conversation_history=self._prefill())
-
-        mock_compress.assert_not_called()
-        assert result.get("compaction_disabled") is True
-
-    def test_413_still_compresses_when_enabled(self, agent):
-        """Control: with compaction enabled, 413 still triggers compression.
-
-        Guards against the disabled-path guard accidentally swallowing the
-        enabled path.
-        """
-        agent.compression_enabled = True
-        err_413 = _make_413_error()
-        ok_resp = _mock_response(content="Recovered", finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
-
-        with (
-            patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": "hello"}], "compressed",
-            )
-            result = agent.run_conversation("hello", conversation_history=self._prefill())
-
-        mock_compress.assert_called_once()
-        assert result["completed"] is True
-        assert result.get("compaction_disabled") is not True

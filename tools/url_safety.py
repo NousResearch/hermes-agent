@@ -34,9 +34,25 @@ import re
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
+from hermes_constants import get_hermes_home_override
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+# ── Proxy detection ──────────────────────────────────────────
+# Proxy environment variables that indicate the runtime should
+# delegate DNS to a proxy rather than attempting direct resolution.
+_PROXY_ENV_VARS = (
+    "HTTPS_PROXY", "https_proxy",
+    "HTTP_PROXY", "http_proxy",
+    "ALL_PROXY", "all_proxy",
+)
+
+
+def _proxy_is_configured() -> bool:
+    """Return True when at least one HTTP proxy env var is set."""
+    return any(os.environ.get(v) for v in _PROXY_ENV_VARS)
 
 
 def normalize_url_for_request(url: str) -> str:
@@ -209,23 +225,36 @@ def _global_allow_private_urls() -> bool:
     2. ``security.allow_private_urls`` in config.yaml
     3. ``browser.allow_private_urls`` in config.yaml  (legacy / backward compat)
 
-    Result is cached for the process lifetime.
+    The single-profile result is cached for the process lifetime. Multiplexed
+    profile turns bypass that process-global cache because their config root is
+    context-local; ``read_raw_config()`` already provides path/mtime caching.
     """
     global _allow_private_resolved, _cached_allow_private
+
+    # A multiplex gateway serves several independently configured profiles in
+    # one process. Reusing the first profile's opt-out here would let it disable
+    # private-network blocking for every later profile in that process.
+    if get_hermes_home_override() is not None:
+        return _resolve_allow_private_urls()
+
     if _allow_private_resolved:
         return _cached_allow_private
 
     _allow_private_resolved = True
-    _cached_allow_private = False  # safe default
+    _cached_allow_private = _resolve_allow_private_urls()
+    return _cached_allow_private
+
+
+def _resolve_allow_private_urls() -> bool:
+    """Resolve the effective private-URL toggle from the active config scope."""
 
     # 1. Env var override (highest priority)
     env_val = os.getenv("HERMES_ALLOW_PRIVATE_URLS", "").strip().lower()
     if env_val in {"true", "1", "yes"}:
-        _cached_allow_private = True
-        return _cached_allow_private
+        return True
     if env_val in {"false", "0", "no"}:
         # Explicit false — don't fall through to config
-        return _cached_allow_private
+        return False
 
     # 2. Config file
     try:
@@ -236,20 +265,18 @@ def _global_allow_private_urls() -> bool:
         if isinstance(sec, dict) and is_truthy_value(
             sec.get("allow_private_urls"), default=False
         ):
-            _cached_allow_private = True
-            return _cached_allow_private
+            return True
         # browser.allow_private_urls (legacy fallback)
         browser = cfg.get("browser", {})
         if isinstance(browser, dict) and is_truthy_value(
             browser.get("allow_private_urls"), default=False
         ):
-            _cached_allow_private = True
-            return _cached_allow_private
+            return True
     except Exception:
         # Config unavailable (e.g. tests, early import) — keep default
         pass
 
-    return _cached_allow_private
+    return False
 
 
 def _reset_allow_private_cache() -> None:
@@ -420,8 +447,29 @@ def is_safe_url(url: str) -> bool:
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except socket.gaierror:
-            # DNS resolution failed — fail closed. If DNS can't resolve it,
-            # the HTTP client will also fail, so blocking loses nothing.
+            # DNS resolution failed.  In sandbox / proxy environments
+            # (NVIDIA OpenShell, Docker + Squid, etc.) the host may
+            # block direct DNS — only HTTP(S) through the proxy is
+            # permitted.  When a proxy is configured, delegate DNS to
+            # the proxy rather than blocking the request outright.
+            # The hostname was already checked against
+            # _BLOCKED_HOSTNAMES above so metadata endpoints remain
+            # blocked regardless.  Literal IPs never qualify — they
+            # need no DNS, so a getaddrinfo failure on one is not a
+            # proxy-environment symptom; keep them on the fail-closed
+            # path (and the blocked-IP floor) instead of delegating.
+            _is_literal_ip = True
+            try:
+                ipaddress.ip_address(hostname)
+            except ValueError:
+                _is_literal_ip = False
+            if not _is_literal_ip and _proxy_is_configured():
+                logger.debug(
+                    "DNS resolution failed for %s — proxy configured, "
+                    "allowing through for proxy-side resolution",
+                    hostname,
+                )
+                return True
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
             return False
 

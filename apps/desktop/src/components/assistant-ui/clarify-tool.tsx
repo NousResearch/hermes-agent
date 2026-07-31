@@ -16,6 +16,7 @@ import {
 import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
@@ -92,8 +93,7 @@ const OPTION_ROW_CLASS =
 // field-sizing on top of Textarea's shared chrome; kill min-h-16 for one-liners.
 const CLARIFY_TEXTAREA_CLASS = 'field-sizing-content max-h-40 min-h-0 resize-none'
 
-const CLARIFY_SHELL_CLASS =
-  'my-1.5 rounded-md border border-primary/20 bg-(--ui-chat-surface-background) text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)'
+const CLARIFY_SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
 
 const CLARIFY_ICON_CLASS = 'mt-px size-4 shrink-0 text-(--ui-text-tertiary)'
 
@@ -237,7 +237,7 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
   )
 
   return (
-    <ClarifyShell className="grid gap-1.5 px-2.5 py-2" data-clarify-settled="">
+    <ClarifyShell className="my-1.5 grid gap-1.5" data-clarify-settled="">
       {question ? (
         <ClarifyLine icon={MessageQuestion}>
           <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
@@ -489,6 +489,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
       const key = event.key.toLowerCase()
 
+      // Only the letters this card actually renders a row for. Anything past
+      // the last row belongs to the composer — the user is typing a message
+      // instead of picking an option, and swallowing the keystroke here would
+      // make the first letter of it vanish.
       if (key.length === 1 && key >= 'a' && key <= 'z') {
         const index = key.charCodeAt(0) - 97
 
@@ -517,11 +521,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   if (loading) {
     return (
-      <ClarifyShell
-        aria-label={copy.loadingQuestion}
-        className="grid min-h-12 place-items-center px-2.5 py-3"
-        role="status"
-      >
+      <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
       </ClarifyShell>
     )
@@ -538,17 +538,28 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   }
 
   return (
-    // `data-clarify-choices` marks the panel as owning printable/Enter keys
-    // while its A/B/C… shortcuts are live, so the global type-to-focus listener
-    // (`composerFocusBlockedBySurface`) stands down and the letters reach this
-    // card instead of being redirected into the composer.
-    <ClarifyShell className="grid gap-2 px-2.5 py-2" data-clarify-choices={hasChoices ? '' : undefined}>
-      <div className="flex items-start gap-2">
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
-        <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
-      </div>
+    // `data-clarify-choices` marks the panel as owning its OWN shortcut keys
+    // (Enter, and 1..N+1 / A.. for the N choices plus "Other") while they're
+    // live, so the global type-to-focus listener (`clarifyCardOwnsKey`) yields
+    // exactly those and lets every other printable through to the composer —
+    // typing a real message instead of picking an option stays possible. The
+    // value is the choice count so the check needs no store access.
+    //
+    // The form is the outer element so the actions can sit OUTSIDE the card and
+    // still submit it — the panel holds the question, the buttons ride below it.
+    <form
+      className="my-1.5 grid gap-4"
+      data-clarify-choices={hasChoices ? choices.length : undefined}
+      onSubmit={handleSubmit}
+    >
+      <ClarifyShell className="grid gap-2">
+        <div className="flex items-start gap-2">
+          <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
+            {question}
+          </span>
+          <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
+        </div>
 
-      <form className="grid gap-2" onSubmit={handleSubmit}>
         {hasChoices ? (
           <div className="grid gap-px" role="group">
             {choices.map((choice, index) => (
@@ -610,25 +621,25 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             value={draft}
           />
         )}
+      </ClarifyShell>
 
-        <div className="flex items-center justify-end gap-1">
-          <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
-            {copy.skip}
-          </Button>
-          <Button disabled={submitting || !pendingAnswer} size="xs" type="submit">
-            {submitting ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <>
-                {copy.continueLabel}
-                <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
-                  ⏎
-                </span>
-              </>
-            )}
-          </Button>
-        </div>
-      </form>
-    </ClarifyShell>
+      <div className="flex items-center justify-end gap-1">
+        <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
+          {copy.skip}
+        </Button>
+        <Button disabled={submitting || !pendingAnswer} size="xs" type="submit">
+          {submitting ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <>
+              {copy.continueLabel}
+              <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
+                ⏎
+              </span>
+            </>
+          )}
+        </Button>
+      </div>
+    </form>
   )
 }

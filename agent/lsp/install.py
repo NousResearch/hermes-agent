@@ -30,7 +30,6 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -124,10 +123,9 @@ def _is_windows() -> bool:
 
 def hermes_lsp_bin_dir() -> Path:
     """Return the Hermes-owned bin staging dir for LSP servers."""
-    home = os.environ.get("HERMES_HOME")
-    if home is None:
-        home = os.path.join(os.path.expanduser("~"), ".hermes")
-    p = Path(home) / "lsp" / "bin"
+    from hermes_constants import get_hermes_home
+
+    p = get_hermes_home() / "lsp" / "bin"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -267,7 +265,7 @@ def _install_npm(
             [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
             check=False,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=300,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
@@ -316,7 +314,7 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
             [go, "install", pkg],
             check=False,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=600,
             env=env,
             stdin=subprocess.DEVNULL,

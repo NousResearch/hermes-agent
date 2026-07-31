@@ -1,10 +1,10 @@
 ---
 name: pinecone
 description: Managed vector DB for production RAG and search.
-version: 1.0.0
+version: 1.0.1
 author: Orchestra Research
 license: MIT
-dependencies: [pinecone-client]
+dependencies: [pinecone]
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -42,8 +42,10 @@ The vector database for production AI applications.
 ### Installation
 
 ```bash
-pip install pinecone-client
+pip install pinecone
 ```
+
+> Note: the old `pinecone-client` package is deprecated. Install `pinecone` (v5+; current 9.x). The import stays `from pinecone import Pinecone`.
 
 ### Basic usage
 
@@ -226,14 +228,31 @@ index.upsert(vectors=[
 ])
 
 # Hybrid query
+# NOTE: index.query() does NOT accept an `alpha` kwarg. Pinecone stores a
+# single sparse-dense vector, so weighting must be applied by pre-scaling the
+# query vectors before sending them. Use the hybrid_score_norm helper below
+# (alpha * dense + (1 - alpha) * sparse; alpha=1 → pure dense, 0 → pure sparse).
+
+def hybrid_score_norm(dense, sparse, alpha: float):
+    """Scale dense/sparse query vectors for weighted hybrid search."""
+    if not 0 <= alpha <= 1:
+        raise ValueError("alpha must be between 0 and 1")
+    scaled_sparse = {
+        "indices": sparse["indices"],
+        "values": [v * (1 - alpha) for v in sparse["values"]],
+    }
+    return [v * alpha for v in dense], scaled_sparse
+
+hdense, hsparse = hybrid_score_norm(
+    dense=[0.1, 0.2, ...],
+    sparse={"indices": [10, 45], "values": [0.5, 0.3]},
+    alpha=0.5,  # 0=sparse, 1=dense, 0.5=balanced
+)
+
 results = index.query(
-    vector=[0.1, 0.2, ...],
-    sparse_vector={
-        "indices": [10, 45],
-        "values": [0.5, 0.3]
-    },
+    vector=hdense,
+    sparse_vector=hsparse,
     top_k=5,
-    alpha=0.5  # 0=sparse, 1=dense, 0.5=hybrid
 )
 ```
 

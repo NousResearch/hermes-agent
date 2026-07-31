@@ -92,12 +92,37 @@ def _pinned_specs(packages: list[str], project_root: Path) -> list[str]:
     return [name_to_spec.get(pkg.lower(), pkg) for pkg in packages]
 
 
+def _certifi_bundle_broken() -> bool:
+    """True when certifi imports but its ``cacert.pem`` is missing/corrupt.
+
+    A brew Python upgrade or an interrupted venv rebuild can leave certifi's
+    distribution metadata (and even the module) intact while the bundled
+    ``cacert.pem`` is gone or a dangling symlink — every TLS connection then
+    fails with an opaque ``Could not find a suitable TLS CA certificate
+    bundle`` from deep inside httpx/requests (#29866). An attribute probe
+    alone passes in that state, so validate the bundle path itself.
+    """
+    try:
+        import certifi
+
+        bundle = Path(certifi.where())
+        # <1 KiB cannot hold a single PEM certificate — treat as corrupt.
+        return not bundle.is_file() or bundle.stat().st_size < 1024
+    except Exception:
+        # Import failure is caught by the regular probe table; a failure to
+        # even stat is treated as broken.
+        return True
+
+
 def _probe_broken_packages() -> list[str]:
     """Import-probe the fragile core packages in THIS process.
 
     Returns repair package names (deduped, probe order) for modules that fail
     to import or lack their sentinel attribute.  Failed imports leave nothing
     in ``sys.modules``, so a post-repair retry in the same process works.
+
+    certifi additionally gets a bundle-file check: the module can import
+    cleanly while ``cacert.pem`` is missing (#29866).
     """
     broken: list[str] = []
     for mod_name, attr in LAZY_REFRESH_IMPORT_PROBES:
@@ -105,6 +130,8 @@ def _probe_broken_packages() -> list[str]:
             mod = importlib.import_module(mod_name)
             if not hasattr(mod, attr):
                 raise ImportError(f"{mod_name} missing {attr}")
+            if mod_name == "certifi" and _certifi_bundle_broken():
+                raise ImportError("certifi cacert.pem missing or corrupt")
         except Exception:
             pkg = LAZY_REFRESH_REPAIR_PACKAGES.get(mod_name)
             if pkg and pkg not in broken:
@@ -131,7 +158,7 @@ def _run_repair_install(specs: list[str], project_root: Path) -> bool:
             [sys.executable, "-m", "pip", "install", "--force-reinstall", *specs],
             cwd=project_root,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         )
     except Exception as exc:
         print(f"  ✗ Early venv repair could not run pip: {exc}", file=sys.stderr)
@@ -142,6 +169,22 @@ def _run_repair_install(specs: list[str], project_root: Path) -> bool:
             print(tail, file=sys.stderr)
         return False
     return True
+
+
+def _pytest_owns_live_checkout(root: Path) -> bool:
+    """True when running under pytest AND ``root`` is this module's own
+    checkout — the one whose venv is executing the suite right now.
+
+    Lifecycle tests spawn real subprocesses that import ``hermes_cli.main``
+    with recovery armed; ``PYTEST_CURRENT_TEST`` rides the inherited env into
+    those children. Without this guard, a genuinely-broken dev venv gets a
+    REAL ``ensurepip`` + ``pip install --force-reinstall`` from inside a
+    running test suite. Tests that sandbox ``project_root`` to a tmp_path are
+    unaffected (same posture as ``managed_scope._under_pytest``)."""
+    return (
+        "PYTEST_CURRENT_TEST" in os.environ
+        and root == Path(__file__).resolve().parent.parent
+    )
 
 
 def recover_if_needed(
@@ -166,6 +209,8 @@ def recover_if_needed(
         if "update" in args:
             return
         root = _project_root() if project_root is None else project_root
+        if _pytest_owns_live_checkout(root):
+            return
         core_marker = root / ".update-incomplete"
         lazy_marker = root / ".lazy-refresh-incomplete"
         if not core_marker.exists() and not lazy_marker.exists():

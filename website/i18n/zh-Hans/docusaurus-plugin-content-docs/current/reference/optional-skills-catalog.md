@@ -52,7 +52,7 @@ hermes skills uninstall <skill-name>
 
 | 技能 | 描述 |
 |-------|-------------|
-| [**audiocraft-audio-generation**](/user-guide/skills/optional/creative/creative-audiocraft) | AudioCraft：MusicGen 文本转音乐、AudioGen 文本转音效。 |
+| [**audiocraft-audio-generation**](/user-guide/skills/optional/creative/creative-audiocraft-audio-generation) | AudioCraft：MusicGen 文本转音乐、AudioGen 文本转音效。 |
 | [**blender-mcp**](/user-guide/skills/optional/creative/creative-blender-mcp) | 通过 socket 连接 blender-mcp 插件，直接从 Hermes 控制 Blender。创建 3D 对象、材质、动画，并运行任意 Blender Python（bpy）代码。适用于用户希望在 Blender 中创建或修改任何内容的场景。 |
 | [**concept-diagrams**](/user-guide/skills/optional/creative/creative-concept-diagrams) | 生成扁平、极简、支持亮色/暗色模式的 SVG 图表，输出为独立 HTML 文件，采用统一的教育视觉语言，包含 9 种语义色阶、句首大写排版及自动暗色模式。最适合教育和说明类内容。 |
 | [**heartmula**](/user-guide/skills/optional/creative/creative-heartmula) | HeartMuLa：根据歌词 + 标签生成类 Suno 风格的歌曲。 |
@@ -144,7 +144,7 @@ hermes skills uninstall <skill-name>
 | [**pytorch-lightning**](/user-guide/skills/optional/mlops/mlops-pytorch-lightning) | 高层 PyTorch 框架，提供 Trainer 类、自动分布式训练（DDP/FSDP/DeepSpeed）、回调系统及极少样板代码。同一套代码可从笔记本扩展至超算。适用于希望训练循环简洁、同时保留完整 PyTorch 灵活性的场景。 |
 | [**qdrant-vector-search**](/user-guide/skills/optional/mlops/mlops-qdrant) | 高性能向量相似性搜索引擎，适用于 RAG 和语义搜索。适用于构建需要快速近邻搜索、带过滤的混合搜索或基于 Rust 高性能的可扩展向量存储的生产 RAG 系统。 |
 | [**sparse-autoencoder-training**](/user-guide/skills/optional/mlops/mlops-saelens) | 提供使用 SAELens 训练和分析稀疏自编码器（SAE）的指导，将神经网络激活分解为可解释特征。适用于发现可解释特征、分析叠加现象或研究神经网络内部结构的场景。 |
-| [**segment-anything-model**](/user-guide/skills/optional/mlops/mlops-models-segment-anything) | SAM：通过点、框、掩码进行零样本图像分割。 |
+| [**segment-anything-model**](/user-guide/skills/optional/mlops/mlops-models-segment-anything-model) | SAM：通过点、框、掩码进行零样本图像分割。 |
 | [**simpo-training**](/user-guide/skills/optional/mlops/mlops-simpo) | 用于 LLM 对齐的简单偏好优化（SimPO）。无需参考模型的 DPO 替代方案，性能更优（在 AlpacaEval 2.0 上提升 +6.4 分）。比 DPO 更高效。适用于希望简化偏好对齐流程的场景。 |
 | [**slime-rl-training**](/user-guide/skills/optional/mlops/mlops-slime) | 提供使用 slime（Megatron+SGLang 框架）进行 LLM RL 后训练的指导。适用于训练 GLM 模型、实现自定义数据生成工作流或需要紧密 Megatron-LM 集成以进行 RL 扩展的场景。 |
 | [**stable-diffusion-image-generation**](/user-guide/skills/optional/mlops/mlops-stable-diffusion) | 通过 HuggingFace Diffusers 使用 Stable Diffusion 模型进行最先进的文本到图像生成。适用于从文本 prompt 生成图像、图像到图像转换、图像修复或构建自定义扩散流水线的场景。 |

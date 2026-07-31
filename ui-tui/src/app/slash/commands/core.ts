@@ -16,7 +16,11 @@ import type {
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
-import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
+import {
+  configureDetectedTerminalKeybindings,
+  configureTerminalKeybindings,
+  isRemoteShellSession
+} from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -403,6 +407,14 @@ export const coreCommands: SlashCommand[] = [
         return sys('nothing to copy — start a conversation first')
       }
 
+      const shouldUseTerminalClipboard = isRemoteShellSession(process.env)
+
+      if (shouldUseTerminalClipboard) {
+        writeOsc52Clipboard(target.text)
+
+        return sys('sent OSC52 copy sequence (terminal support required)')
+      }
+
       void writeClipboardText(target.text)
         .then(nativeOk => {
           if (ctx.stale()) {
@@ -427,7 +439,7 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'attach clipboard image',
     name: 'paste',
-    run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+    run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.attachClipboardImage())
   },
 
   {
@@ -551,6 +563,40 @@ export const coreCommands: SlashCommand[] = [
           })
         )
         .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'toggle focus view — show only your prompt and the final response [on|off|status]',
+    name: 'focus',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const current = ctx.ui.focusView
+
+      // `/focus status` reports without writing, matching the CLI surface.
+      if (mode === 'status' || mode === 'show' || mode === '?') {
+        return ctx.transcript.sys(
+          current ? 'focus view on — only your prompt and the final response' : 'focus view off'
+        )
+      }
+
+      const next = flagFromArg(mode, current)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /focus [on|off|status]')
+      }
+
+      // Display-only: Python owns the tool_progress stash/restore so /focus off
+      // returns to whatever /verbose mode the user had. Optimistically patch the
+      // badge so the status bar flips on the same frame.
+      patchUiState({ focusView: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'focus', value: next ? 'on' : 'off' }).catch(() => {})
+
+      queueMicrotask(() =>
+        ctx.transcript.sys(
+          next ? 'focus view enabled — just your prompt and the final response' : 'focus view disabled'
+        )
+      )
     }
   },
 

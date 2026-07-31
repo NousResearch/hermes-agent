@@ -21,14 +21,16 @@ import { cn } from '@/lib/utils'
 import { $renamingPath, copyFilePath, revealFile, toRelativePath } from '@/store/file-actions'
 import { $sidebarWorkspaceNodeOpen, revealFileInTree, toggleWorkspaceNodeCollapsed } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { setCurrentSessionPreviewTarget } from '@/store/preview'
+import { openPreview } from '@/store/preview'
 import {
   $reviewFiles,
   $reviewLoading,
   $reviewOpen,
+  $reviewScopeCwd,
   $reviewSelectedPath,
   $reviewTreeMode,
   requestRevert,
+  reviewRepoCwd,
   selectReviewFile,
   stageReviewFile,
   unstageReviewFile
@@ -54,16 +56,13 @@ const STATUS_GLYPH: Record<string, { icon: string; tone: string }> = {
 }
 
 // Review paths are repo-relative; the composer drop expects absolute paths, so
-// join against the active session cwd (the repo we probed).
+// join against the pane's repo (its pinned scope, else the active session cwd).
 function absolutePath(relative: string): string {
   if (/^([a-zA-Z]:[\\/]|\/)/.test(relative)) {
     return relative
   }
 
-  const cwd = $currentCwd
-    .get()
-    ?.trim()
-    .replace(/[\\/]+$/, '')
+  const cwd = reviewRepoCwd()?.replace(/[\\/]+$/, '')
 
   return cwd ? `${cwd}/${relative}` : relative
 }
@@ -105,6 +104,7 @@ export function ReviewFileTree() {
   const [animate, setAnimate] = useState(false)
   const armed = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!open) {
       armed.current = false
@@ -112,6 +112,7 @@ export function ReviewFileTree() {
     }
   }, [open])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (open && !loading && !armed.current) {
       armed.current = true
@@ -235,7 +236,11 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
   const selected = file.path === selectedPath
   const glyph = STATUS_GLYPH[file.status] ?? STATUS_GLYPH.M
   const dragPath = absolutePath(file.path)
-  const cwd = useStore($currentCwd)
+  // Reactive mirror of reviewRepoCwd(): the pinned scope wins, else the
+  // active session's cwd (subscribing to both keeps the row live either way).
+  const scopeCwd = useStore($reviewScopeCwd)
+  const activeCwd = useStore($currentCwd)
+  const cwd = scopeCwd?.trim() || activeCwd
 
   // Single-click shows the inline diff; double-click opens the file in the main
   // preview pane (matching the file browser). They're mutually exclusive: defer
@@ -275,7 +280,7 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
         const preview = await normalizeOrLocalPreviewTarget(dragPath)
 
         if (preview) {
-          setCurrentSessionPreviewTarget(preview, 'file-browser', dragPath)
+          openPreview(preview, 'file-browser')
         }
       } catch (error) {
         notifyError(error, t.rightSidebar.previewUnavailable)

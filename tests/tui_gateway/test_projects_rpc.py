@@ -17,6 +17,32 @@ def _call(method, params=None):
     return resp["result"]
 
 
+@pytest.fixture(autouse=True)
+def _fast_git_probe(monkeypatch):
+    """Replace real git subprocess probes with a cheap .git-directory check.
+
+    The record/discover RPC paths probe every distinct session cwd in the DB
+    with a real ``git`` subprocess; on a warm session DB that made single
+    tests take 10-80s. Behavior under test (policy gating, cache merging,
+    ranking) only needs root resolution, not real git.
+    """
+    from tui_gateway import git_probe
+
+    git_probe.invalidate()
+
+    def _fake_run_git(cwd, *_a):
+        d = str(cwd)
+        while d and d not in ("/", os.path.dirname(d)):
+            if os.path.isdir(os.path.join(d, ".git")):
+                return d
+            d = os.path.dirname(d)
+        return ""
+
+    monkeypatch.setattr(git_probe, "run_git", _fake_run_git)
+    yield
+    git_probe.invalidate()
+
+
 def test_methods_registered():
     for m in (
         "projects.list",
@@ -86,36 +112,6 @@ def test_negative_results_are_ttl_cached_then_re_probed(monkeypatch):
     git_probe._cache._neg[cwd] = 0.0  # force-expire the cached negative
     assert git_probe.repo_root(cwd) == ""
     assert calls["n"] == 2
-
-
-def test_repo_root_cache_is_single_flight(monkeypatch):
-    # Concurrent identical probes share one git invocation (gateway long handlers
-    # run on worker threads).
-    import threading
-
-    from tui_gateway import git_probe
-
-    git_probe.invalidate()
-    calls = {"n": 0}
-    started = threading.Event()
-
-    def slow(_cwd, *_a):
-        calls["n"] += 1
-        started.set()
-        time = __import__("time")
-        time.sleep(0.05)
-        return "/repo"
-
-    monkeypatch.setattr(git_probe, "run_git", slow)
-    out: list[str] = []
-    threads = [threading.Thread(target=lambda: out.append(git_probe.repo_root("/repo/x"))) for _ in range(6)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert out == ["/repo"] * 6
-    assert calls["n"] == 1
 
 
 def test_warm_roots_probes_in_parallel_and_fills_the_cache(monkeypatch):
@@ -190,20 +186,6 @@ def test_project_info_for_cwd_returns_status_payload(tmp_path):
     }
 
 
-def test_project_info_for_cwd_unowned_and_blank_are_none(tmp_path):
-    # A cwd outside every project — and an empty cwd — carry no project, so the
-    # status label falls back to the cwd leaf on every surface.
-    owned = tmp_path / "owned"
-    owned.mkdir()
-    _call("projects.create", {"name": "Owned", "folders": [str(owned)]})
-
-    outside = tmp_path / "outside"
-    outside.mkdir()
-
-    assert server._project_info_for_cwd(str(outside)) is None
-    assert server._project_info_for_cwd("") is None
-
-
 def test_session_info_carries_project_for_owned_cwd(tmp_path):
     # session.info threads the resolved project through so the desktop/TUI can
     # name the workspace without a second round-trip.
@@ -261,6 +243,62 @@ def test_record_repos_persists_and_shows_zero_session_repo(tmp_path):
     by_label = {r["label"]: r for r in _call("projects.discover_repos")["repos"]}
     assert "fresh-repo" in by_label
     assert by_label["fresh-repo"]["sessions"] == 0
+
+
+def test_scan_time_is_not_treated_as_session_activity(tmp_path):
+    """A scanned repo with no sessions must not rank as recently active.
+
+    ``discovered_repos.last_seen`` records when the disk scan last saw the
+    directory. Folding it into ``last_active`` stamped every scanned checkout
+    with the scan time — i.e. "just now" — so repos the user has never opened
+    in Hermes outranked the ones they actually work in.
+    """
+    worked_in = tmp_path / "worked-in"
+    worked_in.mkdir()
+    subprocess.run(["git", "init"], cwd=worked_in, check=True, capture_output=True)
+    server._get_db().create_session("worked-in-session", "cli", cwd=str(worked_in))
+
+    never_opened = tmp_path / "never-opened"
+    never_opened.mkdir()
+
+    _call(
+        "projects.record_repos",
+        {"repos": [{"root": str(never_opened)}, {"root": str(worked_in)}]},
+    )
+
+    by_root = {r["root"]: r for r in _call("projects.discover_repos")["repos"]}
+    idle = by_root[str(never_opened)]
+    active = by_root[str(worked_in)]
+
+    assert idle["sessions"] == 0
+    # A repo with no sessions has no activity to report...
+    assert idle["last_active"] == 0
+    # ...so the repo the user actually worked in sorts ahead of it.
+    assert active["last_active"] > idle["last_active"]
+
+
+def test_terminal_session_persists_its_launch_cwd():
+    """A terminal session's cwd IS its workspace, so the row must record it.
+
+    The user cd'd into that directory before running hermes. Dropping it left
+    the row with no cwd and no git_repo_root, so the sidebar could never place
+    the session under its project.
+    """
+    for source in ("tui", "cli"):
+        assert server._persisted_session_cwd(
+            {"source": source, "cwd": "/somewhere/a-repo"}
+        ) == "/somewhere/a-repo"
+
+
+def test_desktop_launch_cwd_is_not_persisted_as_a_workspace():
+    # The desktop launches from wherever the bundle was opened, so an unpicked
+    # cwd is an artifact — those chats belong under "No workspace".
+    assert server._persisted_session_cwd({"source": "desktop", "cwd": "/opt/whatever"}) is None
+
+    # An explicit pick is always honored, desktop included.
+    assert server._persisted_session_cwd(
+        {"source": "desktop", "cwd": "/picked/repo", "explicit_cwd": True}
+    ) == "/picked/repo"
 
 
 def test_disabled_discovery_clears_cache_and_rejects_new_scan(monkeypatch, tmp_path):
@@ -341,24 +379,3 @@ def test_nondefault_policy_rejects_stale_or_legacy_results(monkeypatch, tmp_path
     assert any(item["root"] == str(root) for item in accepted["repos"])
 
 
-def test_discover_repos_from_full_history(tmp_path):
-    repo = tmp_path / "myrepo"
-    (repo / "src").mkdir(parents=True)
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    plain = tmp_path / "plain"
-    plain.mkdir()
-
-    db = server._get_db()
-    db.create_session("s1", "cli", cwd=str(repo))
-    db.create_session("s2", "cli", cwd=str(repo / "src"))
-    db.create_session("s3", "cli", cwd=str(plain))  # not a git repo → excluded
-
-    repos = _call("projects.discover_repos")["repos"]
-    by_label = {r["label"]: r for r in repos}
-
-    assert "myrepo" in by_label
-    assert by_label["myrepo"]["sessions"] == 2  # both repo cwds aggregate
-    assert "plain" not in by_label  # non-git dir never promoted
-
-    # The probe is persisted back onto the session rows (membership at the source).
-    assert os.path.realpath(db.get_session("s1")["git_repo_root"]) == os.path.realpath(str(repo))

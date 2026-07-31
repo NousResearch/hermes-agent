@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { persistString, storedString } from '@/lib/storage'
 
 import { $gateway } from './gateway'
+import { withinNativeNotifyBaseline } from './notify-baseline'
 import { clearApprovalRequest } from './prompts'
 import { $activeSessionId } from './session'
 
@@ -157,6 +158,10 @@ export function dispatchNativeNotification(input: NativeNotificationInput): void
   const prefs = $nativeNotifyPrefs.get()
 
   if (!prefs.enabled || !prefs.kinds[input.kind]) {
+    return
+  }
+
+  if (withinNativeNotifyBaseline()) {
     return
   }
 

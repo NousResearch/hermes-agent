@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { $gateway } from './gateway'
 import { $activeSessionId } from './session'
 
 export interface ClarifyRequest {
@@ -101,4 +102,43 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
   if (changed) {
     $clarifyRequests.set(next)
   }
+}
+
+/** Whether `sessionId` has a clarify parked on it right now (imperative read —
+ *  the composer checks this on Enter, not on every render). */
+export const hasClarifyRequest = (sessionId: string | null | undefined): boolean =>
+  Boolean($clarifyRequests.get()[keyFor(sessionId)])
+
+/**
+ * Answer `sessionId`'s pending clarify with an empty answer (a skip) and drop it
+ * locally, resolving to whether there was one to skip.
+ *
+ * The composer uses this when the user types a real message instead of picking
+ * an option: a clarify blocks the agent inside its tool batch, so leaving it
+ * unanswered would park the follow-up until the server-side clarify timeout
+ * (default 5 min) — the message looks sent and nothing happens. Skipping lets
+ * the tool return and the turn carry on with the user's actual words.
+ *
+ * An empty answer is the same thing the card's own Skip button sends, and
+ * `clarify.respond` is `allow_expired`, so racing the timeout is harmless.
+ */
+export async function skipClarifyRequest(sessionId: string | null | undefined): Promise<boolean> {
+  const request = $clarifyRequests.get()[keyFor(sessionId)]
+
+  if (!request) {
+    return false
+  }
+
+  // Clear first: the answer is already decided, and an in-flight RPC must not
+  // leave a live card the user can answer a second time.
+  clearClarifyRequest(request.requestId, request.sessionId)
+
+  try {
+    await $gateway.get()?.request('clarify.respond', { request_id: request.requestId, answer: '' })
+  } catch {
+    // The tool times out on its own; a failed skip must never swallow the
+    // message the user is actually sending.
+  }
+
+  return true
 }

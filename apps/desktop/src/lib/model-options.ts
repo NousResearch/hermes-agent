@@ -1,5 +1,23 @@
+import { type QueryClient } from '@tanstack/react-query'
+
 import { getGlobalModelOptions, type HermesGateway, type ModelOptionsResponse } from '@/hermes'
-import type { ModelOptionProvider } from '@/types/hermes'
+import type { MoaConfigResponse, ModelOptionProvider } from '@/types/hermes'
+
+export const MOA_MENU_CONFIG_QUERY_KEY = ['moa-menu-config'] as const
+
+export const moaMenuConfigQueryKey = (profile: string) => [...MOA_MENU_CONFIG_QUERY_KEY, profile] as const
+
+/** TanStack's default structural merge assigns `__proto__` through a plain
+ * object and can turn an own preset key into the cache object's prototype.
+ * Keep this JSON payload atomic for both component refetches and manual writes. */
+export function setMoaMenuConfigQueryData(
+  queryClient: QueryClient,
+  profile: string,
+  config: MoaConfigResponse | null
+): void {
+  queryClient.setQueryDefaults(MOA_MENU_CONFIG_QUERY_KEY, { structuralSharing: false })
+  queryClient.setQueryData(moaMenuConfigQueryKey(profile), config)
+}
 
 /**
  * True only when a persisted **manual** composer pick has been removed from the

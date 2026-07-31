@@ -34,6 +34,7 @@ import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { QuickEntrySettings } from './quick-entry-settings'
+import type { UseMoaPresetHandler } from './types'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -59,11 +60,13 @@ export function ConfigSettings({
   activeSectionId,
   onConfigSaved,
   onMainModelChanged,
+  onUseMoaPreset,
   importInputRef
 }: {
   activeSectionId: string
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
+  onUseMoaPreset?: UseMoaPresetHandler
   importInputRef: React.RefObject<HTMLInputElement | null>
 }) {
   const { t } = useI18n()
@@ -299,7 +302,7 @@ export function ConfigSettings({
     <SettingsContent>
       {activeSectionId === 'model' && (
         <div className="mb-6">
-          <ModelSettings onMainModelChanged={onMainModelChanged} />
+          <ModelSettings onMainModelChanged={onMainModelChanged} onUseMoaPreset={onUseMoaPreset} />
         </div>
       )}
       {/* Device-local desktop prefs (not config.yaml) — they live here since

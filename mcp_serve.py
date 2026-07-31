@@ -1365,11 +1365,14 @@ class _OAuthTokenStore:
         resource: Optional[str] = None,
     ) -> bool:
         with self._lock:
-            issued = self._codes.get(code)
+            # An authorization code is a one-shot credential. Consume it on
+            # the first exchange attempt, including attempts with a bad
+            # redirect URI or PKCE verifier, so callers cannot retry guesses
+            # against the same code.
+            issued = self._codes.pop(code, None)
             if not issued:
                 return False
             if issued.expires_at < time.time():
-                self._codes.pop(code, None)
                 return False
             if not secrets.compare_digest(issued.client_id, client_id):
                 return False
@@ -1381,7 +1384,6 @@ class _OAuthTokenStore:
                 derived = _pkce_challenge(code_verifier, issued.code_challenge_method)
                 if not derived or not secrets.compare_digest(issued.code_challenge, derived):
                     return False
-            self._codes.pop(code, None)
             return True
 
 

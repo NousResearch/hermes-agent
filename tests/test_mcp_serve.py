@@ -2001,12 +2001,13 @@ class TestHttpAuthHelpers:
         assert wrong_resource.status_code == 400
         assert self._json_response(wrong_resource)["error"] == "invalid_target"
 
-        valid_after_wrong_redirect = self._call_route(
+        replay_after_wrong_redirect = self._call_route(
             app,
             "/mcp/token",
             self._Request(data={**grant, "code_verifier": verifier}),
         )
-        assert valid_after_wrong_redirect.status_code == 200
+        assert replay_after_wrong_redirect.status_code == 400
+        assert self._json_response(replay_after_wrong_redirect)["error"] == "invalid_grant"
 
         authorize = self._call_route(
             app,
@@ -2031,12 +2032,13 @@ class TestHttpAuthHelpers:
         assert wrong_verifier.status_code == 400
         assert self._json_response(wrong_verifier)["error"] == "invalid_grant"
 
-        valid_after_wrong_verifier = self._call_route(
+        replay_after_wrong_verifier = self._call_route(
             app,
             "/mcp/token",
             self._Request(data={**grant, "code_verifier": verifier}),
         )
-        assert valid_after_wrong_verifier.status_code == 200
+        assert replay_after_wrong_verifier.status_code == 400
+        assert self._json_response(replay_after_wrong_verifier)["error"] == "invalid_grant"
 
         authorize = self._call_route(
             app,

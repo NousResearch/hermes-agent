@@ -70,8 +70,12 @@ class TestMicroCompaction:
         markers = _summary_markers(result)
         assert len(markers) == 1
         assert "ROLLING SUMMARY" in markers[0]["content"]
-        # The marker stands in for a user turn, like batch compaction's does.
-        assert markers[0]["role"] == "user"
+        # The marker is assistant-role: an exchange is a full agent turn
+        # bounded by user messages, so user → marker(assistant) → user keeps
+        # strict alternation. A user-role marker produced user → user → user,
+        # and the pre-request repair_message_sequence pass merged the marker
+        # into the neighbouring real user turn — metadata gone, cursor lost.
+        assert markers[0]["role"] == "assistant"
 
     def test_disabled_is_a_no_op(self):
         cc = _compressor()
@@ -168,12 +172,17 @@ class TestMicroCompaction:
         assert result[-1] == messages[-1], "most recent turn must be preserved"
 
     def test_user_messages_are_never_absorbed(self):
-        """User turns stay verbatim for the life of the session — by design.
+        """Every byte the user typed stays in the transcript — by design.
 
         Assistant output is largely an account of what was done and survives
         summarising; the user's own words are the intent everything else is
         derived from and can't be reconstructed from it. So an exchange starts
         at the assistant message and the walk skips past user turns.
+
+        The invariant is on user TEXT, not message-list shape: superseding an
+        old marker leaves two real user turns adjacent, and they are merged
+        (\\n\\n-joined, same as repair_message_sequence pass 2) to keep strict
+        alternation. Text is never summarized or dropped.
         """
         cc = _compressor()
         messages = _conversation(exchanges=10)
@@ -182,11 +191,14 @@ class TestMicroCompaction:
         for _ in range(5):
             messages = cc._micro_compact(messages)
 
-        surviving = [
+        surviving_text = "\n\n".join(
             m["content"] for m in messages
             if m.get("role") == "user" and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
-        ]
-        assert surviving == originals, "user turns must survive verbatim"
+        )
+        for original in originals:
+            assert original in surviving_text, (
+                f"user text {original!r} must survive verbatim"
+            )
 
     def test_cursor_is_derived_from_the_spliced_list(self):
         """The cursor must never carry over a pre-splice index.
@@ -474,9 +486,20 @@ class TestMicroCompaction:
         assert cc._micro_compact_tokens_saved_total > 0
 
     def test_defrag_triggers_once_the_rolling_summary_grows(self):
+        """Defrag rewrites the summary text and the marker — nothing else.
+
+        The original implementation spliced the whole remaining middle (user
+        turns included) into the marker, silently absorbing user messages.
+        Defrag is now transcript-shape-neutral: same message list, same
+        cursor, marker content rewritten in place.
+        """
         cc = _compressor(summary="FRESH DEFRAGGED SUMMARY")
-        cc._micro_compact_rolling_summary = "x" * 40_000  # far over the threshold
         messages = _conversation(exchanges=8)
+        # Seed a real marker + oversized rolling summary, as after many passes.
+        messages = cc._micro_compact(list(messages))
+        cc._micro_compact_rolling_summary = "x" * 40_000  # far over the threshold
+        cursor_before = cc._micro_compact_cursor
+        shape_before = [m.get("role") for m in messages]
 
         assert cc._needs_defrag() is True
         result = cc._micro_compact(list(messages))
@@ -485,3 +508,126 @@ class TestMicroCompaction:
         markers = _summary_markers(result)
         assert len(markers) == 1
         assert "FRESH DEFRAGGED SUMMARY" in markers[0]["content"]
+        # Shape-neutral: no messages absorbed or spliced, cursor unmoved.
+        assert [m.get("role") for m in result] == shape_before
+        assert cc._micro_compact_cursor == cursor_before
+
+    def test_defrag_never_absorbs_user_messages(self):
+        """Defrag must not touch user turns — the feature's core invariant.
+
+        The original implementation serialized head..tail (user turns
+        included) and spliced it away: 8 of 10 user prompts were destroyed in
+        one pass. Defrag now only rewrites the rolling summary text.
+        """
+        cc = _compressor(summary="DEFRAGGED")
+        messages = [{"role": "system", "content": "sys"}]
+        for i in range(10):
+            messages.append({"role": "user", "content": f"UNIQUE-USER-PROMPT-{i}"})
+            messages.append({"role": "assistant", "content": f"answer {i} " + "z" * 400})
+
+        cc._micro_compact_rolling_summary = "x" * 40_000  # force defrag
+        result = cc._micro_compact(list(messages))
+
+        surviving = [
+            m["content"] for m in result
+            if m.get("role") == "user" and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+        ]
+        for i in range(10):
+            assert any(f"UNIQUE-USER-PROMPT-{i}" in s for s in surviving), (
+                f"user prompt {i} was absorbed by defrag"
+            )
+
+    def test_defrag_summarizes_only_the_summary_text(self):
+        """The defrag aux call receives the rolling summary, not the transcript."""
+        cc = _compressor()
+        captured = {}
+
+        def capture(text):
+            captured["text"] = text
+            return "DEFRAGGED"
+
+        cc._micro_summarize_one = capture
+        cc._micro_compact_rolling_summary = "OLD-SUMMARY " + "x" * 40_000
+        messages = _conversation(exchanges=8)
+        cc._micro_compact(list(messages))
+
+        assert "OLD-SUMMARY" in captured["text"]
+        assert "[USER]" not in captured["text"], (
+            "defrag must never serialize transcript user turns"
+        )
+
+    def test_spliced_transcript_survives_repair_message_sequence(self):
+        """The compacted transcript must survive the production repair pass.
+
+        conversation_loop runs repair_message_sequence before EVERY API call.
+        With the old user-role marker, splicing next to a real user turn made
+        user → user → user; repair merged the marker into the real user
+        message — metadata gone, cursor unrecoverable, summary text duplicated
+        into the transcript on every later pass. Pin the integration: markers
+        survive repair untouched, and no summary text leaks into real user
+        messages.
+        """
+        from agent.agent_runtime_helpers import repair_message_sequence
+
+        class _DummyAgent:
+            session_id = "probe"
+            _last_flushed_db_idx = 0
+
+        cc = _compressor()
+        messages = _conversation(exchanges=8)
+
+        for _ in range(3):
+            messages = cc._micro_compact(messages)
+            repairs = repair_message_sequence(_DummyAgent(), messages)
+            assert repairs == 0, (
+                "micro-compacted transcript must already be alternation-valid"
+            )
+            markers = _summary_markers(messages)
+            assert len(markers) == 1, "marker destroyed by repair pass"
+            polluted = [
+                m for m in messages
+                if m.get("role") == "user"
+                and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                and "ROLLING SUMMARY" in str(m.get("content"))
+            ]
+            assert not polluted, "summary text leaked into a real user message"
+
+    def test_spliced_transcript_has_no_consecutive_same_role_messages(self):
+        """Alternation invariant, checked directly on tool-bearing turns."""
+        cc = _compressor()
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(8):
+            msgs.append({"role": "user", "content": f"q{i}"})
+            msgs.append({
+                "role": "assistant",
+                "content": f"a{i}",
+                "tool_calls": [
+                    {"id": f"c{i}-{j}", "type": "function",
+                     "function": {"name": "f", "arguments": "{}"}}
+                    for j in range(2)
+                ],
+            })
+            for j in range(2):
+                msgs.append({"role": "tool", "tool_call_id": f"c{i}-{j}",
+                             "content": "T" * 400})
+            # Multi-iteration turn: a second assistant+tools group before the
+            # next user message — the splice must absorb the WHOLE turn.
+            msgs.append({"role": "assistant", "content": f"followup {i} " + "y" * 200})
+
+        for _ in range(4):
+            msgs = cc._micro_compact(msgs)
+            for a, b in zip(msgs, msgs[1:]):
+                ra, rb = a.get("role"), b.get("role")
+                assert not (ra == rb and ra in ("user", "assistant")), (
+                    f"consecutive {ra} messages after micro-compaction"
+                )
+
+    def test_marker_reports_no_user_provenance(self):
+        """Micro markers absorb only assistant/tool content (#64650)."""
+        from agent.context_compressor import COMPRESSED_SUMMARY_HAS_USER_TURN_KEY
+
+        cc = _compressor()
+        result = cc._micro_compact(_conversation(exchanges=6))
+        marker = _summary_markers(result)[0]
+
+        assert marker[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False

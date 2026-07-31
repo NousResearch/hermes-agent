@@ -4649,7 +4649,13 @@ class AIAgent:
                 return False
         elif content is not None and content != "":
             return False
-        # Content is empty-ish. Is there reasoning to make it thinking-only?
+        # Content is empty-ish. A prefill stub is thinking-only by construction:
+        # the loop only sets ``_thinking_prefill`` on a turn that had reasoning
+        # and no visible text. Check it first, because the per-call copy has its
+        # reasoning fields stripped for providers that don't echo them back,
+        # which would otherwise leave nothing here to key on.
+        if msg.get("_thinking_prefill"):
+            return True
         reasoning = msg.get("reasoning_content") or msg.get("reasoning")
         if isinstance(reasoning, str) and reasoning.strip():
             return True

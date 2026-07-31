@@ -45,6 +45,17 @@ class TestIsThinkingOnlyAssistant:
         assert not AIAgent._is_thinking_only_assistant(None)
         assert not AIAgent._is_thinking_only_assistant("hello")
 
+    def test_prefill_stub_detected_after_reasoning_stripped(self):
+        # The per-call copy for a provider that doesn't echo reasoning back has
+        # had reasoning_content/reasoning removed, leaving _thinking_prefill as
+        # the only evidence the turn was ever a thinking-only stub.
+        on_wire = {"role": "assistant", "content": "", "_thinking_prefill": True}
+        assert AIAgent._is_thinking_only_assistant(on_wire)
+
+    def test_prefill_marker_does_not_override_visible_content(self):
+        msg = {"role": "assistant", "content": "real text", "_thinking_prefill": True}
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
 
 # ---------------------------------------------------------------------------
 # _drop_thinking_only_and_merge_users — the full pass
@@ -121,6 +132,22 @@ class TestDropThinkingOnlyAndMergeUsers:
             {"type": "text", "text": "second"},
         ]
 
+
+    def test_trailing_prefill_stubs_dropped_so_request_ends_on_user(self):
+        # Regression for the Gemini 400 "Requests ending with a model turn are
+        # not supported". Two thinking-only responses in a row queue two prefill
+        # stubs, and on a provider that doesn't echo reasoning back both arrive
+        # here with their reasoning fields already stripped. Before the fix the
+        # pass couldn't see them and the request went out ending on assistant.
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do the thing"},
+            {"role": "assistant", "content": "", "_thinking_prefill": True},
+            {"role": "assistant", "content": "", "_thinking_prefill": True},
+        ]
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs)
+        assert [m["role"] for m in out] == ["system", "user"]
+        assert out[-1]["role"] != "assistant"
 
     def test_system_messages_ignored_by_pass(self):
         msgs = [

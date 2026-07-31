@@ -1907,8 +1907,13 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
-            # Strip internal thinking-prefill marker
-            api_msg.pop("_thinking_prefill", None)
+            # ``_thinking_prefill`` deliberately survives here. The reasoning
+            # fields it accompanies were just stripped above, which leaves
+            # ``_is_thinking_only_assistant`` no way to recognize the stub, so
+            # ``_drop_thinking_only_and_merge_users`` below could never fire on
+            # it. The transport strips every leading-underscore key before the
+            # wire (agent/transports/chat_completions.py), so keeping it costs
+            # nothing.
             # Strip length-continuation marks; not every transport drops underscore keys.
             api_msg.pop("_length_continuation_fragment", None)
             api_msg.pop("_length_continuation_nudge", None)

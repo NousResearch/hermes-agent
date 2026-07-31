@@ -170,10 +170,11 @@ def _(rid, params: dict) -> dict:
             # ones not enumerated here), ACP adapter clients, webhook sessions,
             # custom `HERMES_SESSION_SOURCE` values, and older installs with
             # different source labels. We deny-list only the noisy internal
-            # sources (``tool`` sub-agent runs) rather than allow-listing a
-            # fixed set of platform names that goes stale whenever a new
-            # platform is added or a user names their own source.
-            deny = frozenset({"tool"})
+            # sources (``tool`` sub-agent runs and ``kanban`` dispatcher
+            # workers) rather than allow-listing a fixed set of platform names
+            # that goes stale whenever a new platform is added or a user names
+            # their own source.
+            deny = frozenset({"kanban", "tool"})
 
             limit = int(params.get("limit", 200) or 200)
             # Over-fetch modestly so per-source filtering doesn't leave us
@@ -215,7 +216,7 @@ def _(rid, params: dict) -> dict:
     """Return the most recent human-facing session id, or ``None``.
 
     Mirrors ``session.list``'s deny-list behaviour (drops ``tool``
-    sub-agent rows).  Used by TUI auto-resume when
+    sub-agent rows and ``kanban`` worker rows).  Used by TUI auto-resume when
     ``display.tui_auto_resume_recent`` is on; the field is also handy
     for any CLI tooling that wants "latest session" without paginating
     the full list.
@@ -232,7 +233,7 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _ok(rid, {"session_id": None})
         try:
-            deny = frozenset({"tool"})
+            deny = frozenset({"kanban", "tool"})
             # Over-fetch by a generous bounded amount so heavy sub-agent
             # users (lots of recent ``tool`` rows) don't get a false
             # "no eligible session" answer.  ``session.list`` uses a

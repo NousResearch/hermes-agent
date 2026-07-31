@@ -7758,14 +7758,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         too. Identified by cwd under the board's workspaces root — a path only
         the dispatcher ever runs a session in.
 
-        Runs once per database (``state_meta`` gate) and returns the number of
-        rows retagged.
+        Gated per workspaces root (``state_meta``) so each board reclaims its
+        own rows exactly once. Returns the number of rows retagged.
         """
-        if self.get_meta("kanban_worker_source_retagged") == "1":
-            return 0
-
         prefix = str(workspaces_root).rstrip("/\\")
         if not prefix:
+            return 0
+
+        gate = f"kanban_worker_source_retagged:{prefix}"
+        if self.get_meta(gate) == "1":
             return 0
 
         def _do(conn):
@@ -7777,7 +7778,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # Read rowcount before set_meta reuses this cursor for its INSERT,
             # which would otherwise overwrite it with the meta write's count.
             retagged = cursor.rowcount or 0
-            self.set_meta("kanban_worker_source_retagged", "1", cursor=cursor)
+            self.set_meta(gate, "1", cursor=cursor)
             return retagged
 
         return self._execute_write(_do)

@@ -36,7 +36,7 @@
     "@typescript-eslint/eslint-plugin": "^8",
     "@typescript-eslint/parser": "^8",
     "esbuild": "^0.28.1",
-    "eslint": "^9",
+    "eslint": "^10.8.0",
     "eslint-plugin-perfectionist": "^5",
     "eslint-plugin-react": "^7",
     "eslint-plugin-react-hooks": "^7",

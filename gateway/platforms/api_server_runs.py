@@ -424,6 +424,7 @@ async def _handle_runs(
     _redact_api_error_text = _api_server._redact_api_error_text
     _request_agent_overrides = _api_server._request_agent_overrides
     StreamingMediaTagResolver = _api_server.StreamingMediaTagResolver
+    _resolve_media_to_data_urls = _api_server._resolve_media_to_data_urls
 
     # Long-term memory scope header (see chat_completions for details).
     gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -667,6 +668,27 @@ async def _handle_runs(
         except Exception:
             pass
 
+    def _flush_run_delta_resolver() -> None:
+        """Emit whatever the MEDIA-tag resolver is still holding back.
+
+        Idempotent -- ``flush()`` clears its own buffer, so calling this on
+        a path that already flushed is a no-op returning "". That is what
+        lets it be called both on the normal post-run path and again from
+        the ``finally`` safety net without double-emitting.
+        """
+        try:
+            remainder = _run_delta_resolver.flush()
+        except Exception:
+            return
+        if not remainder:
+            return
+        _put_event_if_active({
+            "event": "message.delta",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "delta": remainder,
+        })
+
     initial_status = self._set_run_status(
         run_id,
         "queued",
@@ -894,6 +916,14 @@ async def _handle_runs(
                     return r, u
 
             result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+            # Release any MEDIA-tag holdback BEFORE the terminal event, on
+            # every outcome. feed() retains all text from the last "MEDIA:"
+            # onward, so a terminal path that skips the flush silently
+            # swallows text this endpoint used to deliver (raw, but
+            # delivered). Doing it here -- once, before the
+            # cancelled/failed/completed branching below -- covers all
+            # three uniformly; the finally block covers the raising paths.
+            _flush_run_delta_resolver()
             if (
                 run_id in self._stopping_run_ids
                 and isinstance(result, dict)
@@ -927,15 +957,9 @@ async def _handle_runs(
                     last_event="run.failed",
                 )
             else:
-                _run_delta_remainder = _run_delta_resolver.flush()
-                if _run_delta_remainder:
-                    _put_event_if_active({
-                        "event": "message.delta",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "delta": _run_delta_remainder,
-                    })
-                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                final_response = _resolve_media_to_data_urls(
+                    result.get("final_response", "") if isinstance(result, dict) else ""
+                )
                 # Undelivered steer text (accepted after the final response;
                 # see turn_finalizer) rides on the terminal event/status so
                 # the client can replay it as the next user turn.
@@ -1027,6 +1051,13 @@ async def _handle_runs(
                 unregister_gateway_notify(approval_session_key)
             except Exception:
                 pass
+            # Safety net for the paths that never reach the post-run flush
+            # above: a raising _run_sync (provider auth failure, generic
+            # exception) or cancellation. Must run BEFORE the close
+            # sentinel below or the delta would be enqueued after the
+            # consumer has already stopped reading. Idempotent, so the
+            # normal path's own flush makes this a no-op there.
+            _flush_run_delta_resolver()
             # Sentinel: signal SSE stream to close
             try:
                 _put_event_if_active(None)

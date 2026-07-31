@@ -107,7 +107,7 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -2099,11 +2099,33 @@ class MCPServerTask:
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
 
-            # 1. Fetch current tool list from server (follow nextCursor)
+            # 1. Fetch current tool list from server (follow nextCursor).
+            # Bounded like discovery: this runs in a fire-and-forget task
+            # off a server notification, so an unanswered ``tools/list``
+            # would otherwise hold ``_rpc_lock`` forever and block every
+            # tool call on the server with nothing left to notice. An
+            # unanswered list means response delivery is dead even if the
+            # stream still looks alive — rebuild the transport, same as the
+            # keepalive failure path.
+            bound = float(
+                self._config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+            )
             async with self._rpc_lock:
-                new_mcp_tools = await _paginate_full_list(
-                    self.session.list_tools, "tools", self.name
-                )
+                try:
+                    new_mcp_tools = await asyncio.wait_for(
+                        _paginate_full_list(
+                            self.session.list_tools, "tools", self.name
+                        ),
+                        timeout=bound,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "MCP server '%s': tools/list_changed refresh timed "
+                        "out after %.0fs, triggering reconnect",
+                        self.name, bound,
+                    )
+                    self._reconnect_event.set()
+                    return
 
             # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
             # all names: live agent turns may already have tool-call IDs
@@ -2450,6 +2472,10 @@ class MCPServerTask:
             sampling_kwargs["message_handler"] = self._make_message_handler()
         if _MCP_LOGGING_CALLBACK_SUPPORTED:
             sampling_kwargs["logging_callback"] = self._make_logging_callback()
+        # Protocol-level backstop — see the HTTP path for the rationale.
+        sampling_kwargs["read_timeout_seconds"] = timedelta(
+            seconds=float(config.get("timeout", _DEFAULT_TOOL_TIMEOUT))
+        )
 
         # Reap any orphaned subprocesses from prior failed connection
         # attempts before spawning a new one.  Without this, each retry in
@@ -2794,6 +2820,15 @@ class MCPServerTask:
             sampling_kwargs["message_handler"] = self._make_message_handler()
         if _MCP_LOGGING_CALLBACK_SUPPORTED:
             sampling_kwargs["logging_callback"] = self._make_logging_callback()
+        # Protocol-level backstop for every request on this session. Without
+        # it the SDK's send_request awaits on ``anyio.fail_after(None)``, so
+        # any request whose response never arrives parks forever — the caller
+        # only escapes if it wrapped the await itself. Match the per-server
+        # tool timeout the handler already enforces: this adds a floor for
+        # unwrapped requests without tightening any existing bound.
+        sampling_kwargs["read_timeout_seconds"] = timedelta(
+            seconds=float(config.get("timeout", _DEFAULT_TOOL_TIMEOUT))
+        )
 
         # SSE transport (for MCP servers that implement the SSE transport protocol
         # rather than Streamable HTTP). Configure with ``transport: sse`` in the
@@ -3015,8 +3050,22 @@ class MCPServerTask:
             self._register_discovered_tools_if_needed()
             return
         async with self._rpc_lock:
-            self._tools = await _paginate_full_list(
-                self.session.list_tools, "tools", self.name
+            # Bound the drain. Discovery runs before ``_ready`` is set and
+            # before ``_wait_for_lifecycle_event`` starts the keepalive
+            # watchdog, so a gateway that answers ``initialize`` and then
+            # swallows ``tools/list`` wedges the server terminally: the
+            # session is already published (non-None), nothing is watching
+            # ``_reconnect_event``, and every tool call blocks on the
+            # ``_rpc_lock`` held right here. Letting the timeout propagate
+            # drops us into ``run()``'s ``except Exception``, which tears
+            # the transport down and retries with backoff.
+            self._tools = await asyncio.wait_for(
+                _paginate_full_list(
+                    self.session.list_tools, "tools", self.name
+                ),
+                timeout=float(
+                    self._config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                ),
             )
         self._register_discovered_tools_if_needed()
 
@@ -4928,6 +4977,27 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return recovered
 
             _bump_server_error(server_name)
+            # A call that never came back (as opposed to a server that
+            # answered with an error) is a transport-liveness failure, and
+            # nothing else in the process asks for a rebuild in that state:
+            # ``session`` is still non-None so the handler's dead-session
+            # path never runs, and the breaker's half-open probe just
+            # re-blocks on the same wedged transport. Signal exactly at the
+            # threshold crossing so a stream of timeouts doesn't re-signal
+            # on every call; a successful rebuild resets the count, which
+            # re-arms this for the next outage.
+            if (
+                isinstance(exc, TimeoutError)
+                and "MCP call timed out after" in str(exc)  # _run_on_mcp_loop
+                and _server_error_counts.get(server_name, 0)
+                    == _CIRCUIT_BREAKER_THRESHOLD
+            ):
+                logger.warning(
+                    "MCP server '%s': %d consecutive transport timeouts — "
+                    "requesting a transport rebuild",
+                    server_name, _CIRCUIT_BREAKER_THRESHOLD,
+                )
+                _signal_reconnect(server)
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,

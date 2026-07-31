@@ -181,7 +181,7 @@ def test_dashboard_markdown_html_is_sanitized_before_render():
 
     repo_root = Path(__file__).resolve().parents[2]
     bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
-    js = bundle.read_text()
+    js = bundle.read_text(encoding="utf-8")
 
     assert "function sanitizeMarkdownHtml(html)" in js
     assert "MARKDOWN_ALLOWED_TAGS" in js

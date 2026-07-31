@@ -174,7 +174,7 @@ def test_worker_guidance_distinguishes_same_card_and_downstream_review() -> None
 
     repo_root = Path(__file__).resolve().parents[2]
     review_skill = repo_root / "skills" / "devops" / "sdlc-review" / "SKILL.md"
-    skill_text = review_skill.read_text()
+    skill_text = review_skill.read_text(encoding="utf-8")
     assert "kanban_request_changes" in skill_text
     assert "approve" in skill_text.lower()
     assert "escalate" in skill_text.lower()

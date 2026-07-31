@@ -2664,6 +2664,7 @@ def _relay_sync_stream(
         model_name=str(kwargs.get("model") or fallback_model),
         finalizer=dict,
         metadata=metadata,
+        completed_response_predicate=lambda value: hasattr(value, "choices"),
     )
 _RUNTIME_MAIN_COMPAT_SNAPSHOT: Tuple[Any, ...] = ("", "", "", "", "", "")
 _RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()

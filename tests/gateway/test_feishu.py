@@ -1830,6 +1830,42 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(response.status, 200)
         adapter._on_message_event.assert_called_once()
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_request_dispatches_bot_menu_event(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._on_bot_menu_event = Mock()
+
+        body = json.dumps({
+            "header": {
+                "event_type": "application.bot.menu_v6",
+                "event_id": "evt_menu_webhook",
+            },
+            "event": {
+                "event_key": "/status",
+                "operator": {
+                    "operator_id": {"open_id": "ou_user"},
+                },
+            },
+        }).encode("utf-8")
+        request = SimpleNamespace(
+            remote="127.0.0.1",
+            content_length=None,
+            headers={},
+            content=_FakeRequestContent(body),
+        )
+
+        response = asyncio.run(adapter._handle_webhook_request(request))
+
+        self.assertEqual(response.status, 200)
+        adapter._on_bot_menu_event.assert_called_once()
+        data = adapter._on_bot_menu_event.call_args.args[0]
+        self.assertEqual(data.header.event_id, "evt_menu_webhook")
+        self.assertEqual(data.event.event_key, "/status")
+        self.assertEqual(data.event.operator.operator_id.open_id, "ou_user")
+
     @patch.dict(os.environ, {"FEISHU_VERIFICATION_TOKEN": "expected-token"}, clear=True)
     def test_url_verification_requires_configured_verification_token(self):
         """url_verification must be rejected when token is set but mismatched.

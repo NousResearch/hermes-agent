@@ -3727,6 +3727,8 @@ class FeishuAdapter(BasePlatformAdapter):
             self._on_drive_comment_event(data)
         elif event_type == "vc.bot.meeting_invited_v1":
             self._on_meeting_invited_event(data)
+        elif event_type == "application.bot.menu_v6":
+            self._on_bot_menu_event(data)
         else:
             logger.debug("[Feishu] Ignoring webhook event type: %s", event_type or "unknown")
         return web.json_response({"code": 0, "msg": "ok"})

@@ -7798,19 +7798,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # it up.  Clearing happens on /new and /reset via
     # _handle_reset_command.
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+    def _enqueue_fifo(
+        self,
+        session_key: str,
+        queued_event: "MessageEvent",
+        adapter: Any,
+        *,
+        adapter_session_key: Optional[str] = None,
+    ) -> None:
+        """Append an event using durable-state and adapter-slot namespaces."""
         if adapter is None:
             return
         pending_slot = getattr(adapter, "_pending_messages", None)
         if pending_slot is None:
             return
-        if session_key in pending_slot:
+        slot_key = adapter_session_key or session_key
+        if slot_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(
                 queued_event
             )
         else:
-            pending_slot[session_key] = queued_event
+            pending_slot[slot_key] = queued_event
 
     def _promote_queued_event(
         self,

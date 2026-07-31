@@ -2664,16 +2664,17 @@ class GatewaySlashCommandsMixin:
             _adapter_key_for_source = getattr(
                 adapter, "session_key_for_source", None
             )
-            _quick_key = (
+            _state_key = (
+                getattr(self, "_session_key_for_source")(event.source)
+                if event.source
+                else None
+            )
+            _adapter_key = (
                 _adapter_key_for_source(event.source)
                 if event.source and callable(_adapter_key_for_source)
-                else (
-                    getattr(self, "_session_key_for_source")(event.source)
-                    if event.source
-                    else None
-                )
+                else _state_key
             )
-            if prompt and adapter and _quick_key:
+            if prompt and adapter and _state_key and _adapter_key:
                 try:
                     continuation_event = MessageEvent(
                         text=prompt,
@@ -2683,7 +2684,10 @@ class GatewaySlashCommandsMixin:
                         channel_prompt=None,
                     )
                     getattr(self, "_enqueue_fifo")(
-                        _quick_key, continuation_event, adapter
+                        _state_key,
+                        continuation_event,
+                        adapter,
+                        adapter_session_key=_adapter_key,
                     )
                 except Exception as exc:
                     logger.debug("goal resume enqueue failed: %s", exc)

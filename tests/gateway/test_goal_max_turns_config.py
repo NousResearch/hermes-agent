@@ -228,3 +228,56 @@ async def test_gateway_goal_resume_drains_on_multiplexed_profile(tmp_path, monke
         if adapter._background_tasks:
             await asyncio.gather(*list(adapter._background_tasks), return_exceptions=True)
         goals._DB_CACHE.clear()
+
+
+def test_gateway_goal_resume_fifo_separates_multiplexed_slot_and_state_keys():
+    """A racing user turn must not strand or cross-route the continuation."""
+    adapter = _DrainAdapter(
+        PlatformConfig(enabled=True, token="token"), Platform.DISCORD
+    )
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="chat-goal-multiplex-race",
+        chat_type="channel",
+        user_id="user-goal-multiplex-race",
+        profile="coder",
+    )
+    adapter_key = adapter.session_key_for_source(source)
+    state_key = build_session_key(
+        source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+        profile="coder",
+    )
+    default_state_key = build_session_key(
+        source,
+        group_sessions_per_user=True,
+        thread_sessions_per_user=False,
+    )
+    assert adapter_key == default_state_key
+    assert adapter_key != state_key
+
+    user_event = MessageEvent(
+        text="racing user turn",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    continuation_event = MessageEvent(
+        text="[Continuing toward your standing goal]\nGoal: ship safely",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    adapter._pending_messages[adapter_key] = user_event
+
+    runner._enqueue_fifo(
+        state_key,
+        continuation_event,
+        adapter,
+        adapter_session_key=adapter_key,
+    )
+
+    assert adapter._pending_messages.pop(adapter_key) is user_event
+    assert runner._promote_queued_event(state_key, adapter, None) is continuation_event
+    assert runner._promote_queued_event(default_state_key, adapter, None) is None
+    assert adapter._pending_messages == {}

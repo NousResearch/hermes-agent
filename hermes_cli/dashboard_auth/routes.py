@@ -20,7 +20,7 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Any, Deque, Dict
+from typing import Any, Deque, Dict, Tuple
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -62,9 +62,12 @@ router = APIRouter()
 # rotates it; stale siblings must reuse that same result instead of replaying
 # the consumed token at the identity provider.
 #
-# Keys contain only SHA-256(client IP + old RT), never the raw refresh token.
-# The short grace window covers in-flight/retry bursts without becoming a
-# long-lived alternate token store.
+# Keys contain only SHA-256(client IP + provider hint + old RT), never the
+# raw refresh token. The provider hint is included because two providers may
+# issue colliding opaque refresh-token values; without it, a cache or
+# in-flight hit for one provider hint/ordering could hand back a session
+# rotated under a different one. The short grace window covers in-flight/
+# retry bursts without becoming a long-lived alternate token store.
 _NATIVE_REFRESH_REPLAY_SUCCESS_TTL_SEC = 30.0
 _NATIVE_REFRESH_REPLAY_FAILURE_TTL_SEC = 5.0
 _NATIVE_REFRESH_REPLAY_MAX_ENTRIES = 256
@@ -88,9 +91,13 @@ def _drop_idle_native_refresh_lock_locked(key: str) -> None:
         _native_refresh_token_locks.pop(key, None)
 
 
-def _native_refresh_cache_key(refresh_token: str, client_ip: str) -> str:
+def _native_refresh_cache_key(
+    refresh_token: str, provider_hint: str, client_ip: str
+) -> str:
     material = (
         client_ip.encode("utf-8", "surrogatepass")
+        + b"\0"
+        + provider_hint.encode("utf-8", "surrogatepass")
         + b"\0"
         + refresh_token.encode("utf-8", "surrogatepass")
     )
@@ -131,7 +138,7 @@ def _refresh_native_session_sync(
     Returns ``(session, None)`` on success/cache hit, or
     ``(None, unavailable_provider)`` when no provider refreshed it.
     """
-    cache_key = _native_refresh_cache_key(refresh_token, client_ip)
+    cache_key = _native_refresh_cache_key(refresh_token, provider_hint, client_ip)
 
     with _native_refresh_replay_guard:
         now = time.monotonic()

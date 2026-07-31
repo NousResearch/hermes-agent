@@ -5,17 +5,23 @@ from __future__ import annotations
 from math import isfinite
 from typing import Any
 
-from agent.relay_runtime import RUNTIME_INSTANCE_KEY
+from agent.relay_runtime import (
+    LOGICAL_LLM_SCOPE,
+    RUNTIME_INSTANCE_KEY,
+    RUNTIME_SCHEMA_KEY,
+    RUNTIME_SCHEMA_VERSION,
+)
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
-SCHEMA_VERSION = "hermes.metrics.event.v1"
+SCHEMA_VERSION = "hermes.metrics.event.v2"
 MODEL_CALL_SCOPE = "hermes.model_call"
 MODEL_CALL_PROFILE_MODEL = "unknown"
 TASK_SCOPE = "hermes.task_run"
 TOOL_CALL_SCOPE = "hermes.tool_call"
 TOOL_APPROVAL_MARK = "hermes.tool_approval"
 SUBSCRIBER_NAME = "hermes.nemo_relay.shared_metrics"
-MODEL_CALL_METRIC = "hermes.model_call.count"
+LEGACY_MODEL_CALL_METRIC = "hermes.model_call.count"
+MODEL_ROUTE_METRIC = "hermes.model_route.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
 TOOL_CALL_METRIC = "hermes.tool_call.count"
@@ -147,7 +153,48 @@ TOOL_LATENCY_BUCKETS: frozenset[str] = frozenset({
 })
 TOOL_RETRY_BUCKETS: frozenset[str] = COUNT_BUCKETS | frozenset({"unknown"})
 
+_LEGACY_PROVIDER_FAMILIES = frozenset({
+    "aggregator",
+    "custom",
+    "direct",
+    "local",
+    "unknown",
+})
+_LEGACY_MODEL_LOCALITIES = frozenset({"local", "remote", "unknown"})
+_LEGACY_MODEL_OUTCOMES = frozenset({"cancelled", "failed", "success"})
+_LEGACY_MODEL_FAMILIES = frozenset({
+    "claude",
+    "deepseek",
+    "gemini",
+    "gemma",
+    "glm",
+    "gpt",
+    "grok",
+    "kimi",
+    "llama",
+    "minimax",
+    "mimo",
+    "mistral",
+    "nemotron",
+    "nova",
+    "o1",
+    "o3",
+    "o4",
+    "qwen",
+    "step",
+    "trinity",
+    "unknown",
+})
+
 _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
+    # Retained only so pre-v2 pending rows remain packageable.
+    LEGACY_MODEL_CALL_METRIC: {
+        "call_role": frozenset({"primary"}),
+        "locality": _LEGACY_MODEL_LOCALITIES,
+        "model_family": _LEGACY_MODEL_FAMILIES,
+        "outcome": _LEGACY_MODEL_OUTCOMES,
+        "provider_family": _LEGACY_PROVIDER_FAMILIES,
+    },
     TASK_STARTED_METRIC: {
         "entrypoint": TASK_ENTRYPOINTS,
         "execution_surface": EXECUTION_SURFACES,
@@ -175,9 +222,13 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "outcome": TOOL_APPROVAL_OUTCOMES - {"not_required"},
     },
 }
-COUNTER_METRICS: frozenset[str] = frozenset(
-    {*_COUNTER_DIMENSION_VALUES, MODEL_CALL_METRIC}
-)
+COUNTER_METRICS: frozenset[str] = frozenset({
+    MODEL_ROUTE_METRIC,
+    TASK_FINISHED_METRIC,
+    TASK_STARTED_METRIC,
+    TOOL_APPROVAL_METRIC,
+    TOOL_CALL_METRIC,
+})
 
 
 def counter_dimensions_are_valid(
@@ -185,7 +236,7 @@ def counter_dimensions_are_valid(
     dimensions: dict[str, Any],
 ) -> bool:
     """Return whether dimensions match one closed shared-metric contract."""
-    if metric_name == MODEL_CALL_METRIC:
+    if metric_name == MODEL_ROUTE_METRIC:
         return (
             set(dimensions) == {"model", "provider"}
             and dimensions["model"]
@@ -219,7 +270,10 @@ def _event_metadata_is_valid(event: Any) -> bool:
 
 
 def model_call_dimensions(event: Any) -> dict[str, str] | None:
-    """Return package dimensions for one valid primary model-call end event."""
+    """Return package dimensions for one valid logical model-call end event."""
+    auxiliary = _auxiliary_model_call_dimensions(event)
+    if auxiliary is not None:
+        return auxiliary
     if not _event_metadata_is_valid(event):
         return None
     if (
@@ -243,7 +297,52 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
     dimensions = {field: data.get(field) for field in sorted(expected_fields)}
-    if not counter_dimensions_are_valid(MODEL_CALL_METRIC, dimensions):
+    if not counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions):
+        return None
+    return dimensions
+
+
+def _auxiliary_model_call_dimensions(event: Any) -> dict[str, str] | None:
+    """Project a terminal auxiliary route from its Hermes logical scope."""
+    metadata = getattr(event, "metadata", None)
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get(RUNTIME_SCHEMA_KEY) != RUNTIME_SCHEMA_VERSION
+    ):
+        return None
+    relay_metadata = set(metadata) - {
+        RUNTIME_INSTANCE_KEY,
+        RUNTIME_SCHEMA_KEY,
+        "hermes.call_role",
+    }
+    if relay_metadata - {"otel.status_code"} or metadata.get(
+        "otel.status_code", "OK"
+    ) not in {"OK", "ERROR"}:
+        return None
+    call_role = metadata.get("hermes.call_role")
+    if not isinstance(call_role, str) or not call_role.startswith("auxiliary:"):
+        return None
+    if (
+        str(getattr(event, "kind", "") or "") != "scope"
+        or str(getattr(event, "category", "") or "") != "function"
+        or str(getattr(event, "name", "") or "") != LOGICAL_LLM_SCOPE
+        or str(getattr(event, "scope_category", "") or "") != "end"
+        or getattr(event, "category_profile", None) is not None
+    ):
+        return None
+    data = getattr(event, "data", None)
+    if (
+        not isinstance(data, dict)
+        or set(data)
+        not in (
+            {"model", "outcome", "provider"},
+            {"model", "outcome", "provider", "response_model"},
+        )
+        or data.get("outcome") not in {"cancelled", "failed", "success"}
+    ):
+        return None
+    dimensions = model_call_fields(data)
+    if not counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions):
         return None
     return dimensions
 

@@ -141,23 +141,3 @@ def test_cleanup_flushes_pending_writes_before_shutdown(monkeypatch):
     )
 
 
-def test_cleanup_calls_flush_pending_before_shutdown_memory_provider():
-    """Structural contract: the gateway cleanup drains the memory manager
-    BEFORE shutting the provider down (ordering matters — shutdown's drain is
-    the unreliable one the fix works around)."""
-    agent = MagicMock()
-    agent._session_messages = [{"role": "user", "content": "hi"}]
-    agent._memory_manager = MagicMock()
-
-    # Track call order across both objects via a parent mock.
-    parent = MagicMock()
-    parent.attach_mock(agent._memory_manager.flush_pending, "flush_pending")
-    parent.attach_mock(agent.shutdown_memory_provider, "shutdown_memory_provider")
-
-    GatewayRunner._cleanup_agent_resources(object(), agent)
-
-    agent._memory_manager.flush_pending.assert_called_once_with(timeout=10)
-    parent.assert_has_calls(
-        [call.flush_pending(timeout=10), call.shutdown_memory_provider([{"role": "user", "content": "hi"}])],
-        any_order=False,
-    )

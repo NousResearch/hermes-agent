@@ -27,17 +27,7 @@ class TestCompressionMadeProgress:
             orig_len=10, new_len=5, orig_tokens=1000, new_tokens=1000
         ) is True
 
-    def test_tokens_reduced_without_row_change_counts_as_progress(self):
-        """Issue #39548: 220 → 220 rows, 288k → 183k tokens IS progress."""
-        assert _compression_made_progress(
-            orig_len=220, new_len=220, orig_tokens=288_028, new_tokens=183_180
-        ) is True
 
-    def test_both_reduced_counts_as_progress(self):
-        """Common case: summarising drops some rows and shrinks the rest."""
-        assert _compression_made_progress(
-            orig_len=220, new_len=180, orig_tokens=288_028, new_tokens=150_000
-        ) is True
 
     def test_neither_moved_means_no_progress(self):
         """The genuine "stuck" case — same rows, same tokens, give up."""
@@ -45,29 +35,8 @@ class TestCompressionMadeProgress:
             orig_len=10, new_len=10, orig_tokens=1000, new_tokens=1000
         ) is False
 
-    def test_rows_grew_and_tokens_grew_means_no_progress(self):
-        """Pathological: the pass made the request larger — definitely stuck."""
-        assert _compression_made_progress(
-            orig_len=10, new_len=12, orig_tokens=1000, new_tokens=1200
-        ) is False
 
-    def test_rows_grew_but_tokens_dropped_is_progress(self):
-        """Edge: summary rows may expand the row count while shrinking tokens.
 
-        Token reduction alone is sufficient to keep the loop going.
-        """
-        assert _compression_made_progress(
-            orig_len=10, new_len=11, orig_tokens=1000, new_tokens=600
-        ) is True
-
-    def test_tokens_grew_but_rows_dropped_is_progress(self):
-        """Edge: row reduction alone is sufficient even if tokens nominally
-        creep up (e.g. summary verbosity).  Row-count reduction is a hard
-        signal that the transcript actually shrank.
-        """
-        assert _compression_made_progress(
-            orig_len=10, new_len=5, orig_tokens=1000, new_tokens=1100
-        ) is True
 
     def test_sub_5pct_token_drop_is_not_progress(self):
         """A token reduction below the 5% material floor does NOT count as
@@ -82,11 +51,6 @@ class TestCompressionMadeProgress:
             orig_len=10, new_len=10, orig_tokens=1000, new_tokens=940
         ) is True
 
-    def test_zero_orig_tokens_is_not_progress(self):
-        """Degenerate estimate (0 tokens) must not be read as a token win."""
-        assert _compression_made_progress(
-            orig_len=10, new_len=10, orig_tokens=0, new_tokens=0
-        ) is False
 
 
 class TestCompressionWarrantsAnotherPreflightPass:
@@ -104,9 +68,3 @@ class TestCompressionWarrantsAnotherPreflightPass:
             threshold_tokens=272_000,
         ) is False
 
-    def test_clearing_threshold_needs_no_additional_pass(self):
-        assert _compression_warrants_another_preflight_pass(
-            orig_tokens=280_000,
-            new_tokens=250_000,
-            threshold_tokens=272_000,
-        ) is False

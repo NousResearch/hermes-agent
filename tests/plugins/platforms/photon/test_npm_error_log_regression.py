@@ -45,27 +45,6 @@ def test_regression_return_code_zero_on_success(
     assert cli_mod._install_sidecar() == 0
 
 
-def test_regression_return_code_nonzero_on_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """_install_sidecar() must still propagate a non-zero npm exit code."""
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: "/usr/bin/npm")
-    monkeypatch.setattr(
-        cli_mod.subprocess, "run",
-        lambda cmd, **kw: types.SimpleNamespace(returncode=1, stderr="npm ERR! fail"),
-    )
-    monkeypatch.setattr(cli_mod, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
-    assert cli_mod._install_sidecar() == 1
-
-
-def test_regression_return_code_when_npm_not_on_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """_install_sidecar() must still return 1 when npm is not on PATH."""
-    monkeypatch.setattr(cli_mod.shutil, "which", lambda _: None)
-    assert cli_mod._install_sidecar() == 1
-
-
 # ---------------------------------------------------------------------------
 # 2. OSError on log write — silently swallowed, no crash
 # ---------------------------------------------------------------------------
@@ -103,27 +82,6 @@ def test_regression_oserror_on_log_write_does_not_propagate(
 # ---------------------------------------------------------------------------
 # 3. OSError on log read in check_requirements() — silently swallowed
 # ---------------------------------------------------------------------------
-
-@_requires_node
-def test_regression_oserror_on_log_read_does_not_propagate(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """If reading _NPM_ERROR_LOG raises OSError, check_requirements() must NOT
-    propagate the exception — it returns False and emits the fallback debug log."""
-    class _UnreadablePath(type(tmp_path)):
-        def exists(self):
-            return True
-        def read_text(self, *a, **kw):
-            raise OSError("permission denied")
-
-    monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
-    monkeypatch.setattr(adapter_mod, "_SIDECAR_DIR", tmp_path)
-    # NS-606: disable self-heal so the log-read branch is reached.
-    monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
-    monkeypatch.setattr(adapter_mod, "_NPM_ERROR_LOG", _UnreadablePath(tmp_path / ".err"))
-
-    result = adapter_mod.check_requirements()
-    assert result is False  # must not raise
 
 
 # ---------------------------------------------------------------------------

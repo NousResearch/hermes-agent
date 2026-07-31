@@ -23,6 +23,7 @@ def _bare_runner(multiplex: bool = True):
     runner.config = MagicMock(multiplex_profiles=multiplex)
     runner.adapters = {}
     runner._profile_adapters = {}
+    runner.pairing_store = MagicMock()
     runner.pairing_stores = {}
     return runner
 
@@ -54,6 +55,7 @@ def test_secondary_profile_pairing_stores_created(tmp_path, monkeypatch):
     assert "default" in runner.pairing_stores, (
         "active profile PairingStore missing — the NameError swallow is back"
     )
+    assert runner.pairing_stores["default"] is runner.pairing_store
     assert "coder" in runner.pairing_stores, (
         "secondary profile PairingStore missing — the NameError swallow is back"
     )
@@ -80,6 +82,6 @@ def test_pairing_store_scoped_to_profile_dir(tmp_path, monkeypatch):
 
     store = runner.pairing_stores["ops"]
     assert store.profile == "ops"
-    assert "profiles/ops/pairing" in str(store._dir).replace("\\", "/"), (
+    assert "profiles/ops/platforms/pairing" in str(store._dir).replace("\\", "/"), (
         f"store not profile-scoped: {store._dir}"
     )

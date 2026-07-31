@@ -39,7 +39,8 @@ import {
   $sessions,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
-  sessionPinId
+  sessionPinId,
+  shouldMigrateComposerScope
 } from '@/store/session'
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -326,14 +327,19 @@ export function ChatView({
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
+  //
+  // ONLY same-conversation rekeys (tip → root). The route-driven queueSessionKey
+  // can flip to Session B a frame before the store selection leaves Session A;
+  // migrating on bare inequality would re-home A's queued prompts onto B and
+  // auto-drain them into the wrong chat.
   useEffect(() => {
-    if (!selectedSessionId || !queueSessionKey || selectedSessionId === queueSessionKey) {
+    if (!shouldMigrateComposerScope(selectedSessionId, queueSessionKey, sessions)) {
       return
     }
 
     migrateSessionDraft(selectedSessionId, queueSessionKey)
     migrateQueuedPrompts(selectedSessionId, queueSessionKey)
-  }, [queueSessionKey, selectedSessionId])
+  }, [queueSessionKey, selectedSessionId, sessions])
 
   // Transcript-side stops (the streaming message's hover Stop, the runtime's
   // cancel) are explicit halts, same as the composer's Stop button: park any
@@ -542,7 +548,7 @@ export function ChatView({
               config={COMPOSER_HEART_CONFIG}
               style={{
                 top: 0,
-                bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.25rem)'
+                bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
               }}
             />
           )}

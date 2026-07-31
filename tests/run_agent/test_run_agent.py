@@ -1935,6 +1935,59 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert "sort" not in kwargs.get("extra_body", {}).get("provider", {})
 
+    def test_eu_router_data_residency_preferences_injected(self, agent):
+        agent.provider = "eurouter"
+        agent.base_url = "https://api.eurouter.ai/api/v1"
+        agent.provider_data_residency = "eu"
+        agent.provider_eu_owned = True
+        agent.provider_max_retention_days = 0
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        provider = kwargs["extra_body"]["provider"]
+        assert provider["data_residency"] == "eu"
+        assert provider["eu_owned"] is True
+        # 0 is a meaningful "no retention" value, not "unset" — must survive.
+        assert provider["max_retention_days"] == 0
+
+    def test_eu_router_eu_owned_false_is_explicit_not_unset(self, agent):
+        """eu_owned=False ('must NOT be EU-only') must survive, distinct from
+        None ('unset') — both are falsy but only None should be omitted."""
+        agent.provider = "eurouter"
+        agent.base_url = "https://api.eurouter.ai/api/v1"
+        agent.provider_eu_owned = False
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        provider = kwargs["extra_body"]["provider"]
+        assert provider["eu_owned"] is False
+
+    def test_eu_router_keys_do_not_leak_to_openrouter(self, agent):
+        """EU-Router-only routing keys set on the agent must not appear in an
+        OpenRouter request body if the agent's model is later switched to
+        OpenRouter — closes the cross-provider leakage gap found in advisor
+        review."""
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.provider_data_residency = "eu"
+        agent.provider_eu_owned = True
+        agent.provider_max_retention_days = 0
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        provider = kwargs["extra_body"].get("provider", {})
+        assert "data_residency" not in provider
+        assert "eu_owned" not in provider
+        assert "max_retention_days" not in provider
+
+    def test_provider_preferences_omit_eu_fields_when_unset(self, agent):
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.providers_allowed = ["Anthropic"]
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        provider = kwargs["extra_body"]["provider"]
+        assert "data_residency" not in provider
+        assert "eu_owned" not in provider
+        assert "max_retention_days" not in provider
+
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be medium."""
         agent.provider = "openrouter"

@@ -14,7 +14,9 @@ class NousProfile(ProviderProfile):
         self, *, session_id: str | None = None, **context
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"tags": nous_portal_tags()}
-        provider_preferences = context.get("provider_preferences")
+        provider_preferences = self.filter_routing_preferences(
+            context.get("provider_preferences")
+        )
         if provider_preferences:
             body["provider"] = provider_preferences
         return body

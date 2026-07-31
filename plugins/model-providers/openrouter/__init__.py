@@ -79,7 +79,7 @@ class OpenRouterProfile(ProviderProfile):
         body: dict[str, Any] = {}
         if session_id:
             body["session_id"] = session_id
-        prefs = context.get("provider_preferences")
+        prefs = self.filter_routing_preferences(context.get("provider_preferences"))
         if prefs:
             body["provider"] = prefs
 

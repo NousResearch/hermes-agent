@@ -146,7 +146,7 @@ class TestOpenRouterParity:
     """OpenRouter: provider preferences, reasoning in extra_body."""
 
     def test_provider_preferences(self, transport):
-        prefs = {"allow": ["anthropic"], "sort": "price"}
+        prefs = {"only": ["anthropic"], "sort": "price"}
         kw = transport.build_kwargs(
             model="anthropic/claude-sonnet-4.6",
             messages=_simple_messages(),

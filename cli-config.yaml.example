@@ -140,10 +140,14 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
-# OpenRouter Provider Routing (only applies when using OpenRouter)
+# Provider Routing (applies to OpenRouter-shaped aggregators: OpenRouter, EU Router)
 # =============================================================================
-# Control how requests are routed across providers on OpenRouter.
+# Control how requests are routed across providers on OpenRouter-compatible
+# aggregators. Each field is filtered per-provider — e.g. the EU-only fields
+# below are silently dropped when routed through plain OpenRouter, and never
+# sent to a provider that doesn't define them.
 # See: https://openrouter.ai/docs/guides/routing/provider-selection
+#      https://www.eurouter.ai/docs/concepts/routing (EU Router only)
 #
 # provider_routing:
 #   # Sort strategy: "price" (default), "throughput", or "latency"
@@ -164,6 +168,16 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
+#
+#   # ---- EU Router only (https://www.eurouter.ai) ----
+#   # Restrict to a data-residency region: "eu", "eea", "de", "fr", etc.
+#   # data_residency: "eu"
+#
+#   # Restrict to EEA-owned providers only (stricter than data_residency)
+#   # eu_owned: true
+#
+#   # Maximum days a provider may retain request data (0 = no retention)
+#   # max_retention_days: 0
 
 # =============================================================================
 # OpenRouter Response Caching (only applies when using OpenRouter)

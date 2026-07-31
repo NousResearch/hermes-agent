@@ -1,0 +1,5 @@
+name: eurouter-provider
+kind: model-provider
+version: 1.0.0
+description: EU Router aggregator — EU-hosted, GDPR-compliant model routing
+author: Oliver

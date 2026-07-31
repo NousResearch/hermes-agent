@@ -109,7 +109,7 @@ class TestKimiProfileParity:
 
 class TestOpenRouterProfileParity:
     def test_provider_preferences(self, transport):
-        prefs = {"allow": ["anthropic"]}
+        prefs = {"only": ["anthropic"]}
         legacy = transport.build_kwargs(
             model="anthropic/claude-sonnet-4.6", messages=_msgs(), tools=None,
             provider_profile=get_provider_profile("openrouter"), provider_preferences=prefs,

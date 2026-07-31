@@ -91,6 +91,41 @@ class ProviderProfile:
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )
+
+    # ── Routing-preference allowlist ──────────────────────────
+    # ``agent.provider_routing`` config is shared across every profile whose
+    # ``build_extra_body`` forwards ``context["provider_preferences"]`` into
+    # the outgoing ``provider`` object (OpenRouter, Nous, EU Router, ...).
+    # A user who sets an EU-Router-only key (e.g. ``eu_owned``) globally must
+    # not have it silently forwarded to a provider that doesn't define it —
+    # unrecognized keys are, at best, ignored noise and, at worst, a 400.
+    # Subclasses that accept extra routing keys (see EuRouterProfile) extend
+    # this tuple; the shared six are the OpenRouter-shaped baseline every
+    # profile in this pipeline already supports.
+    routing_preference_keys: tuple = (
+        "only",
+        "ignore",
+        "order",
+        "sort",
+        "require_parameters",
+        "data_collection",
+    )
+
+    def filter_routing_preferences(
+        self, preferences: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Return *preferences* restricted to keys this profile actually defines.
+
+        Call this at the point ``build_extra_body`` assigns
+        ``body["provider"] = preferences`` so provider-specific routing keys
+        (e.g. EU Router's ``data_residency``/``eu_owned``/``max_retention_days``)
+        never leak into a differently-shaped provider's request body.
+        """
+        if not preferences:
+            return {}
+        return {
+            k: v for k, v in preferences.items() if k in self.routing_preference_keys
+        }
     # empty = use main model
 
     # ── Hooks (override in subclass for complex providers) ───

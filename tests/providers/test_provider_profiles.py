@@ -99,8 +99,18 @@ class TestKimiProfile:
 class TestOpenRouterProfile:
     def test_extra_body_with_prefs(self):
         p = get_provider_profile("openrouter")
-        body = p.build_extra_body(provider_preferences={"allow": ["anthropic"]})
-        assert body["provider"] == {"allow": ["anthropic"]}
+        body = p.build_extra_body(provider_preferences={"only": ["anthropic"]})
+        assert body["provider"] == {"only": ["anthropic"]}
+
+    def test_extra_body_drops_unrecognized_routing_keys(self):
+        """Keys outside routing_preference_keys must not leak into the request
+        body — e.g. EU Router's eu_owned must never reach OpenRouter (#eurouter
+        cross-provider leakage fix)."""
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(
+            provider_preferences={"only": ["anthropic"], "eu_owned": True, "data_residency": "eu"}
+        )
+        assert body["provider"] == {"only": ["anthropic"]}
 
     def test_extra_body_session_id(self):
         p = get_provider_profile("openrouter")
@@ -444,6 +454,36 @@ class TestNousProfile:
             supports_reasoning=True,
         )
         assert "reasoning" not in eb
+
+
+class TestEuRouterProfile:
+    def test_identity(self):
+        p = get_provider_profile("eurouter")
+        assert p is not None
+        assert p.name == "eurouter"
+        assert p.base_url == "https://api.eurouter.ai/api/v1"
+        assert "EUROUTER_API_KEY" in p.env_vars
+
+    def test_alias_resolves(self):
+        assert get_provider_profile("eur") is get_provider_profile("eurouter")
+
+    def test_extra_body_with_provider_preferences(self):
+        p = get_provider_profile("eurouter")
+        preferences = {"data_residency": "eu", "eu_owned": True}
+        body = p.build_extra_body(provider_preferences=preferences)
+        assert body == {"provider": preferences}
+
+    def test_extra_body_without_preferences_is_empty(self):
+        p = get_provider_profile("eurouter")
+        assert p.build_extra_body() == {}
+
+    def test_reasoning_enabled(self):
+        p = get_provider_profile("eurouter")
+        eb, _ = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            supports_reasoning=True,
+        )
+        assert eb["reasoning"] == {"enabled": True, "effort": "medium"}
 
 
 class TestQwenProfile:

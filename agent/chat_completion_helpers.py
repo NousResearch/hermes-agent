@@ -181,6 +181,13 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
         preferences["require_parameters"] = True
     if agent.provider_data_collection:
         preferences["data_collection"] = agent.provider_data_collection
+    if agent.provider_data_residency:
+        preferences["data_residency"] = agent.provider_data_residency
+    # 0 / False are meaningful values here, so unset is None — not falsy.
+    if agent.provider_eu_owned is not None:
+        preferences["eu_owned"] = bool(agent.provider_eu_owned)
+    if agent.provider_max_retention_days is not None:
+        preferences["max_retention_days"] = int(agent.provider_max_retention_days)
     return preferences
 
 

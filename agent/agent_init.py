@@ -301,6 +301,9 @@ def init_agent(
     provider_sort: str = None,
     provider_require_parameters: bool = False,
     provider_data_collection: str = None,
+    provider_data_residency: str = None,
+    provider_eu_owned: bool = None,
+    provider_max_retention_days: int = None,
     openrouter_min_coding_score: Optional[float] = None,
     session_id: str = None,
     tool_progress_callback: callable = None,
@@ -619,6 +622,9 @@ def init_agent(
     agent.provider_sort = provider_sort
     agent.provider_require_parameters = provider_require_parameters
     agent.provider_data_collection = provider_data_collection
+    agent.provider_data_residency = provider_data_residency
+    agent.provider_eu_owned = provider_eu_owned
+    agent.provider_max_retention_days = provider_max_retention_days
     agent.openrouter_min_coding_score = openrouter_min_coding_score
 
     # Store toolset filtering options

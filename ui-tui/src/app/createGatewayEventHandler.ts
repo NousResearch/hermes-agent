@@ -890,7 +890,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const value = String(text)
           scheduleThinkingStatus(value || statusFromBusy())
 
-          if (value) {
+          // Current gateways mark spinner captions; preserve legacy reasoning chunks.
+          if (value && ev.payload?.status_only !== true) {
             turnController.recordReasoningDelta(value)
           }
         }

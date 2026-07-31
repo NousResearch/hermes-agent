@@ -35618,6 +35618,57 @@
         "title": "TerminalResizeResult",
         "type": "object"
       },
+      "ThinkingDeltaPayload": {
+        "additionalProperties": false,
+        "description": "Current callbacks send status captions; unmarked legacy chunks may be reasoning.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "rendered": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rendered"
+          },
+          "verbose": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Verbose"
+          },
+          "status_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status Only"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ThinkingDeltaPayload",
+        "type": "object"
+      },
       "TipShowPayload": {
         "additionalProperties": false,
         "description": "``tools/tip_tool.py``.",
@@ -40035,12 +40086,12 @@
     },
     {
       "name": "thinking.delta",
-      "summary": "Legacy thinking-text chunk (thinking_callback).",
+      "summary": "Status caption when status_only is true; otherwise legacy thinking text.",
       "params": [
         {
           "name": "payload",
           "schema": {
-            "$ref": "#/components/schemas/StreamDeltaPayload"
+            "$ref": "#/components/schemas/ThinkingDeltaPayload"
           }
         }
       ]

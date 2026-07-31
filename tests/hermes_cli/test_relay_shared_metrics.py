@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from agent import relay_runtime
 from hermes_cli.observability import shared_metrics as shared_metrics_module
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_contract import (
@@ -345,6 +346,43 @@ def test_model_call_fields_report_terminal_model_and_provider_without_a_catalog(
         "model": "zai/glm-5.2",
         "provider": "brev",
     }
+
+
+def test_auxiliary_logical_scope_projects_one_normalized_terminal_route():
+    event = SimpleNamespace(
+        kind="scope",
+        category="function",
+        name=relay_runtime.LOGICAL_LLM_SCOPE,
+        scope_category="end",
+        category_profile=None,
+        data={
+            "model": "Accepted/Model",
+            "outcome": "success",
+            "provider": "OpenRouter",
+        },
+        metadata={
+            relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
+            relay_runtime.RUNTIME_INSTANCE_KEY: "runtime-1",
+            "hermes.call_role": "auxiliary:compression",
+        },
+    )
+
+    assert model_call_dimensions(event) == {
+        "model": "accepted/model",
+        "provider": "openrouter",
+    }
+
+    event.data.update({
+        "model": "configured/model",
+        "response_model": "malformed response model",
+    })
+    assert model_call_dimensions(event) == {
+        "model": "configured/model",
+        "provider": "openrouter",
+    }
+
+    event.metadata["hermes.call_role"] = "primary"
+    assert model_call_dimensions(event) is None
 
 
 @pytest.mark.parametrize(

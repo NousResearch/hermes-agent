@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.relay_runtime import RUNTIME_INSTANCE_KEY
+from agent.relay_runtime import (
+    LOGICAL_LLM_SCOPE,
+    RUNTIME_INSTANCE_KEY,
+    RUNTIME_SCHEMA_KEY,
+    RUNTIME_SCHEMA_VERSION,
+)
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 SCHEMA_VERSION = "hermes.metrics.event.v2"
@@ -186,7 +191,11 @@ def counter_dimensions_are_valid(
 
 
 def model_call_dimensions(event: Any) -> dict[str, str] | None:
-    """Return package dimensions for one valid primary model-call end event."""
+    """Return package dimensions for one valid logical model-call end event."""
+    auxiliary = _auxiliary_model_call_dimensions(event)
+    if auxiliary is not None:
+        return auxiliary
+
     metadata = getattr(event, "metadata", None)
     if not isinstance(metadata, dict) or metadata.get(SCHEMA_KEY) != SCHEMA_VERSION:
         return None
@@ -216,6 +225,51 @@ def model_call_dimensions(event: Any) -> dict[str, str] | None:
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
     dimensions = {field: data.get(field) for field in sorted(expected_fields)}
+    if not counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions):
+        return None
+    return dimensions
+
+
+def _auxiliary_model_call_dimensions(event: Any) -> dict[str, str] | None:
+    """Project a terminal auxiliary route from its Hermes logical scope."""
+    metadata = getattr(event, "metadata", None)
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get(RUNTIME_SCHEMA_KEY) != RUNTIME_SCHEMA_VERSION
+    ):
+        return None
+    relay_metadata = set(metadata) - {
+        RUNTIME_INSTANCE_KEY,
+        RUNTIME_SCHEMA_KEY,
+        "hermes.call_role",
+    }
+    if relay_metadata - {"otel.status_code"} or metadata.get(
+        "otel.status_code", "OK"
+    ) not in {"OK", "ERROR"}:
+        return None
+    call_role = metadata.get("hermes.call_role")
+    if not isinstance(call_role, str) or not call_role.startswith("auxiliary:"):
+        return None
+    if (
+        str(getattr(event, "kind", "") or "") != "scope"
+        or str(getattr(event, "category", "") or "") != "function"
+        or str(getattr(event, "name", "") or "") != LOGICAL_LLM_SCOPE
+        or str(getattr(event, "scope_category", "") or "") != "end"
+        or getattr(event, "category_profile", None) is not None
+    ):
+        return None
+    data = getattr(event, "data", None)
+    if (
+        not isinstance(data, dict)
+        or set(data)
+        not in (
+            {"model", "outcome", "provider"},
+            {"model", "outcome", "provider", "response_model"},
+        )
+        or data.get("outcome") not in {"cancelled", "failed", "success"}
+    ):
+        return None
+    dimensions = model_call_fields(data)
     if not counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions):
         return None
     return dimensions

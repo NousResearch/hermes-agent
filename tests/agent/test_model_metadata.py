@@ -104,8 +104,36 @@ class TestEstimateMessagesTokensRough:
         # substituted (which would undercount the real request).
         assert result >= (len(big_sidecar) // 4) * 0.9
 
-    def test_api_content_does_not_defeat_image_stripping(self):
-        """A sidecar must not smuggle raw base64 past the flat image rate."""
+    def test_non_string_api_content_does_not_displace_content(self):
+        """Only a sidecar shape the wire actually substitutes may displace content.
+
+        ``substitute_api_content()`` overwrites ``content`` only for a
+        non-empty STRING sidecar on a user/assistant row; every other shape
+        is popped and discarded, leaving the clean ``content`` on the wire.
+        The shadow must mirror that guard — substituting unconditionally
+        would drop the real content from the estimate and UNDERcount, which
+        is the dangerous direction (compaction fires too late and the turn
+        dies on a hard context error).
+        """
+        body = "clean stored content " * 2000
+        baseline = estimate_messages_tokens_rough([{"role": "user", "content": body}])
+
+        for bad_sidecar in (None, "", 42, ["not", "a", "string"]):
+            msg = {"role": "user", "content": body, "api_content": bad_sidecar}
+            assert estimate_messages_tokens_rough([msg]) >= baseline, bad_sidecar
+
+        # Same for a role the substitution never applies to.
+        tool_row = {"role": "tool", "content": body, "api_content": "ignored"}
+        assert estimate_messages_tokens_rough([tool_row]) >= baseline
+
+    def test_image_stripping_survives_shadow_extraction(self):
+        """Non-regression for the ``_wire_message_shadow()`` extraction.
+
+        Both estimator helpers now share one shadow builder; this pins the
+        flat per-image accounting that the extraction moved, independent of
+        the ``api_content`` fix (a valid sidecar is a string, so it cannot
+        carry an image list).
+        """
         import base64
         import os
 

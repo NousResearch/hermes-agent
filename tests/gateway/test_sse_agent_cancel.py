@@ -7,7 +7,10 @@ task wrapper is cancelled.
 """
 
 import asyncio
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
+from gateway.platforms.api_server import ThreadSafeAsyncQueue
 
 
 # ---------------------------------------------------------------------------
@@ -355,3 +358,112 @@ class TestSSEAgentFailureFinishReason:
         assert "data: [DONE]" in sse
 
 
+        reason, finish, _ = self._run(failed)
+        assert reason == "error"
+        assert finish.get("hermes", {}).get("failed") is True
+
+    def test_truncated_result_reports_length(self):
+        async def trunc():
+            return (
+                {"final_response": "half", "partial": True, "completed": False,
+                 "error": "output was truncated"},
+                {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            )
+
+        reason, finish, _ = self._run(trunc)
+        assert reason == "length"
+        assert finish["hermes"]["error_code"] == "output_truncated"
+
+    def test_successful_completion_reports_stop(self):
+        async def ok():
+            return (
+                {"final_response": "hi", "completed": True},
+                {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+            )
+
+        reason, finish, _ = self._run(ok)
+        assert reason == "stop"
+        # No error/hermes pollution on the happy path.
+        assert "error" not in finish
+        assert "hermes" not in finish
+
+
+# ---------------------------------------------------------------------------
+# Sweeper review fix (teknium1, 2026-07-30): cover the cross-thread
+# ``put_threadsafe`` boundary that #72610 introduces via ``ThreadSafeAsyncQueue``.
+# ``run_conversation`` runs in a worker thread (``loop.run_in_executor``),
+# so its ``_on_delta`` / ``_on_tool_*`` callbacks must be able to push into
+# the queue from off the owning event loop and immediately wake the
+# consumer ``get()`` — this is the production boundary the original tests
+# only exercised with same-loop ``put_nowait``.
+# ---------------------------------------------------------------------------
+
+class TestThreadSafeAsyncQueueCrossThreadBoundary:
+    """gateway/platforms/api_server.py — ThreadSafeAsyncQueue"""
+
+    def test_worker_thread_put_threadsafe_wakes_owning_loop_get(self):
+        """A real daemon-Thread calling ``put_threadsafe`` from off-loop must
+        immediately unblock an ``await q.get()`` on the owning event loop.
+        This mirrors the ``run_conversation``/``run_in_executor`` boundary."""
+
+        loop = asyncio.new_event_loop()
+
+        async def consumer():
+            q = ThreadSafeAsyncQueue()
+
+            async def wait_for_item():
+                return await asyncio.wait_for(q.get(), timeout=2)
+
+            def worker():
+                time.sleep(0.05)
+                q.put_threadsafe("from-worker", loop=loop)
+
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+
+            got = await wait_for_item()
+            assert got == "from-worker"
+
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+        loop.run_until_complete(consumer())
+        loop.close()
+
+    def test_twenty_concurrent_threads_no_drop(self):
+        """Twenty concurrent off-loop ``put_threadsafe`` calls — all arrive.
+        Regression test for the #65003 producer path."""
+
+        loop = asyncio.new_event_loop()
+        n = 20
+
+        async def consumer():
+            q = ThreadSafeAsyncQueue()
+            received = []
+
+            async def drain():
+                for _ in range(n):
+                    received.append(await q.get())
+
+            def worker(idx):
+                time.sleep(0.01 + idx * 0.002)
+                q.put_threadsafe(f"item-{idx}", loop=loop)
+
+            threads = [
+                threading.Thread(target=worker, args=(i,), daemon=True)
+                for i in range(n)
+            ]
+            for t in threads:
+                t.start()
+
+            await asyncio.wait_for(drain(), timeout=5)
+
+            for t in threads:
+                t.join(timeout=2)
+                assert not t.is_alive()
+
+            assert len(received) == n
+            assert set(received) == {f"item-{i}" for i in range(n)}
+
+        loop.run_until_complete(consumer())
+        loop.close()

@@ -688,3 +688,38 @@ class TestScalarModelSubKeyPreservation:
         parsed = yaml.safe_load(raw)
         assert parsed["model"]["default"] == "claude-sonnet"
         assert parsed["model"]["api_key"] == "sk-test"
+
+class TestMalformedYAMLConfigPreservation:
+    """#75431: config.yaml with YAML syntax errors must not be overwritten."""
+
+    BROKEN_CONFIG = "model: gpt-4o\nterminal:\n  backend: docker\n  broken: [this is invalid YAML"
+
+    def _write_broken_config(self, home):
+        (home / "config.yaml").write_text(self.BROKEN_CONFIG)
+
+    def test_set_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
+        """set_config_value must exit with error, not overwrite the broken config."""
+        self._write_broken_config(_isolated_hermes_home)
+
+        with pytest.raises(SystemExit):
+            set_config_value("agent.max_turns", "50")
+
+        captured = capsys.readouterr()
+        assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
+        # Original config must remain intact
+        raw = _read_config(_isolated_hermes_home)
+        assert raw == self.BROKEN_CONFIG, f"Config was overwritten:\n{raw}"
+
+    def test_unset_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
+        """unset_config_value must exit with error, not overwrite the broken config."""
+        from hermes_cli.config import unset_config_value
+
+        self._write_broken_config(_isolated_hermes_home)
+
+        with pytest.raises(SystemExit):
+            unset_config_value("model")
+
+        captured = capsys.readouterr()
+        assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
+        raw = _read_config(_isolated_hermes_home)
+        assert raw == self.BROKEN_CONFIG

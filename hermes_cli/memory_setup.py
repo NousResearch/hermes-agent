@@ -114,15 +114,17 @@ def _install_dependencies(provider_name: str) -> None:
     # the environment if a probe changed it.
     missing = []
     probe_snapshot = dict(os.environ)
-    for dep in pip_deps:
-        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
-        try:
-            __import__(import_name)
-        except ImportError:
-            missing.append(dep)
-    if dict(os.environ) != probe_snapshot:
-        os.environ.clear()
-        os.environ.update(probe_snapshot)
+    try:
+        for dep in pip_deps:
+            import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+            try:
+                __import__(import_name)
+            except ImportError:
+                missing.append(dep)
+    finally:
+        if dict(os.environ) != probe_snapshot:
+            os.environ.clear()
+            os.environ.update(probe_snapshot)
 
     if not missing:
         return

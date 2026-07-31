@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $subagentsBySession,
   activeSubagentCount,
-  allSubagents,
   buildSubagentTree,
   clearSessionSubagents,
   failedSubagentCount,
   pruneDelegateFallbackSubagents,
   pruneFinishedSessionSubagents,
+  subagentsForPanel,
   upsertSubagent
 } from './subagents'
 
@@ -102,25 +102,49 @@ describe('subagent store', () => {
     expect(listFor('s1').map(item => item.id)).toEqual(['sa-0-xyz'])
   })
 
-  // Contract: the status-bar "Agents" indicator and the Spawn-tree panel read
-  // the same scope — every session's subagents — so a count can never point at
-  // an empty tree (the desync behind "Agents (N)" vs "No live subagents").
-  it('counts running/failed across every session, matching the aggregated tree', () => {
+  it('counts running/failed across active sessions, matching the panel tree', () => {
     upsertSubagent('s1', { goal: 'a', status: 'running', subagent_id: 'a', task_index: 0 })
     upsertSubagent('s1', { goal: 'b', status: 'failed', subagent_id: 'b', task_index: 1 })
     upsertSubagent('s2', { goal: 'c', status: 'running', subagent_id: 'c', task_index: 0 })
     upsertSubagent('s2', { goal: 'd', status: 'failed', subagent_id: 'd', task_index: 1 })
 
-    const flat = allSubagents($subagentsBySession.get())
-    const indicatorRunning = Object.values($subagentsBySession.get()).reduce((n, l) => n + activeSubagentCount(l), 0)
-    const indicatorFailed = Object.values($subagentsBySession.get()).reduce((n, l) => n + failedSubagentCount(l), 0)
+    const flat = subagentsForPanel($subagentsBySession.get(), 's1')
+    const indicatorRunning = activeSubagentCount(flat)
+    const indicatorFailed = failedSubagentCount(flat)
     const tree = buildSubagentTree(flat)
 
-    // The active-session-only filter would have reported 1/1 here, not 2/2.
     expect(indicatorRunning).toBe(2)
     expect(indicatorFailed).toBe(2)
     expect(tree).toHaveLength(4)
     expect(indicatorRunning + indicatorFailed).toBe(tree.length)
+  })
+
+  it('keeps terminal history only for the current or still-active sessions', () => {
+    upsertSubagent('current', { goal: 'current done', status: 'completed', subagent_id: 'current', task_index: 0 })
+    upsertSubagent('background-live', {
+      goal: 'background live',
+      status: 'running',
+      subagent_id: 'live',
+      task_index: 0
+    })
+    upsertSubagent('background-live', {
+      goal: 'background sibling',
+      status: 'completed',
+      subagent_id: 'sibling',
+      task_index: 1
+    })
+    upsertSubagent('background-done', {
+      goal: 'old history',
+      status: 'failed',
+      subagent_id: 'old',
+      task_index: 0
+    })
+
+    expect(subagentsForPanel($subagentsBySession.get(), 'current').map(item => item.id)).toEqual([
+      'current',
+      'live',
+      'sibling'
+    ])
   })
 
   it('clears one session without touching another', () => {

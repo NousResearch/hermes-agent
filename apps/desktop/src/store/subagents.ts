@@ -321,6 +321,10 @@ export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
 export const failedSubagentCount = (items: readonly SubagentProgress[]) =>
   items.filter(item => item.status === 'failed' || item.status === 'interrupted').length
 
-/** Flatten every session's subagents — the scope the Spawn-tree panel and the
- *  status-bar indicator must agree on. */
-export const allSubagents = (bySession: Record<string, SubagentProgress[]>) => Object.values(bySession).flat()
+/** Keep the focused session's history plus complete background delegations
+ * while they are active. Finished inactive sessions disappear as a unit, so
+ * parent/sibling context is preserved without accumulating stale history. */
+export const subagentsForPanel = (bySession: Record<string, SubagentProgress[]>, focusedSessionId: string | null) =>
+  Object.entries(bySession).flatMap(([sessionId, items]) =>
+    sessionId === focusedSessionId || activeSubagentCount(items) > 0 ? items : []
+  )

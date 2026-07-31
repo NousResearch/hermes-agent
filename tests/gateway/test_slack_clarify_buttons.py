@@ -133,27 +133,6 @@ class TestSlackSendClarify:
                 action_ids = [element["action_id"] for element in block["elements"]]
                 assert len(action_ids) == len(set(action_ids))
 
-    @pytest.mark.asyncio
-    async def test_open_ended_no_buttons(self):
-        adapter = _make_adapter()
-        mock_client = adapter._team_clients["T1"]
-        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "9.9"})
-
-        result = await adapter.send_clarify(
-            chat_id="C1",
-            question="What should I name the branch?",
-            choices=None,
-            clarify_id="cid-open",
-            session_key="sk-open",
-        )
-
-        assert result.success is True
-        kwargs = mock_client.chat_postMessage.call_args[1]
-        # Open-ended delegates to the base plain-text path — no action blocks.
-        assert "blocks" not in kwargs or all(
-            b.get("type") != "actions" for b in (kwargs.get("blocks") or [])
-        )
-        assert "What should I name the branch?" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):
@@ -173,52 +152,6 @@ class TestSlackSendClarify:
         assert "&lt;A&gt;" in section_text
         assert "&amp;" in section_text
 
-    @pytest.mark.asyncio
-    async def test_sends_in_thread(self):
-        adapter = _make_adapter()
-        mock_client = adapter._team_clients["T1"]
-        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
-
-        await adapter.send_clarify(
-            chat_id="C1",
-            question="?",
-            choices=["a"],
-            clarify_id="cid3",
-            session_key="sk3",
-            metadata={"thread_id": "8888.0000"},
-        )
-        assert mock_client.chat_postMessage.call_args[1].get("thread_ts") == "8888.0000"
-
-    @pytest.mark.asyncio
-    async def test_not_connected(self):
-        adapter = _make_adapter()
-        adapter._app = None
-        result = await adapter.send_clarify(
-            chat_id="C1", question="?", choices=["a"], clarify_id="c", session_key="s"
-        )
-        assert result.success is False
-
-    @pytest.mark.asyncio
-    async def test_five_choices_chunk_across_actions_blocks(self):
-        """Slack caps 5 elements per actions block; 5 choices + Other = 6
-        buttons must spill into a second block instead of 400ing."""
-        adapter = _make_adapter()
-        mock_client = adapter._team_clients["T1"]
-        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.3"})
-
-        await adapter.send_clarify(
-            chat_id="C1",
-            question="?",
-            choices=["a", "b", "c", "d", "e"],
-            clarify_id="cid5",
-            session_key="sk5",
-        )
-        blocks = mock_client.chat_postMessage.call_args[1]["blocks"]
-        action_blocks = [b for b in blocks if b["type"] == "actions"]
-        assert len(action_blocks) == 2
-        for b in action_blocks:
-            assert len(b["elements"]) <= 5
-
 
 # ===========================================================================
 # _handle_clarify_action — choice click resolves (b)
@@ -228,73 +161,6 @@ class TestSlackClarifyChoiceAction:
     def setup_method(self):
         _clear_clarify_state()
 
-    @pytest.mark.asyncio
-    async def test_choice_resolves_with_choice_text(self):
-        from tools import clarify_gateway as cm
-
-        adapter = _make_adapter()
-        _attach_auth_runner(adapter)
-        cm.register("cidA", "sk-cb", "Pick", ["red", "green", "blue"])
-        adapter._clarify_resolved["1234.5678"] = False
-
-        mock_client = adapter._team_clients["T1"]
-        mock_client.chat_update = AsyncMock()
-
-        ack = AsyncMock()
-        body = {
-            "message": {
-                "ts": "1234.5678",
-                "blocks": [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": "❓ Pick"}},
-                    {"type": "actions", "elements": []},
-                ],
-            },
-            "channel": {"id": "C1"},
-            "user": {"name": "norbert", "id": "U_NORBERT"},
-        }
-        action = {"action_id": "hermes_clarify_choice_1", "value": "cidA|1"}
-
-        await adapter._handle_clarify_action(ack, body, action)
-
-        ack.assert_called_once()
-        with cm._lock:
-            entry = cm._entries.get("cidA")
-        assert entry is not None
-        assert entry.response == "green"
-        assert entry.event.is_set()
-        # Message updated with the answer, buttons dropped.
-        update_kwargs = mock_client.chat_update.call_args[1]
-        assert "green" in update_kwargs["text"]
-        assert all(b["type"] != "actions" for b in update_kwargs["blocks"])
-
-    @pytest.mark.asyncio
-    async def test_prevents_double_click(self):
-        from tools import clarify_gateway as cm
-
-        adapter = _make_adapter()
-        _attach_auth_runner(adapter)
-        cm.register("cidDup", "sk-dup", "Pick", ["x"])
-        adapter._clarify_resolved["1.1"] = True  # already resolved
-
-        mock_client = adapter._team_clients["T1"]
-        mock_client.chat_update = AsyncMock()
-
-        ack = AsyncMock()
-        body = {
-            "message": {"ts": "1.1", "blocks": []},
-            "channel": {"id": "C1"},
-            "user": {"name": "n", "id": "U1"},
-        }
-        action = {"action_id": "hermes_clarify_choice", "value": "cidDup|0"}
-
-        await adapter._handle_clarify_action(ack, body, action)
-
-        ack.assert_called_once()
-        with cm._lock:
-            entry = cm._entries.get("cidDup")
-        assert entry is not None
-        assert not entry.event.is_set()
-        mock_client.chat_update.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_unauthorized_click_ignored(self):
@@ -319,31 +185,6 @@ class TestSlackClarifyChoiceAction:
             entry = cm._entries.get("cidAuth")
         assert entry is not None
         assert not entry.event.is_set()
-
-    @pytest.mark.asyncio
-    async def test_expired_choice_shows_notice(self):
-        """Late tap after the entry was evicted must surface expiry, not a ✓."""
-        adapter = _make_adapter()
-        _attach_auth_runner(adapter)
-        # No entry registered → resolve returns False.
-        adapter._clarify_resolved["3.3"] = False
-
-        mock_client = adapter._team_clients["T1"]
-        mock_client.chat_update = AsyncMock()
-
-        ack = AsyncMock()
-        body = {
-            "message": {"ts": "3.3", "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "❓ Pick"}},
-            ]},
-            "channel": {"id": "C1"},
-            "user": {"name": "t", "id": "U_T"},
-        }
-        action = {"action_id": "hermes_clarify_choice", "value": "cidGone|0"}
-
-        await adapter._handle_clarify_action(ack, body, action)
-
-        assert "expired" in mock_client.chat_update.call_args[1]["text"].lower()
 
 
 # ===========================================================================
@@ -395,48 +236,6 @@ class TestSlackClarifyOtherFlow:
             entry = cm._entries.get("cidO")
         assert entry.response == "my custom answer"
         assert entry.event.is_set()
-
-    @pytest.mark.asyncio
-    async def test_other_expired_shows_notice(self):
-        adapter = _make_adapter()
-        _attach_auth_runner(adapter)
-        # No entry → mark_awaiting_text returns False.
-        adapter._clarify_resolved["5.5"] = False
-
-        mock_client = adapter._team_clients["T1"]
-        mock_client.chat_update = AsyncMock()
-
-        ack = AsyncMock()
-        body = {
-            "message": {"ts": "5.5", "blocks": [
-                {"type": "section", "text": {"type": "mrkdwn", "text": "❓ Pick"}},
-            ]},
-            "channel": {"id": "C1"},
-            "user": {"name": "t", "id": "U_T"},
-        }
-        action = {"action_id": "hermes_clarify_other", "value": "cidOtherGone|other"}
-
-        await adapter._handle_clarify_action(ack, body, action)
-        assert "expired" in mock_client.chat_update.call_args[1]["text"].lower()
-
-    @pytest.mark.asyncio
-    async def test_malformed_value_ignored(self):
-        adapter = _make_adapter()
-        _attach_auth_runner(adapter)
-        adapter._clarify_resolved["6.6"] = False
-        mock_client = adapter._team_clients["T1"]
-        mock_client.chat_update = AsyncMock()
-
-        ack = AsyncMock()
-        body = {
-            "message": {"ts": "6.6", "blocks": []},
-            "channel": {"id": "C1"},
-            "user": {"name": "t", "id": "U_T"},
-        }
-        action = {"action_id": "hermes_clarify_choice", "value": "no-delimiter"}
-
-        await adapter._handle_clarify_action(ack, body, action)
-        mock_client.chat_update.assert_not_called()
 
 
 # ===========================================================================

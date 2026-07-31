@@ -46,6 +46,7 @@ import {
   $sidebarSessionOrderManual,
   $sidebarWorkspaceOrderIds,
   $sidebarWorkspaceParentOrderIds,
+  filterVisibleProjects,
   pinSession,
   SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
@@ -609,23 +610,19 @@ export function ChatSidebar({
       return []
     }
 
-    const dismissed = new Set(dismissedAutoProjects)
-
     const sorted = sortProjectsForOverview(
-      projectTree
-        .filter(node => !(node.isAuto && dismissed.has(node.id)))
-        .map(project =>
-          excludeProjectSessions(
-            {
-              ...project,
-              // Home is synthetic, so its name is ours to translate — every other
-              // label is a repo basename or a name the user typed.
-              label: project.isNoProject ? s.projects.home : project.label,
-              repos: orderRepos(project.repos)
-            },
-            isPinnedSession
-          )
-        ),
+      filterVisibleProjects(projectTree, dismissedAutoProjects).map(project =>
+        excludeProjectSessions(
+          {
+            ...project,
+            // Home is synthetic, so its name is ours to translate — every other
+            // label is a repo basename or a name the user typed.
+            label: project.isNoProject ? s.projects.home : project.label,
+            repos: orderRepos(project.repos)
+          },
+          isPinnedSession
+        )
+      ),
       activeProjectId
     )
 

@@ -581,6 +581,13 @@ _POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
+# Telegram transcodes an uploaded video before it answers sendVideo, so the
+# wait for the response is unrelated to how fast the bytes went out and can
+# outlast the 20s read timeout the rest of the Bot API is tuned for. Only
+# media sends take this longer budget; ordinary calls keep the short one so a
+# dead request is still noticed quickly. Kept modest deliberately — this is
+# also how long a user waits to be told the attachment failed.
+_MEDIA_SEND_READ_TIMEOUT = 60.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
     "telegram_polling_generation", default=None
 )
@@ -3664,6 +3671,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+                # Not a duplicate of write_timeout: PTB routes any request
+                # carrying files to media_write_timeout instead, so the line
+                # above never applied to an upload and every upload was pinned
+                # to PTB's own 20s default. httpx budgets this per socket
+                # write rather than across the upload, so it is stall
+                # tolerance, not a size or bandwidth allowance — a slow but
+                # steady uplink never accumulates against it. 60s rides out
+                # the buffer stalls a congested link produces; going higher
+                # only lengthens how long a dead socket takes to report
+                # itself.
+                "media_write_timeout": 60.0,
             }
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
@@ -6803,6 +6821,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     "parse_mode": _cap_parse_mode,
                                     "reply_to_message_id": reply_to_id,
                                     "duration": _duration_secs,
+                                    "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                                     **voice_thread_kwargs,
                                     **self._notification_kwargs(metadata),
                                 },
@@ -6852,6 +6871,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             "duration": _duration_secs,
+                            "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
@@ -6990,6 +7010,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "chat_id": normalize_telegram_chat_id(chat_id),
                         "media": media,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7049,6 +7070,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "photo": image_file,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7146,6 +7168,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "filename": display_name,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7196,6 +7219,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "video": f,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7340,6 +7364,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "animation": animation_url,
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
+                    "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                     **animation_thread_kwargs,
                     **self._notification_kwargs(metadata),
                 },
@@ -8713,6 +8738,18 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
+        # Telegram clients split messages above 4096 chars into multiple
+        # updates.  A long command paste (e.g. ``/queue <huge prompt>``)
+        # arrives as a COMMAND chunk near the limit followed by plain TEXT
+        # continuation chunk(s).  Dispatching the command immediately would
+        # orphan the continuation, which then lands as a separate message and
+        # interrupts the running agent.  Route near-limit command chunks
+        # through the same text-batching pipeline so continuations merge in
+        # before dispatch; short commands (/stop, /approve, ...) keep the
+        # immediate path and are never delayed.
+        if len(event.text or "") >= self._SPLIT_THRESHOLD:
+            self._enqueue_text_event(event)
+            return
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

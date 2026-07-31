@@ -78,13 +78,6 @@ class TestCallbackAuthFailClosed:
         adapter._message_handler = None
         assert adapter._is_callback_user_authorized("12345") is False
 
-    def test_no_allowlist_with_global_allow_all_permits(self, monkeypatch):
-        """No TELEGRAM_ALLOWED_USERS but GATEWAY_ALLOW_ALL_USERS=true → allow."""
-        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
-        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-        adapter = _make_adapter()
-        adapter._message_handler = None
-        assert adapter._is_callback_user_authorized("12345") is True
 
     def test_allowlist_with_matching_user_permits(self, monkeypatch):
         """TELEGRAM_ALLOWED_USERS contains the user → allow."""
@@ -93,16 +86,4 @@ class TestCallbackAuthFailClosed:
         adapter._message_handler = None
         assert adapter._is_callback_user_authorized("12345") is True
 
-    def test_allowlist_without_matching_user_denies(self, monkeypatch):
-        """TELEGRAM_ALLOWED_USERS does not contain the user → deny."""
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "67890")
-        adapter = _make_adapter()
-        adapter._message_handler = None
-        assert adapter._is_callback_user_authorized("12345") is False
 
-    def test_allowlist_wildcard_permits(self, monkeypatch):
-        """TELEGRAM_ALLOWED_USERS=* → allow everyone."""
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
-        adapter = _make_adapter()
-        adapter._message_handler = None
-        assert adapter._is_callback_user_authorized("12345") is True

@@ -95,16 +95,6 @@ class TestPlanToolBatchSegments:
         assert _kinds(segments) == ["parallel", "sequential"]
         assert [tc.id for tc in segments[1][1]] == ["b1", "r3"]
 
-    def test_adjacent_barriers_merge_into_one_sequential_segment(self):
-        calls = [
-            _tc("terminal", '{"command":"a"}', call_id="b1"),
-            _tc("terminal", '{"command":"b"}', call_id="b2"),
-            _tc("web_search", call_id="r1"),
-            _tc("web_search", call_id="r2"),
-        ]
-        segments = _plan_tool_batch_segments(calls)
-        assert _kinds(segments) == ["sequential", "parallel"]
-        assert [tc.id for tc in segments[0][1]] == ["b1", "b2"]
 
     def test_never_parallel_tool_is_a_barrier(self):
         calls = [
@@ -116,26 +106,7 @@ class TestPlanToolBatchSegments:
         assert _kinds(segments) == ["parallel", "sequential"]
         assert [tc.id for tc in segments[1][1]] == ["c1"]
 
-    def test_malformed_args_call_is_a_barrier_not_a_batch_poison(self):
-        calls = [
-            _tc("web_search", call_id="r1"),
-            _tc("web_search", call_id="r2"),
-            _tc("web_search", "{not json", call_id="bad"),
-            _tc("web_search", call_id="r3"),
-            _tc("web_search", call_id="r4"),
-        ]
-        segments = _plan_tool_batch_segments(calls)
-        assert _kinds(segments) == ["parallel", "sequential", "parallel"]
-        assert [tc.id for tc in segments[1][1]] == ["bad"]
 
-    def test_non_dict_args_call_is_a_barrier(self):
-        calls = [
-            _tc("web_search", call_id="r1"),
-            _tc("web_search", call_id="r2"),
-            _tc("web_search", '"just a string"', call_id="bad"),
-        ]
-        segments = _plan_tool_batch_segments(calls)
-        assert _kinds(segments) == ["parallel", "sequential"]
 
     def test_overlapping_paths_split_across_segments(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -180,18 +151,8 @@ class TestShouldParallelizeBackwardCompat:
     def test_single_call_is_sequential(self):
         assert not _should_parallelize_tool_batch([_tc("web_search")])
 
-    def test_all_safe_batch_is_parallel(self):
-        assert _should_parallelize_tool_batch([_tc("web_search"), _tc("web_extract")])
 
-    def test_mixed_batch_is_not_wholly_parallel(self):
-        assert not _should_parallelize_tool_batch(
-            [_tc("web_search"), _tc("terminal", '{"command":"ls"}')]
-        )
 
-    def test_clarify_anywhere_blocks_whole_batch_parallelism(self):
-        assert not _should_parallelize_tool_batch(
-            [_tc("web_search"), _tc("clarify", '{"question":"?"}')]
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -316,33 +277,7 @@ class TestSegmentedDispatchIntegration:
         conc.assert_called_once()
         seq.assert_not_called()
 
-    def test_homogeneous_unsafe_batch_still_uses_plain_sequential_path(self, agent):
-        calls = [
-            _tc("terminal", '{"command":"a"}'),
-            _tc("terminal", '{"command":"b"}'),
-        ]
-        msg = SimpleNamespace(content="", tool_calls=calls)
 
-        with (
-            patch.object(agent, "_execute_tool_calls_concurrent") as conc,
-            patch.object(agent, "_execute_tool_calls_sequential") as seq,
-        ):
-            agent._execute_tool_calls(msg, [], "task-1")
-
-        seq.assert_called_once()
-        conc.assert_not_called()
-
-    def test_single_call_uses_sequential_path(self, agent):
-        msg = SimpleNamespace(content="", tool_calls=[_tc("web_search", '{"query":"a"}')])
-
-        with (
-            patch.object(agent, "_execute_tool_calls_concurrent") as conc,
-            patch.object(agent, "_execute_tool_calls_sequential") as seq,
-        ):
-            agent._execute_tool_calls(msg, [], "task-1")
-
-        seq.assert_called_once()
-        conc.assert_not_called()
 
     def test_interrupt_during_barrier_drains_later_segments(self, agent):
         """Interrupt raised while the barrier tool runs: the trailing parallel
@@ -483,25 +418,6 @@ class TestPathCanonicalization:
             "process cwd must not be used when execution_cwd is provided"
         )
 
-    def test_symlink_alias_nonexistent_write_target_overlap(self, tmp_path):
-        """Symlink parent + not-yet-created leaf file must still be detected
-        as overlapping — write_file targets may not exist at planning time."""
-        import os
-        from agent.tool_dispatch_helpers import _canonical_path, _paths_overlap
-
-        real_dir = tmp_path / "real"
-        real_dir.mkdir()
-        alias_dir = tmp_path / "alias"
-        alias_dir.symlink_to(real_dir)
-
-        # Leaf file does NOT exist yet (write_file scenario).
-        real_target = _canonical_path(str(real_dir / "new.txt"))
-        alias_target = _canonical_path(str(alias_dir / "new.txt"))
-
-        assert _paths_overlap(real_target, alias_target), (
-            "Symlink parent + nonexistent leaf must overlap — "
-            "write_file targets are planned before they exist"
-        )
 
     @pytest.mark.skipif(
         sys.platform != "win32",

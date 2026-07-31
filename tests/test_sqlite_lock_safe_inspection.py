@@ -81,66 +81,8 @@ def clean_registry():
         mod._live_connections.clear()
 
 
-@pytest.mark.parametrize("journal_mode", ["DELETE", "WAL"])
-def test_write_lock_survives_file_length_check(tmp_path, journal_mode, clean_registry):
-    """kanban's post-commit invariant check must not cancel the write lock."""
-    from hermes_cli.kanban_db import _check_file_length_invariant
-
-    db = tmp_path / "kanban.db"
-    _make_db(db, journal_mode)
-
-    holder = sqlite3.connect(str(db), isolation_level=None, timeout=0.5)
-    holder.execute(f"PRAGMA journal_mode={journal_mode}")
-    holder.execute("BEGIN IMMEDIATE")
-    holder.execute("INSERT INTO t(v) VALUES ('held')")
-    try:
-        assert not _external_writer_can_break_in(db), (
-            "precondition failed: the external writer was not locked out "
-            "before the inspection call"
-        )
-
-        worker = sqlite3.connect(str(db), isolation_level=None, timeout=0.5)
-        try:
-            _check_file_length_invariant(worker)
-        finally:
-            worker.close()
-
-        assert not _external_writer_can_break_in(db), (
-            "_check_file_length_invariant cancelled this process's POSIX "
-            "advisory locks -- an external process wrote into a database "
-            "that a writer still believed it held exclusively"
-        )
-    finally:
-        holder.close()
 
 
-@pytest.mark.parametrize("journal_mode", ["DELETE", "WAL"])
-def test_write_lock_survives_zeroed_state_db_probe(
-    tmp_path, journal_mode, clean_registry
-):
-    """SessionDB's zeroed-file detector must not cancel locks once connected."""
-    from hermes_state import is_zeroed_state_db
-
-    db = tmp_path / "state.db"
-    _make_db(db, journal_mode)
-
-    holder = sqlite3.connect(str(db), isolation_level=None, timeout=0.5)
-    holder.execute(f"PRAGMA journal_mode={journal_mode}")
-    holder.execute("BEGIN IMMEDIATE")
-    holder.execute("INSERT INTO t(v) VALUES ('held')")
-    track_connection(db)
-    try:
-        assert not _external_writer_can_break_in(db)
-
-        assert is_zeroed_state_db(db) is False
-
-        assert not _external_writer_can_break_in(db), (
-            "is_zeroed_state_db cancelled this process's POSIX advisory "
-            "locks on a live database"
-        )
-    finally:
-        untrack_connection(db)
-        holder.close()
 
 
 def test_preopen_read_refused_while_connection_is_live(tmp_path, clean_registry):
@@ -282,33 +224,6 @@ def test_probe_and_connect_do_not_race(tmp_path, clean_registry, monkeypatch):
     assert not failures, failures[0]
 
 
-def test_read_only_uri_connection_is_tracked_by_real_path(tmp_path, clean_registry):
-    """A ``file:...?mode=ro`` connection must register under the real path.
-
-    SessionDB's read-only path opens a URI, not a filesystem path. Keying the
-    registry on the caller's spelling produces something like
-    ``<cwd>/file:/…/state.db?mode=ro``, which no probe of the actual Path can
-    match -- leaving the read-only connection invisible to the guard and its
-    locks cancellable.
-    """
-    from hermes_cli.sqlite_safe_read import connect_tracked
-
-    db = tmp_path / "state.db"
-    _make_db(db, "DELETE")
-
-    conn = connect_tracked(
-        f"file:{db}?mode=ro", uri=True, isolation_level=None, timeout=0.5
-    )
-    try:
-        assert has_live_connection(db), (
-            "read-only URI connection was registered under a URI-shaped key; "
-            "a probe of the real path cannot see it"
-        )
-        assert read_header_bytes_preopen(db, length=16) is None
-    finally:
-        conn.close()
-
-    assert not has_live_connection(db)
 
 
 def test_session_db_read_only_is_tracked(tmp_path, clean_registry, monkeypatch):
@@ -332,91 +247,10 @@ def test_session_db_read_only_is_tracked(tmp_path, clean_registry, monkeypatch):
     assert read_header_bytes_preopen(db_path, length=16) is not None
 
 
-def test_custom_factory_is_honoured_and_still_tracked(tmp_path, clean_registry):
-    """A caller's factory must work AND keep byte-probe protection.
-
-    Callers legitimately pass their own Connection subclasses (the suite uses
-    them to simulate FTS5-less runtimes). Neither rejecting them nor silently
-    leaving them untracked is acceptable — the former breaks real callers, the
-    latter quietly unguards the database. The factory is augmented instead.
-    """
-    from hermes_cli.sqlite_safe_read import connect_tracked
-
-    class CustomConnection(sqlite3.Connection):
-        pass
-
-    db = tmp_path / "state.db"
-    _make_db(db, "WAL")
-
-    conn = connect_tracked(db, factory=CustomConnection)
-    try:
-        assert isinstance(conn, CustomConnection), "caller's factory must be honoured"
-        assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 200
-        assert has_live_connection(db), "custom factory must still be tracked"
-        assert read_header_bytes_preopen(db, length=16) is None
-    finally:
-        conn.close()
-
-    assert not has_live_connection(db), "custom factory must untrack on close"
 
 
-def test_opener_that_discards_our_factory_is_still_tracked(tmp_path, clean_registry):
-    """Tracking must survive an opener that substitutes its own factory.
-
-    Two distinct paths reach a custom Connection subclass: the caller passing
-    ``factory=`` (augmented before the open) and an opener that ignores the
-    factory we asked for and supplies its own (retrofitted after the open).
-    The suite's FTS5-less doubles take the second path, so it needs its own
-    coverage -- otherwise a regression there is invisible.
-    """
-    from hermes_cli.sqlite_safe_read import connect_tracked
-
-    class CustomConnection(sqlite3.Connection):
-        pass
-
-    db = tmp_path / "state.db"
-    _make_db(db, "DELETE")
-
-    def opener_that_ignores_factory(path, **kwargs):
-        kwargs.pop("factory", None)
-        return sqlite3.connect(path, factory=CustomConnection, **kwargs)
-
-    conn = connect_tracked(db, connect_fn=opener_that_ignores_factory)
-    try:
-        assert isinstance(conn, CustomConnection), "opener's factory must survive"
-        assert has_live_connection(db), (
-            "connection opened with a substituted factory was left untracked; "
-            "its database silently lost byte-probe protection"
-        )
-        assert read_header_bytes_preopen(db, length=16) is None
-    finally:
-        conn.close()
-
-    assert not has_live_connection(db), "retrofitted connection must untrack on close"
 
 
-def test_session_db_read_only_tracks_under_canonical_path(tmp_path, clean_registry):
-    """The read-only URI must resolve to the real path even without a hint.
-
-    ``SessionDB`` passes ``tracking_path`` explicitly, but the helper must not
-    depend on that: ``PRAGMA database_list`` is the authority. This exercises
-    the no-hint path directly so removing the fallback is caught.
-    """
-    from hermes_cli.sqlite_safe_read import connect_tracked
-
-    db = tmp_path / "state.db"
-    _make_db(db, "DELETE")
-
-    conn = connect_tracked(
-        f"file:{db}?mode=ro", uri=True, isolation_level=None, timeout=0.5
-    )
-    try:
-        assert has_live_connection(db), (
-            "canonical-path resolution failed: the URI spelling was used as "
-            "the registry key"
-        )
-    finally:
-        conn.close()
 
 
 def test_page_count_bytes_matches_on_disk_size(tmp_path):

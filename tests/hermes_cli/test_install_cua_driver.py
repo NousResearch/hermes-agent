@@ -71,6 +71,96 @@ class TestInstallCuaDriverUpgrade:
             assert tools_config.install_cua_driver(upgrade=True) is True
             runner.assert_called_once()
 
+    def test_quiet_refresh_prints_single_contextual_progress_line(self):
+        import subprocess
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 1
+        fake_proc.returncode = 0
+        fake_proc.communicate.return_value = ("", None)
+
+        with patch("platform.system", return_value="Linux"), \
+             patch(
+                 "subprocess.run",
+                 return_value=MagicMock(returncode=0, stderr=""),
+             ), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch.object(
+                 tools_config.shutil,
+                 "which",
+                 return_value="/usr/local/bin/cua-driver",
+             ), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_info") as info:
+            assert tools_config._run_cua_driver_installer(
+                label="Refreshing",
+                verbose=False,
+            ) is True
+
+        info.assert_called_once_with(
+            "→ Refreshing cua-driver (Computer Use)..."
+        )
+
+    def test_quiet_refresh_can_suppress_progress_line(self):
+        from unittest.mock import MagicMock
+
+        from hermes_cli import tools_config
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 1
+        fake_proc.returncode = 0
+        fake_proc.communicate.return_value = ("", None)
+
+        with patch("platform.system", return_value="Linux"), \
+             patch(
+                 "subprocess.run",
+                 return_value=MagicMock(returncode=0, stderr=""),
+             ), \
+             patch("subprocess.Popen", return_value=fake_proc), \
+             patch.object(
+                 tools_config.shutil,
+                 "which",
+                 return_value="/usr/local/bin/cua-driver",
+             ), \
+             patch.object(tools_config, "_clear_stale_cua_install_lock"), \
+             patch.object(tools_config, "_print_info") as info:
+            assert tools_config._run_cua_driver_installer(
+                label="Refreshing",
+                verbose=False,
+                show_progress=False,
+            ) is True
+
+        info.assert_not_called()
+
+    def test_upgrade_can_suppress_installer_progress(self):
+        from hermes_cli import tools_config
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch.object(
+                 tools_config.shutil,
+                 "which",
+                 side_effect=lambda name: (
+                     f"/usr/local/bin/{name}"
+                     if name in {"cua-driver", "curl"}
+                     else None
+                 ),
+             ), \
+             patch.object(
+                 tools_config,
+                 "_run_cua_driver_installer",
+                 return_value=True,
+             ) as runner, \
+             patch("subprocess.run"):
+            assert tools_config.install_cua_driver(
+                upgrade=True,
+                show_installer_progress=False,
+            ) is True
+
+        assert runner.call_args.kwargs["show_progress"] is False
+
     def test_upgrade_on_macos_non_writable_applications_skips_refresh(self):
         from hermes_cli import tools_config
 

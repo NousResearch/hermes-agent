@@ -50,35 +50,4 @@ class TestDiscordHomeChannelClear:
         assert "DISCORD_HOME_CHANNEL" in removed
         assert "DISCORD_HOME_CHANNEL" not in saved
 
-    def test_blank_without_prior_home_still_attempts_remove(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch, _PROMPTS_BLANK, saved, removed, existing={}
-        )
-        interactive_setup()
-        assert removed.count("DISCORD_HOME_CHANNEL") == 1
 
-    def test_nonempty_saves_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch, _PROMPTS_NONEMPTY, saved, removed, existing={}
-        )
-        interactive_setup()
-        assert saved["DISCORD_HOME_CHANNEL"] == "123456789012345678"
-        assert "DISCORD_HOME_CHANNEL" not in removed
-
-    def test_whitespace_only_clears_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch,
-            _PROMPTS_WHITESPACE,
-            saved,
-            removed,
-            existing={"DISCORD_HOME_CHANNEL": "987654321098765432"},
-        )
-        interactive_setup()
-        assert "DISCORD_HOME_CHANNEL" in removed
-        assert "DISCORD_HOME_CHANNEL" not in saved

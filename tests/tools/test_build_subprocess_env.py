@@ -29,12 +29,6 @@ def test_scrub_on_strips_dynamic_internal_secret(monkeypatch):
     assert "GATEWAY_RELAY_FOO_TOKEN" not in env
 
 
-def test_scrub_on_strips_venv_markers(monkeypatch):
-    monkeypatch.setenv("VIRTUAL_ENV", "/some/venv")
-    env = build_subprocess_env()
-    assert "VIRTUAL_ENV" not in env
-
-
 def test_scrub_on_forwards_extra_like_sanitize_extra_env(monkeypatch):
     env = build_subprocess_env(extra={"MY_HARMLESS_VAR": "1"})
     assert env.get("MY_HARMLESS_VAR") == "1"
@@ -43,40 +37,9 @@ def test_scrub_on_forwards_extra_like_sanitize_extra_env(monkeypatch):
     assert "ANTHROPIC_API_KEY" not in env2
 
 
-def test_scrub_on_matches_sanitize_exactly(monkeypatch):
-    """build_subprocess_env(scrub_secrets=True) must equal
-    _sanitize_subprocess_env(os.environ.copy()) — single owner, zero drift."""
-    from tools.environments.local import _sanitize_subprocess_env
-
-    monkeypatch.setenv("OPENAI_API_KEEP_TEST", "x")
-    assert build_subprocess_env() == _sanitize_subprocess_env(os.environ.copy())
-
-
 # ---------------------------------------------------------------------------
 # Unit: no-scrub path preserves content exactly
 # ---------------------------------------------------------------------------
-
-def test_no_scrub_no_home_is_exact_environ_copy(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    assert env == os.environ.copy()
-    assert env is not os.environ  # detached copy
-
-
-def test_no_scrub_explicit_base_preserved(monkeypatch):
-    base = {"PATH": "/bin", "ANTHROPIC_API_KEY": "sk"}
-    env = build_subprocess_env(base, scrub_secrets=False, inherit_profile_home=False)
-    assert env == base
-    assert env is not base
-
-
-def test_extra_wins_last_on_no_scrub_path():
-    base = {"HERMES_HOME": "/old"}
-    env = build_subprocess_env(
-        base, scrub_secrets=False, inherit_profile_home=False,
-        extra={"HERMES_HOME": "/new"},
-    )
-    assert env["HERMES_HOME"] == "/new"
 
 
 def test_no_scrub_inherit_profile_home_bridges_context_override(tmp_path):

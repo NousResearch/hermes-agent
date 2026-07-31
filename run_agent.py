@@ -45,6 +45,7 @@ import tempfile
 import time
 import threading
 import uuid
+import warnings
 from typing import List, Dict, Any, Optional, Callable
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -181,6 +182,8 @@ from agent.message_sanitization import (  # noqa: F401
     _sanitize_tools_non_ascii,
     _strip_images_from_messages,
     _sanitize_structure_non_ascii,
+    coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
+    uniquify_tool_call_ids as _sanitize_uniquify_tool_call_ids,
 )
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -437,8 +440,8 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 500,  # Default tool-calling iterations (shared with subagents)
-        tool_delay: float = 1.0,
+        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
         save_trajectories: bool = False,
@@ -502,6 +505,13 @@ class AIAgent:
         requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
+        if tool_delay is not None:
+            warnings.warn(
+                "tool_delay is deprecated and ignored; sequential tool calls "
+                "no longer sleep between executions.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         from agent.agent_init import init_agent
         init_agent(
             self,
@@ -516,7 +526,6 @@ class AIAgent:
             args=args,
             model=model,
             max_iterations=max_iterations,
-            tool_delay=tool_delay,
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             save_trajectories=save_trajectories,
@@ -3891,6 +3900,7 @@ class AIAgent:
           - process_registry entries for task_id (user's bg shells)
           - terminal sandbox for task_id (cwd, env, shell state)
           - browser daemon for task_id (open tabs, cookies)
+          - computer-use backend for task_id (native target and browser refs)
           - memory provider (has its own lifecycle; keeps running)
 
         We DO close:
@@ -3947,6 +3957,7 @@ class AIAgent:
         - Background processes tracked in ProcessRegistry
         - Terminal sandbox environments
         - Browser daemon sessions
+        - Computer-use backend sessions and target/ref state
         - Active child agents (subagent delegation)
         - OpenAI/httpx client connections
 
@@ -3974,7 +3985,19 @@ class AIAgent:
         except Exception:
             pass
 
-        # 4. Close active child agents
+        # 4. Release the session-owned computer-use backend.  This ends the
+        # exact cua-driver session, drops typed-browser refs/grants, and stops
+        # a private embedded daemon when Hermes YOLO selected unrestricted
+        # mode.  The import is lazy so sessions without computer_use retain
+        # the narrow core footprint.
+        try:
+            from tools.computer_use import release_computer_use_session
+
+            release_computer_use_session(task_id)
+        except Exception:
+            pass
+
+        # 5. Close active child agents
         try:
             with self._active_children_lock:
                 children = list(self._active_children)
@@ -3987,7 +4010,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close the OpenAI/httpx client
+        # 6. Close the OpenAI/httpx client
         try:
             client = getattr(self, "client", None)
             if client is not None:
@@ -3996,14 +4019,14 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5b. Close the cached per-request wire client (reused across
+        # 6b. Close the cached per-request wire client (reused across
         # sequential LLM calls; see _create_request_openai_client).
         try:
             self._close_cached_request_openai_client(reason="agent_close")
         except Exception:
             pass
 
-        # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
+        # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't
         # be reused.  Drops the reference proactively rather than waiting for
@@ -4014,7 +4037,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 7. Finalize the owned SQLite session row unless this agent is only a
+        # 8. Finalize the owned SQLite session row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
         # (manual compression helpers that rotate to a continuation session_id,
         # or background-review forks that share the live parent's session_id and
@@ -4158,10 +4181,12 @@ class AIAgent:
 
     @staticmethod
     def _get_tool_call_id_static(tc) -> str:
-        """Extract call ID from a tool_call entry (dict or object)."""
-        if isinstance(tc, dict):
-            return (tc.get("call_id", "") or tc.get("id", "") or "").strip()
-        return (getattr(tc, "call_id", "") or getattr(tc, "id", "") or "").strip()
+        """Extract call ID from a tool_call entry (dict or object).
+
+        Forwarder — policy owner is
+        ``agent.message_sanitization.coalesce_tool_call_id`` (audit F4).
+        """
+        return _sanitize_coalesce_tool_call_id(tc)
 
     @staticmethod
     def _get_tool_call_name_static(tc) -> str:
@@ -4322,78 +4347,13 @@ class AIAgent:
     def _uniquify_tool_call_ids(tool_calls: list) -> list:
         """Ensure every tool call in a single assistant turn has a distinct id.
 
-        Some models/providers reuse one call id across different calls in a
-        single batch (observed with native Kimi Responses replays, Ollama-
-        compatible endpoints, and degraded models at long context; same bug
-        class as openclaw/openclaw#110518 / #110956). Duplicate ids are lossy
-        downstream: the pre-API sanitizer keeps only the first call/result
-        pair per id (#58327), so the later call's result silently vanishes
-        from every replayed payload, and strict providers (Anthropic
-        tool_use, DeepSeek) reject duplicate ids outright.
-
-        The first occurrence keeps its id; later collisions get a
-        deterministic ``<id>_d<n>`` suffix — never a random UUID, which would
-        break prompt-cache prefix stability across replays. Mutates the
-        entries in place (SDK models / SimpleNamespace / dicts) and returns
-        the same list. Blank/missing ids are left for the deterministic
-        fallback in ``build_assistant_message``.
+        Forwarder — policy owner is
+        ``agent.message_sanitization.uniquify_tool_call_ids`` (audit F4).
+        First occurrence keeps its id; later collisions get a deterministic
+        ``<id>_d<n>`` suffix (never uuid4 — prompt-cache prefix stability).
+        Mutates entries in place and returns the same list.
         """
-        seen: set = set()
-        for tc in tool_calls or []:
-            if isinstance(tc, dict):
-                raw = tc.get("call_id") or tc.get("id") or ""
-            else:
-                raw = getattr(tc, "call_id", None) or getattr(tc, "id", None) or ""
-            raw = raw.strip() if isinstance(raw, str) else ""
-            if not raw:
-                continue
-            # Composite Responses ids ("call_x|fc_y") collide on the call
-            # half — that's the pairing key providers enforce per turn.
-            cid = raw.split("|", 1)[0]
-            if not cid:
-                continue
-            if cid not in seen:
-                seen.add(cid)
-                continue
-            n = 2
-            new_id = f"{cid}_d{n}"
-            while new_id in seen:
-                n += 1
-                new_id = f"{cid}_d{n}"
-            seen.add(new_id)
-
-            def _renamed(value):
-                # Preserve a composite id's response-item half so the
-                # provider's real fc_/item id survives the rename.
-                if isinstance(value, str) and "|" in value:
-                    return f"{new_id}|{value.split('|', 1)[1]}"
-                return new_id
-
-            try:
-                if isinstance(tc, dict):
-                    if tc.get("id"):
-                        tc["id"] = _renamed(tc["id"])
-                    else:
-                        tc["id"] = new_id
-                    if tc.get("call_id"):
-                        tc["call_id"] = new_id
-                else:
-                    tc.id = _renamed(getattr(tc, "id", None))
-                    if getattr(tc, "call_id", None):
-                        tc.call_id = new_id
-            except Exception:
-                logger.warning(
-                    "Could not uniquify duplicate tool call id %s", cid
-                )
-                continue
-            _fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
-            _fn_name = (_fn.get("name") if isinstance(_fn, dict) else getattr(_fn, "name", None)) or "?"
-            logger.warning(
-                "Model reused tool call id %s within one turn; renamed the "
-                "duplicate to %s (tool=%s) to keep call/result pairing "
-                "lossless.", cid, new_id, _fn_name,
-            )
-        return tool_calls
+        return _sanitize_uniquify_tool_call_ids(tool_calls)
 
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_tool_call``."""
@@ -5273,12 +5233,15 @@ class AIAgent:
         apply_user_headers: bool = True,
     ) -> None:
         from agent.auxiliary_client import (
+            _AI_GATEWAY_HEADERS,
             build_nvidia_nim_headers,
             build_or_headers,
         )
 
         if base_url_host_matches(base_url, "openrouter.ai"):
             self._client_kwargs["default_headers"] = build_or_headers()
+        elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
+            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):
@@ -6479,6 +6442,8 @@ class AIAgent:
         """
         if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
             return True
+        if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
+            return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
             or base_url_host_matches(self._base_url_lower, "githubcopilot.com")
@@ -6672,12 +6637,12 @@ class AIAgent:
         protocol and reject ``reasoning_content`` echoes. We only enable the
         kimi-reasoning replay when the request actually targets a
         kimi/moonshot endpoint or the dedicated kimi-coding provider.
+
+        Rule table owner: ``agent.message_sanitization.reasoning_echo_family``.
         """
-        return (
-            self.provider in {"kimi-coding", "kimi-coding-cn"}
-            or base_url_host_matches(self.base_url, "api.kimi.com")
-            or base_url_host_matches(self.base_url, "moonshot.ai")
-            or base_url_host_matches(self.base_url, "moonshot.cn")
+        from agent.message_sanitization import matches_reasoning_echo_family
+        return matches_reasoning_echo_family(
+            "kimi", self.provider, None, self.base_url
         )
 
     def _needs_deepseek_tool_reasoning(self) -> bool:
@@ -6686,13 +6651,12 @@ class AIAgent:
         DeepSeek V4 thinking mode requires ``reasoning_content`` on every
         assistant tool-call turn; omitting it causes HTTP 400 when the
         message is replayed in a subsequent API request (#15250).
+
+        Rule table owner: ``agent.message_sanitization.reasoning_echo_family``.
         """
-        provider = (self.provider or "").lower()
-        model = (self.model or "").lower()
-        return (
-            provider == "deepseek"
-            or "deepseek" in model
-            or base_url_host_matches(self.base_url, "api.deepseek.com")
+        from agent.message_sanitization import matches_reasoning_echo_family
+        return matches_reasoning_echo_family(
+            "deepseek", (self.provider or "").lower(), self.model, self.base_url
         )
 
     def _needs_mimo_tool_reasoning(self) -> bool:
@@ -6701,14 +6665,12 @@ class AIAgent:
         MiMo thinking mode requires ``reasoning_content`` on every assistant
         tool-call message when replaying history; omitting it causes HTTP 400.
         Refs: https://platform.xiaomimimo.com/docs/zh-CN/usage-guide/passing-back-reasoning_content
+
+        Rule table owner: ``agent.message_sanitization.reasoning_echo_family``.
         """
-        provider = (self.provider or "").lower()
-        model = (self.model or "").lower()
-        return (
-            provider == "xiaomi"
-            or "mimo" in model
-            or base_url_host_matches(self.base_url, "api.xiaomimimo.com")
-            or base_url_host_matches(self.base_url, "xiaomimimo.com")
+        from agent.message_sanitization import matches_reasoning_echo_family
+        return matches_reasoning_echo_family(
+            "mimo", (self.provider or "").lower(), self.model, self.base_url
         )
 
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:

@@ -34,12 +34,14 @@ const INITIAL_WAKE_WORD_STATE: WakeWordState = {
 export const $wakeWord = atom<WakeWordState>(INITIAL_WAKE_WORD_STATE)
 
 export interface WakeStatusResponse {
-  /** Armed but the mic delivers only silence (macOS backend-permission gap). */
+  /** Armed but the selected backend input delivers only silence. */
   audio_silent?: boolean
   available?: boolean
+  configured_surface?: string
   /** Config truth (wake_word.enabled) — drives post-voice re-arm. */
   enabled?: boolean
   hint?: string
+  input_device?: WakeInputDeviceStatus
   listening?: boolean
   owned_by_caller?: boolean
   owner_surface?: string | null
@@ -61,6 +63,16 @@ export interface WakeStopResponse {
   disabled_persisted?: boolean
   reason?: string | null
   stopped?: boolean
+}
+
+export interface WakeInputDeviceStatus {
+  default_samplerate?: number
+  error?: string
+  hostapi?: string
+  hostapi_index?: number
+  max_input_channels?: number
+  name?: string
+  selector?: number | string | null
 }
 
 /** Minimal requester shape — satisfied by both `useGatewayRequest`'s
@@ -111,8 +123,8 @@ const noticeFrom = (result: { hint?: string; reason?: string | null } | null | u
 export function applyWakeStatus(status: WakeStatusResponse | null | undefined): void {
   const current = $wakeWord.get()
   const listening = Boolean(status?.listening)
-  // "Armed but deaf" (macOS backend without mic permission) keeps its hint
-  // visible in the tooltip even though the toggle shows listening.
+  // "Armed but deaf" keeps its input-device hint visible in the tooltip even
+  // though the toggle shows listening.
   const silent = Boolean(status?.audio_silent)
 
   $wakeWord.set({

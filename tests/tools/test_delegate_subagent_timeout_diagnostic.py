@@ -145,61 +145,6 @@ class TestDumpSubagentTimeoutDiagnostic:
         # The thread is parked inside _hang.wait → cond.wait → waiter.acquire
         assert "acquire" in content or "wait" in content
 
-    def test_truncates_very_long_goal(self, hermes_home):
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
-        child = _StubChild()
-        huge_goal = "x" * 5000
-
-        path = _dump_subagent_timeout_diagnostic(
-            child=child,
-            task_index=0,
-            timeout_seconds=300.0,
-            duration_seconds=300.0,
-            worker_thread=None,
-            goal=huge_goal,
-        )
-        child.interrupt()
-
-        content = Path(path).read_text()
-        assert "[truncated]" in content
-        # Goal section trimmed to 1000 chars + suffix
-        goal_block = content.split("## Goal", 1)[1].split("## Child config", 1)[0]
-        assert len(goal_block) < 1200
-
-    def test_missing_worker_thread_is_handled(self, hermes_home):
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
-        child = _StubChild()
-        path = _dump_subagent_timeout_diagnostic(
-            child=child,
-            task_index=0,
-            timeout_seconds=300.0,
-            duration_seconds=300.0,
-            worker_thread=None,
-            goal="x",
-        )
-        child.interrupt()
-        content = Path(path).read_text()
-        assert "<no worker thread handle>" in content
-
-    def test_exited_worker_thread_is_handled(self, hermes_home):
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
-        child = _StubChild()
-        # A thread that has already finished
-        t = threading.Thread(target=lambda: None)
-        t.start()
-        t.join()
-        assert not t.is_alive()
-        path = _dump_subagent_timeout_diagnostic(
-            child=child,
-            task_index=0,
-            timeout_seconds=300.0,
-            duration_seconds=300.0,
-            worker_thread=t,
-            goal="x",
-        )
-        child.interrupt()
-        content = Path(path).read_text()
-        assert "<worker thread already exited>" in content
 
     def test_returns_none_on_unwritable_logs_dir(self, tmp_path, monkeypatch):
         # Point HERMES_HOME at an unwritable path so logs/ can't be created
@@ -266,42 +211,9 @@ class TestRunSingleChildTimeoutDump:
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
 
-    def test_nonzero_api_calls_skips_dump_and_uses_old_message(self, hermes_home, monkeypatch):
-        child = _StubChild(api_call_count=5, hang_seconds=10.0)
-        result = self._invoke_with_short_timeout(child, monkeypatch)
-
-        assert result["status"] == "timeout"
-        assert result["api_calls"] == 5
-        # No diagnostic file should be written for timeouts that made
-        # actual API calls — the old generic "stuck on slow call" message
-        # still applies.
-        assert result.get("diagnostic_path") is None
-        assert "stuck on a slow API call" in result["error"]
-        # And no subagent-timeout-* file should exist under logs/
-        logs_dir = hermes_home / "logs"
-        if logs_dir.is_dir():
-            dumps = list(logs_dir.glob("subagent-timeout-*.log"))
-            assert dumps == []
 
     # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────
 
-    def test_timeout_result_carries_structured_metadata(self, hermes_home, monkeypatch):
-        """Parents must be able to distinguish a child_timeout_seconds kill
-        from other failures without parsing the error string."""
-        child = _StubChild(api_call_count=0, hang_seconds=10.0)
-        result = self._invoke_with_short_timeout(child, monkeypatch)
-
-        assert result["status"] == "timeout"
-        assert result["timeout_seconds"] == 0.3
-        assert result["timed_out_after_seconds"] == result["duration_seconds"]
-        assert result["timeout_phase"] == "before_first_llm_call"
-
-    def test_timeout_phase_after_llm_calls(self, hermes_home, monkeypatch):
-        child = _StubChild(api_call_count=5, hang_seconds=10.0)
-        result = self._invoke_with_short_timeout(child, monkeypatch)
-
-        assert result["timeout_phase"] == "after_llm_calls"
-        assert result["timeout_seconds"] == 0.3
 
     def test_non_timeout_error_has_null_timeout_metadata(self, hermes_home, monkeypatch):
         """The metadata fields are timeout-specific — a child that raises

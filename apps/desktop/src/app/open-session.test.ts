@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const focusOpenSession = vi.fn()
 const openSessionTile = vi.fn()
+const reuseBlankDraftTile = vi.fn()
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
@@ -10,7 +11,8 @@ vi.mock('@/store/session-states', () => ({
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
     !focused || (focused === 'main' && workspaceIsPage),
   focusOpenSession: (...args: unknown[]) => focusOpenSession(...args),
-  openSessionTile: (...args: unknown[]) => openSessionTile(...args)
+  openSessionTile: (...args: unknown[]) => openSessionTile(...args),
+  reuseBlankDraftTile: (...args: unknown[]) => reuseBlankDraftTile(...args)
 }))
 
 vi.mock('@/store/windows', () => ({
@@ -23,7 +25,33 @@ vi.mock('./routes', () => ({
   sessionRoute: (id: string) => `/c/${encodeURIComponent(id)}`
 }))
 
-import { openSession, openSessionIntentFromModifiers } from './open-session'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+
+import { mainChatOccupied, openSession, openSessionIntentFromModifiers } from './open-session'
+
+/**
+ * The question behind both the sidebar "+" and a palette open: is there a
+ * conversation on main that must not be discarded? A create affordance stacks a
+ * tab rather than replacing a chat that may still be mid-turn, and an open from
+ * nowhere does the same.
+ */
+describe('mainChatOccupied', () => {
+  it('is occupied once a conversation is on screen', () => {
+    expect(mainChatOccupied('runtime-a', 'stored-a')).toBe(true)
+  })
+
+  it('is occupied by a live runtime whose stored id has not landed yet', () => {
+    expect(mainChatOccupied('runtime-a', null)).toBe(true)
+  })
+
+  it('is occupied by a selected session still resuming into a runtime', () => {
+    expect(mainChatOccupied(null, 'stored-a')).toBe(true)
+  })
+
+  it('is free when nothing is open', () => {
+    expect(mainChatOccupied(null, null)).toBe(false)
+  })
+})
 
 describe('openSessionIntentFromModifiers', () => {
   it('defaults to in-place', () => {
@@ -32,11 +60,21 @@ describe('openSessionIntentFromModifiers', () => {
     expect(openSessionIntentFromModifiers({})).toBe('in-place')
   })
 
+  it('returns the caller base for an unmodified select', () => {
+    expect(openSessionIntentFromModifiers(undefined, 'stack')).toBe('stack')
+    expect(openSessionIntentFromModifiers({}, 'stack')).toBe('stack')
+  })
+
   it('reads ⌘/⌃ as tab and ⇧+mod as window', () => {
     expect(openSessionIntentFromModifiers({ metaKey: true })).toBe('tab')
     expect(openSessionIntentFromModifiers({ ctrlKey: true })).toBe('tab')
     expect(openSessionIntentFromModifiers({ metaKey: true, shiftKey: true })).toBe('window')
     expect(openSessionIntentFromModifiers({ shiftKey: true })).toBe('in-place')
+  })
+
+  it('lets modifiers override the base', () => {
+    expect(openSessionIntentFromModifiers({ metaKey: true }, 'stack')).toBe('tab')
+    expect(openSessionIntentFromModifiers({ metaKey: true, shiftKey: true }, 'stack')).toBe('window')
   })
 })
 
@@ -50,6 +88,9 @@ describe('openSession', () => {
     openSessionInNewWindow.mockReset()
     canOpenSessionWindow.mockReturnValue(true)
     workspaceIsPageGet.mockReturnValue(false)
+    reuseBlankDraftTile.mockReset()
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
   })
 
   it('in-place focuses an existing tile and does not navigate', () => {
@@ -92,6 +133,55 @@ describe('openSession', () => {
     openSession('s1', navigate, 'tab')
     expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('stack focuses a session that is already on screen', () => {
+    $selectedStoredSessionId.set('s0')
+    focusOpenSession.mockReturnValue('tile')
+    openSession('s1', navigate, 'stack')
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('stack opens a tab rather than taking main from a loaded chat', () => {
+    $selectedStoredSessionId.set('s0')
+    focusOpenSession.mockReturnValue(null)
+    openSession('s1', navigate, 'stack')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('stack spends an open blank draft tab before stacking a new one', () => {
+    $selectedStoredSessionId.set('s0')
+    focusOpenSession.mockReturnValue(null)
+    reuseBlankDraftTile.mockReturnValue(true)
+    openSession('s1', navigate, 'stack')
+    expect(reuseBlankDraftTile).toHaveBeenCalledWith('s1')
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('stack prefers the session already on screen over a blank draft tab', () => {
+    $selectedStoredSessionId.set('s0')
+    focusOpenSession.mockReturnValue('tile')
+    reuseBlankDraftTile.mockReturnValue(true)
+    openSession('s1', navigate, 'stack')
+    expect(reuseBlankDraftTile).not.toHaveBeenCalled()
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('stack opens a tab while main is mid-turn on an unsaved session', () => {
+    $activeSessionId.set('runtime-a')
+    focusOpenSession.mockReturnValue(null)
+    openSession('s1', navigate, 'stack')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+  })
+
+  it('stack loads into main when it holds only a blank draft', () => {
+    focusOpenSession.mockReturnValue(null)
+    openSession('s1', navigate, 'stack')
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(openSessionTile).not.toHaveBeenCalled()
   })
 
   it('window pops out when the bridge supports it', () => {

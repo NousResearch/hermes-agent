@@ -7873,11 +7873,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter_session_key=adapter_session_key,
         )
 
-    def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
+    def _queue_depth(
+        self,
+        session_key: str,
+        *,
+        adapter: Any = None,
+        adapter_session_key: Optional[str] = None,
+    ) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         _q_state = self._peek_session_state(session_key)
         depth = len(_q_state.conversation.queued_events) if _q_state else 0
-        if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
+        slot_key = adapter_session_key or session_key
+        if adapter is not None and slot_key in getattr(adapter, "_pending_messages", {}):
             depth += 1
         return depth
 
@@ -8815,10 +8822,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(
+        self,
+        session_key: str,
+        event: MessageEvent,
+        *,
+        adapter_session_key: Optional[str] = None,
+    ) -> None:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
             return
+        slot_key = adapter_session_key or session_key
         # #28503 — Previously this called ``merge_pending_message_event``
         # with the default ``merge_text=False``, which silently OVERWROTE
         # the single pending slot when consecutive text messages arrived
@@ -8828,7 +8842,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # the head slot via ``merge_pending_message_event`` (album
         # semantics); everything else appends to the overflow tail.
         pending_slot = getattr(adapter, "_pending_messages", None)
-        existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
+        existing = pending_slot.get(slot_key) if isinstance(pending_slot, dict) else None
         if existing is not None and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
@@ -8838,13 +8852,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Preserve photo-burst / media-merge semantics for the head slot.
             merge_pending_message_event(
                 adapter._pending_messages,
-                session_key,
+                slot_key,
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
             return
 
-        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+        if (
+            self._queue_depth(
+                session_key,
+                adapter=adapter,
+                adapter_session_key=slot_key,
+            )
+            >= self._BUSY_QUEUE_MAX_PENDING
+        ):
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key,
@@ -8852,7 +8873,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return
 
-        self._enqueue_fifo(session_key, event, adapter)
+        self._enqueue_fifo(
+            session_key,
+            event,
+            adapter,
+            adapter_session_key=slot_key,
+        )
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Return steerable text for a busy follow-up, transcribing voice first.
@@ -8891,7 +8917,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return text
         return (enriched_text or text).strip()
 
-    async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+    async def _handle_active_session_busy_message(
+        self, event: MessageEvent, adapter_session_key: str
+    ) -> bool:
+        session_key = adapter_session_key
+        try:
+            resolved_state_key = self._session_key_for_source(event.source)
+            if isinstance(resolved_state_key, str) and resolved_state_key:
+                session_key = resolved_state_key
+        except Exception:
+            logger.warning(
+                "Failed to resolve durable state key for busy event; "
+                "falling back to adapter key %s",
+                adapter_session_key,
+                exc_info=True,
+            )
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
@@ -8917,7 +8957,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
-                self._queue_or_replace_pending_event(session_key, event)
+                self._queue_or_replace_pending_event(
+                    session_key,
+                    event,
+                    adapter_session_key=adapter_session_key,
+                )
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
@@ -9143,7 +9187,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn in arrival order while still preserving photo-burst / album
         # merge semantics for media.
         if not steered and not redirected:
-            self._queue_or_replace_pending_event(session_key, event)
+            self._queue_or_replace_pending_event(
+                session_key,
+                event,
+                adapter_session_key=adapter_session_key,
+            )
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -14476,7 +14524,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not queued_text and not has_media:
             return "Usage: /queue <prompt>"
         adapter = self._adapter_for_source(source)
+        adapter_session_key = None
         if adapter:
+            adapter_session_key = quick_key
+            adapter_key_for_source = getattr(adapter, "session_key_for_source", None)
+            if callable(adapter_key_for_source):
+                resolved_adapter_key = adapter_key_for_source(source)
+                if isinstance(resolved_adapter_key, str) and resolved_adapter_key:
+                    adapter_session_key = resolved_adapter_key
             queued_event = MessageEvent(
                 text=queued_text,
                 message_type=event.message_type if has_media else MessageType.TEXT,
@@ -14496,8 +14551,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 internal=event.internal,
                 timestamp=event.timestamp,
             )
-            self._enqueue_fifo(quick_key, queued_event, adapter)
-        depth = self._queue_depth(quick_key, adapter=self._adapter_for_source(source))
+            self._enqueue_fifo(
+                quick_key,
+                queued_event,
+                adapter,
+                adapter_session_key=adapter_session_key,
+            )
+        depth = self._queue_depth(
+            quick_key,
+            adapter=adapter,
+            adapter_session_key=adapter_session_key,
+        )
         if depth <= 1:
             return "Queued for the next turn."
         return f"Queued for the next turn. ({depth} queued)"
@@ -15022,6 +15086,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._release_running_agent_state(_quick_key)
 
         if self._is_session_running(_quick_key):
+            _priority_adapter = self._adapter_for_source(source)
+            _priority_adapter_key = _quick_key
+            _priority_key_for_source = getattr(
+                _priority_adapter, "session_key_for_source", None
+            )
+            if callable(_priority_key_for_source):
+                _resolved_priority_key = _priority_key_for_source(source)
+                if isinstance(_resolved_priority_key, str) and _resolved_priority_key:
+                    _priority_adapter_key = _resolved_priority_key
             # Resolve the command once; every command's mid-run behavior is
             # declared on its CommandDef (busy_policy / busy_handler in
             # hermes_cli/commands.py) and dispatched through the single
@@ -15060,9 +15133,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                if _priority_adapter:
+                    merge_pending_message_event(
+                        getattr(_priority_adapter, "_pending_messages"),
+                        _priority_adapter_key,
+                        event,
+                    )
                 return None
 
             _telegram_followup_grace = float(
@@ -15082,14 +15158,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     time.time() - _started_at,
                     _quick_key,
                 )
-                adapter = self._adapter_for_source(source)
-                if adapter:
+                if _priority_adapter:
                     if self._busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
+                        self._enqueue_fifo(
+                            _quick_key,
+                            event,
+                            _priority_adapter,
+                            adapter_session_key=_priority_adapter_key,
+                        )
                     else:
                         merge_pending_message_event(
-                            adapter._pending_messages,
-                            _quick_key,
+                            getattr(_priority_adapter, "_pending_messages"),
+                            _priority_adapter_key,
                             event,
                             merge_text=True,
                         )
@@ -15106,18 +15186,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
                 # agent starts.
-                adapter = self._adapter_for_source(source)
-                if adapter:
+                if _priority_adapter:
                     merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
+                        getattr(_priority_adapter, "_pending_messages"),
+                        _priority_adapter_key,
                         event,
                         merge_text=True,
                     )
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
-                    self._queue_or_replace_pending_event(_quick_key, event)
+                    self._queue_or_replace_pending_event(
+                        _quick_key,
+                        event,
+                        adapter_session_key=_priority_adapter_key,
+                    )
                 return (
                     f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                     if self._queue_during_drain_enabled()
@@ -15125,7 +15208,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                self._queue_or_replace_pending_event(
+                    _quick_key,
+                    event,
+                    adapter_session_key=_priority_adapter_key,
+                )
                 return None
             if self._busy_input_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
@@ -15149,7 +15236,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                self._queue_or_replace_pending_event(
+                    _quick_key,
+                    event,
+                    adapter_session_key=_priority_adapter_key,
+                )
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
             # as ``_handle_active_session_busy_message``: an interrupt
@@ -15165,7 +15256,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "because the running agent has active subagents (#30170)",
                     _quick_key,
                 )
-                self._queue_or_replace_pending_event(_quick_key, event)
+                self._queue_or_replace_pending_event(
+                    _quick_key,
+                    event,
+                    adapter_session_key=_priority_adapter_key,
+                )
                 return None
             # #56391 — Compression protection (PRIORITY path). Same
             # rationale as ``_handle_active_session_busy_message``: context
@@ -15181,7 +15276,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "because context compression is in flight (#56391)",
                     _quick_key,
                 )
-                self._queue_or_replace_pending_event(_quick_key, event)
+                self._queue_or_replace_pending_event(
+                    _quick_key,
+                    event,
+                    adapter_session_key=_priority_adapter_key,
+                )
                 return None
             # Text-only corrections redirect the live turn (preserving
             # displayed context) when the runtime supports it; media/voice and

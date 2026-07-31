@@ -386,7 +386,7 @@ def test_gateway_goal_resume_fifo_separates_multiplexed_slot_and_state_keys():
 
 
 @pytest.mark.asyncio
-async def test_gateway_busy_secondary_adapter_stamps_real_user_before_fifo():
+async def test_gateway_busy_secondary_adapter_stamps_real_user_before_fifo(monkeypatch):
     """Real adapter ingestion must retain the secondary profile before queueing."""
     platform_config = PlatformConfig(enabled=True, token="token")
     adapter = _DrainAdapter(platform_config, Platform.DISCORD)
@@ -400,11 +400,19 @@ async def test_gateway_busy_secondary_adapter_stamps_real_user_before_fifo():
     runner._profile_adapters = {"coder": {Platform.DISCORD: adapter}}
     runner._active_profile_name = lambda: "default"
     runner._queued_events = {}
-    runner._busy_text_mode = "queue"
+    runner._busy_input_mode = "interrupt"
+    runner._busy_text_mode = "interrupt"
+    runner._draining = False
+    runner._restart_requested = False
+    runner._is_user_authorized = lambda source: True
+
+    async def _no_compression(session_key: str) -> bool:
+        return False
+
+    runner._session_has_compression_in_flight = _no_compression
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
     setattr(adapter, "gateway_runner", runner)
     runner._configure_profile_adapter(adapter, "coder", Platform.DISCORD)
-    # Avoid the optional text-debounce timer so this test observes the owner
-    # slot synchronously; the busy handler still declines interruption.
     adapter._busy_text_mode = "interrupt"
 
     source = adapter.build_source(
@@ -428,21 +436,31 @@ async def test_gateway_busy_secondary_adapter_stamps_real_user_before_fifo():
     # reaches transport ingress without a profile must be stamped before the
     # active-session busy slot owns it.
     source.profile = None
-    user_event = MessageEvent(
-        text="older real user",
+    first_user = MessageEvent(
+        text="older real user 1",
         message_type=MessageType.TEXT,
         source=source,
     )
+    second_user = MessageEvent(
+        text="older real user 2",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+
+    class _BusyAgent:
+        _active_children = []
+        _supports_active_turn_redirect = False
+
+        def interrupt(self, _text=None):
+            return None
+
+    runner._session_state(state_key).turn.agent = _BusyAgent()
     adapter._active_sessions[adapter_key] = asyncio.Event()
     current_task = asyncio.current_task()
     assert current_task is not None
     adapter._session_tasks[adapter_key] = current_task
-
-    async def _decline_busy(_event, _key):
-        return False
-
-    adapter.set_busy_session_handler(_decline_busy)
-    await adapter.handle_message(user_event)
+    await adapter.handle_message(first_user)
+    await adapter.handle_message(second_user)
 
     continuation = MessageEvent(
         text="[Continuing toward your standing goal]\nGoal: ship safely",
@@ -455,13 +473,29 @@ async def test_gateway_busy_secondary_adapter_stamps_real_user_before_fifo():
         adapter,
         adapter_session_key=adapter_key,
     )
+    assert (
+        runner._queue_depth(
+            state_key,
+            adapter=adapter,
+            adapter_session_key=adapter_key,
+        )
+        == 3
+    )
 
     first = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
-    assert first is not None
-    assert first is user_event
-    assert first.source.profile == "coder"
-    assert runner._session_key_for_source(first.source) == state_key
-    assert runner._promote_queued_event(default_state_key, adapter, None) is None
     second = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
-    assert second is continuation
+    third = runner._dequeue_and_promote_queued_event(state_key, adapter, source)
+    assert first is not None
+    assert second is not None
+    assert third is not None
+    assert first is first_user
+    assert second is second_user
+    assert third is continuation
+    assert all(item.source.profile == "coder" for item in (first, second, third))
+    assert all(runner._session_key_for_source(item.source) == state_key for item in (first, second, third))
+    assert runner._promote_queued_event(default_state_key, adapter, None) is None
     assert runner._dequeue_and_promote_queued_event(state_key, adapter, source) is None
+    default_state = runner._peek_session_state(default_state_key)
+    assert default_state is None or default_state.conversation.queued_events == []
+    assert runner._session_state(state_key).conversation.queued_events == []
+    assert adapter._pending_messages == {}

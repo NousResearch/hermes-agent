@@ -1756,6 +1756,64 @@ class TestConvertMessages:
         assert result[0] == {"role": "user", "content": "Hello world"}
 
 
+    def test_tool_result_message_is_bounded_before_sampling_llm_call(self):
+        inner = SimpleNamespace(text="[]" * 8_000)
+        tr_block = SimpleNamespace(toolUseId="call_large", content=[inner])
+        msg = SimpleNamespace(
+            role="user",
+            content=[tr_block],
+            content_as_list=[tr_block],
+        )
+        params = _make_sampling_params(messages=[msg])
+
+        result = self.handler._convert_messages(params)
+
+        assert len(result[0]["content"].encode("utf-8")) <= 10_000
+
+    def test_tool_result_message_preserves_image_blocks(self):
+        text = SimpleNamespace(text="chart")
+        image = SimpleNamespace(data="abc123", mimeType="image/png")
+        tr_block = SimpleNamespace(toolUseId="call_image", content=[text, image])
+        msg = SimpleNamespace(
+            role="user",
+            content=[tr_block],
+            content_as_list=[tr_block],
+        )
+        params = _make_sampling_params(messages=[msg])
+
+        result = self.handler._convert_messages(params)
+
+        assert result[0]["role"] == "tool"
+        assert result[0]["tool_call_id"] == "call_image"
+        assert result[0]["content"] == [
+            {"type": "text", "text": "chart"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,abc123"},
+            },
+        ]
+
+    def test_tool_result_message_serializes_unknown_blocks_as_text(self):
+        resource = SimpleNamespace(
+            type="resource",
+            uri="file:///tmp/report.json",
+            payload={"ok": True},
+        )
+        tr_block = SimpleNamespace(toolUseId="call_resource", content=[resource])
+        msg = SimpleNamespace(
+            role="user",
+            content=[tr_block],
+            content_as_list=[tr_block],
+        )
+
+        result = self.handler._convert_messages(
+            _make_sampling_params(messages=[msg])
+        )
+
+        content = result[0]["content"]
+        assert "file:///tmp/report.json" in content
+        assert '"ok": true' in content
+
     def test_tool_use_message(self):
         tu_block = SimpleNamespace(
             id="call_2", name="get_weather", input={"city": "London"}

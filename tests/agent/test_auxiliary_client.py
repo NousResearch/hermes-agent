@@ -465,6 +465,41 @@ class TestBuildCallKwargsMaxTokens:
 
 
 
+def test_build_call_kwargs_bounds_tool_results_and_consumes_private_metadata():
+    messages = [
+        {
+            "role": "tool",
+            "name": "legacy_auxiliary_result",
+            "tool_name": "legacy_auxiliary_result",
+            "effect_disposition": "unknown",
+            "_tool_output_risk": {"findings": ["prompt_injection"]},
+            "tool_call_id": "call_aux_budget",
+            "content": "[]" * 8_000,
+            "_tool_result_budget": {
+                "schema_version": 1,
+                "limit_tokens": 12_000,
+                "override_requested": True,
+            },
+        }
+    ]
+
+    kwargs = _build_call_kwargs(
+        provider="openai",
+        model="test-model",
+        messages=messages,
+    )
+
+    sent = kwargs["messages"][0]
+    assert len(sent["content"].encode("utf-8")) <= 12_000
+    assert "tool_name" not in sent
+    assert "effect_disposition" not in sent
+    assert "_tool_output_risk" not in sent
+    assert "_tool_result_budget" not in sent
+    assert messages[0]["tool_name"] == "legacy_auxiliary_result"
+    assert messages[0]["effect_disposition"] == "unknown"
+    assert messages[0]["_tool_result_budget"]["limit_tokens"] == 12_000
+
+
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):
         import agent.auxiliary_client as aux

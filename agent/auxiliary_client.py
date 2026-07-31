@@ -7238,6 +7238,15 @@ def _build_call_kwargs(
     task: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    # Auxiliary models (compression, MCP sampling, MiniSWE helpers, and plugin
+    # tasks) share the same final tool-result hardline as the primary model.
+    # This also consumes private call-local metadata before any strict provider
+    # sees the request.
+    from tools.tool_result_storage import (
+        enforce_model_visible_tool_result_limits,
+    )
+    messages = enforce_model_visible_tool_result_limits(messages)
+
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,

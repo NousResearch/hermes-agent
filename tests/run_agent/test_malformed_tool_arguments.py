@@ -80,10 +80,6 @@ def test_malformed_arguments_are_rejected_without_blocking_valid_sibling(
     with (
         patch("run_agent.handle_function_call", side_effect=fake_dispatch),
         patch.object(agent, "_invoke_tool", side_effect=fake_dispatch),
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
     ):
         execute = getattr(agent, f"_execute_tool_calls_{dispatch_mode}")
         execute(assistant_message, messages, "task-1")

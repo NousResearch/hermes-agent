@@ -583,7 +583,11 @@ def _compute_tool_definitions(
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
 
-    return filtered_tools
+    # Expose one reserved, call-local result-budget override on every schema
+    # after all dynamic rebuilds and Tool Search assembly. The dispatcher
+    # removes it before middleware/hooks/business handlers.
+    from tools.budget_config import augment_tool_schemas_with_result_token_limit
+    return augment_tool_schemas_with_result_token_limit(filtered_tools)
 
 
 def _resolve_active_context_length() -> int:
@@ -1122,6 +1126,15 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    if not isinstance(function_args, dict):
+        function_args = {}
+    from tools.budget_config import extract_result_token_budget
+    function_args, _result_budget, _result_budget_error = (
+        extract_result_token_budget(function_args)
+    )
+    if _result_budget_error is not None:
+        return json.dumps({"error": _result_budget_error}, ensure_ascii=False)
+
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
@@ -1171,6 +1184,21 @@ def handle_function_call(
             underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
             if err or not underlying_name:
                 return tool_error(err or "tool_call could not be resolved")
+            underlying_args, _inner_budget, _inner_budget_error = (
+                extract_result_token_budget(underlying_args)
+            )
+            if _inner_budget_error is not None:
+                return json.dumps({"error": _inner_budget_error}, ensure_ascii=False)
+            if _result_budget.override_requested and _inner_budget.override_requested:
+                return json.dumps(
+                    {
+                        "error": (
+                            "'result_token_limit' may be supplied either on "
+                            "tool_call or in its underlying arguments, not both"
+                        )
+                    },
+                    ensure_ascii=False,
+                )
             # Defense in depth: the underlying tool MUST be in the session's
             # scoped deferrable catalog. resolve_underlying_call() only checks
             # that the name is deferrable in the global registry; this gate
@@ -1197,6 +1225,8 @@ def handle_function_call(
                 task_id=task_id,
                 tool_call_id=tool_call_id,
                 session_id=session_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
                 user_task=user_task,
                 enabled_tools=enabled_tools,
                 skip_pre_tool_call_hook=skip_pre_tool_call_hook,
@@ -1226,6 +1256,22 @@ def handle_function_call(
             _tool_middleware_trace = _tool_request_mw.trace
         except Exception as _mw_err:
             logger.debug("tool_request middleware error: %s", _mw_err)
+
+    # A middleware must not be able to smuggle the reserved model-visible
+    # budget into a business handler or silently alter the validated request.
+    function_args, _middleware_budget, _middleware_budget_error = (
+        extract_result_token_budget(function_args)
+    )
+    if _middleware_budget_error is not None or _middleware_budget.override_requested:
+        return json.dumps(
+            {
+                "error": (
+                    _middleware_budget_error
+                    or "'result_token_limit' may only be supplied by the original tool call"
+                )
+            },
+            ensure_ascii=False,
+        )
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:

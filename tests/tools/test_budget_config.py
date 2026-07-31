@@ -1,12 +1,11 @@
 """Unit tests for tools/budget_config.py.
 
 Covers default values, resolve_threshold() priority chain
-(pinned > tool_overrides > registry > default), immutability,
-and the PINNED_THRESHOLDS escape-hatch for read_file.
+(pinned > tool_overrides > registry > default), immutability, and the
+universal call-local result-budget schema.
 """
 
 import dataclasses
-import math
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +17,7 @@ from tools.budget_config import (
     DEFAULT_TURN_BUDGET_CHARS,
     PINNED_THRESHOLDS,
     BudgetConfig,
+    augment_function_schema_with_result_token_limit,
     budget_for_context_window,
 )
 
@@ -41,12 +41,36 @@ class TestModuleConstants:
 class TestPinnedThresholds:
     """PINNED_THRESHOLDS – tools whose values must never be overridden."""
 
-    def test_read_file_is_inf(self):
-        assert PINNED_THRESHOLDS["read_file"] == float("inf")
-        assert math.isinf(PINNED_THRESHOLDS["read_file"])
+    def test_read_file_has_no_unlimited_pin(self):
+        assert "read_file" not in PINNED_THRESHOLDS
 
-    def test_pinned_is_not_empty(self):
-        assert len(PINNED_THRESHOLDS) >= 1
+
+def test_function_schema_augmentation_is_copy_safe_and_optional():
+    original = {
+        "name": "late_injected",
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query", "result_token_limit"],
+        },
+    }
+
+    augmented = augment_function_schema_with_result_token_limit(original)
+
+    assert augmented is not original
+    assert "result_token_limit" not in original["parameters"]["properties"]
+    budget = augmented["parameters"]["properties"]["result_token_limit"]
+    assert budget == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 32_000,
+        "default": 10_000,
+        "description": (
+            "Optional model-visible result budget for this call only. "
+            "Defaults to 10000; maximum 32000. Removed before tool execution."
+        ),
+    }
+    assert augmented["parameters"]["required"] == ["query"]
 
 
 # ---------------------------------------------------------------------------
@@ -116,11 +140,10 @@ class TestBudgetConfigCustom:
 class TestResolveThreshold:
     """Priority: pinned > tool_overrides > registry > default."""
 
-    def test_pinned_wins_over_override(self):
-        """Even if tool_overrides contains read_file, pinned value wins."""
+    def test_tool_override_applies_to_read_file(self):
         cfg = BudgetConfig(tool_overrides={"read_file": 1})
         result = cfg.resolve_threshold("read_file")
-        assert result == float("inf")
+        assert result == 1
 
     def test_tool_override_wins_over_default(self):
         """tool_overrides should be returned before falling back to registry."""
@@ -128,6 +151,32 @@ class TestResolveThreshold:
         result = cfg.resolve_threshold("my_tool")
         assert result == 42
 
+    @patch("tools.registry.registry")
+    def test_falls_back_to_registry(self, mock_registry):
+        """When not pinned and not in overrides, delegate to registry."""
+        mock_registry.get_max_result_size.return_value = 77_777
+        cfg = BudgetConfig()
+        result = cfg.resolve_threshold("some_tool")
+        mock_registry.get_max_result_size.assert_called_once_with(
+            "some_tool", default=DEFAULT_RESULT_SIZE_CHARS
+        )
+        assert result == 77_777
+
+    @patch("tools.registry.registry")
+    def test_registry_receives_custom_default(self, mock_registry):
+        """Custom default_result_size flows through to registry call."""
+        mock_registry.get_max_result_size.return_value = 50_000
+        cfg = BudgetConfig(default_result_size=50_000)
+        cfg.resolve_threshold("unknown_tool")
+        mock_registry.get_max_result_size.assert_called_once_with(
+            "unknown_tool", default=50_000
+        )
+
+    @patch("tools.registry.registry")
+    def test_read_file_uses_bounded_registry_value(self, mock_registry):
+        mock_registry.get_max_result_size.return_value = 100_000
+        cfg = BudgetConfig()
+        assert cfg.resolve_threshold("read_file") == 100_000
 
     @patch("tools.registry.registry")
     def test_registry_value_capped_at_default(self, mock_registry):

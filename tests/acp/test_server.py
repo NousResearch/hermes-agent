@@ -619,6 +619,9 @@ class TestRegisterSessionMcpServers:
     async def test_refreshes_agent_tool_surface(self, agent, mock_manager):
         """After MCP registration, agent.tools and valid_tool_names are refreshed."""
         from acp.schema import McpServerStdio
+        from tools.budget_config import (
+            augment_function_schema_with_result_token_limit,
+        )
 
         state = mock_manager.create_session(cwd="/tmp")
         state.agent.enabled_toolsets = ["hermes-acp"]
@@ -658,11 +661,13 @@ class TestRegisterSessionMcpServers:
         assert state.agent.tools is fake_tools
         assert state.agent.tools[-1] == {
             "type": "function",
-            "function": {
-                "name": "hindsight_recall",
-                "description": "Recall",
-                "parameters": {},
-            },
+            "function": augment_function_schema_with_result_token_limit(
+                {
+                    "name": "hindsight_recall",
+                    "description": "Recall",
+                    "parameters": {},
+                }
+            ),
         }
         assert state.agent.valid_tool_names == {
             "hindsight_recall",

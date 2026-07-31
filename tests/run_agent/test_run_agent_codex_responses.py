@@ -1057,6 +1057,45 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
 
 
 
+def _append_many_bounded_tool_results(assistant_message, messages):
+    """Grow a valid transcript without violating the 10k per-result hardline."""
+    for call in assistant_message.tool_calls:
+        messages.append(
+            {
+                "role": "tool",
+                "name": "synthetic",
+                "tool_call_id": call.id,
+                "content": "x" * 10_000,
+            }
+        )
+    for index in range(8):
+        call_id = f"bounded_extra_{index}"
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": "synthetic",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "name": "synthetic",
+                    "tool_call_id": call_id,
+                    "content": "x" * 10_000,
+                },
+            ]
+        )
+
+
 def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(monkeypatch):
     """Long tool-heavy turns should compact before the next API request.
 
@@ -1082,14 +1121,7 @@ def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(mo
     )
 
     def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
-        for call in assistant_message.tool_calls:
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": "x" * 80_000,
-                }
-            )
+        _append_many_bounded_tool_results(assistant_message, messages)
 
     compress_calls = []
 
@@ -1148,10 +1180,7 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
     )
 
     def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
-        for call in assistant_message.tool_calls:
-            messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": "x" * 80_000}
-            )
+        _append_many_bounded_tool_results(assistant_message, messages)
 
     def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
         # Emulate the real in-place compaction DB side effect: soft-archive the

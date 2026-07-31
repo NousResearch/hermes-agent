@@ -45,10 +45,17 @@ from tools.terminal_tool import (
 )
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
-    maybe_persist_tool_result,
     enforce_turn_budget,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.budget_config import (
+    DEFAULT_BUDGET,
+    DEFAULT_RESULT_TOKEN_BUDGET,
+    BudgetConfig,
+    ResultTokenBudget,
+    budget_for_context_window,
+    extract_result_token_budget,
+    merge_result_token_budgets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -382,6 +389,16 @@ def _run_agent_tool_execution_middleware(
     dispatch_lock = threading.Lock()
 
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
+        # The model-supplied override was consumed before middleware. Any
+        # reserved budget field present here was injected or mutated by a
+        # request/execution middleware and must fail closed before dispatch.
+        final_args, middleware_budget, middleware_budget_error = (
+            extract_result_token_budget(final_args)
+        )
+        if middleware_budget_error is None and middleware_budget.override_requested:
+            middleware_budget_error = (
+                "'result_token_limit' may only be supplied by the original tool call"
+            )
         with dispatch_lock:
             if state["dispatched"]:
                 raise RuntimeError(
@@ -408,8 +425,12 @@ def _run_agent_tool_execution_middleware(
                 return
             begin_execution(callback)
 
-        block_message = scope_block
-        block_error_type = "tool_scope_block"
+        block_message = middleware_budget_error or scope_block
+        block_error_type = (
+            "invalid_result_token_limit"
+            if middleware_budget_error is not None
+            else "tool_scope_block"
+        )
         if block_message is None:
             block_error_type = "plugin_block"
 
@@ -664,6 +685,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # (tool call, resolved name, parsed args, middleware trace, parse error,
     # tool-search scope block)
     parsed_calls = []
+    result_budgets: dict[str, ResultTokenBudget] = {}
     for tool_call in tool_calls:
         function_name = tool_call.function.name
 
@@ -672,6 +694,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         )
 
         if malformed_args_result is not None:
+            result_budgets[tool_call.id] = DEFAULT_RESULT_TOKEN_BUDGET
             parsed_calls.append(
                 (
                     tool_call,
@@ -683,6 +706,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
             )
             continue
+
+        function_args, result_budget, result_budget_error = (
+            extract_result_token_budget(function_args)
+        )
 
         # ── Tool Search unwrap ────────────────────────────────────────
         # When the model invokes the tool_call bridge, peel it open so
@@ -706,6 +733,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
+                    _underlying_args, _inner_budget, _inner_budget_error = (
+                        extract_result_token_budget(_underlying_args)
+                    )
+                    result_budget, _merge_error = merge_result_token_budgets(
+                        result_budget,
+                        _inner_budget,
+                    )
+                    result_budget_error = (
+                        result_budget_error
+                        or _inner_budget_error
+                        or _merge_error
+                    )
                     if _underlying in _tool_search_scoped_names(agent):
                         # Probe-validate before unwrapping (ironclaw#5149):
                         # missing required args return the parameter schema
@@ -724,8 +763,24 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        result_budgets[tool_call.id] = result_budget
+        block_result = None
+        if result_budget_error is not None:
+            block_result = json.dumps({"error": result_budget_error}, ensure_ascii=False)
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="invalid_result_token_limit",
+                error_message=result_budget_error,
+                middleware_trace=[],
+            )
         parsed_calls.append(
-            (tool_call, function_name, function_args, [], None, _ts_scope_block)
+            (tool_call, function_name, function_args, [], block_result, _ts_scope_block)
         )
 
     # ── Logging / callbacks ──────────────────────────────────────────
@@ -1199,13 +1254,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
 
         display_function_result = function_result
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=name,
-            tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -1225,11 +1273,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
+        _result_budget = result_budgets.get(tc.id, DEFAULT_RESULT_TOKEN_BUDGET)
         tool_message = make_tool_result_message(
             name,
             _tool_content,
             tc.id,
             effect_disposition=effect_disposition,
+            env=get_active_env(effective_task_id),
+            budget_config=_tool_budget,
+            result_token_limit=_result_budget.limit_tokens,
+            override_requested=_result_budget.override_requested,
+            source_args=args,
         )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
@@ -1371,6 +1425,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._apply_pending_steer_to_tool_results(messages, 1)
             continue
 
+        function_args, result_budget, result_budget_error = (
+            extract_result_token_budget(function_args)
+        )
+
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
         # underlying tool directly, so session toolset scope is enforced here).
@@ -1380,6 +1438,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
+                    _underlying_args, _inner_budget, _inner_budget_error = (
+                        extract_result_token_budget(_underlying_args)
+                    )
+                    result_budget, _merge_error = merge_result_token_budgets(
+                        result_budget,
+                        _inner_budget,
+                    )
+                    result_budget_error = (
+                        result_budget_error
+                        or _inner_budget_error
+                        or _merge_error
+                    )
                     if _underlying in _tool_search_scoped_names(agent):
                         # Probe-validate before unwrapping (ironclaw#5149):
                         # missing required args return the parameter schema
@@ -1408,6 +1478,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        if result_budget_error is not None:
+            _ts_scope_block = result_budget_error
         middleware_trace: list[dict[str, Any]] = []
         _execution_blocked = False
 
@@ -1872,13 +1944,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
 
         display_function_result = function_result
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=function_name,
-            tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -1891,7 +1956,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        tool_message = make_tool_result_message(
+            function_name,
+            _tool_content,
+            tool_call.id,
+            env=get_active_env(effective_task_id),
+            budget_config=_tool_budget,
+            result_token_limit=result_budget.limit_tokens,
+            override_requested=result_budget.override_requested,
+            source_args=function_args,
+        )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(

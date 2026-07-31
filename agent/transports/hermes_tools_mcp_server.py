@@ -149,6 +149,57 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+def _dispatch_with_result_budget(
+    tool_name: str,
+    kwargs: dict[str, Any],
+    handle_function_call,
+) -> str:
+    """Dispatch one MCP-exposed Hermes tool through the canonical result path."""
+    from agent.tool_dispatch_helpers import make_tool_result_message
+    from tools.budget_config import extract_result_token_budget
+    from tools.tool_result_storage import finalize_model_visible_tool_result
+
+    args, budget, budget_error = extract_result_token_budget(kwargs)
+    if budget_error is not None:
+        raw_result = json.dumps({"error": budget_error}, ensure_ascii=False)
+    else:
+        try:
+            raw_result = handle_function_call(tool_name, args)
+        except Exception as exc:
+            # Tool-controlled exception text is still model-visible data. Keep
+            # it on the same wrapping and budget path as successful results.
+            logger.warning("tool %s raised %s", tool_name, type(exc).__name__)
+            raw_result = json.dumps(
+                {"error": str(exc), "tool": tool_name},
+                ensure_ascii=False,
+            )
+
+    message = make_tool_result_message(
+        tool_name,
+        raw_result,
+        f"hermes-tools-mcp:{tool_name}",
+        result_token_limit=budget.limit_tokens,
+        override_requested=budget.override_requested,
+        source_args=args,
+    )
+    finalized = message["content"]
+    if isinstance(finalized, str):
+        return finalized
+
+    # FastMCP advertises a string result. Keep uncommon structured handlers
+    # valid without letting their JSON serialization bypass the final bound.
+    serialized = json.dumps(finalized, ensure_ascii=False, default=str)
+    bounded, _outcome = finalize_model_visible_tool_result(
+        serialized,
+        tool_name=tool_name,
+        tool_use_id=f"hermes-tools-mcp:{tool_name}:serialized",
+        limit_tokens=budget.limit_tokens,
+        override_requested=budget.override_requested,
+        source_args=args,
+    )
+    return bounded
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -211,10 +262,23 @@ def _build_server() -> Any:
                     # Filter out None values before dispatch so unset optionals
                     # aren't forwarded to the handler.
                     args = {k: v for k, v in kwargs.items() if v is not None}
-                    return handle_function_call(tool_name, args or {})
+                    return _dispatch_with_result_budget(
+                        tool_name,
+                        args or {},
+                        handle_function_call,
+                    )
                 except Exception as exc:
-                    logger.exception("tool %s raised", tool_name)
-                    return json.dumps({"error": str(exc), "tool": tool_name})
+                    # Finalization failures must not expose an unbounded
+                    # exception string. Business-handler errors are handled
+                    # inside _dispatch_with_result_budget above.
+                    logger.error(
+                        "tool %s result finalization failed: %s",
+                        tool_name,
+                        type(exc).__name__,
+                    )
+                    return json.dumps(
+                        {"error": "Tool dispatch failed", "tool": tool_name}
+                    )
 
             _dispatch.__name__ = tool_name
             _dispatch.__doc__ = description

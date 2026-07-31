@@ -31,6 +31,97 @@ class TestHandleFunctionCall:
         assert "totally_fake_tool_xyz" in result["error"]
 
 
+    def test_result_budget_override_is_removed_before_dispatch(self):
+        seen = {}
+
+        def dispatch(name, args, **kwargs):
+            seen["name"] = name
+            seen["args"] = dict(args)
+            return '{"ok":true}'
+
+        with (
+            patch("model_tools.registry.dispatch", side_effect=dispatch),
+            patch("hermes_cli.plugins.has_hook", return_value=False),
+        ):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test", "result_token_limit": 12_000},
+            )
+
+        assert result == '{"ok":true}'
+        assert seen == {"name": "web_search", "args": {"q": "test"}}
+
+    def test_invalid_result_budget_fails_before_dispatch(self):
+        with patch("model_tools.registry.dispatch") as dispatch:
+            result = json.loads(
+                handle_function_call(
+                    "web_search",
+                    {"q": "never", "result_token_limit": 32_001},
+                )
+            )
+
+        dispatch.assert_not_called()
+        assert "result_token_limit" in result["error"]
+
+    def test_tool_hooks_receive_session_and_tool_call_ids(self):
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="call-1",
+                session_id="session-1",
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_invoke_hook.call_args_list == [
+            call(
+                "pre_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                middleware_trace=[],
+            ),
+            call(
+                "post_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+                middleware_trace=[],
+            ),
+            call(
+                "transform_tool_result",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+            ),
+        ]
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
         """Regression: post_tool_call and transform_tool_result hooks must

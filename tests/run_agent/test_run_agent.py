@@ -2349,7 +2349,19 @@ class TestHandleMaxIterations:
                 "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
                 "codex_reasoning_items": [{"id": "rs_1"}],
             },
-            {"role": "tool", "tool_call_id": "call_1", "content": "result", "tool_name": "execute_code"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "x" * 20_000,
+                "tool_name": "execute_code",
+                "effect_disposition": "unknown",
+                "_tool_output_risk": {"findings": ["prompt_injection"]},
+                "_tool_result_budget": {
+                    "schema_version": 1,
+                    "limit_tokens": 24_000,
+                    "override_requested": True,
+                },
+            },
             {"role": "assistant", "content": "Done.", "_empty_recovery_synthetic": True},
         ]
 
@@ -2359,11 +2371,16 @@ class TestHandleMaxIterations:
         sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
         for m in sent_msgs:
             assert "tool_name" not in m, m
+            assert "effect_disposition" not in m, m
             assert "codex_reasoning_items" not in m, m
             assert "codex_message_items" not in m, m
             assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
+        sent_tool = next(m for m in sent_msgs if m.get("role") == "tool")
+        assert len(sent_tool["content"].encode("utf-8")) == 20_000
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
+        assert messages[2]["effect_disposition"] == "unknown"
+        assert messages[2]["_tool_result_budget"]["limit_tokens"] == 24_000
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
 

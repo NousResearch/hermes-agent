@@ -33,6 +33,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from agent.tool_dispatch_helpers import make_tool_result_message
+
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
     """Stable id for tool_call message correlation.
@@ -166,11 +168,7 @@ class CodexEventProjector:
         exit_code = item.get("exitCode")
         if exit_code is not None and exit_code != 0:
             output = f"[exit {exit_code}]\n{output}"
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": output,
-        }
+        tool_msg = make_tool_result_message("exec_command", output, call_id)
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
@@ -205,11 +203,11 @@ class CodexEventProjector:
             self._pending_reasoning = []
         status = item.get("status") or "unknown"
         n = len(changes_summary)
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": f"apply_patch status={status}, {n} change(s)",
-        }
+        tool_msg = make_tool_result_message(
+            "apply_patch",
+            f"apply_patch status={status}, {n} change(s)",
+            call_id,
+        )
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
@@ -248,11 +246,11 @@ class CodexEventProjector:
             content = json.dumps(result, ensure_ascii=False)[:4000]
         else:
             content = ""
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": content,
-        }
+        tool_msg = make_tool_result_message(
+            f"mcp.{server}.{tool}",
+            content,
+            call_id,
+        )
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
@@ -288,11 +286,7 @@ class CodexEventProjector:
         else:
             success = item.get("success")
             content = f"success={success}"
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": content,
-        }
+        tool_msg = make_tool_result_message(tool, content, call_id)
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )

@@ -105,6 +105,15 @@ def test_active_context_engine_tools_survive_explicit_platform_toolsets():
         tool.get("function", {}).get("name")
         for tool in getattr(agent, "tools", [])
     }
+    stub_schema = next(
+        tool["function"]
+        for tool in agent.tools
+        if tool["function"]["name"] == "stub_recover"
+    )
+    assert (
+        stub_schema["parameters"]["properties"]["result_token_limit"]["default"]
+        == 10_000
+    )
 
 
 def test_plugin_engine_update_model_args():

@@ -35,6 +35,11 @@ from typing import List, Dict, Any, Optional
 import fire
 from dotenv import load_dotenv
 from agent.tool_dispatch_helpers import make_tool_result_message
+from tools.budget_config import (
+    augment_tool_schemas_with_result_token_limit,
+    extract_result_token_budget,
+)
+from tools.tool_result_storage import enforce_model_visible_tool_result_limits
 
 # Load environment variables
 load_dotenv()
@@ -225,7 +230,9 @@ class MiniSWERunner:
         self.env = None
         
         # Tool definition
-        self.tools = [TERMINAL_TOOL_DEFINITION]
+        self.tools = augment_tool_schemas_with_result_token_limit(
+            [TERMINAL_TOOL_DEFINITION]
+        )
         
         print("🤖 Mini-SWE Runner initialized")
         print(f"   Model: {self.model}")
@@ -448,7 +455,9 @@ Complete the user's task step by step."""
                 print(f"\n🔄 API call #{api_call_count}/{self.max_iterations}")
                 
                 # Prepare API messages
-                api_messages = [{"role": "system", "content": system_prompt}] + messages
+                api_messages = enforce_model_visible_tool_result_limits(
+                    [{"role": "system", "content": system_prompt}] + messages
+                )
                 
                 # Make API call
                 try:
@@ -503,6 +512,9 @@ Complete the user's task step by step."""
                             args = json.loads(tc.function.arguments)
                         except json.JSONDecodeError:
                             args = {}
+                        args, result_budget, result_budget_error = (
+                            extract_result_token_budget(args)
+                        )
                         
                         command = args.get("command", "echo 'No command provided'")
                         timeout = args.get("timeout", self.command_timeout)
@@ -510,7 +522,14 @@ Complete the user's task step by step."""
                         print(f"   📞 terminal: {command[:60]}...")
                         
                         # Execute command
-                        result = self._execute_command(command, timeout)
+                        if result_budget_error is not None:
+                            result = {
+                                "output": "",
+                                "exit_code": -1,
+                                "error": result_budget_error,
+                            }
+                        else:
+                            result = self._execute_command(command, timeout)
                         
                         # Format result
                         result_json = json.dumps({
@@ -528,7 +547,12 @@ Complete the user's task step by step."""
                         
                         # Add tool response
                         messages.append(make_tool_result_message(
-                            tc.function.name, result_json, tc.id,
+                            tc.function.name,
+                            result_json,
+                            tc.id,
+                            result_token_limit=result_budget.limit_tokens,
+                            override_requested=result_budget.override_requested,
+                            source_args=args,
                         ))
                         
                         print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")

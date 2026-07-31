@@ -3182,7 +3182,13 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
-    return messages
+
+    # Final P0 hardline: legacy transcripts, recovery stubs, projected Codex
+    # events, and /steer mutations may create or enlarge role=tool messages
+    # outside the normal dispatcher. Bound a copy immediately before every
+    # provider call without mutating canonical history.
+    from tools.tool_result_storage import enforce_model_visible_tool_result_limits
+    return enforce_model_visible_tool_result_limits(messages)
 
 
 

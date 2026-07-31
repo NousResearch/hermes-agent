@@ -34,6 +34,25 @@ def _td(name: str, description: str = "", properties: Dict[str, Any] | None = No
     }
 
 
+def test_model_visible_tool_schemas_expose_bounded_result_override():
+    import model_tools
+
+    definitions = model_tools.get_tool_definitions(
+        enabled_toolsets=["terminal"],
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    terminal = next(
+        item for item in definitions
+        if item.get("function", {}).get("name") == "terminal"
+    )
+    override = terminal["function"]["parameters"]["properties"]["result_token_limit"]
+
+    assert override["type"] == "integer"
+    assert override["default"] == 10_000
+    assert override["maximum"] == 32_000
+
+
 # ---------------------------------------------------------------------------
 # Config parsing
 # ---------------------------------------------------------------------------

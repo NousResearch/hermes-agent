@@ -109,6 +109,10 @@ def memory_provider_tools_enabled(
 
 def inject_memory_provider_tools(agent: Any) -> int:
     """Append external memory-provider tool schemas to an agent tool surface."""
+    from tools.budget_config import (
+        augment_function_schema_with_result_token_limit,
+    )
+
     memory_manager = getattr(agent, "_memory_manager", None)
     tools = getattr(agent, "tools", None)
     if not memory_manager or tools is None:
@@ -148,7 +152,14 @@ def inject_memory_provider_tools(agent: Any) -> int:
         tool_name = schema["name"]
         if tool_name in existing_tool_names:
             continue
-        tools.append({"type": "function", "function": schema})
+        tools.append(
+            {
+                "type": "function",
+                "function": augment_function_schema_with_result_token_limit(
+                    schema
+                ),
+            }
+        )
         valid_tool_names.add(tool_name)
         existing_tool_names.add(tool_name)
         added += 1

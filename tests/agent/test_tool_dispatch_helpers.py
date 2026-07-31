@@ -194,6 +194,81 @@ class TestMakeToolResultMessage:
         assert "_tool_output_risk" not in msg
 
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "[]" * 8_000,
+            "界" * 8_000,
+            "👩🏽‍💻" * 3_000,
+        ],
+    )
+    def test_default_model_visible_budget_is_conservative_for_dense_text(self, payload):
+        msg = make_tool_result_message("terminal", payload, "call_budget")
+
+        assert len(msg["content"].encode("utf-8")) <= 10_000
+        assert msg["_tool_result_budget"]["limit_tokens"] == 10_000
+        assert msg["_tool_result_budget"]["counter_method"] == "utf8_bytes"
+        assert msg["_tool_result_budget"]["truncated"] is True
+
+    def test_untrusted_wrapper_is_included_in_final_budget(self):
+        msg = make_tool_result_message(
+            "mcp_synthetic_probe",
+            "external payload " * 8_000,
+            "call_mcp_budget",
+        )
+
+        content = msg["content"]
+        assert len(content.encode("utf-8")) <= 10_000
+        assert content.startswith(
+            '<untrusted_tool_result source="mcp_synthetic_probe">'
+        )
+        assert content.endswith("</untrusted_tool_result>")
+
+    def test_multimodal_text_has_one_aggregate_budget_and_preserves_image(self):
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
+        content = [
+            {"type": "text", "text": "a" * 7_000},
+            image,
+            {"type": "text", "text": "b" * 7_000},
+        ]
+
+        msg = make_tool_result_message("computer_use", content, "call_multimodal_budget")
+        final_content = msg["content"]
+
+        assert sum(
+            len(part.get("text", "").encode("utf-8"))
+            for part in final_content
+            if isinstance(part, dict)
+        ) <= 10_000
+        assert final_content[1] is image
+        assert msg["_tool_result_budget"]["truncated"] is True
+
+    def test_read_file_is_bounded_without_creating_a_persisted_handle(self):
+        msg = make_tool_result_message(
+            "read_file",
+            "line\n" * 8_000,
+            "call_read_file_budget",
+            source_args={"path": "/workspace/large.txt", "offset": 400, "limit": 8_000},
+        )
+
+        assert len(msg["content"].encode("utf-8")) <= 10_000
+        assert "<persisted-output>" not in msg["content"]
+        assert "/workspace/large.txt" in msg["content"]
+        assert msg["_tool_result_budget"]["persisted"] is False
+
+    def test_explicit_override_is_bounded_and_traceable(self):
+        msg = make_tool_result_message(
+            "terminal",
+            "x" * 20_000,
+            "call_override",
+            result_token_limit=24_000,
+            override_requested=True,
+        )
+
+        assert len(msg["content"].encode("utf-8")) == 20_000
+        assert msg["_tool_result_budget"]["limit_tokens"] == 24_000
+        assert msg["_tool_result_budget"]["override_requested"] is True
+
 
 class TestFileMutationTargets:
     def test_v4a_move_file_includes_source_and_destination(self):

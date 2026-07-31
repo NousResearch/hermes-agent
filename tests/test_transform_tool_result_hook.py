@@ -132,6 +132,30 @@ def test_transform_tool_result_runs_after_post_tool_call(monkeypatch):
     ]
 
 
+def test_transformed_plugin_result_is_bounded_in_final_tool_message(monkeypatch):
+    from agent.tool_dispatch_helpers import make_tool_result_message
+
+    def _hook(hook_name, **_kw):
+        if hook_name == "transform_tool_result":
+            return ["[]" * 8_000]
+        return []
+
+    transformed = _run_handle_function_call(
+        monkeypatch,
+        tool_name="plugin_budget_probe",
+        dispatch_result='{"small": true}',
+        invoke_hook=_hook,
+    )
+    message = make_tool_result_message(
+        "plugin_budget_probe",
+        transformed,
+        "call_plugin_budget",
+    )
+
+    assert len(message["content"].encode("utf-8")) <= 10_000
+    assert message["_tool_result_budget"]["truncated"] is True
+
+
 def test_transform_tool_result_integration_with_real_plugin(monkeypatch, tmp_path):
     """End-to-end: load a real plugin from HERMES_HOME and verify it rewrites results."""
     import yaml

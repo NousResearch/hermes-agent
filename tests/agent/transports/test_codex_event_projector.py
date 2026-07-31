@@ -99,6 +99,28 @@ class TestCommandExecutionProjection:
         assert "hello" in tool["content"]
 
 
+    def test_large_command_output_is_bounded_in_canonical_transcript(self) -> None:
+        item = {
+            **COMMAND_EXEC_COMPLETED["params"]["item"],
+            "aggregatedOutput": "[]" * 8_000,
+        }
+        notif = {
+            "method": "item/completed",
+            "params": {**COMMAND_EXEC_COMPLETED["params"], "item": item},
+        }
+
+        tool = CodexEventProjector().project(notif).messages[1]
+
+        assert len(tool["content"].encode("utf-8")) <= 10_000
+        assert tool["_tool_result_budget"]["truncated"] is True
+
+    def test_deterministic_call_id_across_replay(self) -> None:
+        # Same item id → same call_id (prefix cache must stay valid).
+        p1 = CodexEventProjector()
+        p2 = CodexEventProjector()
+        a = p1.project(COMMAND_EXEC_COMPLETED).messages
+        b = p2.project(COMMAND_EXEC_COMPLETED).messages
+        assert a[0]["tool_calls"][0]["id"] == b[0]["tool_calls"][0]["id"]
 
 
 class TestAgentMessageProjection:
@@ -200,6 +222,24 @@ class TestMcpToolCallProjection:
             {"method": "item/completed", "params": {"item": item}}
         ).messages
         assert "error" in msgs[1]["content"]
+
+    def test_dense_unicode_mcp_result_uses_byte_safe_finalizer(self) -> None:
+        item = {
+            "type": "mcpToolCall",
+            "id": "m3",
+            "server": "x",
+            "tool": "dense",
+            "arguments": {},
+            "result": {"content": "界" * 8_000},
+            "error": None,
+        }
+
+        tool = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        ).messages[1]
+
+        assert len(tool["content"].encode("utf-8")) <= 10_000
+        assert tool["_tool_result_budget"]["truncated"] is True
 
 
 class TestUserAndOpaqueProjection:

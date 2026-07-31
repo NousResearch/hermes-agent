@@ -2122,7 +2122,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # timestamp (preserved on gateway user replay entries for the
             # stale-confirmation expiry check — #47868 rejection class),
             # and every Hermes-internal underscore-prefixed scaffolding key.
-            for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
+            for schema_foreign in (
+                "tool_name",
+                "effect_disposition",
+                "codex_reasoning_items",
+                "codex_message_items",
+                "timestamp",
+            ):
                 api_msg.pop(schema_foreign, None)
             # api_content (the persist-what-you-send sidecar) carries the
             # exact bytes every main-loop call sent for this message —
@@ -2133,7 +2139,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # sidecar-carrying message and re-prefilling the whole transcript
             # at exactly the moment the context is largest.
             substitute_api_content(api_msg)
-            for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+            # Keep validated tool-result budget metadata until the final
+            # pre-model sanitizer has applied its call-local override. The
+            # sanitizer consumes and removes it before this direct provider
+            # call, just like the regular transport path.
+            for internal_key in [
+                k
+                for k in api_msg
+                if isinstance(k, str)
+                and k.startswith("_")
+                and k != "_tool_result_budget"
+            ]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:
                 # In MoA mode, agent.model is the virtual preset name,

@@ -140,6 +140,11 @@ def _format_messages_as_prompt(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any = None,
 ) -> str:
+    from tools.tool_result_storage import (
+        enforce_model_visible_tool_result_limits,
+    )
+    messages = enforce_model_visible_tool_result_limits(messages)
+
     sections: list[str] = [
         "You are being used as the active ACP agent backend for Hermes.",
         "Use ACP capabilities to complete tasks.",

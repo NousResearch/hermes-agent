@@ -84,6 +84,17 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     assert "memory_search" in agent.valid_tool_names   # not clobbered
     assert "lcm_grep" in agent.valid_tool_names         # not clobbered
     assert added == {"mcp_new_server_tool"}
+    injected = {
+        tool["function"]["name"]: tool["function"]
+        for tool in agent.tools
+        if tool["function"]["name"] in {"memory_search", "lcm_grep"}
+    }
+    assert set(injected) == {"memory_search", "lcm_grep"}
+    assert all(
+        schema["parameters"]["properties"]["result_token_limit"]["maximum"]
+        == 32_000
+        for schema in injected.values()
+    )
 
 
 def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):

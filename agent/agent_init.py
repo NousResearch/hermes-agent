@@ -2536,6 +2536,9 @@ def init_agent(
             if isinstance(t, dict)
         }
         from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
+        from tools.budget_config import (
+            augment_function_schema_with_result_token_limit as _augment_result_budget,
+        )
         for _raw_schema in agent.context_compressor.get_tool_schemas():
             _schema = _normalize_tool_schema(_raw_schema)
             if _schema is None:
@@ -2551,7 +2554,10 @@ def init_agent(
             _tname = _schema["name"]
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
-            _wrapped = {"type": "function", "function": _schema}
+            _wrapped = {
+                "type": "function",
+                "function": _augment_result_budget(_schema),
+            }
             agent.tools.append(_wrapped)
             agent.valid_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)

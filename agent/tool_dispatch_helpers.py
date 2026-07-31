@@ -34,7 +34,16 @@ from typing import Any, Dict, List, Optional
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
+from tools.budget_config import (
+    DEFAULT_BUDGET,
+    DEFAULT_RESULT_TOKEN_LIMIT,
+    BudgetConfig,
+)
 from tools.threat_patterns import scan_for_threats
+from tools.tool_result_storage import (
+    TokenCounter,
+    finalize_model_visible_tool_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -460,6 +469,12 @@ def make_tool_result_message(
     tool_call_id: str,
     *,
     effect_disposition: str | None = None,
+    env=None,
+    budget_config: BudgetConfig = DEFAULT_BUDGET,
+    result_token_limit: int = DEFAULT_RESULT_TOKEN_LIMIT,
+    override_requested: bool = False,
+    source_args: Dict[str, Any] | None = None,
+    token_counter: TokenCounter | None = None,
 ) -> dict:
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
@@ -481,13 +496,26 @@ def make_tool_result_message(
     callers should compare by value, not by ``is``.
     """
     wrapped = _maybe_wrap_untrusted(name, content)
+    finalized, budget_outcome = finalize_model_visible_tool_result(
+        wrapped,
+        tool_name=name,
+        tool_use_id=tool_call_id,
+        env=env,
+        config=budget_config,
+        limit_tokens=result_token_limit,
+        override_requested=override_requested,
+        source_args=source_args,
+        token_counter=token_counter,
+    )
     message = {
         "role": "tool",
         "name": name,
         "tool_name": name,
-        "content": wrapped,
+        "content": finalized,
         "tool_call_id": tool_call_id,
     }
+    if budget_outcome.truncated or budget_outcome.override_requested:
+        message["_tool_result_budget"] = budget_outcome.as_metadata()
     try:
         risk_metadata = _tool_output_risk_metadata(name, content)
     except Exception as exc:

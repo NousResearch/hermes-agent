@@ -1323,12 +1323,40 @@ class SamplingHandler:
     # -- Message conversion --------------------------------------------------
 
     @staticmethod
-    def _extract_tool_result_text(block) -> str:
-        """Extract text from a ToolResultContent block."""
+    def _extract_tool_result_content(block):
+        """Convert ToolResultContent without discarding image blocks."""
         if not hasattr(block, "content") or block.content is None:
             return ""
         items = block.content if isinstance(block.content, list) else [block.content]
-        return "\n".join(item.text for item in items if hasattr(item, "text"))
+        parts = []
+        has_non_text = False
+        for item in items:
+            if hasattr(item, "text"):
+                parts.append({"type": "text", "text": item.text})
+            elif hasattr(item, "data") and hasattr(item, "mimeType"):
+                has_non_text = True
+                parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{item.mimeType};base64,{item.data}"
+                    },
+                })
+            else:
+                model_dump = getattr(item, "model_dump", None)
+                if callable(model_dump):
+                    payload = model_dump(mode="json", by_alias=True)
+                elif hasattr(item, "__dict__"):
+                    payload = vars(item)
+                else:
+                    payload = str(item)
+                parts.append({
+                    "type": "text",
+                    "text": json.dumps(payload, ensure_ascii=False, default=str),
+                })
+
+        if not has_non_text:
+            return "\n".join(part["text"] for part in parts)
+        return parts
 
     def _convert_messages(self, params) -> List[dict]:
         """Convert MCP SamplingMessages to OpenAI format.
@@ -1351,11 +1379,14 @@ class SamplingHandler:
 
             # Emit tool result messages (role: tool)
             for tr in tool_results:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tr.toolUseId,
-                    "content": self._extract_tool_result_text(tr),
-                })
+                from agent.tool_dispatch_helpers import make_tool_result_message
+                messages.append(
+                    make_tool_result_message(
+                        "mcp_sampling_tool_result",
+                        self._extract_tool_result_content(tr),
+                        tr.toolUseId,
+                    )
+                )
 
             # Emit assistant tool_calls message
             if tool_uses:
@@ -6453,11 +6484,22 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     caller publishes this into ``agent._context_engine_tool_names`` atomically
     with the snapshot.
     """
+    from tools.budget_config import (
+        augment_function_schema_with_result_token_limit,
+    )
+
     def _add(schema: dict) -> bool:
         name = schema.get("name", "")
         if not name or name in name_set:
             return False
-        tools_list.append({"type": "function", "function": schema})
+        tools_list.append(
+            {
+                "type": "function",
+                "function": augment_function_schema_with_result_token_limit(
+                    schema
+                ),
+            }
+        )
         name_set.add(name)
         return True
 

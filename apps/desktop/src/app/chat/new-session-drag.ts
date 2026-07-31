@@ -21,6 +21,7 @@
 
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
+import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { findGroup } from '@/components/pane-shell/tree/model'
 import {
   rectContains,
@@ -60,7 +61,7 @@ interface SurfaceSnapshot {
 }
 
 function snapshotSurfaces(): SurfaceSnapshot[] {
-  return [...document.querySelectorAll<HTMLElement>('[data-session-anchor]')].map(el => ({
+  return queryAllVisible('[data-session-anchor]').map(el => ({
     anchor: el.dataset.sessionAnchor || 'workspace',
     rect: snapRect(el)
   }))
@@ -122,7 +123,7 @@ export function startNewSessionDrag(
       zones = snapshotZones()
       strips = snapshotStrips()
       surfaces = snapshotSurfaces()
-      composers = [...document.querySelectorAll<HTMLElement>('[data-slot="composer-root"]')].map(snapRect)
+      composers = queryAllVisible('[data-slot="composer-root"]').map(snapRect)
       zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
       source?.style.setProperty('opacity', '0.45')
       // The distinct sentinel: the zone overlay lights its normal targets, but

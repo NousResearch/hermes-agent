@@ -238,4 +238,46 @@ describe('startNewSessionDrag', () => {
 
     expect(onCreate).toHaveBeenCalledWith({ anchor: 'workspace', cwd: undefined, dir: 'center' })
   })
+
+  it('ignores an inactive tab surface when resolving the center-drop anchor', () => {
+    const rect = { bottom: 600, height: 600, left: 0, right: 800, top: 0, width: 800, x: 0, y: 0, toJSON: () => ({}) }
+    document.body.innerHTML = `
+      <div data-pane-hidden>
+        <div data-session-anchor="session-tile:hidden"></div>
+      </div>
+      <div data-session-anchor="workspace"></div>
+    `
+
+    for (const element of document.querySelectorAll<HTMLElement>('[data-session-anchor]')) {
+      element.getBoundingClientRect = vi.fn(() => rect)
+    }
+
+    const onCreate = vi.fn()
+    subZonePosition.mockReturnValue('center')
+    const spec = engage(onCreate)
+    const hint = spec.resolveMove(400, 300, false)
+    spec.onCommit(hint)
+
+    expect(onCreate).toHaveBeenCalledWith({ anchor: 'workspace', cwd: undefined, dir: 'center' })
+  })
+
+  it('ignores an inactive tab composer when resolving an edge split', () => {
+    const rect = { bottom: 600, height: 600, left: 0, right: 800, top: 0, width: 800, x: 0, y: 0, toJSON: () => ({}) }
+    document.body.innerHTML = `
+      <div data-session-anchor="workspace"></div>
+      <div data-pane-hidden>
+        <div data-slot="composer-root"></div>
+      </div>
+    `
+    document.querySelector<HTMLElement>('[data-session-anchor]')!.getBoundingClientRect = vi.fn(() => rect)
+    document.querySelector<HTMLElement>('[data-slot="composer-root"]')!.getBoundingClientRect = vi.fn(() => rect)
+
+    const onCreate = vi.fn()
+    subZonePosition.mockReturnValue('right')
+    const spec = engage(onCreate)
+    const hint = spec.resolveMove(780, 300, false)
+    spec.onCommit(hint)
+
+    expect(onCreate).toHaveBeenCalledWith({ anchor: 'workspace', cwd: undefined, dir: 'right' })
+  })
 })

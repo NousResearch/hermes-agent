@@ -2533,20 +2533,51 @@ def _env_ref_var_name(ref: str) -> Optional[str]:
     return ref
 
 
-def _expand_env_vars(obj):
+def _expand_mcp_server_env_vars(server: Dict[str, Any]) -> Dict[str, Any]:
+    """Expand one MCP server config while deferring escaped argv refs."""
+    return {
+        key: _expand_env_vars(value, preserve_escaped=key == "args")
+        for key, value in server.items()
+    }
+
+
+def _expand_env_vars(obj, *, preserve_escaped: bool = False):
     """Recursively expand ``${VAR}`` / ``${env:VAR}`` references in config
     values.
 
     Only string values are processed; dict keys, numbers, booleans, and
-    None are left untouched.  Unresolved references (variable not in
-    ``os.environ``) are kept verbatim so callers can detect them.
+    None are left untouched. Unresolved references are kept verbatim so
+    callers can detect them. MCP stdio arguments preserve ``$${VAR}`` for a
+    downstream consumer; every other field retains legacy interpolation.
     """
     if isinstance(obj, str):
-        return re.sub(r"\${([^}]+)}", _env_expand_match, obj)
+        pattern = (
+            r"(?<!\$)\${([^}]+)}"
+            if preserve_escaped
+            else r"\${([^}]+)}"
+        )
+        return re.sub(pattern, _env_expand_match, obj)
     if isinstance(obj, dict):
-        return {k: _expand_env_vars(v) for k, v in obj.items()}
+        expanded = {}
+        for key, value in obj.items():
+            if key == "mcp_servers" and isinstance(value, dict):
+                expanded[key] = {
+                    name: _expand_mcp_server_env_vars(server)
+                    if isinstance(server, dict)
+                    else _expand_env_vars(server)
+                    for name, server in value.items()
+                }
+            else:
+                expanded[key] = _expand_env_vars(
+                    value,
+                    preserve_escaped=preserve_escaped,
+                )
+        return expanded
     if isinstance(obj, list):
-        return [_expand_env_vars(item) for item in obj]
+        return [
+            _expand_env_vars(item, preserve_escaped=preserve_escaped)
+            for item in obj
+        ]
     return obj
 
 

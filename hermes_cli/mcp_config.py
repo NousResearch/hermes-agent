@@ -262,7 +262,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     auth-requiring servers (e.g. n8n) returned 401 — while runtime tool
     loading worked because it interpolates. (#37792)
     """
-    from tools.mcp_tool import _interpolate_env_vars
+    from tools.mcp_tool import _interpolate_mcp_server_config
 
     from agent.secret_scope import current_secret_scope
 
@@ -272,7 +272,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
             load_hermes_dotenv()
         except Exception:  # pragma: no cover — defensive
             pass
-    return _interpolate_env_vars(config)
+    return _interpolate_mcp_server_config(config)
 
 
 def _probe_single_server(

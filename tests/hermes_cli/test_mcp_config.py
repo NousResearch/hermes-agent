@@ -68,6 +68,15 @@ def _seed_config(tmp_path: Path, mcp_servers: dict):
         yaml.safe_dump(config, f)
 
 
+def _seed_escaped_stdio_fixture(tmp_path: Path) -> None:
+    fixture = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "mcp_escaped_stdio_config.yaml"
+    )
+    (tmp_path / "config.yaml").write_text(fixture.read_text())
+
+
 class FakeTool:
     """Mimics an MCP tool object returned by the SDK."""
 
@@ -363,6 +372,71 @@ class TestEnvVarInterpolation:
         assert _env_ref_name("API_KEY") == "API_KEY"
         assert _env_ref_name(" env:API_KEY ") == "API_KEY"
 
+    def test_escape_only_changes_behavior_when_requested(self, monkeypatch):
+        monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
+        from tools.mcp_tool import _interpolate_env_vars
+
+        value = "$${AUTH_HEADER}"
+        assert _interpolate_env_vars(value) == "$Bearer test-token"
+        assert _interpolate_env_vars(value, unescape=True) == "${AUTH_HEADER}"
+
+    def test_server_config_unescapes_explicit_child_reference(self, monkeypatch):
+        monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
+        monkeypatch.setenv("RESOURCE_ID", "project-42")
+        from tools.mcp_tool import _interpolate_mcp_server_config
+
+        result = _interpolate_mcp_server_config({
+            "command": "npx",
+            "args": [
+                "mcp-remote",
+                "--header",
+                "Authorization:$${AUTH_HEADER}",
+                "--resource",
+                "${RESOURCE_ID}",
+            ],
+            "env": {
+                "AUTH_HEADER": "${AUTH_HEADER}",
+            },
+        })
+
+        assert result["args"][2] == "Authorization:${AUTH_HEADER}"
+        assert result["args"][4] == "project-42"
+        assert result["env"]["AUTH_HEADER"] == "Bearer test-token"
+
+    def test_server_config_keeps_unescaped_interpolation(self, monkeypatch):
+        monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
+        from tools.mcp_tool import _interpolate_mcp_server_config
+
+        result = _interpolate_mcp_server_config({
+            "args": ["Authorization:${AUTH_HEADER}"],
+            "env": {"AUTH_HEADER": "${AUTH_HEADER}"},
+        })
+
+        assert result["args"] == ["Authorization:Bearer test-token"]
+        assert result["env"]["AUTH_HEADER"] == "Bearer test-token"
+
+    def test_persisted_config_reaches_runtime_with_escaped_args_and_resolved_env(
+        self, tmp_path, monkeypatch
+    ):
+        """Exercise the real persisted config -> runtime MCP loading chain."""
+        _seed_escaped_stdio_fixture(tmp_path)
+        monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
+        monkeypatch.setenv("RESOURCE_ID", "project-42")
+
+        from hermes_cli.config import load_config
+        from tools.mcp_tool import _load_mcp_config
+
+        loaded = load_config()
+        persisted_server = loaded["mcp_servers"]["escaped-stdio"]
+        assert persisted_server["args"][2] == "Authorization:$${AUTH_HEADER}"
+        assert persisted_server["args"][4] == "project-42"
+        assert persisted_server["env"]["AUTH_HEADER"] == "Bearer test-token"
+
+        runtime_server = _load_mcp_config()["escaped-stdio"]
+        assert runtime_server["args"][2] == "Authorization:${AUTH_HEADER}"
+        assert runtime_server["args"][4] == "project-42"
+        assert runtime_server["env"]["AUTH_HEADER"] == "Bearer test-token"
+
 
 # ---------------------------------------------------------------------------
 # Tests: probe-path env resolution (#37792)
@@ -383,6 +457,59 @@ class TestProbeEnvResolution:
             "headers": {"Authorization": "Bearer ${MCP_N8N_API_KEY}"},
         })
         assert resolved["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+    def test_resolve_unescapes_stdio_child_env_reference(self, monkeypatch):
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
+        resolved = _resolve_mcp_server_config({
+            "command": "npx",
+            "args": ["--header", "Authorization:$${AUTH_HEADER}"],
+            "env": {"AUTH_HEADER": "${AUTH_HEADER}"},
+        })
+
+        assert resolved["args"][1] == "Authorization:${AUTH_HEADER}"
+        assert resolved["env"]["AUTH_HEADER"] == "Bearer test-token"
+
+    def test_persisted_stdio_config_probe_matches_runtime_resolution(
+        self, tmp_path, monkeypatch
+    ):
+        """The CLI probe must resolve the same loaded fixture as runtime."""
+        import asyncio
+        import hermes_cli.mcp_config as mcp_config
+
+        _seed_escaped_stdio_fixture(tmp_path)
+        monkeypatch.setenv("AUTH_HEADER", "Bearer test-token")
+        monkeypatch.setenv("RESOURCE_ID", "project-42")
+
+        from hermes_cli.config import load_config
+        from tools import mcp_tool
+
+        persisted = load_config()["mcp_servers"]["escaped-stdio"]
+        runtime = mcp_tool._load_mcp_config()["escaped-stdio"]
+        seen = {}
+
+        class FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def fake_connect(name, config):
+            seen["name"] = name
+            seen["config"] = config
+            return FakeServer()
+
+        def fake_run(coro, timeout):
+            return asyncio.run(coro)
+
+        monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(mcp_tool, "_stop_mcp_loop_if_idle", lambda: None)
+        monkeypatch.setattr(mcp_tool, "_connect_server", fake_connect)
+        monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", fake_run)
+
+        assert mcp_config._probe_single_server("escaped-stdio", persisted) == []
+        assert seen == {"name": "escaped-stdio", "config": runtime}
 
     def test_active_secret_scope_does_not_load_dotenv_into_process_env(
         self, tmp_path, monkeypatch

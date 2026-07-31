@@ -21,6 +21,54 @@ class TestExpandEnvVars:
 
 
 
+    def test_escaped_reference_is_deferred(self):
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setenv("AUTH_HEADER", "Bearer test-token")
+            result = _expand_env_vars({
+                "mcp_servers": {
+                    "todoist": {
+                        "command": "npx",
+                        "args": [
+                            "--header",
+                            "Authorization:$${AUTH_HEADER}",
+                        ],
+                        "env": {
+                            "AUTH_HEADER": "${AUTH_HEADER}",
+                        },
+                    },
+                },
+            })
+
+        server = result["mcp_servers"]["todoist"]
+        assert server["args"][1] == "Authorization:$${AUTH_HEADER}"
+        assert server["env"]["AUTH_HEADER"] == "Bearer test-token"
+
+    def test_unescaped_reference_keeps_existing_interpolation(self):
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setenv("AUTH_HEADER", "Bearer test-token")
+            result = _expand_env_vars({
+                "args": ["Authorization:${AUTH_HEADER}"],
+                "env": {"AUTH_HEADER": "${AUTH_HEADER}"},
+            })
+
+        assert result["args"] == ["Authorization:Bearer test-token"]
+        assert result["env"]["AUTH_HEADER"] == "Bearer test-token"
+
+    def test_escape_does_not_change_non_mcp_config_interpolation(self):
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setenv("AUTH_HEADER", "Bearer test-token")
+            result = _expand_env_vars({
+                "other": "$${AUTH_HEADER}",
+                "mcp_servers": {
+                    "example": {"args": ["$${AUTH_HEADER}"]},
+                },
+            })
+
+        assert result["other"] == "$Bearer test-token"
+        assert result["mcp_servers"]["example"]["args"] == [
+            "$${AUTH_HEADER}",
+        ]
+
 
 class TestLoadConfigExpansion:
     def test_load_config_expands_env_vars(self, tmp_path, monkeypatch):

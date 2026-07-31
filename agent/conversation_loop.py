@@ -89,7 +89,7 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 _TEXTUAL_INVOKE_RE = re.compile(
-    r"(?:^|\r?\n)[ \t]*(?:card[ \t]*\r?\n[ \t]*)?"
+    r"(?:^|\r?\n)[ \t]*card[ \t]*\r?\n[ \t]*"
     r"<invoke\b[^>]*\bname\s*=\s*(?P<quote>[\"'])(?P<name>[^\"']+)"
     r"(?P=quote)[^>]*>.*</invoke>[ \t]*\Z",
     re.IGNORECASE | re.DOTALL,
@@ -729,8 +729,8 @@ def _textual_invoke_tool_name(content: str, valid_tool_names) -> Optional[str]:
 
     Some models copy transcript/UI tool markup into a normal text block and
     finish with ``stop`` instead of using the provider's structured tool-call
-    channel. Only recognize a complete trailing block for a currently exposed
-    tool; explanatory prose and unknown names remain ordinary text.
+    channel. Only recognize a complete trailing ``card`` block for a currently
+    exposed tool; explanatory prose and unknown names remain ordinary text.
     """
     if not isinstance(content, str) or not content:
         return None

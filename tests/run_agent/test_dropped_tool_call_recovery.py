@@ -12,9 +12,9 @@ The fix keys on the provider contract violation itself
 (``finish_reason == "tool_calls"`` with zero ``tool_calls``) and re-prompts,
 bounded to 3 consecutive stalls, with the budget resetting after any
 successful tool round so it guards each stall rather than the whole run. It
-also recovers when a model emits a trailing ``<invoke>`` block as plain text
-with ``finish_reason="stop"`` instead of using the provider's structured tool
-channel. Genuine text turns are unaffected.
+also recovers when a model emits a trailing ``card`` + ``<invoke>`` block as
+plain text with ``finish_reason="stop"`` instead of using the provider's
+structured tool channel. Genuine text turns are unaffected.
 """
 
 from __future__ import annotations
@@ -164,12 +164,18 @@ class TestDroppedToolCallRecovery:
                 'For example: <invoke name="memory"></invoke> is transcript '
                 "data, not a tool call."
             ),
+            (
+                "A provider may represent a memory call like this:\n"
+                '<invoke name="memory">\n'
+                '<parameter name="target">memory</parameter>\n'
+                "</invoke>"
+            ),
             'card\n<invoke name="not_a_real_tool"></invoke>',
         ],
     )
     def test_non_call_invoke_text_is_unaffected(self, loop_agent, content):
-        """Explanatory text and unknown tool names must not be mistaken for
-        executable tool intent."""
+        """Explanatory text, including trailing known-tool examples, and
+        unknown tool names must not be mistaken for executable tool intent."""
         from tests.run_agent.test_run_agent import _mock_response
 
         loop_agent.valid_tool_names = {"memory"}

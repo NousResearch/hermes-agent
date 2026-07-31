@@ -6264,16 +6264,18 @@ This compaction should PRIORITISE preserving all information related to the focu
                 None,
             )
         first_tail_role = None
+        first_tail_visible_idx: Optional[int] = None
         if tail_messages:
-            first_tail_role = next(
+            first_tail_visible_idx, first_tail_role = next(
                 (
-                    role
-                    for role in (
-                        _template_visible_role(m) for m in tail_messages
+                    (idx, role)
+                    for idx, role in (
+                        (idx, _template_visible_role(m))
+                        for idx, m in enumerate(tail_messages)
                     )
                     if role is not None
                 ),
-                None,
+                (None, None),
             )
         # When the only protected head message is the system prompt, the
         # summary becomes the first *visible* message in the API request
@@ -6300,11 +6302,27 @@ This compaction should PRIORITISE preserving all information related to the focu
         # If no user-role message survives in either the protected head or the
         # preserved tail, the summary MUST carry role="user" so the request
         # always has at least one user turn.
+        #
+        # A bare role check is not enough: the tail's sole surviving user
+        # turn can be image-only (a screenshot with no caption). The newest
+        # image-bearing user message is the ``_strip_historical_media``
+        # anchor and is kept byte-for-byte, so it never gains a text
+        # placeholder — its role is "user" but its text content is empty,
+        # which backends checking for actual query text still reject. Count
+        # only user messages with non-empty text as "surviving"; when the
+        # guard fires, the real (never fabricated) summary text lands in a
+        # role="user" slot, which is always non-empty (falls back to
+        # ``_build_static_fallback_summary`` above when generation fails).
         if not _force_user_leading:
+            def _is_nonempty_user_turn(message: Dict[str, Any]) -> bool:
+                return message.get("role") == "user" and bool(
+                    _content_text_for_contains(message.get("content")).strip()
+                )
+
             _user_survives = any(
-                message.get("role") == "user" for message in compressed
+                _is_nonempty_user_turn(message) for message in compressed
             ) or any(
-                message.get("role") == "user" for message in tail_messages
+                _is_nonempty_user_turn(message) for message in tail_messages
             )
             if not _user_survives:
                 _force_user_leading = True
@@ -6360,9 +6378,27 @@ This compaction should PRIORITISE preserving all information related to the focu
                 ),
             })
 
+        # Default merge target: literal tail index 0. For an ordinary
+        # alternation collision the summary only has to stay *invisible* to
+        # the template, and a leading template-exempt row (bare tool-call
+        # assistant message, tool result) is the ideal carrier — it absorbs
+        # the summary without adding a visible turn, and it leaves the live
+        # tail user message intact as the model's actual prompt. Retargeting
+        # to the first template-visible row here would convert that live
+        # request into the summary carrier for no benefit.
+        #
+        # The forced repair path is the exception. There the merge is not
+        # about alternation but about guaranteeing at least one genuinely
+        # non-empty role="user" message (an image-only or otherwise
+        # text-empty surviving user row). An exempt carrier cannot satisfy
+        # that invariant, so the summary text must land on the
+        # template-visible row itself.
+        _merge_target_idx = 0
+        if _force_user_leading and first_tail_visible_idx is not None:
+            _merge_target_idx = first_tail_visible_idx
         for tail_idx, msg in enumerate(tail_messages):
-            if _merge_summary_into_tail and tail_idx == 0:
-                # Merge the summary into the first (post-strip) tail message.
+            if _merge_summary_into_tail and tail_idx == _merge_target_idx:
+                # Merge the summary into the tail message that collided.
                 old_content = msg.get("content", "")
                 if _force_user_leading and summary_role == "user":
                     # The summary must be part of the first user-visible

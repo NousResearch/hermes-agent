@@ -75,6 +75,9 @@ lowercased and structurally bounded, but they are not normalized through a
 checked-in model catalog. Pricing and model-family classification belong to
 the metrics backend. Prompts, responses, endpoints, errors, session IDs, task
 IDs, and request IDs are not included in the metrics event or package.
+New calls use `hermes.model_route.count`. The previous
+`hermes.model_call.count` contract remains readable only so pending local
+counters created by older builds can be exported without losing data.
 
 Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution
@@ -130,6 +133,9 @@ platform strings, hostnames, and paths are never included. Fully packaged
 aggregate rows and successfully exported package rows and files are retained
 locally for 30 days. Pending package rows and counters with unexported deltas
 are never pruned.
+Package schema v1 remains unchanged for existing outbox files. New packages
+use v2, which accepts both the retired model-call contract and the current
+model-route contract so upgrades can drain pending counters safely.
 
 Each package contains an `install_id` generated as a random UUID. Despite the
 schema field name, its current scope is one `HERMES_HOME`, so it is more

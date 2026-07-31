@@ -32,7 +32,6 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
-from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -2056,9 +2055,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 ):
                     return
             break
-
-        if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):
-            time.sleep(agent.tool_delay)
 
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools_seq = len(assistant_message.tool_calls)

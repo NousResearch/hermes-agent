@@ -160,7 +160,7 @@ def _post_enroll(
 
 def cmd_gateway_enroll(args) -> None:
     """Enroll this gateway with a relay connector; persist the auth creds to .env."""
-    from hermes_cli.auth import AuthError, resolve_nous_access_token
+    from hermes_cli.auth import AuthError
     from hermes_cli.config import is_managed, save_env_value
 
     # Managed installs get GATEWAY_RELAY_* stamped in by the orchestrator (NAS

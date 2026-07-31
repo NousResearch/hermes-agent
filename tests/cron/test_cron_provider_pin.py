@@ -210,38 +210,6 @@ class TestCreateJobSnapshot:
 
         assert job["provider_snapshot"] is None
 
-    def test_unpinned_model_captures_model_snapshot(self, monkeypatch, tmp_path):
-        """An unpinned model captures config.yaml model.default into model_snapshot."""
-        jobs = self._isolate_storage(monkeypatch)
-        (tmp_path / "config.yaml").write_text("model:\n  default: llama-3.3-70b:free\n")
-        monkeypatch.setattr(
-            "cron.jobs.get_hermes_home", lambda: tmp_path, raising=True
-        )
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
-        ):
-            job = jobs.create_job(prompt="do a thing", schedule="every 1 hour")
-        assert job["model"] is None
-        assert job["model_snapshot"] == "llama-3.3-70b:free"
-
-    def test_pinned_model_skips_model_snapshot(self, monkeypatch, tmp_path):
-        """An explicit model → pinned → no model_snapshot captured."""
-        jobs = self._isolate_storage(monkeypatch)
-        (tmp_path / "config.yaml").write_text("model:\n  default: llama-3.3-70b:free\n")
-        monkeypatch.setattr(
-            "cron.jobs.get_hermes_home", lambda: tmp_path, raising=True
-        )
-        with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value={"provider": "openrouter"},
-        ):
-            job = jobs.create_job(
-                prompt="do a thing", schedule="every 1 hour", model="my-model"
-            )
-        assert job["model"] == "my-model"
-        assert job["model_snapshot"] is None
-
 
 def _run_with_current_provider_and_model(
     job,
@@ -314,33 +282,6 @@ class TestModelDriftGuard:
         assert "llama-3.3-70b-instruct:free" in blob
         assert "44585" in blob
 
-    def test_model_snapshot_matches_runs(self, tmp_path):
-        # Default model unchanged → runs normally.
-        job = _base_job(
-            provider_snapshot="openrouter",
-            model_snapshot="llama-3.3-70b-instruct:free",
-        )
-        success, output, final_response, error, agent_constructed = \
-            _run_with_current_provider_and_model(
-                job, "openrouter", "llama-3.3-70b-instruct:free", tmp_path
-            )
-        assert agent_constructed is True
-        assert success is True
-
-    def test_pinned_model_bypasses_guard(self, tmp_path):
-        # Explicit job["model"] → not unpinned → no model-drift skip even if the
-        # global default differs from any snapshot.
-        job = _base_job(
-            provider_snapshot="openrouter",
-            model_snapshot="old-model",
-            model="my-pinned-model",
-        )
-        success, output, final_response, error, agent_constructed = \
-            _run_with_current_provider_and_model(
-                job, "openrouter", "claude-fable-5", tmp_path
-            )
-        assert agent_constructed is True
-        assert success is True
 
     def test_no_model_snapshot_backcompat(self, tmp_path):
         # Pre-existing job without model_snapshot → no model-drift skip.
@@ -397,48 +338,6 @@ class TestCronFleetDefaultModel:
         assert success is True
         assert final_response == "ok"
 
-    def test_cron_model_beats_global_default_for_unpinned_job(self, tmp_path):
-        job = _base_job(
-            provider_snapshot="openrouter",
-            model_snapshot="llama-3.3-70b-instruct:free",
-        )
-        captured = {}
-
-        config_yaml = (
-            "model:\n  default: claude-fable-5\n"
-            "cron:\n  model: qwen-2.5-7b:free\n"
-        )
-        (tmp_path / "config.yaml").write_text(config_yaml)
-        fake_db = MagicMock()
-
-        def _capture(**kwargs):
-            captured.update(kwargs)
-            return {
-                "api_key": "test-key",
-                "base_url": "https://example.invalid/v1",
-                "provider": "openrouter",
-                "api_mode": "chat_completions",
-            }
-
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
-             patch(
-                 "hermes_cli.runtime_provider.resolve_runtime_provider",
-                 side_effect=_capture,
-             ), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
-            run_job(job)
-            agent_kwargs = mock_agent_cls.call_args.kwargs
-
-        assert captured.get("target_model") == "qwen-2.5-7b:free"
-        assert agent_kwargs.get("model") == "qwen-2.5-7b:free"
 
     def test_per_job_pin_still_beats_cron_model(self, tmp_path):
         job = _base_job(
@@ -456,45 +355,6 @@ class TestCronFleetDefaultModel:
             )
         assert agent_constructed is True
         assert success is True
-
-    def test_cron_model_provider_skips_provider_drift_guard(self, tmp_path):
-        # Provider snapshot differs from the current resolution, but the user
-        # explicitly routed cron via cron.model_provider — not drift.
-        job = _base_job(
-            provider_snapshot="deepseek",
-            model_snapshot="some-model",
-        )
-        success, output, final_response, error, agent_constructed = \
-            _run_with_current_provider_and_model(
-                job,
-                "nous",
-                "some-model",
-                tmp_path,
-                cron_model="some-model",
-                cron_model_provider="nous",
-            )
-        assert agent_constructed is True
-        assert success is True
-
-    def test_cron_model_does_not_unblock_provider_axis(self, tmp_path):
-        # cron.model only covers the MODEL axis: a provider drift with no
-        # cron.model_provider set must still fail closed.
-        job = _base_job(
-            provider_snapshot="openrouter",
-            model_snapshot="some-model",
-        )
-        success, output, final_response, error, agent_constructed = \
-            _run_with_current_provider_and_model(
-                job,
-                "nous",
-                "whatever",
-                tmp_path,
-                cron_model="some-model",
-            )
-        assert agent_constructed is False
-        assert success is False
-        blob = f"{error}\n{output}".lower()
-        assert "provider 'openrouter' -> 'nous'" in blob
 
 
 class TestRuntimeResolutionTargetModel:

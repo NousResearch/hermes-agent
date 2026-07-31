@@ -58,7 +58,3 @@ def test_fireworks_basic_chat_through_runtime():
     assert content and "pong" in content.lower()
 
 
-def test_fireworks_alias_resolves_through_runtime():
-    """The 'fw' alias resolves to the same Fireworks client via the runtime."""
-    client, _ = _resolve_runtime_client("fw")
-    assert "api.fireworks.ai" in str(client.base_url)

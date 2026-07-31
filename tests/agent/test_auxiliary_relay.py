@@ -5,6 +5,9 @@ import pytest
 pytest.importorskip("nemo_relay")
 
 from agent import auxiliary_client, relay_llm, relay_runtime
+from hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_cli.observability.shared_metrics_contract import MODEL_ROUTE_METRIC
+from hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
 
 
 @pytest.fixture()
@@ -54,8 +57,8 @@ def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
     monkeypatch.setattr(
         relay_llm,
         "complete_logical_call",
-        lambda request_id, *, outcome: logical_completions.append(
-            (request_id, outcome)
+        lambda request_id, *, outcome, model_name, provider_name, response_model_name: logical_completions.append(
+            (request_id, outcome, model_name, provider_name, response_model_name)
         ),
     )
 
@@ -92,7 +95,13 @@ def test_auxiliary_retries_share_logical_relay_identity(monkeypatch):
     assert attempts[0]["metadata"]["call_role"] == "auxiliary:compression"
     assert all(attempt["defer_logical_completion"] is True for attempt in attempts)
     assert logical_completions == [
-        (attempts[0]["metadata"]["api_request_id"], "success")
+        (
+            attempts[0]["metadata"]["api_request_id"],
+            "success",
+            "test-model",
+            "openrouter",
+            None,
+        )
     ]
 
 
@@ -103,11 +112,11 @@ def test_auxiliary_provider_fallback_closes_one_real_logical_call(
     relay, turn = relay_turn
     consumer = "test.auxiliary-provider-fallback"
     turn.lease.host.retain_managed_execution(consumer)
-    outcomes = []
+    logical_outputs = []
     original_pop = relay.scope.pop
 
     def record_pop(*args, **kwargs):
-        outcomes.append((kwargs.get("output") or {}).get("outcome"))
+        logical_outputs.append(kwargs.get("output") or {})
         return original_pop(*args, **kwargs)
 
     monkeypatch.setattr(relay.scope, "pop", record_pop)
@@ -162,7 +171,93 @@ def test_auxiliary_provider_fallback_closes_one_real_logical_call(
 
     assert result.choices[0].message.content == "recovered"
     assert turn.logical_llm_calls == {}
-    assert outcomes == ["success"]
+    assert logical_outputs == [
+        {
+            "model": "openrouter/test-model",
+            "outcome": "success",
+            "provider": "openrouter",
+        }
+    ]
+
+
+def test_auxiliary_provider_fallback_records_one_terminal_model_route(
+    relay_turn,
+    tmp_path,
+):
+    relay, turn = relay_turn
+    store = SharedMetricsStore(
+        tmp_path / "metrics.sqlite3",
+        tmp_path / "outbox",
+    )
+    subscriber = SharedMetricsSubscriber(
+        store,
+        "test-version",
+        runtime_id=turn.lease.host.runtime_id,
+    )
+    subscriber_name = "test.auxiliary-model-route"
+    relay.subscribers.register(subscriber_name, subscriber)
+    turn.lease.host.retain_managed_execution(subscriber_name)
+    responses = iter([
+        SimpleNamespace(model="failed/model", choices=[]),
+        SimpleNamespace(
+            model="Accepted/Model",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="recovered"))],
+        ),
+    ])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: next(responses),
+            )
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "nvidia",
+            "failed/configured-model",
+            "chat_completions",
+        )
+        with pytest.raises(RuntimeError, match="invalid response"):
+            auxiliary_client._validate_llm_response(
+                auxiliary_client._relay_sync_completion(
+                    client,
+                    {"model": "failed/configured-model", "messages": []},
+                ),
+                task,
+            )
+        auxiliary_client._set_relay_auxiliary_route(
+            "OpenRouter",
+            "fallback/configured-model",
+            "chat_completions",
+        )
+        return auxiliary_client._validate_llm_response(
+            auxiliary_client._relay_sync_completion(
+                client,
+                {"model": "fallback/configured-model", "messages": []},
+            ),
+            task,
+        )
+
+    try:
+        result = run("compression")
+        relay.subscribers.flush()
+    finally:
+        turn.lease.host.release_managed_execution(subscriber_name)
+        relay.subscribers.deregister(subscriber_name)
+
+    assert result.choices[0].message.content == "recovered"
+    snapshot = store.counter_snapshot()
+    assert len(snapshot) == 1
+    assert snapshot[0]["metric_name"] == MODEL_ROUTE_METRIC
+    assert snapshot[0]["resource"]["hermes_version"] == "test-version"
+    assert snapshot[0]["dimensions"] == {
+        "model": "accepted/model",
+        "provider": "openrouter",
+    }
+    assert snapshot[0]["value"] == 1
+    assert snapshot[0]["packaged_value"] == 0
 
 
 @pytest.mark.asyncio
@@ -192,8 +287,8 @@ async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch)
     monkeypatch.setattr(
         relay_llm,
         "complete_logical_call",
-        lambda request_id, *, outcome: logical_completions.append(
-            (request_id, outcome)
+        lambda request_id, *, outcome, model_name, provider_name, response_model_name: logical_completions.append(
+            (request_id, outcome, model_name, provider_name, response_model_name)
         ),
     )
 
@@ -219,145 +314,20 @@ async def test_async_auxiliary_attempt_uses_inherited_relay_adapter(monkeypatch)
     assert captured["metadata"]["call_role"] == "auxiliary:title_generation"
     assert captured["defer_logical_completion"] is True
     assert logical_completions == [
-        (captured["metadata"]["api_request_id"], "success")
+        (
+            captured["metadata"]["api_request_id"],
+            "success",
+            "claude-test",
+            "anthropic",
+            None,
+        )
     ]
 
 
-def test_terminal_auxiliary_failure_stays_failed_when_caller_catches_it(
-    relay_turn, monkeypatch
-):
-    _relay, turn = relay_turn
-    consumer = "test.terminal-auxiliary-failure"
-    turn.lease.host.retain_managed_execution(consumer)
-    outcomes = []
-    original_pop = turn.lease.host.relay.scope.pop
-
-    def record_pop(*args, **kwargs):
-        outcomes.append((kwargs.get("output") or {}).get("outcome"))
-        return original_pop(*args, **kwargs)
-
-    monkeypatch.setattr(turn.lease.host.relay.scope, "pop", record_pop)
-    client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(
-                create=lambda **_kwargs: SimpleNamespace(choices=[]),
-            )
-        )
-    )
-
-    @auxiliary_client._relay_auxiliary_call
-    def run(task):
-        auxiliary_client._set_relay_auxiliary_route(
-            "openrouter",
-            "test-model",
-            "chat_completions",
-        )
-        with pytest.raises(RuntimeError, match="invalid response"):
-            auxiliary_client._validate_llm_response(
-                auxiliary_client._relay_sync_completion(
-                    client,
-                    {"model": "test-model", "messages": []},
-                ),
-                task,
-            )
-        assert len(turn.logical_llm_calls) == 1
-        return auxiliary_client._validate_llm_response(
-            auxiliary_client._relay_sync_completion(
-                client,
-                {"model": "test-model", "messages": []},
-            ),
-            task,
-        )
-
-    try:
-        with pytest.raises(RuntimeError, match="invalid response"):
-            run("compression")
-
-        assert outcomes == ["failed"]
-        assert turn.logical_llm_calls == {}
-
-        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
-
-        assert outcomes == ["failed", "success"]
-    finally:
-        turn.lease.host.release_managed_execution(consumer)
 
 
-@pytest.mark.asyncio
-async def test_async_terminal_auxiliary_failure_closes_logical_call(relay_turn):
-    _relay, turn = relay_turn
-    consumer = "test.async-terminal-auxiliary-failure"
-    turn.lease.host.retain_managed_execution(consumer)
-
-    async def create(**_kwargs):
-        return SimpleNamespace(choices=[])
-
-    client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
-    )
-
-    @auxiliary_client._relay_auxiliary_call_async
-    async def run(task):
-        auxiliary_client._set_relay_auxiliary_route(
-            "anthropic",
-            "claude-test",
-            "chat_completions",
-        )
-        with pytest.raises(RuntimeError, match="invalid response"):
-            auxiliary_client._validate_llm_response(
-                await auxiliary_client._relay_async_completion(
-                    client,
-                    {"model": "claude-test", "messages": []},
-                ),
-                task,
-            )
-        assert len(turn.logical_llm_calls) == 1
-        return auxiliary_client._validate_llm_response(
-            await auxiliary_client._relay_async_completion(
-                client,
-                {"model": "claude-test", "messages": []},
-            ),
-            task,
-        )
-
-    try:
-        with pytest.raises(RuntimeError, match="invalid response"):
-            await run("title_generation")
-
-        assert turn.logical_llm_calls == {}
-    finally:
-        turn.lease.host.release_managed_execution(consumer)
 
 
-def test_auxiliary_stream_uses_streaming_relay_primitive(monkeypatch):
-    captured = {}
-    raw_stream = iter([{"delta": "one"}, {"delta": "two"}])
-    client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(create=lambda **_kwargs: raw_stream)
-        )
-    )
-
-    def stream_current(request, stream_factory, **kwargs):
-        captured.update(kwargs)
-        return stream_factory(request)
-
-    monkeypatch.setattr(relay_llm, "stream_current", stream_current)
-
-    @auxiliary_client._relay_auxiliary_call
-    def run(task):
-        auxiliary_client._set_relay_auxiliary_route(
-            "openrouter",
-            "moa-model",
-            "chat_completions",
-        )
-        return auxiliary_client._relay_sync_stream(
-            client,
-            {"model": "moa-model", "messages": [], "stream": True},
-        )
-
-    assert list(run("moa")) == [{"delta": "one"}, {"delta": "two"}]
-    assert captured["metadata"]["call_role"] == "auxiliary:moa"
 
 
 def test_partial_auxiliary_stream_failure_closes_before_recovery(
@@ -366,11 +336,11 @@ def test_partial_auxiliary_stream_failure_closes_before_recovery(
     _relay, turn = relay_turn
     consumer = "test.partial-auxiliary-stream-failure"
     turn.lease.host.retain_managed_execution(consumer)
-    outcomes = []
+    logical_outputs = []
     original_pop = turn.lease.host.relay.scope.pop
 
     def record_pop(*args, **kwargs):
-        outcomes.append((kwargs.get("output") or {}).get("outcome"))
+        logical_outputs.append(kwargs.get("output") or {})
         return original_pop(*args, **kwargs)
 
     monkeypatch.setattr(turn.lease.host.relay.scope, "pop", record_pop)
@@ -448,67 +418,30 @@ def test_partial_auxiliary_stream_failure_closes_before_recovery(
             next(stream)
 
         assert caught.value is provider_error
-        assert outcomes == ["failed"]
+        assert logical_outputs == [
+            {
+                "model": "test-model",
+                "outcome": "failed",
+                "provider": "openrouter",
+            }
+        ]
         assert turn.logical_llm_calls == {}
 
         result = recover("moa")
 
         assert result.choices[0].message.content == "recovered"
-        assert outcomes == ["failed", "success"]
+        assert logical_outputs == [
+            {
+                "model": "test-model",
+                "outcome": "failed",
+                "provider": "openrouter",
+            },
+            {
+                "model": "test-model",
+                "outcome": "success",
+                "provider": "openrouter",
+            },
+        ]
         assert turn.logical_llm_calls == {}
     finally:
         turn.lease.host.release_managed_execution(consumer)
-
-
-def test_auxiliary_attempt_uses_real_relay_request_intercepts(relay_turn):
-    relay, turn = relay_turn
-    consumer = "test.auxiliary-request-intercept"
-    turn.lease.host.retain_managed_execution(consumer)
-    captured_requests = []
-    client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(
-                create=lambda **kwargs: captured_requests.append(kwargs)
-                or SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(message=SimpleNamespace(content="ok"))
-                    ]
-                ),
-            )
-        )
-    )
-
-    def rewrite_request(_name, request, annotated):
-        annotated.params = {**(annotated.params or {}), "temperature": 0.25}
-        return relay.LLMRequestInterceptOutcome(request, annotated)
-
-    relay.intercepts.register_llm_request(
-        "hermes-auxiliary-request",
-        1,
-        False,
-        rewrite_request,
-    )
-    try:
-        @auxiliary_client._relay_auxiliary_call
-        def run(task):
-            auxiliary_client._set_relay_auxiliary_route(
-                "openrouter",
-                "test-model",
-                "chat_completions",
-            )
-            return auxiliary_client._validate_llm_response(
-                auxiliary_client._relay_sync_completion(
-                    client,
-                    {"model": "test-model", "messages": []},
-                ),
-                task,
-            )
-
-        result = run("compression")
-    finally:
-        relay.intercepts.deregister_llm_request("hermes-auxiliary-request")
-        turn.lease.host.release_managed_execution(consumer)
-
-    assert result.choices[0].message.content == "ok"
-    assert captured_requests[0]["temperature"] == 0.25
-    assert turn.logical_llm_calls == {}

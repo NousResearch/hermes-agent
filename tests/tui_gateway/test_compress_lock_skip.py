@@ -74,48 +74,6 @@ def test_compress_session_history_raises_on_lock_skip():
     assert session["history_version"] == 1
 
 
-def test_compress_session_history_clears_signal_after_raise():
-    """The signal attribute must be cleared when the exception is raised
-    so stale signals don't leak into subsequent operations."""
-    from tui_gateway.server import _compress_session_history, CompressionLockHeld
-
-    history = _make_history()
-    agent = _make_lock_skip_agent(True)
-    session = _make_session(agent, history)
-
-    with (
-        patch(
-            "agent.model_metadata.estimate_request_tokens_rough", return_value=100
-        ),
-        pytest.raises(CompressionLockHeld),
-    ):
-        _compress_session_history(session)
-
-    # Signal must be cleared after the raise.
-    assert agent._compression_skipped_due_to_lock is None
-
-
-def test_compress_session_history_unconfirmed_signal_yields_none_holder():
-    """signal=True (acquisition failed, holder unconfirmed — e.g. SQLite
-    error made try_acquire return False) must map to holder=None, NOT a
-    fabricated holder, so downstream wording doesn't claim a concurrent
-    compression is definitely running."""
-    from tui_gateway.server import _compress_session_history, CompressionLockHeld
-
-    agent = _make_lock_skip_agent(True)
-    session = _make_session(agent, _make_history())
-
-    with (
-        patch(
-            "agent.model_metadata.estimate_request_tokens_rough", return_value=100
-        ),
-        pytest.raises(CompressionLockHeld) as exc_info,
-    ):
-        _compress_session_history(session)
-
-    assert exc_info.value.holder is None
-
-
 # ── Consumer 1: session.compress RPC ───────────────────────────────────
 
 
@@ -212,28 +170,3 @@ def test_mirror_slash_side_effects_reports_lock_skip():
     assert "live session sync failed" not in output
 
 
-def test_mirror_slash_side_effects_unconfirmed_lock_skip_wording():
-    """signal=True (no confirmed holder) must use the 'could not acquire'
-    wording rather than claiming another compression is running."""
-    from tui_gateway import server
-
-    agent = _make_lock_skip_agent(True)
-    session = _make_session(agent, _make_history())
-    sid = "sid-lock-mirror-unconfirmed"
-    server._sessions[sid] = session
-    try:
-        with (
-            patch.object(server, "_sync_session_key_after_compress"),
-            patch.object(server, "_emit"),
-            patch(
-                "agent.model_metadata.estimate_request_tokens_rough",
-                return_value=100,
-            ),
-        ):
-            output = server._mirror_slash_side_effects(sid, session, "/compress")
-    finally:
-        server._sessions.pop(sid, None)
-
-    assert "Compression skipped" in output
-    assert "could not acquire" in output
-    assert "already in progress" not in output

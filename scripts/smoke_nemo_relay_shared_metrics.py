@@ -298,7 +298,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     for counter in counters:
         by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
-        "hermes.model_call.count",
+        "hermes.model_route.count",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
@@ -308,9 +308,9 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
         )
-    [model] = by_name["hermes.model_call.count"]
+    [model] = by_name["hermes.model_route.count"]
     expected_model = {
-        "name": "hermes.model_call.count",
+        "name": "hermes.model_route.count",
         "dimensions": {
             "model": MODEL_CANARY,
             "provider": "custom",
@@ -320,7 +320,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     }
     if model != expected_model:
         raise AssertionError(
-            f"Unexpected model counter: {by_name['hermes.model_call.count']}"
+            f"Unexpected model counter: {by_name['hermes.model_route.count']}"
         )
     expected_start = {
         "name": "hermes.task_run.started",
@@ -455,7 +455,7 @@ def _validate_packages(
         for metric in package.get("metrics", []):
             metrics.setdefault(metric["name"], []).append(metric)
     if set(metrics) != {
-        "hermes.model_call.count",
+        "hermes.model_route.count",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
         "hermes.task_run.finished",
@@ -465,19 +465,14 @@ def _validate_packages(
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(metrics, indent=2)}"
         )
-    models = metrics["hermes.model_call.count"]
-    if (
-        sum(metric["value"] for metric in models) != 2
-        or any(
-            metric["dimensions"]
-            != {
-                "model": MODEL_CANARY,
-                "provider": "custom",
-            }
-            for metric in models
+    [model] = metrics["hermes.model_route.count"]
+    if model["dimensions"] != {
+        "model": MODEL_CANARY,
+        "provider": "custom",
+    } or model["value"] != 2:
+        raise AssertionError(
+            f"Unexpected model metric: {metrics['hermes.model_route.count']}"
         )
-    ):
-        raise AssertionError(f"Unexpected model metrics: {models}")
     [terminal] = metrics["hermes.task_run.finished"]
     if terminal["dimensions"] != {
         "duration_bucket": terminal["dimensions"].get("duration_bucket"),
@@ -704,7 +699,7 @@ def main() -> int:
         / "hermes_cli"
         / "observability"
         / "schemas"
-        / "hermes.shared_metrics.v1.schema.json",
+        / "hermes.shared_metrics.v2.schema.json",
     )
 
     print("Hermes -> NeMo Relay shared-metrics smoke test passed")

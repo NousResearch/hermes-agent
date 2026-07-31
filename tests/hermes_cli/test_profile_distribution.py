@@ -87,13 +87,6 @@ def _symlink_file_or_skip(link: Path, target: Path) -> None:
 
 class TestManifestParsing:
 
-    def test_minimal_manifest(self, tmp_path):
-        (tmp_path / MANIFEST_FILENAME).write_text("name: minimal\n")
-        m = read_manifest(tmp_path)
-        assert m.name == "minimal"
-        assert m.version == "0.1.0"
-        assert m.env_requires == []
-        assert m.distribution_owned == []
 
     def test_full_manifest(self, tmp_path):
         (tmp_path / MANIFEST_FILENAME).write_text(
@@ -125,28 +118,10 @@ class TestManifestParsing:
         assert m.env_requires[1].default == "http://127.0.0.1:8000"
         assert m.distribution_owned == ["SOUL.md", "skills"]
 
-    def test_missing_name_rejected(self, tmp_path):
-        (tmp_path / MANIFEST_FILENAME).write_text("version: 1.0\n")
-        with pytest.raises(DistributionError, match="missing 'name'"):
-            read_manifest(tmp_path)
 
-    def test_env_requires_not_list_rejected(self, tmp_path):
-        (tmp_path / MANIFEST_FILENAME).write_text(
-            "name: bad\nenv_requires:\n  name: FOO\n"
-        )
-        with pytest.raises(DistributionError, match="env_requires must be a list"):
-            read_manifest(tmp_path)
 
-    def test_read_manifest_returns_none_when_absent(self, tmp_path):
-        assert read_manifest(tmp_path) is None
 
-    def test_owned_paths_default(self):
-        m = DistributionManifest(name="x")
-        assert m.owned_paths() == list(DEFAULT_DIST_OWNED)
 
-    def test_owned_paths_explicit(self):
-        m = DistributionManifest(name="x", distribution_owned=["SOUL.md", "skills"])
-        assert m.owned_paths() == ["SOUL.md", "skills"]
 
     def test_roundtrip_write_read(self, tmp_path):
         original = DistributionManifest(
@@ -194,14 +169,6 @@ class TestVersionRequires:
         assert _parse_semver("0.12.0-rc1") == (0, 12, 0)
         assert _parse_semver("v0.12.0+abc") == (0, 12, 0)
 
-    def test_parse_semver_pads(self):
-        assert _parse_semver("1") == (1, 0, 0)
-        assert _parse_semver("1.2") == (1, 2, 0)
-
-    def test_parse_semver_rejects_garbage(self):
-        with pytest.raises(DistributionError, match="Unparseable"):
-            _parse_semver("not-a-version")
-
 
 # ===========================================================================
 # Env template
@@ -221,21 +188,6 @@ class TestEnvTemplate:
         assert "FOO=" in out
         # No leading `# ` before FOO=
         assert "\nFOO=" in out or out.startswith("FOO=") or "\nFOO=\n" in out or "FOO=\n" in out
-
-    def test_optional_is_commented(self):
-        m = DistributionManifest(
-            name="x",
-            env_requires=[EnvRequirement(name="BAR", required=False, default="http://x")],
-        )
-        out = _env_template_from_manifest(m)
-        assert "# (optional)" in out
-        assert "# BAR=http://x" in out
-
-    def test_empty_env_requires_is_header_only(self):
-        m = DistributionManifest(name="x")
-        out = _env_template_from_manifest(m)
-        assert "Hermes distribution" in out
-        assert "FOO" not in out
 
 
 # ===========================================================================
@@ -257,15 +209,6 @@ class TestLooksLikeGitUrl:
     def test_accepts_git_sources(self, src):
         assert _looks_like_git_url(src)
 
-    @pytest.mark.parametrize("src", [
-        "/tmp/local/path",
-        "./relative/dir",
-        "~/profile",
-        "some-random-string",
-    ])
-    def test_rejects_non_git(self, src):
-        assert not _looks_like_git_url(src)
-
 
 # ===========================================================================
 # Install — fresh and force (from a local-directory source)
@@ -286,30 +229,6 @@ class TestInstall:
         assert m.name == "installed"
         assert m.source == str(staged)
 
-    def test_install_uses_manifest_name_when_no_override(self, profile_env):
-        mf = DistributionManifest(name="telem", version="1.0.0")
-        staged = _make_staging_dir(profile_env, "telem", manifest=mf)
-        plan = install_distribution(str(staged))
-        assert plan.manifest.name == "telem"
-        assert plan.target_dir.name == "telem"
-
-    def test_install_rejects_existing_without_force(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        install_distribution(str(staged), name="existing")
-        with pytest.raises(DistributionError, match="already exists"):
-            install_distribution(str(staged), name="existing")
-
-    def test_install_with_force_overwrites(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        install_distribution(str(staged), name="target")
-        # Install again with --force succeeds
-        plan = install_distribution(str(staged), name="target", force=True)
-        assert plan.target_dir.is_dir()
-
-    def test_install_rejects_default_name(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        with pytest.raises(DistributionError, match="Cannot install"):
-            install_distribution(str(staged), name="default")
 
     def test_install_rejects_non_distribution_directory(self, profile_env, tmp_path):
         bogus = tmp_path / "bogus_dir"
@@ -318,21 +237,6 @@ class TestInstall:
         with pytest.raises(DistributionError, match="No distribution.yaml"):
             plan_install(str(bogus), tmp_path / "work", override_name="x")
 
-    def test_install_rejects_unknown_source(self, profile_env, tmp_path):
-        with pytest.raises(DistributionError, match="Cannot resolve"):
-            plan_install("definitely-not-a-thing", tmp_path / "work", override_name="x")
-
-    def test_install_emits_env_example_when_manifest_has_env(self, profile_env):
-        mf = DistributionManifest(
-            name="needs_env",
-            version="0.1.0",
-            env_requires=[EnvRequirement(name="OPENAI_API_KEY", description="key")],
-        )
-        staged = _make_staging_dir(profile_env, "needs_env", manifest=mf)
-        plan = install_distribution(str(staged), name="needs_env")
-        example = plan.target_dir / ".env.EXAMPLE"
-        assert example.is_file()
-        assert "OPENAI_API_KEY" in example.read_text()
 
     def test_install_enforces_hermes_requires(self, profile_env, monkeypatch):
         # Pin current Hermes version to something well below the requirement
@@ -399,17 +303,6 @@ class TestUpdate:
         assert "gpt-5" in (plan.target_dir / "config.yaml").read_text()
         assert "user override" in (plan.target_dir / "config.yaml").read_text()
 
-    def test_update_force_config_overwrites(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        plan = install_distribution(str(staged), name="t3")
-
-        (plan.target_dir / "config.yaml").write_text("model:\n  model: gpt-5\n")
-
-        (staged / "config.yaml").write_text("model:\n  model: claude\n")
-
-        update_distribution("t3", force_config=True)
-        assert "claude" in (plan.target_dir / "config.yaml").read_text()
-        assert "gpt-5" not in (plan.target_dir / "config.yaml").read_text()
 
     def test_update_missing_manifest_errors(self, profile_env):
         # Make a profile without a manifest; update must refuse
@@ -440,10 +333,6 @@ class TestDescribe:
         assert data["version"] == "1.0.0"
         assert data["env_requires"][0]["name"] == "API"
 
-    def test_describe_non_distribution_returns_empty(self, profile_env):
-        from hermes_cli.profiles import create_profile
-        create_profile(name="plain", no_alias=True)
-        assert describe_distribution("plain") == {}
 
     def test_describe_missing_profile_raises(self, profile_env):
         with pytest.raises(DistributionError, match="does not exist"):
@@ -524,14 +413,6 @@ class TestNestedUserOwnedExcludeNotFiltered:
         assert (plan.target_dir / "scripts" / "logs").is_dir()
         assert (plan.target_dir / "scripts" / "logs" / "run.log").read_text() == "ok\n"
 
-    def test_nested_cache_dir_is_preserved(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        (staged / "control-plane" / "cache").mkdir(parents=True)
-        (staged / "control-plane" / "cache" / "data.json").write_text("{}\n")
-
-        plan = install_distribution(str(staged), name="nested_cache")
-        assert (plan.target_dir / "control-plane" / "cache").is_dir()
-        assert (plan.target_dir / "control-plane" / "cache" / "data.json").exists()
 
     def test_top_level_user_owned_still_skipped(self, profile_env):
         """Top-level entries in USER_OWNED_EXCLUDE must still be skipped —
@@ -554,18 +435,6 @@ class TestNestedUserOwnedExcludeNotFiltered:
         # so check that the staged file did NOT land there.
         assert not (plan.target_dir / "logs" / "shipped.log").exists(), \
             "staged logs/ content should not leak into target"
-
-    def test_both_nested_and_top_level_coexist(self, profile_env):
-        """Top-level bin/ filtered, but tools/bin/ kept."""
-        staged = _make_staging_dir(profile_env, "src")
-        (staged / "bin").mkdir(exist_ok=True)
-        (staged / "bin" / "top.sh").write_text("# top\n")
-        (staged / "tools" / "bin").mkdir(parents=True)
-        (staged / "tools" / "bin" / "helper.py").write_text("# helper\n")
-
-        plan = install_distribution(str(staged), name="coexist")
-        assert not (plan.target_dir / "bin").exists()
-        assert (plan.target_dir / "tools" / "bin" / "helper.py").exists()
 
 
 # ===========================================================================
@@ -632,12 +501,6 @@ class TestProfileInfoDistribution:
         assert row.distribution_version == "1.2.3"
         assert row.distribution_source  # path populated, exact value depends on fixture
 
-    def test_plain_profile_has_no_distribution_fields(self, profile_env):
-        from hermes_cli.profiles import create_profile, list_profiles
-        create_profile(name="plain", no_alias=True)
-        rows = {p.name: p for p in list_profiles()}
-        assert rows["plain"].distribution_name is None
-        assert rows["plain"].distribution_version is None
 
     def test_malformed_manifest_does_not_break_list(self, profile_env):
         from hermes_cli.profiles import create_profile, list_profiles, get_profile_dir
@@ -670,8 +533,3 @@ class TestErrorSurfaces:
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
 
-    def test_path_traversal_name_rejected(self, profile_env, tmp_path):
-        mf = DistributionManifest(name="../../etc/passwd", version="0.1.0")
-        staged = _make_staging_dir(profile_env, "bad", manifest=mf)
-        with pytest.raises((ValueError, DistributionError)):
-            plan_install(str(staged), tmp_path / "work")

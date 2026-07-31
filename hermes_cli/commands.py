@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from utils import is_truthy_value
@@ -77,6 +77,15 @@ class CommandDef:
     # normal handler (e.g. /goal's control-verb whitelist, /queue's FIFO
     # enqueue, /model's custom busy-reject text).
     busy_handler: str | None = None
+    # Registry-owned shared execution (thin slice, informational commands).
+    # Names a key in ``hermes_cli.slash_exec.EXECUTORS`` — a pure formatter
+    # producing the canonical, surface-independent core text.  Surfaces
+    # resolve it via ``hermes_cli.slash_exec.run_execute`` and apply only
+    # their own decoration (Rich markup, emoji/markdown, telegramize).  A
+    # string key (not a callable) keeps this module import-light: the
+    # gateway can import commands.py without prompt_toolkit and without
+    # pulling in executor dependencies.
+    execute: str | None = None
 
 
 # Valid values for CommandDef.busy_policy (see field docs above).
@@ -153,13 +162,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch"),
     CommandDef("egress", "Show Docker egress proxy status", "Session",
                args_hint="[status]", subcommands=("status",),
-               busy_policy="dispatch", busy_handler="egress"),
+               busy_policy="dispatch", busy_handler="egress",
+               execute="egress"),
     CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput", "Session",
                aliases=("ctx",), args_hint="[all]", subcommands=("all",),
                busy_policy="dispatch"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info",
-               busy_policy="dispatch"),
+               busy_policy="dispatch", execute="profile"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -242,7 +252,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
-               "Tools & Skills"),
+               "Tools & Skills", execute="bundles"),
     CommandDef("pet", "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)", "Tools & Skills",
                cli_only=True, args_hint="[toggle|list|scale <n>|<slug>]", subcommands=("toggle", "list", "scale", "off")),
     CommandDef("hatch", "Generate a new petdex pet from a description",
@@ -285,8 +295,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
-               gateway_only=True, args_hint="[page]", busy_policy="dispatch"),
-    CommandDef("help", "Show available commands", "Info", busy_policy="dispatch"),
+               gateway_only=True, args_hint="[page]", busy_policy="dispatch",
+               execute="gateway_commands"),
+    CommandDef("help", "Show available commands", "Info", busy_policy="dispatch",
+               execute="gateway_help"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch"),
     CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
@@ -309,7 +321,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                busy_policy="dispatch"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
-               busy_policy="dispatch"),
+               busy_policy="dispatch", execute="version"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",
                args_hint="[nous|local]"),
 

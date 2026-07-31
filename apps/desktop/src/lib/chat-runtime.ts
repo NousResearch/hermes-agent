@@ -387,6 +387,13 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
 
   const createdAt = messageCreatedAt(message)
 
+  // Reactions and the durable row id ride metadata.custom for every role — the
+  // established channel for per-message extras (attachmentRefs below).
+  const reactionMeta = {
+    ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
+    ...(message.reactions?.length ? { reactions: message.reactions } : {})
+  }
+
   if (role === 'user') {
     return {
       id: message.id,
@@ -394,7 +401,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [] } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta } }
     } as ThreadMessage
   }
 
@@ -426,7 +433,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_data: [],
       steps: [],
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
-      custom: message.interim ? { interim: true } : {}
+      custom: { ...(message.interim ? { interim: true } : {}), ...reactionMeta }
     }
   } as ThreadMessage
 }

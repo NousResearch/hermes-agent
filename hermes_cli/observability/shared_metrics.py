@@ -18,13 +18,13 @@ from utils import atomic_json_write
 
 from .shared_metrics_contract import (
     COUNTER_METRICS,
-    MODEL_CALL_METRIC,
+    MODEL_ROUTE_METRIC,
     client_resource_is_valid,
     counter_dimensions_are_valid,
 )
 
 
-_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v1"
+_PACKAGE_SCHEMA_VERSION = "hermes.shared_metrics.v2"
 _STORE_SCHEMA_VERSION = "2"
 _BUSY_TIMEOUT_MS = 250
 _SCHEMA_BUSY_TIMEOUT_MS = 5_000
@@ -63,7 +63,7 @@ class SharedMetricsStore:
         resource: dict[str, str],
     ) -> None:
         """Increment the terminal model-call counter for the current UTC day."""
-        self.record_counter(MODEL_CALL_METRIC, dimensions, resource)
+        self.record_counter(MODEL_ROUTE_METRIC, dimensions, resource)
 
     def record_counter(
         self,

@@ -184,9 +184,9 @@ export function normalize(node: LayoutNode): LayoutNode | null {
   return { ...node, children, weights }
 }
 
-/** Remove a pane wherever it lives. Closing the ACTIVE tab activates its
- *  previous neighbor (the next one when it was first) — browser-tab feel,
- *  never a jump to the strip's start. */
+/** Remove a pane wherever it lives. Closing the ACTIVE tab leaves selection on
+ *  the neighbor that fills its slot (right; left when it was last) — same rule
+ *  as terminals and the preview rail. */
 export function removePane(node: LayoutNode, paneId: string): LayoutNode | null {
   const walk = (n: LayoutNode): LayoutNode => {
     if (n.type === 'group') {
@@ -198,7 +198,8 @@ export function removePane(node: LayoutNode, paneId: string): LayoutNode | null 
 
       const panes = n.panes.filter(p => p !== paneId)
 
-      return { ...n, panes, active: n.active === paneId ? panes[Math.max(0, at - 1)] : n.active }
+      // After splice, `at` indexes the old right neighbor (clamp left at end).
+      return { ...n, panes, active: n.active === paneId ? (panes[Math.min(at, panes.length - 1)] ?? '') : n.active }
     }
 
     return { ...n, children: n.children.map(walk) }
@@ -320,91 +321,6 @@ export function groupLeafIds(node: LayoutNode): string[] {
   return node.type === 'group' ? [node.id] : node.children.flatMap(groupLeafIds)
 }
 
-function pathToGroup(node: LayoutNode, groupId: string): LayoutNode[] | null {
-  if (node.type === 'group') {
-    return node.id === groupId ? [node] : null
-  }
-
-  for (const child of node.children) {
-    const sub = pathToGroup(child, groupId)
-
-    if (sub) {
-      return [node, ...sub]
-    }
-  }
-
-  return null
-}
-
-const OPPOSITE_EDGE: Record<RootEdge, RootEdge> = { bottom: 'top', left: 'right', right: 'left', top: 'bottom' }
-
-/** The viable group touching `edge` of this subtree. Along the edge's axis
- *  children are scanned edge-first — a non-viable zone is display:none, so the
- *  next sibling IS the visual edge; across it, every child touches the edge. */
-function edgeGroup(node: LayoutNode, edge: RootEdge, viable: (g: GroupNode) => boolean): GroupNode | null {
-  if (node.type === 'group') {
-    return viable(node) ? node : null
-  }
-
-  const along = (node.orientation === 'row') === (edge === 'left' || edge === 'right')
-  const children = along && (edge === 'right' || edge === 'bottom') ? [...node.children].reverse() : node.children
-
-  for (const child of children) {
-    const hit = edgeGroup(child, edge, viable)
-
-    if (hit) {
-      return hit
-    }
-  }
-
-  return null
-}
-
-/**
- * The viable zone VISUALLY adjacent to `groupId` on `side` (the target of the
- * zone menu's "Move left/right/up/down"). Walks up to the nearest ancestor
- * split running along that axis with a sibling on that side, then descends to
- * the sibling's closest viable leaf; subtrees whose every zone fails `viable`
- * (all panes hidden) are skipped, matching their collapsed rendering.
- */
-export function adjacentGroup(
-  root: LayoutNode,
-  groupId: string,
-  side: RootEdge,
-  viable: (g: GroupNode) => boolean
-): GroupNode | null {
-  const path = pathToGroup(root, groupId)
-
-  if (!path) {
-    return null
-  }
-
-  const orientation: Orientation = side === 'left' || side === 'right' ? 'row' : 'column'
-  const forward = side === 'right' || side === 'bottom'
-
-  for (let i = path.length - 2; i >= 0; i--) {
-    const parent = path[i]
-
-    if (parent.type !== 'split' || parent.orientation !== orientation) {
-      continue
-    }
-
-    const index = parent.children.indexOf(path[i + 1])
-
-    const siblings = forward ? parent.children.slice(index + 1) : parent.children.slice(0, index).reverse()
-
-    for (const sibling of siblings) {
-      const hit = edgeGroup(sibling, OPPOSITE_EDGE[side], viable)
-
-      if (hit) {
-        return hit
-      }
-    }
-  }
-
-  return null
-}
-
 function sameSet(ids: string[], set: Set<string>): boolean {
   return ids.length === set.size && ids.every(id => set.has(id))
 }
@@ -521,32 +437,6 @@ function replaceNode(node: LayoutNode, id: string, make: (g: GroupNode) => Layou
   }
 
   return { ...node, children: node.children.map(c => replaceNode(c, id, make)) }
-}
-
-/**
- * Split a zone: `movePaneId` (one of SEVERAL panes in the group) moves into
- * the new zone on `side` — VS Code "split right", split and move in one
- * gesture. A lone pane can't split away from itself: no-op (normalize prunes
- * the empty zone the split would have minted).
- */
-export function splitGroupZone(root: LayoutNode, groupId: string, side: RootEdge, movePaneId: string): LayoutNode {
-  const orientation: Orientation = side === 'left' || side === 'right' ? 'row' : 'column'
-  const before = side === 'left' || side === 'top'
-
-  return (
-    normalize(
-      replaceNode(root, groupId, g => {
-        if (g.panes.length < 2 || !g.panes.includes(movePaneId)) {
-          return g
-        }
-
-        const added = group([movePaneId])
-        const remaining = { ...g, panes: g.panes.filter(p => p !== movePaneId) }
-
-        return split(orientation, before ? [added, remaining] : [remaining, added], [1, 1])
-      })
-    ) ?? root
-  )
 }
 
 /** Mirror the layout HORIZONTALLY (the titlebar flip toggle / ⌘\): reverse

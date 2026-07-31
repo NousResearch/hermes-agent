@@ -20,6 +20,11 @@ interface FenceSegment {
   lang: string | null
 }
 
+interface QuoteSegment {
+  kind: 'quote'
+  text: string
+}
+
 interface InlineSegment {
   kind: 'inline'
   text: string
@@ -35,13 +40,14 @@ interface InlineTextSegment {
   text: string
 }
 
-type TopSegment = FenceSegment | InlineSegment
+type TopSegment = FenceSegment | InlineSegment | QuoteSegment
 type InlineNode = InlineCodeSegment | InlineTextSegment
 
 const FENCE_RE = /```([^\n`]*)\n([\s\S]*?)```/g
 
 // Greedy backtick run length so ``code with `backticks` inside`` works.
 const INLINE_CODE_RE = /(`+)([^`\n][\s\S]*?)\1/g
+const QUOTE_LINE_RE = /^[ \t]{0,3}>[ ]?/
 
 // A directive's value is BACKTICK-QUOTED whenever it needs to be (`@url:`
 // always, and any path with a space), so the inline-code scanner would claim
@@ -73,7 +79,7 @@ function splitFences(text: string): TopSegment[] {
     const start = match.index ?? 0
 
     if (start > cursor) {
-      segments.push({ kind: 'inline', text: text.slice(cursor, start) })
+      segments.push(...splitQuotes(text.slice(cursor, start)))
     }
 
     segments.push({
@@ -85,8 +91,48 @@ function splitFences(text: string): TopSegment[] {
   }
 
   if (cursor < text.length) {
-    segments.push({ kind: 'inline', text: text.slice(cursor) })
+    segments.push(...splitQuotes(text.slice(cursor)))
   }
+
+  return segments
+}
+
+/** Group runs of prefixed lines after fenced blocks have been carved out. */
+function splitQuotes(text: string): TopSegment[] {
+  if (!text.includes('>')) {
+    return text ? [{ kind: 'inline', text }] : []
+  }
+
+  const segments: TopSegment[] = []
+  let inline: string[] = []
+  let quoted: string[] = []
+
+  const flushInline = () => {
+    if (inline.length > 0) {
+      segments.push({ kind: 'inline', text: inline.join('\n') })
+      inline = []
+    }
+  }
+
+  const flushQuote = () => {
+    if (quoted.length > 0) {
+      segments.push({ kind: 'quote', text: quoted.join('\n') })
+      quoted = []
+    }
+  }
+
+  for (const line of text.split('\n')) {
+    if (QUOTE_LINE_RE.test(line)) {
+      flushInline()
+      quoted.push(line.replace(QUOTE_LINE_RE, ''))
+    } else {
+      flushQuote()
+      inline.push(line)
+    }
+  }
+
+  flushQuote()
+  flushInline()
 
   return segments
 }
@@ -122,7 +168,7 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
   const top = useMemo(() => splitFences(text), [text])
 
   return (
-    <span className={cn('block', className)} data-slot="aui_user-message-text">
+    <div className={cn('block', className)} data-slot="aui_user-message-text">
       {top.map((segment, segmentIndex) => {
         if (segment.kind === 'fence') {
           return (
@@ -136,13 +182,26 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
           )
         }
 
+        if (segment.kind === 'quote') {
+          return (
+            <blockquote
+              className="my-1.5 border-l-2 border-(--ui-stroke-tertiary) pl-2.5 italic text-muted-foreground/85"
+              data-slot="aui_user-quote"
+              dir="auto"
+              key={`quote-${segmentIndex}`}
+            >
+              <InlineSegmentView text={segment.text} />
+            </blockquote>
+          )
+        }
+
         return (
           <Fragment key={`inline-${segmentIndex}`}>
             <InlineSegmentView text={segment.text} />
           </Fragment>
         )
       })}
-    </span>
+    </div>
   )
 }
 

@@ -2231,6 +2231,46 @@ def finalize_context_engine_compression_notification(
     return bool(pending())
 
 
+def _emit_compression_auth_hint(agent: Any) -> None:
+    """Surface the compression auxiliary's own provider/model/endpoint when
+    compression aborted on an auxiliary auth/quota failure (#72636).
+
+    The compressor records the failing identity on itself
+    (``provider`` / ``summary_model`` / ``base_url``); the surrounding
+    "Compression aborted" warning already says *that* something failed,
+    but with an auxiliary summary model the main-model identity
+    (``agent.provider`` / ``agent.model`` / ``agent.base_url``) is the
+    wrong one to chase. This companion block points the user at the
+    actual compression endpoint to fix.
+
+    Called only from the compression-abort branch in
+    :func:`compress_context`. The helper runs after the current
+    compression attempt has completed, avoiding the pre-request and
+    unrelated-main-error ordering problems that an earlier call site
+    in the main-model API-error path introduced.
+
+    Silent when no compressor is attached or the abort was not an auth
+    failure (the gate is ``_last_summary_auth_failure``). Tolerates a
+    misbehaving compressor missing any of the three identity fields via
+    ``getattr`` defaults so this diagnostic can never mask the abort
+    warning itself.
+    """
+    _ctx_comp = getattr(agent, "context_compressor", None)
+    if _ctx_comp is None or not getattr(_ctx_comp, "_last_summary_auth_failure", False):
+        return
+
+    _comp_provider = getattr(_ctx_comp, "provider", "auto") or "auto"
+    _comp_model = getattr(_ctx_comp, "summary_model", "unknown") or "unknown"
+    _comp_base = getattr(_ctx_comp, "base_url", "unknown") or "unknown"
+
+    agent._emit_warning(
+        f"⚠ Auxiliary compression model failed with an auth/permission "
+        f"error — check auxiliary.compression in config.yaml. "
+        f"🔌 Provider: {_comp_provider}  Model: {_comp_model}  "
+        f"🌐 Endpoint: {_comp_base}"
+    )
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -3143,6 +3183,12 @@ def compress_context(
                         "No messages were dropped — conversation continues unchanged. "
                         "Run /compress to retry, or /new to start a fresh session."
                     )
+                # When the abort was caused by an auxiliary compression-model
+                # auth/quota failure, point at the *compression* endpoint —
+                # agent.provider/model/base_url are the main model's, which is
+                # the wrong thing to chase (#72636). The flag is set during
+                # summary generation, so it is fresh at this call site.
+                _emit_compression_auth_hint(agent)
                 _existing_sp = getattr(agent, "_cached_system_prompt", None)
                 if not _existing_sp:
                     _existing_sp = agent._build_system_prompt(system_message)

@@ -363,7 +363,8 @@ class TestMattermostMultiImage:
         a._base_url = "https://mm.example.com"
         a._token = "fake"
         a._session = MagicMock()
-        a._reply_mode = "thread"
+        a._auto_thread = True
+        a._dm_auto_thread = True
         a._api_post = AsyncMock(return_value={"id": "post123"})
         a._upload_file = AsyncMock(side_effect=lambda *args, **kwargs: f"fid_{a._upload_file.await_count}")
         return a
@@ -425,5 +426,4 @@ class TestEmailMultiImage:
         assert to_addr == "user@example.com"
         assert len(file_paths) == 3
         assert "alt 0" in body
-
 

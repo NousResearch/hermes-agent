@@ -9,6 +9,9 @@ Environment variables:
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
     MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_AUTO_THREAD      Auto-thread top-level channel/group messages
+    MATTERMOST_DM_AUTO_THREAD   Auto-thread top-level direct messages
+    MATTERMOST_REPLY_MODE       Deprecated auto-thread compatibility setting
 """
 
 from __future__ import annotations
@@ -50,6 +53,34 @@ _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+
+
+def _parse_bool(value: Any, *, default: bool) -> bool:
+    """Parse a config/env boolean without treating explicit false as missing."""
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    return default
+
+
+def _thread_setting(
+    extra: Dict[str, Any],
+    config_key: str,
+    env_key: str,
+    *,
+    default: bool,
+) -> bool:
+    """Resolve a new thread setting; its env override wins over config.yaml."""
+    env_value = os.getenv(env_key)
+    if env_value is not None:
+        return _parse_bool(env_value, default=default)
+    if config_key in extra:
+        return _parse_bool(extra[config_key], default=default)
+    return default
 
 
 def _with_mentions_disabled(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -94,8 +125,9 @@ class MattermostAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
 
+        extra = config.extra or {}
         self._base_url: str = (
-            config.extra.get("url", "")
+            extra.get("url", "")
             or os.getenv("MATTERMOST_URL", "")
         ).rstrip("/")
         self._token: str = config.token or os.getenv("MATTERMOST_TOKEN", "")
@@ -110,17 +142,45 @@ class MattermostAdapter(BasePlatformAdapter):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closing = False
 
-        # Reply mode: "thread" to nest replies, "off" for flat messages.
+        # MATTERMOST_REPLY_MODE is a compatibility fallback for the two
+        # explicit auto-thread settings. Existing real thread roots are always
+        # preserved; these booleans only decide whether a top-level post
+        # becomes a synthetic thread/session root.
+        legacy_reply_mode_configured = (
+            "reply_mode" in extra or os.getenv("MATTERMOST_REPLY_MODE") is not None
+        )
         self._reply_mode: str = (
-            config.extra.get("reply_mode", "")
+            extra.get("reply_mode", "")
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
-        ).lower()
+        ).strip().lower()
+        legacy_auto_thread = self._reply_mode == "thread"
+        self._auto_thread = _thread_setting(
+            extra,
+            "auto_thread",
+            "MATTERMOST_AUTO_THREAD",
+            default=legacy_auto_thread,
+        )
+        self._dm_auto_thread = _thread_setting(
+            extra,
+            "dm_auto_thread",
+            "MATTERMOST_DM_AUTO_THREAD",
+            default=legacy_auto_thread,
+        )
+        if legacy_reply_mode_configured:
+            logger.warning(
+                "Mattermost: reply_mode / MATTERMOST_REPLY_MODE is deprecated; "
+                "use mattermost.auto_thread and mattermost.dm_auto_thread"
+            )
 
         self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Channel types learned from websocket events or REST lookups. Outbound
+        # sends may originate from cron/notifications before an inbound event.
+        self._channel_type_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -180,18 +240,83 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def _thread_root_for_send(
         self,
+        chat_id: str,
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Optional[str]:
-        """Resolve the Mattermost root_id from reply_to or metadata."""
-        if self._reply_mode != "thread":
+        """Resolve an explicit or policy-created Mattermost thread root."""
+        metadata_root_id = None
+        if isinstance(metadata, dict):
+            metadata_root_id = metadata.get("thread_id") or metadata.get("root_id")
+        if metadata_root_id:
+            # A source/target thread ID represents a real existing thread (or a
+            # top-level message intentionally promoted by the inbound policy).
+            # It is not guaranteed to be a *root*, though: delayed deliveries
+            # and synthesized metadata can carry a reply's ID, and Mattermost
+            # rejects a non-root root_id with "Invalid RootId parameter".
+            # Resolve it the same way the reply_to branch below does.  A failed
+            # lookup returns None and may be transient, so fall back to the
+            # recorded ID rather than dropping the thread entirely.
+            return await self._resolve_root_id(str(metadata_root_id)) or str(metadata_root_id)
+        if not reply_to:
             return None
-        candidate = reply_to
-        if not candidate and isinstance(metadata, dict):
-            candidate = metadata.get("thread_id") or metadata.get("root_id")
-        if not candidate:
+
+        resolved = await self._resolve_root_id(str(reply_to))
+        if resolved and resolved != str(reply_to):
+            # reply_to is itself a reply in an existing thread. Preserve that
+            # real thread even when automatic thread creation is disabled.
+            return resolved
+
+        if await self._should_auto_thread(chat_id, metadata):
+            return str(resolved or reply_to)
+        return None
+
+    def _remember_channel_type(self, channel_id: str, chat_type: str) -> None:
+        if channel_id and chat_type:
+            self._channel_type_cache[str(channel_id)] = str(chat_type).lower()
+
+    async def _channel_type_for_send(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Return the outbound channel type, resolving uncached targets."""
+        if isinstance(metadata, dict):
+            raw_type = str(
+                metadata.get("chat_type")
+                or metadata.get("channel_type")
+                or ""
+            )
+            normalized = _CHANNEL_TYPE_MAP.get(raw_type.upper(), raw_type.lower())
+            if normalized in {"dm", "group", "channel"}:
+                self._remember_channel_type(chat_id, normalized)
+                return normalized
+
+        cached = self._channel_type_cache.get(str(chat_id))
+        if cached:
+            return cached
+
+        data = await self._api_get(f"channels/{chat_id}")
+        if not data:
             return None
-        return await self._resolve_root_id(str(candidate))
+        channel_type = _CHANNEL_TYPE_MAP.get(data.get("type", ""))
+        if channel_type:
+            self._remember_channel_type(chat_id, channel_type)
+        return channel_type
+
+    async def _should_auto_thread(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> bool:
+        channel_type = await self._channel_type_for_send(chat_id, metadata)
+        if channel_type == "dm":
+            return self._dm_auto_thread
+        if channel_type in {"group", "channel"}:
+            return self._auto_thread
+        # If REST classification failed and the policies disagree, avoid
+        # creating a thread under an unknown top-level target.
+        return self._auto_thread and self._dm_auto_thread
 
     def _last_post_failure_is_broken_thread_root(self) -> bool:
         """Return True only for clear invalid/missing Mattermost thread roots."""
@@ -341,21 +466,28 @@ class MattermostAdapter(BasePlatformAdapter):
         logger.info("Mattermost: disconnected")
 
 
-    async def _resolve_root_id(self, post_id: str) -> str:
-        """Resolve a post_id to the thread root_id for Mattermost.
+    async def _resolve_root_id(self, post_id: str) -> Optional[str]:
+        """Resolve a post ID to its Mattermost thread root.
 
         Mattermost requires root_id to be the *root* post of a thread.
         If the post is a reply (has its own root_id), we must use that
         root_id instead.  Using a reply's own ID as root_id causes
-        "Invalid RootId parameter" errors.
+        "Invalid RootId parameter" errors. Successful lookups are cached;
+        failures are not, because an empty response may be transient.
         """
         if not post_id:
             return post_id
-        # Check if this post has a root_id (meaning it's a reply)
+        cached = getattr(self, "_thread_root_cache", None)
+        if cached is None:
+            cached = self._thread_root_cache = {}
+        if post_id in cached:
+            return cached[post_id]
         data = await self._api_get(f"posts/{post_id}")
-        if data and data.get("root_id"):
-            return data["root_id"]
-        return post_id
+        if not data:
+            return None
+        resolved = data.get("root_id") or post_id
+        cached[post_id] = resolved
+        return resolved
 
     async def send(
         self,
@@ -378,7 +510,11 @@ class MattermostAdapter(BasePlatformAdapter):
                 "message": chunk,
             })
             # Thread support: reply_to or metadata["thread_id"] is the root post ID.
-            resolved_root = await self._thread_root_for_send(reply_to, metadata)
+            resolved_root = await self._thread_root_for_send(
+                chat_id,
+                reply_to,
+                metadata,
+            )
             if resolved_root:
                 payload["root_id"] = resolved_root
 
@@ -397,6 +533,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         ch_type = _CHANNEL_TYPE_MAP.get(data.get("type", "O"), "channel")
         display_name = data.get("display_name") or data.get("name") or chat_id
+        self._remember_channel_type(chat_id, ch_type)
         return {"name": display_name, "type": ch_type}
 
     # ------------------------------------------------------------------
@@ -406,10 +543,13 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_typing(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Send a typing indicator."""
+        """Send a typing indicator in the active Mattermost thread."""
+        payload: Dict[str, Any] = {"channel_id": chat_id}
+        if metadata and metadata.get("thread_id"):
+            payload["parent_id"] = metadata["thread_id"]
         await self._api_post(
             f"users/{self._bot_user_id}/typing",
-            {"channel_id": chat_id},
+            payload,
         )
 
     async def edit_message(
@@ -560,7 +700,11 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         })
-        resolved_root = await self._thread_root_for_send(reply_to, metadata)
+        resolved_root = await self._thread_root_for_send(
+            chat_id,
+            reply_to,
+            metadata,
+        )
         if resolved_root:
             payload["root_id"] = resolved_root
 
@@ -601,7 +745,11 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         })
-        resolved_root = await self._thread_root_for_send(reply_to, metadata)
+        resolved_root = await self._thread_root_for_send(
+            chat_id,
+            reply_to,
+            metadata,
+        )
         if resolved_root:
             payload["root_id"] = resolved_root
 
@@ -689,7 +837,11 @@ class MattermostAdapter(BasePlatformAdapter):
                     "message": "\n".join(caption_parts),
                     "file_ids": file_ids,
                 })
-                resolved_root = await self._thread_root_for_send(None, metadata)
+                resolved_root = await self._thread_root_for_send(
+                    chat_id,
+                    None,
+                    metadata,
+                )
                 if resolved_root:
                     payload["root_id"] = resolved_root
                 logger.info(
@@ -818,6 +970,7 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id = post.get("channel_id", "")
         channel_type_raw = data.get("channel_type", "O")
         chat_type = _CHANNEL_TYPE_MAP.get(channel_type_raw, "channel")
+        self._remember_channel_type(channel_id, chat_type)
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
@@ -882,16 +1035,16 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id. In
-        # thread mode, top-level channel posts are valid roots for progress.
+        # Real Mattermost threads are always preserved. The two auto-thread
+        # settings only decide whether an otherwise top-level post becomes the
+        # root used for session isolation and subsequent outbound sends.
         thread_id = post.get("root_id") or None
-        if (
-            not thread_id
-            and self._reply_mode == "thread"
-            and channel_type_raw != "D"
-            and post_id
-        ):
-            thread_id = post_id
+        if not thread_id and post_id:
+            if channel_type_raw == "D":
+                if self._dm_auto_thread:
+                    thread_id = post_id
+            elif self._auto_thread:
+                thread_id = post_id
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
@@ -1202,13 +1355,11 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     Mirrors the legacy ``mattermost_cfg`` block that used to live in
     ``gateway/config.py::load_gateway_config()`` before this migration.
 
-    The MattermostAdapter reads its runtime configuration via
+    The MattermostAdapter reads some runtime configuration via
     ``os.getenv()`` for ``MATTERMOST_REQUIRE_MENTION``,
     ``MATTERMOST_FREE_RESPONSE_CHANNELS``, and
-    ``MATTERMOST_ALLOWED_CHANNELS``.  Rather than rewrite those call sites
-    to read from ``PlatformConfig.extra``, this hook keeps the env-driven
-    model and merely owns the YAML→env translation here, next to the
-    adapter that consumes it.
+    ``MATTERMOST_ALLOWED_CHANNELS``. The auto-thread values are bridged too so
+    environment overrides and config.yaml share one precedence model.
 
     Env vars take precedence over YAML — every assignment is guarded
     by ``not os.getenv(...)`` so an explicit env var survives a config.yaml
@@ -1217,6 +1368,10 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     """
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+    if "auto_thread" in mattermost_cfg and not os.getenv("MATTERMOST_AUTO_THREAD"):
+        os.environ["MATTERMOST_AUTO_THREAD"] = str(mattermost_cfg["auto_thread"]).lower()
+    if "dm_auto_thread" in mattermost_cfg and not os.getenv("MATTERMOST_DM_AUTO_THREAD"):
+        os.environ["MATTERMOST_DM_AUTO_THREAD"] = str(mattermost_cfg["dm_auto_thread"]).lower()
     frc = mattermost_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):

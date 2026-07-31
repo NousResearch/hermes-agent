@@ -3898,6 +3898,22 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "MATTERMOST_AUTO_THREAD": {
+        "description": "Override Mattermost channel/group auto-threading (default: false)",
+        "prompt": "Auto-thread Mattermost channel messages",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATTERMOST_DM_AUTO_THREAD": {
+        "description": "Override Mattermost direct-message auto-threading (default: false)",
+        "prompt": "Auto-thread Mattermost direct messages",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "MATTERMOST_FREE_RESPONSE_CHANNELS": {
         "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
         "prompt": "Free-response channel IDs (comma-separated)",

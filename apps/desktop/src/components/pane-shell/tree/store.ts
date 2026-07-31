@@ -420,12 +420,22 @@ export function treeTabCloseTargets(paneId: string): { all: number; others: numb
   return { all: others.length + (isUncloseablePane(paneId) ? 0 : 1), others: others.length, right: right.length }
 }
 
+/** Close a pane, routing collapse panes (terminal/logs) through dismiss +
+ *  store sync so their toggle stays truthful. */
+export function closeTabPane(paneId: string) {
+  if (isCollapsePane(paneId)) {
+    closeCollapsePane(paneId)
+  } else {
+    closeTreePane(paneId)
+  }
+}
+
 export function closeOtherTreeTabs(paneId: string): void {
-  closeableTreeSiblings(paneId).others.forEach(closeTreePane)
+  closeableTreeSiblings(paneId).others.forEach(closeTabPane)
 }
 
 export function closeTreeTabsToRight(paneId: string): void {
-  closeableTreeSiblings(paneId).right.forEach(closeTreePane)
+  closeableTreeSiblings(paneId).right.forEach(closeTabPane)
 }
 
 /** Close every closeable tab in `paneId`'s group (the uncloseable workspace stays). */
@@ -433,7 +443,7 @@ export function closeAllTreeTabs(paneId: string): void {
   const tree = $layoutTree.get()
   const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
 
-  panes.filter(id => !isUncloseablePane(id)).forEach(closeTreePane)
+  panes.filter(id => !isUncloseablePane(id)).forEach(closeTabPane)
 }
 
 /** Pane ids in the tree under a `${prefix}:` namespace — lets a mirror prune
@@ -614,6 +624,16 @@ export function dismissTreePane(paneId: string) {
     setDismissed(paneId, true)
     commit(removePane(tree, paneId))
   }
+}
+
+/** Tab ✕ on a tool panel (terminal/logs): dismiss from the layout AND sync
+ *  the owning store so the toggle stays truthful. The pane is removed first
+ *  so the store listener's setPaneCollapsed is a no-op (pane already gone),
+ *  not a minimize that strands a shared-zone sibling. The toggle's open
+ *  path (revealTreePane in bindPaneCollapse) un-dismisses + re-adopts. */
+export function closeCollapsePane(paneId: string) {
+  dismissTreePane(paneId)
+  paneClosers[paneId]?.()
 }
 
 export function closeTreePane(paneId: string) {

@@ -1730,11 +1730,15 @@ export const zhHant = defineLocale({
       ageMin: '分'
     },
     dateDivider: {
-      today: '今天稍早',
+      today: '今天',
       yesterday: '昨天',
-      thisWeek: '本週',
-      lastWeek: '上週',
-      thisMonth: '本月'
+      lastWeek: range => `上週 · ${range}`,
+      week: range => `${range}這一週`,
+      collapseAll: '收合所有日期群組',
+      expandAll: '展開所有日期群組',
+      actions: '工作階段日期群組操作',
+      collapseGroup: label => `收合${label}`,
+      expandGroup: label => `展開${label}`
     }
   },
 

@@ -2144,11 +2144,15 @@ export const zh: Translations = {
       ageMin: '分'
     },
     dateDivider: {
-      today: '今天早些时候',
+      today: '今天',
       yesterday: '昨天',
-      thisWeek: '本周',
-      lastWeek: '上周',
-      thisMonth: '本月'
+      lastWeek: range => `上周 · ${range}`,
+      week: range => `${range}这一周`,
+      collapseAll: '折叠所有日期分组',
+      expandAll: '展开所有日期分组',
+      actions: '会话日期分组操作',
+      collapseGroup: label => `折叠${label}`,
+      expandGroup: label => `展开${label}`
     }
   },
 

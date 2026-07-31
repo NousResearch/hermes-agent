@@ -4,8 +4,8 @@ import {
   $subagentsBySession,
   activeSubagentCount,
   buildSubagentTree,
-  clearSessionSubagents,
   failedSubagentCount,
+  interruptSessionSubagents,
   pruneDelegateFallbackSubagents,
   pruneFinishedSessionSubagents,
   subagentsForPanel,
@@ -147,14 +147,33 @@ describe('subagent store', () => {
     ])
   })
 
-  it('clears one session without touching another', () => {
-    upsertSubagent('s1', { goal: 'one', status: 'running', subagent_id: 'a1', task_index: 0 })
-    upsertSubagent('s2', { goal: 'two', status: 'running', subagent_id: 'a2', task_index: 0 })
+  it('interrupts live rows on stop without discarding terminal event targets', () => {
+    upsertSubagent('s1', { goal: 'running', status: 'running', subagent_id: 'running', task_index: 0 })
+    upsertSubagent('s1', { goal: 'queued', status: 'queued', subagent_id: 'queued', task_index: 1 })
+    upsertSubagent('s1', { goal: 'done', status: 'completed', subagent_id: 'done', task_index: 2 })
 
-    clearSessionSubagents('s1')
+    interruptSessionSubagents('s1')
 
-    expect($subagentsBySession.get().s1).toBeUndefined()
-    expect($subagentsBySession.get().s2).toHaveLength(1)
+    expect(listFor('s1').map(item => [item.id, item.status])).toEqual([
+      ['running', 'interrupted'],
+      ['queued', 'interrupted'],
+      ['done', 'completed']
+    ])
+    expect(activeSubagentCount(listFor('s1'))).toBe(0)
+  })
+
+  it('lets a late completion refine a row interrupted by stop', () => {
+    upsertSubagent('s1', { goal: 'running', status: 'running', subagent_id: 'child', task_index: 0 })
+    interruptSessionSubagents('s1')
+
+    upsertSubagent(
+      's1',
+      { status: 'completed', subagent_id: 'child', summary: 'finished after stop', task_index: 0 },
+      false,
+      'subagent.complete'
+    )
+
+    expect(listFor('s1')[0]).toMatchObject({ status: 'completed', summary: 'finished after stop' })
   })
 
   // Regression test for #64015: still-RUNNING background subagents must survive

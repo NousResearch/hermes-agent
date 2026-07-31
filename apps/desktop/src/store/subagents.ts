@@ -208,15 +208,26 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
   }
 }
 
-export function clearSessionSubagents(sid: string) {
+/** End a stopped session's live rows without discarding their identity.
+ * Keeping the rows lets a terminal gateway event that was already in flight
+ * refine the final status, while the immediate interrupted status prevents
+ * the stopped session from looking active forever if no event arrives. */
+export function interruptSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
+  const list = map[sid]
 
-  if (!(sid in map)) {
+  if (!list?.some(item => !TERMINAL.has(item.status))) {
     return
   }
 
-  const { [sid]: _drop, ...rest } = map
-  $subagentsBySession.set(rest)
+  const at = Date.now()
+  const next = list.map(item =>
+    TERMINAL.has(item.status)
+      ? item
+      : { ...item, currentTool: undefined, status: 'interrupted' as const, updatedAt: at }
+  )
+
+  $subagentsBySession.set({ ...map, [sid]: next })
 }
 
 /**
@@ -226,8 +237,8 @@ export function clearSessionSubagents(sid: string) {
  * from the display while background subagents that outlived the spawning turn
  * remain visible (and still accept late progress/complete events).
  *
- * Distinct from `clearSessionSubagents` (used by the Stop action, which
- * genuinely cancels running subagents and so should drop them all) and from
+ * Distinct from `interruptSessionSubagents` (used by Stop to terminalize live
+ * rows while preserving them for in-flight completion events) and from
  * `pruneDelegateFallbackSubagents` (which filters by id prefix to remove
  * placeholder rows once the real native event arrives).
  */
@@ -277,7 +288,10 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
 
   const prev = idx >= 0 ? list[idx] : undefined
 
-  if (prev && TERMINAL.has(prev.status)) {
+  const refinesInterruptedStop =
+    prev?.status === 'interrupted' && eventType === 'subagent.complete' && TERMINAL.has(asStatus(payload.status))
+
+  if (prev && TERMINAL.has(prev.status) && !refinesInterruptedStop) {
     return
   }
 

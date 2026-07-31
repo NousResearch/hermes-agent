@@ -227,17 +227,25 @@ def managed_vendor_endpoints(
     vendor: str,
     gateway_builder: Optional[Callable[[str], str]] = None,
 ) -> Optional[dict]:
-    """Absolute URLs for a managed vendor, or ``None`` when unreachable.
+    """Absolute URLs for a managed vendor, or ``None`` when none resolves.
 
-    ``None`` means managed Nous tools are disabled for this build, which is
-    what keeps a user who could never use the vendor from being shown its
-    tools.
+    Address resolution only: entitlement is deliberately not consulted here.
+    What an account may spend on a managed vendor is the gateway's own
+    decision, stated in its refusals, and re-deciding it on the client can only
+    ever disagree with the server. A caller that wants to hide its tools from
+    users who could not call them at all does that in its ``check_fn``.
+
+    ``None`` means no origin could be resolved — a misconfigured
+    ``TOOL_GATEWAY_SCHEME`` — so there is nothing to call.
     """
-    if not managed_nous_tools_enabled():
+    builder = gateway_builder or build_vendor_gateway_url
+    try:
+        origin = builder(_MANAGED_GATEWAY_VENDOR).rstrip("/")
+    except ValueError:
+        return None
+    if not origin:
         return None
 
-    builder = gateway_builder or build_vendor_gateway_url
-    origin = builder(_MANAGED_GATEWAY_VENDOR).rstrip("/")
     return {
         "origin": origin,
         "base_url": f"{origin}{managed_vendor_base_path(vendor)}",

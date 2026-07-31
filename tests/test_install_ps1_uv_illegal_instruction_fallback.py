@@ -49,10 +49,28 @@ def _compile_uv_stub(output: Path, exit_code: int) -> None:
     reason="requires native Windows and PowerShell",
 )
 @pytest.mark.parametrize(
-    ("uv_exit_code", "powershell_exit_code", "expects_fallback"),
+    (
+        "uv_exit_code",
+        "powershell_exit_code",
+        "expects_fallback",
+        "create_lockfile",
+    ),
     [
-        pytest.param(0xC000001D, -1073741795, True, id="illegal-instruction"),
-        pytest.param(1, 1, False, id="ordinary-error"),
+        pytest.param(
+            0xC000001D,
+            -1073741795,
+            True,
+            True,
+            id="illegal-instruction-from-locked-sync",
+        ),
+        pytest.param(1, 1, False, True, id="ordinary-error"),
+        pytest.param(
+            0xC000001D,
+            -1073741795,
+            True,
+            False,
+            id="illegal-instruction-from-lockless-pip-tier",
+        ),
     ],
 )
 def test_dependencies_only_fall_back_for_uv_illegal_instruction(
@@ -60,6 +78,7 @@ def test_dependencies_only_fall_back_for_uv_illegal_instruction(
     uv_exit_code: int,
     powershell_exit_code: int,
     expects_fallback: bool,
+    create_lockfile: bool,
 ) -> None:
     install_dir = tmp_path / "hermes-agent"
     hermes_home = tmp_path / "hermes-home"
@@ -107,8 +126,9 @@ def test_dependencies_only_fall_back_for_uv_illegal_instruction(
     web_source.parent.mkdir()
     web_source.write_text("READY = True\n", encoding="utf-8")
 
-    # Force the hash-verified uv path first, matching the reported update flow.
-    (install_dir / "uv.lock").write_text("", encoding="utf-8")
+    # Cover both the locked sync path and the lockless editable-install tier.
+    if create_lockfile:
+        (install_dir / "uv.lock").write_text("", encoding="utf-8")
     _compile_uv_stub(managed_bin / "uv.exe", uv_exit_code)
 
     env = os.environ | {
@@ -178,6 +198,10 @@ def test_dependencies_only_fall_back_for_uv_illegal_instruction(
     assert result.returncode == 0, output
     assert "EXCEPTION_ILLEGAL_INSTRUCTION" in output
     assert "pip fallback" in output
+    if not create_lockfile:
+        assert "uv.lock not found" in output
+        assert "Trying tier: all ..." in output
+        assert "Trying pip fallback tier: all ..." in output
 
     venv_python = venv_dir / "Scripts" / "python.exe"
     probe = subprocess.run(

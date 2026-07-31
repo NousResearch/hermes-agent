@@ -129,6 +129,33 @@ describe('watchSessionPins remote pull', () => {
     expect($pinnedSessionIds.get()).not.toContain('gone')
   })
 
+  it('keeps a fresh local pin when the row already carries pinned=false', async () => {
+    // Regression: the running backend returns `pinned` on every row, so the
+    // reconcile fired by the user's own click used to read the pre-click
+    // server value back as "gone" and instantly revert the pin.
+    $sessions.set([row('fresh', { pinned: false })])
+    await flush()
+
+    $pinnedSessionIds.set(['fresh'])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('fresh')
+    expect(patch).toHaveBeenCalledWith('fresh', true, undefined)
+  })
+
+  it('keeps a fresh local unpin when the row still carries pinned=true', async () => {
+    $sessions.set([row('established', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('established')
+    patch.mockClear()
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('established')
+    expect(patch).toHaveBeenCalledWith('established', false, undefined)
+  })
+
   it('leaves the local set alone when the backend omits the flag', async () => {
     $pinnedSessionIds.set(['legacy'])
     // No `pinned` key at all — a runtime predating the column.

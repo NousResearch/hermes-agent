@@ -93,13 +93,23 @@ function pullRemotePins(): void {
   }
 }
 
-function reconcile(): void {
+// Why the pull is gated on `source`: a reconcile triggered by OUR OWN pin-set
+// change runs before the mirroring PATCH has even been issued, so every server
+// row still carries the pre-click value. Consulting rows at that moment reads
+// our own not-yet-pushed intent back as "the server says it's gone" and
+// instantly reverts the user's click (pin: row.pinned=false → unpin; unpin:
+// row.pinned=true → re-pin). The pull exists to adopt truth that arrives with
+// a session-list refresh (or at boot) — a local pin-set change carries no new
+// server information, so there is nothing to pull.
+function reconcile(source: 'boot' | 'pins' | 'sessions' = 'boot'): void {
   // Config/session REST is only reachable through the Electron bridge.
   if (!window.hermesDesktop) {
     return
   }
 
-  pullRemotePins()
+  if (source !== 'pins') {
+    pullRemotePins()
+  }
 
   const current = new Set($pinnedSessionIds.get())
 
@@ -139,8 +149,10 @@ function reconcile(): void {
 }
 
 // Sync once, then re-sync on pin-set and session-list changes. Call once per app.
+// The pin-set listener tags its origin so reconcile skips the pull pass — see
+// the note above reconcile().
 export function watchSessionPins(): void {
-  reconcile()
-  $pinnedSessionIds.listen(reconcile)
-  $sessions.listen(reconcile)
+  reconcile('boot')
+  $pinnedSessionIds.listen(() => reconcile('pins'))
+  $sessions.listen(() => reconcile('sessions'))
 }

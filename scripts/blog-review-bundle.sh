@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo_root="${HERMES_AGENT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 engine_root="$repo_root/content_engine"
 builder=${REVIEW_BUNDLE_SCRIPT:-"$engine_root/scripts/build_review_bundle.py"}
 python_bin=${REVIEW_BUNDLE_PYTHON:-python3}

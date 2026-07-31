@@ -3034,6 +3034,14 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        # The auxiliary identity actually used on the wire for the most
+        # recent summary call — resolved from auxiliary.compression config
+        # by _resolve_task_provider_model, distinct from the main-model
+        # identity on self.provider / self.summary_model / self.base_url.
+        # Read by the compression-abort diagnostic (#72636).
+        self._last_aux_call_provider: str = ""
+        self._last_aux_call_model: str = ""
+        self._last_aux_call_base_url: str = ""
         self._last_compression_telemetry: Optional[Dict[str, Any]] = None
         self._active_compression_telemetry: Optional[Dict[str, Any]] = None
         self._compression_telemetry_seed: Optional[Dict[str, Any]] = None
@@ -4655,20 +4663,34 @@ This compaction should PRIORITISE preserving all information related to the focu
                 call_kwargs["model"] = self.summary_model
             _aux_provider = ""
             _aux_model = self.summary_model or ""
+            _aux_base_url: Optional[str] = None
             _aux_context = None
             try:
                 from agent.auxiliary_client import _resolve_task_provider_model
 
-                _resolved_provider, _resolved_model, _, _, _ = _resolve_task_provider_model(
-                    "compression",
-                    model=(self.summary_model or ""),
+                _resolved_provider, _resolved_model, _resolved_base_url, _, _ = (
+                    _resolve_task_provider_model(
+                        "compression",
+                        model=(self.summary_model or ""),
+                    )
                 )
                 _aux_provider = _resolved_provider or ""
                 _aux_model = _resolved_model or _aux_model or self.model or ""
+                _aux_base_url = _resolved_base_url
                 if _aux_model == self.model:
                     _aux_context = self.context_length
             except Exception:
                 pass
+            # Persist the resolved auxiliary identity (the provider/model/
+            # base_url actually used on the wire) on the instance so callers
+            # that need to attribute a failure can read the *real* auxiliary
+            # endpoint rather than the main-model identity stored on
+            # self.provider / self.summary_model / self.base_url (#72636).
+            # These differ whenever auxiliary.compression.{provider,model,
+            # base_url} is configured separately from the main runtime.
+            self._last_aux_call_provider = _aux_provider or ""
+            self._last_aux_call_model = _aux_model or ""
+            self._last_aux_call_base_url = _aux_base_url or ""
             # Compression is atomic: protect the in-flight summary call from a
             # mid-turn gateway interrupt. Without this, an incoming user message
             # aborts the summary and compression falls back to a degraded static

@@ -2235,39 +2235,57 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     """Surface the compression auxiliary's own provider/model/endpoint when
     compression aborted on an auxiliary auth/quota failure (#72636).
 
-    The compressor records the failing identity on itself
-    (``provider`` / ``summary_model`` / ``base_url``); the surrounding
-    "Compression aborted" warning already says *that* something failed,
-    but with an auxiliary summary model the main-model identity
-    (``agent.provider`` / ``agent.model`` / ``agent.base_url``) is the
-    wrong one to chase. This companion block points the user at the
-    actual compression endpoint to fix.
+    The identity actually used on the wire for the summary call is
+    resolved from ``auxiliary.compression`` config by
+    ``_resolve_task_provider_model`` and recorded on the compressor as
+    ``_last_aux_call_provider`` / ``_last_aux_call_model`` /
+    ``_last_aux_call_base_url``. This is *not* the same as
+    ``compressor.provider`` / ``compressor.summary_model`` /
+    ``compressor.base_url`` — those carry the *main* model's identity
+    (the compressor is initialized against the main runtime), so reading
+    them here would point the user at the wrong endpoint whenever the
+    compression auxiliary is configured separately. The surrounding
+    "Compression aborted" warning says *that* something failed; this
+    companion block says *which* endpoint to fix.
 
     Called only from the compression-abort branch in
     :func:`compress_context`. The helper runs after the current
     compression attempt has completed, avoiding the pre-request and
     unrelated-main-error ordering problems that an earlier call site
-    in the main-model API-error path introduced.
+    in the main-model API-error path introduced. The identity fields
+    are populated before the summary ``call_llm`` fires, so they are
+    fresh at this call site.
 
     Silent when no compressor is attached or the abort was not an auth
-    failure (the gate is ``_last_summary_auth_failure``). Tolerates a
-    misbehaving compressor missing any of the three identity fields via
-    ``getattr`` defaults so this diagnostic can never mask the abort
-    warning itself.
+    failure (the gate is ``_last_summary_auth_failure``). Falls back to
+    the main-model identity when no separate auxiliary was resolved
+    (``auxiliary.compression`` unset / ``auto``) and says so explicitly,
+    rather than silently reporting a wrong endpoint.
     """
     _ctx_comp = getattr(agent, "context_compressor", None)
     if _ctx_comp is None or not getattr(_ctx_comp, "_last_summary_auth_failure", False):
         return
 
-    _comp_provider = getattr(_ctx_comp, "provider", "auto") or "auto"
-    _comp_model = getattr(_ctx_comp, "summary_model", "unknown") or "unknown"
-    _comp_base = getattr(_ctx_comp, "base_url", "unknown") or "unknown"
+    _aux_provider = (getattr(_ctx_comp, "_last_aux_call_provider", "") or "").strip()
+    _aux_model = (getattr(_ctx_comp, "_last_aux_call_model", "") or "").strip()
+    _aux_base = (getattr(_ctx_comp, "_last_aux_call_base_url", "") or "").strip()
+
+    # When auxiliary.compression is unset / "auto", the summary call runs
+    # against the main model — report that honestly instead of inventing a
+    # phantom auxiliary endpoint.
+    if not _aux_provider and not _aux_model and not _aux_base:
+        _aux_provider = (getattr(_ctx_comp, "provider", "") or "auto").strip() or "auto"
+        _aux_model = (getattr(_ctx_comp, "model", "") or "unknown").strip() or "unknown"
+        _aux_base = (getattr(_ctx_comp, "base_url", "") or "unknown").strip() or "unknown"
+        _note = " (auxiliary.compression is not configured — using main model)"
+    else:
+        _note = ""
 
     agent._emit_warning(
         f"⚠ Auxiliary compression model failed with an auth/permission "
         f"error — check auxiliary.compression in config.yaml. "
-        f"🔌 Provider: {_comp_provider}  Model: {_comp_model}  "
-        f"🌐 Endpoint: {_comp_base}"
+        f"🔌 Provider: {_aux_provider}  Model: {_aux_model}  "
+        f"🌐 Endpoint: {_aux_base}{_note}"
     )
 
 

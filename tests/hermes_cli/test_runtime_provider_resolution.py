@@ -587,6 +587,32 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_codex_app_server_routes_named_custom_provider(monkeypatch):
+    """A configured provider identity must survive custom resolution so the
+    explicitly enabled Codex runtime can select the matching Codex provider."""
+    config = {
+        "model": {
+            "provider": "custom:my-gateway",
+            "default": "gpt-5.4",
+            "openai_runtime": "codex_app_server",
+        },
+        "providers": {
+            "my-gateway": {
+                "api": "https://gateway.example.com/v1",
+                "api_key": "test-key",
+                "default_model": "gpt-5.4",
+            }
+        },
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+
+    resolved = rp.resolve_runtime_provider(requested="custom:my-gateway")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["requested_provider"] == "custom:my-gateway"
+    assert resolved["api_mode"] == "codex_app_server"
+
+
 def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     """A request for bare ``provider="custom"`` must resolve a literal
     ``providers.custom`` entry (e.g. a cliproxy endpoint) instead of falling

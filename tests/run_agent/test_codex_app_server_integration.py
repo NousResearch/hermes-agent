@@ -86,6 +86,25 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_named_custom_provider_configures_codex_thread(self, fake_session):
+        agent = run_agent.AIAgent(
+            api_key="hermes-only-test-key",
+            base_url="https://gateway.example.com/v1",
+            provider="custom",
+            requested_provider="custom:my-gateway",
+            model="gpt-5.4",
+            api_mode="codex_app_server",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert agent._codex_session._model == "gpt-5.4"
+        assert agent._codex_session._model_provider == "my-gateway"
+
     def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

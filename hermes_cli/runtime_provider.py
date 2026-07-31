@@ -390,8 +390,8 @@ _VALID_API_MODES = {
     # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
     # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
     # instead of Hermes' tool dispatch. Gated behind config key
-    # `model.openai_runtime == "codex_app_server"` AND provider in
-    # {"openai", "openai-codex"}. Default is unchanged.
+    # `model.openai_runtime == "codex_app_server"` AND an OpenAI/Codex or
+    # configured named custom provider. Default is unchanged.
     "codex_app_server",
 }
 
@@ -421,20 +421,25 @@ def _maybe_apply_codex_app_server_runtime(
     provider: str,
     api_mode: str,
     model_cfg: Optional[Dict[str, Any]],
+    requested_provider: Optional[str] = None,
 ) -> str:
-    """Optional opt-in: rewrite api_mode → "codex_app_server" for OpenAI/Codex
-    providers when the user has explicitly enabled that runtime via
-    `model.openai_runtime: codex_app_server` in config.yaml.
+    """Optionally rewrite api_mode to ``codex_app_server`` for OpenAI/Codex
+    providers or a configured named custom provider.
 
     Default behavior is preserved: when the key is unset, "auto", or empty,
-    this function is a no-op. Only providers in {"openai", "openai-codex"}
-    are eligible — other providers (anthropic, openrouter, etc.) cannot be
-    rerouted through codex.
+    this function is a no-op. Anonymous ``custom`` and built-in non-Codex
+    providers remain ineligible.
 
     Returns the (possibly-rewritten) api_mode."""
     if not model_cfg:
         return api_mode
-    if provider not in {"openai", "openai-codex"}:
+    requested = str(requested_provider or "").strip().lower()
+    named_custom = (
+        provider == "custom"
+        and requested not in {"", "custom"}
+        and has_named_custom_provider(requested)
+    )
+    if provider not in {"openai", "openai-codex"} and not named_custom:
         return api_mode
     runtime = str(model_cfg.get("openai_runtime") or "").strip().lower()
     if runtime == "codex_app_server":
@@ -1787,6 +1792,12 @@ def resolve_runtime_provider(
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
+        custom_runtime["api_mode"] = _maybe_apply_codex_app_server_runtime(
+            provider="custom",
+            requested_provider=requested_provider,
+            api_mode=str(custom_runtime.get("api_mode") or "chat_completions"),
+            model_cfg=_get_model_config(),
+        )
         return custom_runtime
 
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url

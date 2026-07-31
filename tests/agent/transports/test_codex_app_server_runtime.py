@@ -62,6 +62,21 @@ class TestMaybeApplyCodexAppServerRuntime:
         )
         assert got == "codex_app_server"
 
+    def test_anonymous_custom_provider_is_not_rerouted(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.has_named_custom_provider",
+            lambda _: True,
+        )
+
+        got = _maybe_apply_codex_app_server_runtime(
+            provider="custom",
+            requested_provider="custom",
+            api_mode="chat_completions",
+            model_cfg={"openai_runtime": "codex_app_server"},
+        )
+
+        assert got == "chat_completions"
+
 
 
     @pytest.mark.parametrize(
@@ -339,4 +354,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

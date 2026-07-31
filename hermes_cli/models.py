@@ -4867,6 +4867,39 @@ def _lmstudio_entry_is_embedding(entry: dict) -> bool:
     return str(entry.get("type") or "").strip().lower() == "embedding"
 
 
+def _lmstudio_identifier(value: Any) -> str:
+    """Normalize one raw LM Studio catalog identifier (``key`` / ``id``) value.
+
+    This is the single identifier rule for LM Studio catalog entries: a missing
+    or falsy value is no identifier at all, anything else is coerced to text and
+    stripped, and a value that is empty once stripped is no identifier either.
+
+    Discovery (``probe_lmstudio_models``), target lookup, and loaded-instance
+    classification (``ensure_lmstudio_model_loaded``) all go through this rule.
+    If they diverged, LM Studio padding a ``key`` or ``id`` with whitespace
+    would make discovery advertise the stripped identifier while loading
+    compared it raw — the requested target would not be found, or would be
+    mistaken for a competing LLM and needlessly evicted.
+    """
+    return str(value).strip() if value else ""
+
+
+def _lmstudio_entry_identifiers(entry: dict) -> set[str]:
+    """Return the normalized identifiers an LM Studio catalog entry answers to.
+
+    ``key`` and ``id`` are independent aliases for the same entry — LM Studio
+    publishes entries where they differ (e.g. a quantization-qualified ``id``) —
+    so a caller naming either one is naming this entry. Whitespace-only values
+    contribute nothing, matching ``_lmstudio_identifier``.
+    """
+    identifiers: set[str] = set()
+    for field in ("key", "id"):
+        identifier = _lmstudio_identifier(entry.get(field))
+        if identifier:
+            identifiers.add(identifier)
+    return identifiers
+
+
 def probe_lmstudio_models(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -4892,7 +4925,10 @@ def probe_lmstudio_models(
             continue
         if _lmstudio_entry_is_embedding(raw):
             continue
-        key = str(raw.get("key") or raw.get("id") or "").strip()
+        # ``key`` wins over ``id`` when both are present, so an entry is offered
+        # under a single identifier; both remain valid aliases when looking the
+        # entry back up (see ``_lmstudio_entry_identifiers``).
+        key = _lmstudio_identifier(raw.get("key") or raw.get("id"))
         if key and key not in keys:
             keys.append(key)
     return keys
@@ -4949,6 +4985,13 @@ def ensure_lmstudio_model_loaded(
     ``probe_lmstudio_models`` offers; instances of entries explicitly declared
     as embeddings are never unloaded.
 
+    Catalog ``key``/``id`` values are normalized with ``_lmstudio_identifier``
+    for both target lookup and target/competitor classification, so any
+    identifier ``probe_lmstudio_models`` advertises resolves back to the entry
+    it came from. ``model`` itself is the caller's identifier and is used
+    verbatim — both when matching and in the load payload — so Hermes never
+    asks LM Studio to load a name the caller did not supply.
+
     This prevents LM Studio from keeping multiple large local LLMs resident when
     Hermes switches models, which can force RAM/CPU fallback and severe slowdown.
     """
@@ -4981,17 +5024,9 @@ def ensure_lmstudio_model_loaded(
 
     def _find_entry(raw_models: list[dict]) -> Optional[dict]:
         for raw in raw_models:
-            if isinstance(raw, dict) and (raw.get("key") == model or raw.get("id") == model):
+            if isinstance(raw, dict) and model in _lmstudio_entry_identifiers(raw):
                 return raw
         return None
-
-    def _entry_aliases(entry: dict) -> set[str]:
-        aliases: set[str] = set()
-        for field in ("key", "id"):
-            value = entry.get(field)
-            if isinstance(value, str) and value:
-                aliases.add(value)
-        return aliases
 
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
@@ -5018,7 +5053,7 @@ def ensure_lmstudio_model_loaded(
     if explicit_context is not None and max_ctx is not None and explicit_context > max_ctx:
         return _result(None, rejected=True)
 
-    target_aliases = {model} | _entry_aliases(target_entry)
+    target_aliases = {model} | _lmstudio_entry_identifiers(target_entry)
 
     # Inventory the loaded LLM instances so competing models can be unloaded
     # before the target is (re)loaded. Chat-capability uses the same predicate
@@ -5033,7 +5068,7 @@ def ensure_lmstudio_model_loaded(
         if not isinstance(raw, dict):
             continue
 
-        is_target_model = bool(_entry_aliases(raw) & target_aliases)
+        is_target_model = bool(_lmstudio_entry_identifiers(raw) & target_aliases)
         if _lmstudio_entry_is_embedding(raw) and not is_target_model:
             continue
 
@@ -5150,6 +5185,10 @@ def lmstudio_model_reasoning_options(
     Pulls ``capabilities.reasoning.allowed_options`` from ``/api/v1/models``.
     Returns ``[]`` when the model is unknown, the endpoint is unreachable,
     or the model does not declare a reasoning capability.
+
+    Entry lookup uses the same normalized ``key``/``id`` identifiers as
+    discovery and loading, so a model name taken from
+    ``probe_lmstudio_models`` finds its capabilities here too.
     """
     try:
         raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=timeout)
@@ -5161,7 +5200,7 @@ def lmstudio_model_reasoning_options(
     for raw in raw_models:
         if not isinstance(raw, dict):
             continue
-        if raw.get("key") != model and raw.get("id") != model:
+        if model not in _lmstudio_entry_identifiers(raw):
             continue
         caps = raw.get("capabilities")
         reasoning = caps.get("reasoning") if isinstance(caps, dict) else None

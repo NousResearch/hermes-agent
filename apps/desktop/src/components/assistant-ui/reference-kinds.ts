@@ -157,3 +157,20 @@ const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session):(
 export function referenceRe(): RegExp {
   return new RegExp(REFERENCE_PATTERN.source, 'g')
 }
+
+/** Remove reference-only lines when comparing visible message text. */
+export function textWithoutReferenceLines(text: string): string {
+  const matcher = referenceRe()
+
+  return text
+    .split('\n')
+    .filter(line => {
+      const candidate = line.trimEnd()
+      matcher.lastIndex = 0
+      const match = matcher.exec(candidate)
+
+      return !match || match.index !== 0 || match[0] !== candidate
+    })
+    .join('\n')
+    .trim()
+}

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -574,6 +575,46 @@ describe('preserveLocalPendingTurnMessages', () => {
 
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
+
+  it('does not duplicate the optimistic file turn when the persisted turn carries @file refs', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'text', {
+        attachmentRefs: ['@file:X']
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', '@file:X\n\ntext')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it.each(WIRE_REFERENCE_KINDS.filter(kind => kind !== 'file' && kind !== 'image'))(
+    'does not duplicate the optimistic %s turn when the persisted turn carries its directive',
+    kind => {
+      const ref = `@${kind}:X`
+      const previous = [
+        msg('1-user', 'user', 'first'),
+        msg('2-assistant', 'assistant', 'first answer'),
+        msg('user-optimistic', 'user', 'text', {
+          attachmentRefs: [ref]
+        })
+      ]
+
+      const next = [
+        msg('1-user-stored', 'user', 'first'),
+        msg('2-assistant-stored', 'assistant', 'first answer'),
+        msg('3-user-stored', 'user', `${ref}\n\ntext`)
+      ]
+
+      expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+    }
+  )
 
   it('still keeps a genuinely uncommitted optimistic image turn when the persisted text differs', () => {
     const previous = [

@@ -1,7 +1,8 @@
 import { getSession } from '@/hermes'
+import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
-import { embeddedImageUrls, textWithoutEmbeddedImages, textWithoutImageRefs } from '@/lib/embedded-images'
+import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -403,7 +404,8 @@ export function preserveLocalPendingTurnMessages(
     if (
       isOptimisticUser &&
       latestAuthoritativeUser &&
-      textWithoutImageRefs(chatMessageText(latestAuthoritativeUser)) === textWithoutImageRefs(chatMessageText(message))
+      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
+        textWithoutReferenceLines(chatMessageText(message))
     ) {
       continue
     }
@@ -415,7 +417,9 @@ export function preserveLocalPendingTurnMessages(
         continue
       }
 
-      if (textWithoutImageRefs(chatMessageText(authoritative)) === textWithoutImageRefs(chatMessageText(message))) {
+      if (
+        textWithoutReferenceLines(chatMessageText(authoritative)) === textWithoutReferenceLines(chatMessageText(message))
+      ) {
         continue
       }
     }
@@ -484,7 +488,9 @@ export function appendLiveSessionProjection(
   }
 
   const persistedInLatestRun = (text: string): boolean =>
-    latestUserRun.some(message => textWithoutImageRefs(chatMessageText(message)) === textWithoutImageRefs(text))
+    latestUserRun.some(
+      message => textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
+    )
 
   const inflightUserAlreadyPersisted = Boolean(inflightUser) && persistedInLatestRun(inflightUser)
 

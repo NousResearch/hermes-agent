@@ -337,3 +337,137 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
         assert (pkg / "hermes-agent.rb").read_text() == "formula\n"
     finally:
         os.chmod(pkg, 0o755)
+
+
+# ---------------------------------------------------------------------------
+# reset --hard on diverged history must not silently discard local COMMITS
+# (as opposed to uncommitted changes, which the autostash above already
+# covers). A committed local fix shows up clean in `git status` and was
+# never protected by the stash -- it needs its own preserve-and-reapply path.
+# ---------------------------------------------------------------------------
+
+def _make_divergence_side_effect(
+    *, local_only_count="0", cherry_pick_fails=False,
+):
+    """subprocess.run side_effect for the ff-only-fails -> reset -> preserve
+    -> cherry-pick flow. Distinguishes the two different rev-list calls by
+    range direction: "HEAD..origin/<branch>" is the pre-existing "how many
+    new commits" check; "origin/<branch>..HEAD" is this fix's "how many
+    local-only commits would the reset destroy" check.
+    """
+    recorded = []
+
+    def side_effect(cmd, **kwargs):
+        recorded.append(list(cmd))
+        joined = " ".join(str(c) for c in cmd)
+        if "fetch" in joined and "origin" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-parse" in joined and "--abbrev-ref" in joined:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if "checkout" in joined and "main" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "rev-list" in joined and "HEAD..origin" in joined:
+            return SimpleNamespace(stdout="3\n", stderr="", returncode=0)
+        if "rev-list" in joined and "origin/main..HEAD" in joined:
+            return SimpleNamespace(stdout=f"{local_only_count}\n", stderr="", returncode=0)
+        if "--ff-only" in joined:
+            return SimpleNamespace(
+                stdout="", stderr="fatal: Not possible to fast-forward, aborting.\n",
+                returncode=128,
+            )
+        if "update-ref" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "reset" in joined and "--hard" in joined:
+            return SimpleNamespace(stdout="HEAD is now at abc123\n", stderr="", returncode=0)
+        if "cherry-pick" in joined and "--abort" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "cherry-pick" in joined:
+            if cherry_pick_fails:
+                return SimpleNamespace(
+                    stdout="", stderr="error: could not apply ...\nCONFLICT\n", returncode=1,
+                )
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return side_effect, recorded
+
+
+def test_cmd_update_preserves_and_reapplies_local_commits_on_reset(monkeypatch, tmp_path, capsys):
+    """Local commits ahead of origin get backed up before the hard reset and
+    cleanly reapplied on top afterward -- the fix's happy path."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
+
+    side_effect, recorded = _make_divergence_side_effect(local_only_count="2")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+    monkeypatch.setattr(hermes_main, "_validate_critical_files_syntax", lambda root: (True, None, None))
+    monkeypatch.setattr(hermes_main, "_venv_core_imports_healthy", lambda: (True, ""))
+    monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_finish_dashboard_update_cleanup", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_install_python_dependencies_with_optional_fallback", lambda *a, **kw: None)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    calls = [" ".join(str(c) for c in cmd) for cmd in recorded]
+    update_ref_calls = [c for c in calls if "update-ref" in c]
+    cherry_pick_calls = [c for c in calls if "cherry-pick" in c and "--abort" not in c]
+    assert len(update_ref_calls) == 1
+    assert "refs/hermes-update-backups/main-" in update_ref_calls[0]
+    assert len(cherry_pick_calls) == 1
+    assert "HEAD..refs/hermes-update-backups/main-" in cherry_pick_calls[0]
+
+    out = capsys.readouterr().out
+    assert "Preserving 2 local commit(s)" in out
+    assert "Reapplied 2 local commit(s)" in out
+
+
+def test_cmd_update_cherry_pick_conflict_leaves_backup_ref_and_prints_recovery(monkeypatch, tmp_path, capsys):
+    """A conflicting reapply aborts cleanly and points at the backup ref --
+    nothing is lost, no conflict markers are left in the tree."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
+
+    side_effect, recorded = _make_divergence_side_effect(local_only_count="1", cherry_pick_fails=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+    monkeypatch.setattr(hermes_main, "_validate_critical_files_syntax", lambda root: (True, None, None))
+    monkeypatch.setattr(hermes_main, "_venv_core_imports_healthy", lambda: (True, ""))
+    monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_finish_dashboard_update_cleanup", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_install_python_dependencies_with_optional_fallback", lambda *a, **kw: None)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    calls = [" ".join(str(c) for c in cmd) for cmd in recorded]
+    assert any("cherry-pick --abort" in c for c in calls)
+
+    out = capsys.readouterr().out
+    assert "Could not automatically reapply your 1 local" in out
+    assert "refs/hermes-update-backups/main-" in out
+    assert "git cherry-pick HEAD..refs/hermes-update-backups/main-" in out
+
+
+def test_cmd_update_skips_backup_when_no_local_commits_diverged(monkeypatch, tmp_path, capsys):
+    """A pure remote-side divergence (e.g. upstream rebase) with zero local
+    commits ahead must not create a backup ref -- nothing local to lose."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
+
+    side_effect, recorded = _make_divergence_side_effect(local_only_count="0")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+    monkeypatch.setattr(hermes_main, "_validate_critical_files_syntax", lambda root: (True, None, None))
+    monkeypatch.setattr(hermes_main, "_venv_core_imports_healthy", lambda: (True, ""))
+    monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_finish_dashboard_update_cleanup", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_update_node_dependencies", lambda: [])
+    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **kw: None)
+    monkeypatch.setattr(hermes_main, "_install_python_dependencies_with_optional_fallback", lambda *a, **kw: None)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    calls = [" ".join(str(c) for c in cmd) for cmd in recorded]
+    assert not any("update-ref" in c for c in calls)
+    assert not any("cherry-pick" in c for c in calls)

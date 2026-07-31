@@ -3154,6 +3154,23 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 6  # 1 original + 5 retries
 
+    def test_truly_empty_response_retries_zero_skips_retries(self, agent):
+        """empty_response_retries=0 skips retries entirely: the empty response
+        falls straight through to the terminal empty path (one API call)."""
+        self._setup_agent(agent)
+        agent._empty_response_retries = 0
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+        assert result["completed"] is True
+        assert result["api_calls"] == 1  # original only; 0 retries
+
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
         """Model produces content after being nudged for empty response."""
         self._setup_agent(agent)
@@ -3285,7 +3302,7 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
 
         assert result["interrupted"] is True
-        assert "Operation interrupted: retrying empty response from model" in result["final_response"]
+        assert "Operation interrupted during empty-response retry" in result["final_response"]
         assert agent._empty_content_retries == 1
         assert 0.2 in sleep_called
         assert mock_persist.call_count == 2
@@ -3336,7 +3353,7 @@ class TestRunConversation:
         # 7.5s wait, slept in 0.2s increments -> 37.5 -> at least 37 calls
         assert len([c for c in sleep_calls if c == 0.2]) >= 37
 
-        retry_status = [m for m in status_messages if "Empty response from model — retrying (1/3) in 8s" in m]
+        retry_status = [m for m in status_messages if "Empty response from model; retrying" in m and "in 7.5s" in m]
         assert len(retry_status) == 1
 
     def test_partial_stream_recovery_uses_streamed_content(self, agent):

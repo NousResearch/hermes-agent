@@ -848,6 +848,12 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Retries when the model returns an empty response (no content or reasoning)
+  # before switching to the fallback provider (default 5). Some providers
+  # return transient empty responses; this plus a short backoff avoids a
+  # premature fallback. 0 = skip retries, fall back at once.
+  # empty_response_retries: 5
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. The default "auto" enables it on interactive
   # coding surfaces (CLI, TUI, desktop) and programmatic callers, and disables

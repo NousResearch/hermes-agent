@@ -6691,12 +6691,13 @@ def run_conversation(
                         )
                         # Short jittered backoff so a transiently-empty provider
                         # (e.g. z.ai GLM-5-Turbo) recovers before the retry.
-                        # Interruptible: a steering redirect that lands during
-                        # the wait is preserved and re-applied on the next loop
-                        # iteration instead of aborting the turn (same rule as
-                        # the 429/529 backoff). No activity keepalive: the ~22s
-                        # worst case (15s cap + jitter) sits well under the
-                        # gateway's 900s inactivity-warning / 1800s hard-timeout.
+                        # Interruptible: a /stop during the wait aborts the turn.
+                        # No preserve-redirect path here (unlike the 429/529
+                        # backoff): the model-request window has already closed
+                        # by the time we process an empty response, so a steer
+                        # cannot land during this wait. No activity keepalive:
+                        # the ~22s worst case (15s cap + jitter) sits well under
+                        # the gateway's 900s inactivity-warning / 1800s timeout.
                         wait_time = jittered_backoff(
                             agent._empty_content_retries,
                             base_delay=3.0,
@@ -6708,12 +6709,8 @@ def run_conversation(
                             f"in {wait_time:.1f}s..."
                         )
                         sleep_end = time.time() + wait_time
-                        _empty_redirect_preserved = False
                         while time.time() < sleep_end:
                             if agent._interrupt_requested:
-                                if agent.clear_interrupt(preserve_redirect=True):
-                                    _empty_redirect_preserved = True
-                                    break
                                 agent._vprint(
                                     f"{agent.log_prefix}⚡ Interrupt during empty-response backoff, aborting.",
                                     force=True,
@@ -6733,12 +6730,6 @@ def run_conversation(
                                     "interrupted": True,
                                 }
                             time.sleep(0.2)
-                        if _empty_redirect_preserved:
-                            # Refund the slot this empty retry consumed so the
-                            # loop re-enters and drains/applies the redirect
-                            # instead of exiting on an exhausted budget (mirrors
-                            # the 429 backoff's redirect-restart refund).
-                            agent.iteration_budget.refund()
                         continue
 
                     # ── Exhausted retries — try fallback provider ──

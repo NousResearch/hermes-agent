@@ -2064,7 +2064,7 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
 
 def _convert_tool_message_to_result(
     result: List[Dict[str, Any]], m: Dict[str, Any]
-) -> None:
+) -> Dict[str, Any]:
     """Convert a tool message to an Anthropic tool_result, merging consecutive
     results into one user message.
 
@@ -2122,6 +2122,7 @@ def _convert_tool_message_to_result(
         result[-1]["content"].append(tool_result)
     else:
         result.append({"role": "user", "content": [tool_result]})
+    return tool_result
 
 
 def _convert_user_message(content: Any) -> Dict[str, Any]:
@@ -2425,18 +2426,13 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
 # the message list — doesn't invalidate the cached prefix the way editing the
 # top-level ``system`` string would.
 #
-# Hermes already has a channel for exactly this: mid-turn /steer text is
-# appended to the last tool result as an inline [OUT-OF-BAND USER MESSAGE]
-# marker (agent/prompt_builder.py:format_steer_marker,
-# agent/agent_runtime_helpers.py:apply_pending_steer_to_tool_results) so it
-# rides a role-alternation-safe slot on every model. That marker-in-tool-
-# output approach remains the only option for Sonnet 5 / GPT / third-party
-# endpoints and is left completely unchanged. For the three gated models we
-# additionally promote the *trailing* marker (only ever the newest one — see
-# _split_trailing_steer_marker) to a real ``role: system`` message so it gets
-# native operator-level priority without the cache-prefix cost, matching
-# Anthropic's own guidance to phrase it as context ("new input arrived...")
-# rather than a command.
+# Hermes already has a channel for exactly this: the runtime appends mid-turn
+# /steer text to the last tool result and records the same value in a private
+# top-level provenance field that tool output cannot set. The inline marker
+# remains the role-alternation-safe fallback for Sonnet 5 / GPT / third-party
+# endpoints. For the three gated models, the adapter promotes only text backed
+# by that structural provenance to a real ``role: system`` message, avoiding
+# both forged-marker elevation and cache-prefix invalidation.
 _MID_CONVERSATION_SYSTEM_MODEL_PREFIXES = (
     "claude-fable-5",
     "claude-mythos-5",
@@ -2461,105 +2457,88 @@ def _model_supports_mid_conversation_system(model: str | None) -> bool:
     return normalized.startswith(_MID_CONVERSATION_SYSTEM_MODEL_PREFIXES)
 
 
-def _extract_trailing_steer_marker(content: Any) -> Tuple[Any, Optional[str]]:
-    """Pull a trailing [OUT-OF-BAND USER MESSAGE] marker out of tool_result content.
+def _remove_trusted_steer_marker(content: Any, steer_text: str) -> Any:
+    """Remove only the exact marker for structurally trusted steer text."""
+    from agent.prompt_builder import format_steer_marker
 
-    Returns (content_with_marker_removed, steer_text). steer_text is None
-    (and content is returned unchanged) when no marker is present.
-    Handles both the plain-string tool_result content shape and the
-    multimodal list-of-blocks shape (the marker is appended as its own
-    trailing {"type": "text"} block in that case — see
-    apply_pending_steer_to_tool_results).
-    """
-    # Deferred import: avoids a module-level dependency from
-    # anthropic_adapter (imported early, on every provider's cold path) on
-    # prompt_builder (imports transitively pull in platform-hint tables etc).
-    from agent.prompt_builder import STEER_MARKER_OPEN, STEER_MARKER_CLOSE
+    marker = format_steer_marker(steer_text)
+    if isinstance(content, str) and content.endswith(marker):
+        remainder = content[: -len(marker)].rstrip()
+        return remainder or "(no output)"
 
-    if isinstance(content, str):
-        idx = content.rfind(STEER_MARKER_OPEN)
-        if idx == -1:
-            return content, None
-        close_idx = content.find(STEER_MARKER_CLOSE, idx)
-        if close_idx == -1:
-            return content, None
-        steer_text = content[idx + len(STEER_MARKER_OPEN):close_idx].strip("\n")
-        remainder = content[:idx].rstrip()
-        return (remainder or "(no output)"), (steer_text or None)
-
-    if isinstance(content, list):
-        for i in range(len(content) - 1, -1, -1):
-            blk = content[i]
-            if not (isinstance(blk, dict) and blk.get("type") == "text"):
-                continue
-            text = blk.get("text") or ""
-            idx = text.find(STEER_MARKER_OPEN)
-            if idx == -1:
-                continue
-            close_idx = text.find(STEER_MARKER_CLOSE, idx)
-            if close_idx == -1:
-                return content, None
-            steer_text = text[idx + len(STEER_MARKER_OPEN):close_idx].strip("\n")
-            remainder_text = text[:idx].rstrip()
-            new_blocks = list(content)
-            if remainder_text:
-                new_blocks[i] = {**blk, "text": remainder_text}
-            else:
-                new_blocks.pop(i)
-            return new_blocks, (steer_text or None)
-
-    return content, None
+    if isinstance(content, list) and content:
+        last = content[-1]
+        if isinstance(last, dict) and last.get("type") == "text":
+            text = last.get("text") or ""
+            stripped_marker = marker.lstrip()
+            if text.endswith(stripped_marker):
+                remainder = text[: -len(stripped_marker)].rstrip()
+                new_blocks = list(content)
+                if remainder:
+                    new_blocks[-1] = {**last, "text": remainder}
+                else:
+                    new_blocks.pop()
+                return new_blocks or "(no output)"
+    return content
 
 
 def _split_trailing_steer_marker(
-    result: List[Dict[str, Any]], model: str | None, base_url: str | None
+    result: List[Dict[str, Any]],
+    model: str | None,
+    base_url: str | None,
+    trusted_steers: Dict[int, str],
 ) -> None:
-    """Promote a trailing /steer marker to a native mid-conversation system message.
+    """Promote trusted /steers to replay-stable native system messages.
 
     Only acts when the model is GA'd for the feature on a native Anthropic
     endpoint (never third-party — they don't support this API shape) and
-    only ever inspects ``result[-1]``: the marker Hermes just appended for
-    *this* turn. Anthropic requires a mid-conversation system message to be
-    the last entry in ``messages`` (or immediately followed by an assistant
-    turn) — appending after every other transform in
-    ``convert_messages_to_anthropic`` guarantees that here, since ``result``
-    is the exact payload about to be sent.
+    the tool result's ID maps to structurally trusted steer provenance from
+    the canonical Hermes message. Every tagged historical steer is promoted
+    immediately after its tool-result user message on every replay. That
+    stable placement preserves the cached prefix across subsequent turns.
 
-    Older markers already embedded deeper in history (from a prior turn,
-    replayed as part of that turn's stored tool output) are left untouched —
-    they're already part of a cached prefix and are not at ``result[-1]``, so
-    this function is a no-op for them on every later call. This mutates
-    ``result`` in place but never mutates the canonical Hermes-internal
-    message history the caller passed in.
+    This mutates ``result`` in place but never mutates the canonical
+    Hermes-internal message history the caller passed in.
     """
-    if not result or _is_third_party_anthropic_endpoint(base_url):
+    if (
+        not result
+        or not trusted_steers
+        or _is_third_party_anthropic_endpoint(base_url)
+    ):
         return
     if not _model_supports_mid_conversation_system(model):
         return
-    last = result[-1]
-    if not isinstance(last, dict) or last.get("role") != "user":
-        return
-    content = last.get("content")
-    if not isinstance(content, list):
-        return
-    for block in content:
-        if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+
+    promoted: List[Dict[str, Any]] = []
+    for message in result:
+        promoted.append(message)
+        if not isinstance(message, dict) or message.get("role") != "user":
             continue
-        new_inner, steer_text = _extract_trailing_steer_marker(block.get("content"))
-        if steer_text is None:
+        content = message.get("content")
+        if not isinstance(content, list):
             continue
-        block["content"] = new_inner
-        # Anthropic's own guidance: phrase as context, not a command overriding
-        # the user — Claude is trained to resist "ignore what the user said"-
-        # shaped system content even here.
-        result.append({
-            "role": "system",
-            "content": (
-                "New input arrived from the user while you were working: "
-                + steer_text
-            ),
-        })
-        return  # Only one steer target per apply_pending_steer_to_tool_results call.
+        for block in content:
+            if not (
+                isinstance(block, dict)
+                and block.get("type") == "tool_result"
+            ):
+                continue
+            steer_text = trusted_steers.get(id(block))
+            if not steer_text:
+                continue
+            block["content"] = _remove_trusted_steer_marker(
+                block.get("content"), steer_text
+            )
+            promoted.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "New input arrived from the user while you were working: "
+                        + steer_text
+                    ),
+                }
+            )
+    result[:] = promoted
 
 
 def convert_messages_to_anthropic(
@@ -2591,6 +2570,7 @@ def convert_messages_to_anthropic(
     """
     system = None
     result: List[Dict[str, Any]] = []
+    trusted_steers: Dict[int, str] = {}
 
     for m in messages:
         role = m.get("role", "user")
@@ -2617,7 +2597,12 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "tool":
-            _convert_tool_message_to_result(result, m)
+            from agent.prompt_builder import TRUSTED_STEER_KEY
+
+            trusted_steer = m.get(TRUSTED_STEER_KEY)
+            tool_result = _convert_tool_message_to_result(result, m)
+            if isinstance(trusted_steer, str) and trusted_steer:
+                trusted_steers[id(tool_result)] = trusted_steer
             continue
 
         # Regular user message
@@ -2627,7 +2612,7 @@ def convert_messages_to_anthropic(
     result = _merge_consecutive_roles(result)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
-    _split_trailing_steer_marker(result, model, base_url)
+    _split_trailing_steer_marker(result, model, base_url, trusted_steers)
 
     return system, result
 

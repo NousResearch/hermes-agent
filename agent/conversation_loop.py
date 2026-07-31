@@ -797,7 +797,7 @@ def run_conversation(
             for _si in range(len(messages) - 1, -1, -1):
                 _sm = messages[_si]
                 if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                    from agent.prompt_builder import format_steer_marker
+                    from agent.prompt_builder import TRUSTED_STEER_KEY, format_steer_marker
                     marker = format_steer_marker(_pre_api_steer)
                     existing = _sm.get("content", "")
                     if isinstance(existing, str):
@@ -810,6 +810,7 @@ def run_conversation(
                             _sm["content"] = blocks
                         except Exception:
                             pass
+                    _sm[TRUSTED_STEER_KEY] = _pre_api_steer
                     _injected = True
                     logger.debug(
                         "Pre-API-call steer drain: injected into tool msg at index %d",

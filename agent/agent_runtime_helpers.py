@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.timeouts import get_provider_request_timeout
-from agent.prompt_builder import format_steer_marker
+from agent.prompt_builder import TRUSTED_STEER_KEY, format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
@@ -3384,6 +3384,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             messages[target_idx]["content"] = f"{existing_content}{marker}"
     else:
         messages[target_idx]["content"] = existing_content + marker
+    messages[target_idx][TRUSTED_STEER_KEY] = steer_text
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars): %s",
         len(steer_text),

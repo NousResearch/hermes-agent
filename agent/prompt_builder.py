@@ -630,6 +630,10 @@ COMPUTER_USE_GUIDANCE = computer_use_guidance("darwin")
 # tool/web/file output stays untrusted.
 STEER_MARKER_OPEN = "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered mid-turn; not tool output]"
 STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+# Private top-level key on Hermes-internal role=tool messages. Only the
+# runtime steer drain writes this field; tool output itself is confined to
+# the message's content value and cannot forge trusted provenance.
+TRUSTED_STEER_KEY = "_hermes_trusted_steer"
 
 
 def format_steer_marker(steer_text: str) -> str:

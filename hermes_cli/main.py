@@ -2023,30 +2023,44 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 tui_dir,
                 include_child_workspaces=True,
             )
-        result = subprocess.run(
-            [
-                npm,
-                "install",
-                *npm_workspace_args,
-                # --include=dev: ui-tui's build toolchain (esbuild, typescript)
-                # lives in devDependencies. An inherited NODE_ENV=production
-                # (e.g. from a container shell or a parent TUI launch) or an
-                # npm `omit=dev` config would silently skip them and the TUI
-                # build would fail. See _run_npm_install_deterministic.
-                "--include=dev",
-                "--silent",
-                "--no-fund",
-                "--no-audit",
-                "--progress=false",
-            ],
-            cwd=str(npm_cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env={**os.environ, "CI": "1"},
-        )
+        npm_install_cmd = [
+            npm,
+            "install",
+            *npm_workspace_args,
+            # --include=dev: ui-tui's build toolchain (esbuild, typescript)
+            # lives in devDependencies. An inherited NODE_ENV=production
+            # (e.g. from a container shell or a parent TUI launch) or an
+            # npm `omit=dev` config would silently skip them and the TUI
+            # build would fail. See _run_npm_install_deterministic.
+            "--include=dev",
+            "--silent",
+            "--no-fund",
+            "--no-audit",
+            "--progress=false",
+        ]
+
+        def _run_tui_install() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                npm_install_cmd,
+                cwd=str(npm_cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env={**os.environ, "CI": "1"},
+            )
+
+        result = _run_tui_install()
+        if result.returncode != 0:
+            # An npm outside the root package.json's `engines.npm` range fails
+            # here before doing any work; upgrade a Hermes-managed npm once and
+            # retry rather than dumping EBADENGINE at the user.
+            from hermes_cli.npm_engine import maybe_repair_npm_engine
+
+            combined_output = f"{result.stdout or ''}\n{result.stderr or ''}"
+            if maybe_repair_npm_engine(npm, combined_output):
+                result = _run_tui_install()
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
@@ -5443,34 +5457,84 @@ def _run_npm_install_deterministic(
     # install path and nix/lib.nix npm ci hooks.
     run_env = {**os.environ, **(env or {}), "CI": "1"}
 
-    lockfile = cwd / "package-lock.json"
-    if lockfile.exists():
-        ci_cmd = [npm, "ci", "--include=dev", *extra_args]
-        ci_result = subprocess.run(
-            ci_cmd,
+    def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+        return _run_npm_watching_for_engine_failure(
+            cmd,
             cwd=cwd,
             env=run_env,
             capture_output=capture_output,
+        )
+
+    def _attempt() -> subprocess.CompletedProcess:
+        lockfile = cwd / "package-lock.json"
+        if lockfile.exists():
+            ci_result = _run([npm, "ci", "--include=dev", *extra_args])
+            if ci_result.returncode == 0:
+                return ci_result
+            # Fall through to `npm install` — lockfile may be out of sync on a
+            # WIP fork/branch, or `npm ci` may not be available on very old npm.
+        return _run([npm, "install", "--no-save", "--include=dev", *extra_args])
+
+    result = _attempt()
+    if result.returncode == 0:
+        return result
+
+    # An npm outside the root package.json's `engines.npm` range fails every
+    # command here identically (the `npm install` fallback included), so the
+    # failure is worth exactly one upgrade attempt. `maybe_repair_npm_engine`
+    # returns True only when it actually upgraded a Hermes-managed npm.
+    from hermes_cli.npm_engine import maybe_repair_npm_engine
+
+    combined = f"{result.stdout or ''}\n{result.stderr or ''}"
+    if not maybe_repair_npm_engine(npm, combined):
+        return result
+    return _attempt()
+
+
+def _run_npm_watching_for_engine_failure(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    capture_output: bool,
+) -> subprocess.CompletedProcess:
+    """Run *cmd*, always retaining stderr so ``EBADENGINE`` stays detectable.
+
+    ``capture_output=False`` callers stream npm's progress live and would
+    otherwise hand back a ``CompletedProcess`` with ``stderr=None``, leaving the
+    engine-failure recovery nothing to read. Tee stderr instead: each line is
+    forwarded to this process's stderr as it arrives (so live output is
+    unchanged) and accumulated for the caller.
+    """
+    if capture_output:
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
         )
-        if ci_result.returncode == 0:
-            return ci_result
-        # Fall through to `npm install` — lockfile may be out of sync on a
-        # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", "--no-save", "--include=dev", *extra_args]
-    return subprocess.run(
-        install_cmd,
+
+    captured: list[str] = []
+    with subprocess.Popen(
+        cmd,
         cwd=cwd,
-        env=run_env,
-        capture_output=capture_output,
+        env=env,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        check=False,
-    )
+    ) as proc:
+        if proc.stderr is not None:
+            for line in proc.stderr:
+                captured.append(line)
+                sys.stderr.write(line)
+            sys.stderr.flush()
+        returncode = proc.wait()
+    return subprocess.CompletedProcess(cmd, returncode, None, "".join(captured))
 
 
 def _missing_web_build_tool(output: str) -> str | None:

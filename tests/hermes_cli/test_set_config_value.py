@@ -643,3 +643,17 @@ class TestMappingGuard:
         parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert parsed["model"]["default"] == "claude-opus-4"
         assert parsed["model"]["provider"] == "openai-api"
+
+    def test_model_force_overwrites_entire_section(self, _isolated_hermes_home):
+        """hermes config set --force model <id> → overwrite entire section."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+                "context_length": 128_000,
+            }
+        })
+        set_config_value("model", "claude-opus-4", force=True)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["model"] == "claude-opus-4"

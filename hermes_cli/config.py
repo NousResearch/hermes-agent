@@ -4866,14 +4866,21 @@ def set_config_value(key: str, value: str, force: bool = False):
         _existing = user_config.get(key)
         if isinstance(_existing, dict):
             if key == "model":
-                # Redirect bare-model shorthand to model.default while
-                # keeping every sibling mapping key intact.
-                key = "model.default"
-                print(
-                    f"✓ Redirecting bare 'model' to 'model.default' "
-                    f"(preserving {len(_existing)} existing model sub-key(s))"
-                )
-                # value was already coerced above; proceed to _set_nested
+                if force:
+                    # --force: allow destructive section overwrite.
+                    print(
+                        f"⚠ Replacing entire 'model' section with a scalar "
+                        f"(discarding {len(_existing)} existing sub-key(s))"
+                    )
+                else:
+                    # Redirect bare-model shorthand to model.default while
+                    # keeping every sibling mapping key intact.
+                    key = "model.default"
+                    print(
+                        f"✓ Redirecting bare 'model' to 'model.default' "
+                        f"(preserving {len(_existing)} existing model sub-key(s))"
+                    )
+                    # value was already coerced above; proceed to _set_nested
             elif not force:
                 _sub = [k for k in _existing if isinstance(k, str)]
                 print(

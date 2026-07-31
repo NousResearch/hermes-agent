@@ -114,6 +114,34 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                      "agent_id": str(extra.get("agent_id", "")), "token": extra.get("token", ""), "encoding_aes_key": extra.get("encoding_aes_key", "")}]
         return []
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def _ensure_http_client(self) -> None:
+        """Create the outbound HTTP client, without starting the server.
+
+        ``send()`` only needs this client — the aiohttp app, the bound port
+        and the poll loop exist purely to *receive* callbacks. Separating the
+        two lets an out-of-process sender (cron, ``send_message``) reuse the
+        real send path without binding the callback port, which ``connect()``
+        would refuse anyway when the gateway already holds it.
+        """
+        if self._http_client is not None:
+            return
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+
+        self._http_client = httpx.AsyncClient(
+            timeout=20.0, limits=platform_httpx_limits()
+        )
+
+    async def aclose_http_client(self) -> None:
+        """Close the outbound client opened by :meth:`_ensure_http_client`."""
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         del is_reconnect  # kwarg MUST exist (GatewayRunner passes it) even though unused
         if not self._apps:
@@ -133,10 +161,9 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             except (ConnectionRefusedError, OSError):
                 pass
         try:
-            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
-            from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
-            # client_max_size → 413 before our handler / any signature work runs.
+            self._ensure_http_client()
+            # client_max_size rejects oversized bodies at the aiohttp layer
+            # (413) before our handler — and before any signature work — runs.
             self._app = web.Application(client_max_size=_MAX_BODY)
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get(self._path, self._handle_verify)
@@ -176,9 +203,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         if self._runner:
             await self._runner.cleanup()
         self._runner = self._app = None
-        if self._http_client:
-            await self._http_client.aclose()
-        self._http_client = None
+        await self.aclose_http_client()
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         app = self._resolve_app_for_chat(chat_id)

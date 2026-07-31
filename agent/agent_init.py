@@ -1669,6 +1669,15 @@ def init_agent(
     if not skip_memory:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+            # Align with doctor/dashboard: builtin/built-in/none → no external plugin.
+            try:
+                from plugins.memory import normalize_memory_provider_name as _norm_mem
+                _mem_provider_name = _norm_mem(_mem_provider_name)
+            except Exception:
+                if str(_mem_provider_name or "").strip().lower() in {
+                    "built-in", "builtin", "none",
+                }:
+                    _mem_provider_name = ""
 
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager

@@ -5083,10 +5083,15 @@ def _memory_provider_label(name: str) -> str:
 
 
 def _normalize_memory_provider_name(name: Any) -> str:
-    provider = str(name or "").strip()
-    if provider.lower() in {"built-in", "builtin", "none"}:
-        return ""
-    return provider
+    """Dashboard alias for plugins.memory.normalize_memory_provider_name."""
+    try:
+        from plugins.memory import normalize_memory_provider_name
+        return normalize_memory_provider_name(name)
+    except Exception:
+        provider = str(name or "").strip()
+        if provider.lower() in {"built-in", "builtin", "none"}:
+            return ""
+        return provider
 
 
 def _load_memory_provider(name: str):

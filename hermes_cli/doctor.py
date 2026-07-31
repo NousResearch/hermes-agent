@@ -2617,16 +2617,23 @@ def run_doctor(args):
     except Exception:
         pass
 
-    # ``builtin`` / ``default`` / ``none`` are first-class values for the
-    # built-in MEMORY.md provider — not plugin names. Falling through to
-    # load_memory_provider("builtin") always fails (no plugins/memory/builtin/)
+    # Same alias set as runtime / dashboard (plugins.memory.normalize_memory_provider_name).
+    # Without this, memory.provider: builtin falls through to load_memory_provider
     # and prints a false "plugin not found" warning (#75647).
-    _builtin_aliases = {"", "builtin", "default", "none"}
-    if str(_active_memory_provider).strip().lower() in _builtin_aliases:
+    try:
+        from plugins.memory import normalize_memory_provider_name as _norm_mem_provider
+        _raw_mem_provider = _active_memory_provider
+        _active_memory_provider = _norm_mem_provider(_active_memory_provider)
+    except Exception:
+        _raw_mem_provider = _active_memory_provider
+        if str(_active_memory_provider).strip().lower() in {"built-in", "builtin", "none"}:
+            _active_memory_provider = ""
+
+    if not _active_memory_provider:
         check_ok(
             "Built-in memory active",
             "(builtin provider configured — this is fine)"
-            if str(_active_memory_provider).strip()
+            if str(_raw_mem_provider).strip()
             else "(no external provider configured — this is fine)",
         )
     elif _active_memory_provider == "honcho":

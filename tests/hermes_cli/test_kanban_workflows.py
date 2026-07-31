@@ -311,6 +311,119 @@ def test_workflow_subscription_admin_can_skip_one_event_and_disable(workflow_db)
     assert events == []
 
 
+def test_workflow_subscription_skip_rejects_leaping_over_next_target_transition(
+    workflow_db,
+):
+    acceptance = kb.create_task(
+        workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"
+    )
+    kb.create_workflow(
+        workflow_db, workflow_id="wf_skip_order", name="notify", tenant="tenant-a",
+        designated_acceptance_task_id=acceptance, actor=_actor(),
+        mutation_id="create-skip-order",
+        subscription={
+            "platform": "telegram", "chat_id": "origin", "notifier_profile": "default",
+            "target_states": ["PASS"],
+        },
+    )
+    kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_skip_order", task_id=acceptance, outcome="PASS",
+        actor=_actor(capabilities=("workflow.outcome",)),
+        mutation_id="skip-order-pass-one", expected_version=1,
+    )
+    next_acceptance = kb.create_task(
+        workflow_db, title="accept generation 2", assignee="orchestrator", tenant="tenant-a"
+    )
+    remediation = kb.create_task(
+        workflow_db, title="remediate generation 2", assignee="builder", tenant="tenant-a"
+    )
+    reverification = kb.create_task(
+        workflow_db, title="verify generation 2", assignee="x_qa", tenant="tenant-a"
+    )
+    kb.reopen_workflow(
+        workflow_db,
+        workflow_id="wf_skip_order",
+        designated_acceptance_task_id=next_acceptance,
+        members=[
+            {"task_id": next_acceptance, "stage_key": "acceptance-2",
+             "stage_role": "acceptance", "required": True},
+            {"task_id": remediation, "stage_key": "remediation-2",
+             "stage_role": "remediation", "required": True},
+            {"task_id": reverification, "stage_key": "reverification-2",
+             "stage_role": "reverification", "required": True},
+        ],
+        actor=_actor(capabilities=("workflow.admin",)),
+        mutation_id="skip-order-reopen", expected_version=2,
+        reason="remediation and re-verification cycle",
+    )
+    outcome_actor = _actor(capabilities=("workflow.outcome",))
+    kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_skip_order", task_id=remediation, outcome="PASS",
+        actor=outcome_actor, mutation_id="skip-order-remediation-pass",
+        expected_version=3,
+    )
+    kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_skip_order", task_id=reverification, outcome="PASS",
+        actor=outcome_actor, mutation_id="skip-order-reverification-pass",
+        expected_version=4,
+    )
+    passed = kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_skip_order", task_id=next_acceptance, outcome="PASS",
+        actor=outcome_actor, mutation_id="skip-order-pass-two", expected_version=5,
+    )
+    aggregate_events = workflow_db.execute(
+        "SELECT id,payload FROM kanban_workflow_events "
+        "WHERE workflow_id='wf_skip_order' AND kind='aggregate_changed' ORDER BY id"
+    ).fetchall()
+    assert [json.loads(event["payload"])["resulting_state"] for event in aggregate_events] == [
+        "PASS", "ACTIVE", "PASS",
+    ]
+    first_pass_event, _, second_pass_event = aggregate_events
+    subscription_before = dict(workflow_db.execute(
+        "SELECT * FROM kanban_workflow_subscriptions "
+        "WHERE workflow_id='wf_skip_order' AND role='origin'"
+    ).fetchone())
+    event_count_before = workflow_db.execute(
+        "SELECT count(*) FROM kanban_workflow_events WHERE workflow_id='wf_skip_order'"
+    ).fetchone()[0]
+    mutation_count_before = workflow_db.execute(
+        "SELECT count(*) FROM kanban_workflow_mutations WHERE workflow_id='wf_skip_order'"
+    ).fetchone()[0]
+
+    with pytest.raises(kb.WorkflowConflictError, match="next pending target transition"):
+        kb.skip_workflow_subscription_event(
+            workflow_db, workflow_id="wf_skip_order", event_id=second_pass_event["id"],
+            actor=_actor(capabilities=("workflow.admin",)), mutation_id="skip-pass-two-early",
+            expected_version=passed["workflow"]["version"], reason="operator disposition",
+        )
+
+    subscription_after = dict(workflow_db.execute(
+        "SELECT * FROM kanban_workflow_subscriptions "
+        "WHERE workflow_id='wf_skip_order' AND role='origin'"
+    ).fetchone())
+    workflow_after = workflow_db.execute(
+        "SELECT version FROM kanban_workflows WHERE id='wf_skip_order'"
+    ).fetchone()
+    assert subscription_after == subscription_before
+    assert workflow_after["version"] == passed["workflow"]["version"]
+    assert workflow_db.execute(
+        "SELECT count(*) FROM kanban_workflow_events WHERE workflow_id='wf_skip_order'"
+    ).fetchone()[0] == event_count_before
+    assert workflow_db.execute(
+        "SELECT count(*) FROM kanban_workflow_mutations WHERE workflow_id='wf_skip_order'"
+    ).fetchone()[0] == mutation_count_before
+
+    skipped = kb.skip_workflow_subscription_event(
+        workflow_db, workflow_id="wf_skip_order", event_id=first_pass_event["id"],
+        actor=_actor(capabilities=("workflow.admin",)), mutation_id="skip-pass-one",
+        expected_version=passed["workflow"]["version"], reason="operator disposition",
+    )
+    assert skipped["subscription"]["last_event_id"] == first_pass_event["id"]
+    assert kb.workflow_integrity_report(
+        workflow_db, workflow_id="wf_skip_order"
+    )["ok"] is True
+
+
 def test_workflow_subscription_admin_actions_fail_closed(workflow_db):
     acceptance = kb.create_task(
         workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"

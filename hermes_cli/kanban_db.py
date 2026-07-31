@@ -11732,7 +11732,7 @@ def skip_workflow_subscription_event(
     actor: Optional[KanbanActorContext], mutation_id: str,
     expected_version: int, reason: str, role: str = "origin",
 ) -> dict[str, Any]:
-    """Audit an administrative disposition and advance past one aggregate event."""
+    """Audit disposition of the next pending reportable aggregate event."""
     mutation_id = (mutation_id or "").strip()
     reason = (reason or "").strip()
     if not mutation_id or not reason:
@@ -11779,6 +11779,31 @@ def skip_workflow_subscription_event(
             raise WorkflowIntegrityError("only an existing aggregate transition event may be skipped")
         if int(event["id"]) <= int(subscription["last_event_id"]):
             raise WorkflowConflictError("workflow subscription event is already disposed")
+        try:
+            targets = set(json.loads(subscription["target_states"]))
+        except Exception as exc:
+            raise WorkflowIntegrityError("workflow subscription target states are invalid") from exc
+        next_target_event_id = None
+        pending_events = conn.execute(
+            "SELECT id,kind,payload FROM kanban_workflow_events "
+            "WHERE workflow_id=? AND id>? ORDER BY id",
+            (workflow_id, int(subscription["last_event_id"])),
+        ).fetchall()
+        for pending_event in pending_events:
+            if pending_event["kind"] != "aggregate_changed":
+                continue
+            try:
+                pending_payload = json.loads(pending_event["payload"])
+            except Exception as exc:
+                raise WorkflowIntegrityError("workflow event payload is invalid") from exc
+            if pending_payload.get("resulting_state") not in targets:
+                continue
+            next_target_event_id = int(pending_event["id"])
+            break
+        if next_target_event_id != int(event["id"]):
+            raise WorkflowConflictError(
+                "workflow subscription event is not the next pending target transition"
+            )
         prior_version = int(workflow["version"])
         next_version = prior_version + 1
         generation = int(workflow["active_generation"])
@@ -11799,12 +11824,14 @@ def skip_workflow_subscription_event(
             batch_seq=0, event_role="canonical", actor=actor,
             expected_version=prior_version, payload=payload, created_at=now,
         )
-        conn.execute(
+        subscription_cur = conn.execute(
             "UPDATE kanban_workflow_subscriptions SET last_event_id=?,retry_count=0,"
             "next_attempt_at=NULL,dead_lettered_at=NULL,last_error_class=NULL "
             "WHERE workflow_id=? AND role=? AND last_event_id=?",
             (int(event_id), workflow_id, role, int(subscription["last_event_id"])),
         )
+        if subscription_cur.rowcount != 1:
+            raise WorkflowConflictError("workflow subscription cursor changed during skip")
         cur = conn.execute(
             "UPDATE kanban_workflows SET version=?,last_event_id=?,updated_at=? "
             "WHERE id=? AND version=?",

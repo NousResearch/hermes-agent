@@ -636,6 +636,170 @@ def test_native_refresh_reuses_rotated_result_for_same_old_token(gated_client):
     assert second.json()["refresh_token"] == first.json()["refresh_token"]
 
 
+def test_native_refresh_cache_does_not_cross_provider_hint_boundary(
+    gated_client,
+):
+    """A cache/in-flight hit must never cross a provider_hint boundary.
+
+    Two distinct providers can end up accepting the same opaque
+    refresh-token value (e.g. colliding stub tokens in tests, or two IdPs
+    that happen to hand out overlapping opaque strings). The replay
+    cache/lock key must include provider_hint so a session rotated for one
+    hint is never handed back to a request that named a different hint
+    (which also changes provider ordering).
+    """
+
+    class CountingProviderA(StubAuthProvider):
+        name = "provider-a"
+        display_name = "Provider A"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            return super().refresh_session(refresh_token=refresh_token)
+
+    class CountingProviderB(StubAuthProvider):
+        name = "provider-b"
+        display_name = "Provider B"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            return super().refresh_session(refresh_token=refresh_token)
+
+    provider_a = CountingProviderA()
+    provider_b = CountingProviderB()
+    clear_providers()
+    register_provider(provider_a)
+    register_provider(provider_b)
+
+    # Both providers accept this exact opaque refresh-token value.
+    shared_rt = _sign({
+        "sub": "stub-user-1",
+        "kind": "refresh",
+        "exp": int(time.time()) + 3600,
+    })
+
+    first = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": shared_rt, "provider": provider_a.name},
+    )
+    assert first.status_code == 200, first.text
+    assert provider_a.refresh_calls == 1
+    assert provider_b.refresh_calls == 0
+
+    # Same RT, different provider hint/ordering: must not be served from
+    # provider A's cached rotation — provider B must actually be invoked.
+    second = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": shared_rt, "provider": provider_b.name},
+    )
+    assert second.status_code == 200, second.text
+    assert provider_a.refresh_calls == 1
+    assert provider_b.refresh_calls == 1
+
+    # Repeating the *first* request (same RT, same hint) must still be
+    # served from the single-flight cache rather than calling provider A
+    # again — provider-hint isolation must not break existing coalescing.
+    third = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": shared_rt, "provider": provider_a.name},
+    )
+    assert third.status_code == 200, third.text
+    assert provider_a.refresh_calls == 1
+    assert provider_b.refresh_calls == 1
+    assert third.json()["access_token"] == first.json()["access_token"]
+    assert third.json()["refresh_token"] == first.json()["refresh_token"]
+
+
+def test_native_refresh_concurrent_different_provider_hints_use_independent_locks():
+    """Two truly concurrent refreshes with different provider hints must not
+    share a single-flight lock, even when the opaque RT and client IP match.
+
+    Both providers block inside ``refresh_session`` on a shared
+    ``threading.Barrier(2)``. That barrier only releases once BOTH threads
+    are simultaneously inside their provider call. If the cache/lock key
+    did not include ``provider_hint``, the second request would instead
+    block waiting to acquire the FIRST request's per-token lock and would
+    never reach the barrier — this test would then fail deterministically
+    on the barrier timeout rather than depending on a race or a sleep.
+    """
+
+    entry_barrier = threading.Barrier(2, timeout=2)
+
+    class BarrierProviderA(StubAuthProvider):
+        name = "concurrent-provider-a"
+        display_name = "Concurrent Provider A"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            entry_barrier.wait()
+            return super().refresh_session(refresh_token=refresh_token)
+
+    class BarrierProviderB(StubAuthProvider):
+        name = "concurrent-provider-b"
+        display_name = "Concurrent Provider B"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            entry_barrier.wait()
+            return super().refresh_session(refresh_token=refresh_token)
+
+    provider_a = BarrierProviderA()
+    provider_b = BarrierProviderB()
+    clear_providers()
+    register_provider(provider_a)
+    register_provider(provider_b)
+
+    # Same opaque RT and same client IP for both requests — only the
+    # provider hint differs. Both providers accept this exact token.
+    shared_rt = _sign({
+        "sub": "stub-user-1",
+        "kind": "refresh",
+        "exp": int(time.time()) + 3600,
+    })
+    client_ip = "127.0.0.1"
+    args_a = (shared_rt, provider_a.name, client_ip)
+    args_b = (shared_rt, provider_b.name, client_ip)
+
+    assert auth_routes._native_refresh_cache_key(
+        *args_a
+    ) != auth_routes._native_refresh_cache_key(*args_b)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(auth_routes._refresh_native_session_sync, *args_a)
+        future_b = pool.submit(auth_routes._refresh_native_session_sync, *args_b)
+
+        result_a = future_a.result(timeout=3)
+        result_b = future_b.result(timeout=3)
+
+    assert provider_a.refresh_calls == 1
+    assert provider_b.refresh_calls == 1
+
+    session_a, unreachable_a = result_a
+    session_b, unreachable_b = result_b
+    assert unreachable_a is None, unreachable_a
+    assert unreachable_b is None, unreachable_b
+    assert session_a is not None
+    assert session_b is not None
+    assert session_a.provider == provider_a.name
+    assert session_b.provider == provider_b.name
+
+
 def test_native_refresh_spoofed_xff_prefix_cannot_split_replay_key(
     gated_client,
 ):
@@ -729,7 +893,7 @@ def test_native_refresh_single_flight_coalesces_concurrent_requests():
     register_provider(provider)
 
     args = ("old-rotating-refresh-token", provider.name, "127.0.0.1")
-    cache_key = auth_routes._native_refresh_cache_key(args[0], args[2])
+    cache_key = auth_routes._native_refresh_cache_key(args[0], args[1], args[2])
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(auth_routes._refresh_native_session_sync, *args)
@@ -828,6 +992,7 @@ def test_native_refresh_keeps_registered_lock_while_waiter_exists():
     args = (refresh_token, provider.name, client_ip)
     cache_key = auth_routes._native_refresh_cache_key(
         refresh_token,
+        provider.name,
         client_ip,
     )
 

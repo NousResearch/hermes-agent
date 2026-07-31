@@ -9,7 +9,7 @@
 
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
-import { Navigate, Route, Routes, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useParams } from 'react-router'
 
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'

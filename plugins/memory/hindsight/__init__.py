@@ -374,11 +374,33 @@ _METADATA_ATTRS = (
 _SYSTEM_PROMPT_TAILS = {
     "context": "Relevant memories are automatically injected into context.",
     "tools": ("Use hindsight_recall to search, hindsight_reflect for synthesis, "
-              "hindsight_retain to store facts."),
+              "hindsight_retain to store facts, "
+              "hindsight_invalidate to curate memories."),
     "hybrid": ("Relevant memories are automatically injected into context. "
                "Use hindsight_recall to search, hindsight_reflect for synthesis, "
-               "hindsight_retain to store facts."),
+               "hindsight_retain to store facts, "
+               "hindsight_invalidate to curate memories."),
 }
+
+
+def _coerce_bool(value):
+    """Parse a bool-like value safely, handling None/bool/string.
+
+    Used instead of truthiness checks so that string "false" / "0"
+    is recognized as False rather than acting as a truthy string.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "1", "yes", "on"}:
+            return True
+        if v in {"false", "0", "no", "off"}:
+            return False
+    return None
+
 
 
 class HindsightMemoryProvider(MemoryProvider):
@@ -1180,9 +1202,7 @@ class HindsightMemoryProvider(MemoryProvider):
         for i, r in enumerate(results, 1):
             sid = getattr(r, "id", None)
             sid_str = sid if sid else "?"
-            state = getattr(r, "state", None)
-            flag = " [INVALIDATED]" if state == "invalidated" else ""
-            lines.append(f"{i}. id={sid_str} {r.text}{flag}")
+            lines.append(f"{i}. id={sid_str} {r.text}")
         return "\n".join(lines)
 
     def _tool_reflect(self, args: dict) -> str:
@@ -1208,7 +1228,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 lines = []
                 for r in results:
                     sid = r.get("id", "?")
-                    text = r.get("content", "") or r.get("text", "")
+                    text = r.get("text", "")
                     lines.append(f"id={sid} {text}")
                 return {
                     "result": "\n".join(lines),
@@ -1223,7 +1243,8 @@ class HindsightMemoryProvider(MemoryProvider):
         # —— Mutation mode ——
         if not memory_id:
             return {"error": "Provide query to search or memory_id to mutate"}
-        state = "valid" if args.get("restore", False) else "invalidated"
+        restore_bool = _coerce_bool(args.get("restore", False))
+        state = "valid" if restore_bool else "invalidated"
         reason = args.get("reason", "")
 
         UpdateMemoryRequest = self._try_import_update_memory_request()
@@ -1286,6 +1307,20 @@ class HindsightMemoryProvider(MemoryProvider):
         except ImportError:
             return None
 
+    def _probe_url(self) -> str:
+        """Return the URL to probe/address the running Hindsight API on.
+
+        For local_embedded the daemon is on a per-profile dynamic port, so we
+        prefer the running client's URL when available; otherwise fall back to
+        the configured api_url. Mirrors the probe target used for the
+        update_mode capability check.
+        """
+        if self._mode == "local_embedded" and self._client is not None:
+            url = getattr(self._client, "url", None)
+            if url:
+                return str(url)
+        return self._api_url or ""
+
     def _http_patch_memory(self, memory_id: str, state: str, *,
                            reason: str | None = None):
         """PATCH /v1/default/banks/{bank_id}/memories/{memory_id}.
@@ -1297,10 +1332,12 @@ class HindsightMemoryProvider(MemoryProvider):
         """
         import urllib.error       # noqa: PLC0415
         import urllib.request     # noqa: PLC0415
+        import urllib.parse       # noqa: PLC0415
 
+        encoded_id = urllib.parse.quote(memory_id, safe="")
         url = (
-            f"{self._api_url.rstrip('/')}"
-            f"/v1/default/banks/{self._bank_id}/memories/{memory_id}"
+            f"{self._probe_url().rstrip('/')}"
+            f"/v1/default/banks/{self._bank_id}/memories/{encoded_id}"
         )
         body = {"state": state}
         if reason:
@@ -1315,54 +1352,58 @@ class HindsightMemoryProvider(MemoryProvider):
             req.add_header("Authorization", f"Bearer {self._api_key}")
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
                 resp.read()  # consume — 200 returns empty body
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
             raise RuntimeError(f"HTTP {e.code}: {body[:300]}") from None
 
-    # -- session lifecycle -------------------------------------------------------
-
     def _http_list_invalidated(self, query: str):
-        """GET /v1/default/banks/{bank_id}/memories?state=invalidated.
+        """GET /v1/default/banks/{bank_id}/memories/list?q=<query>&state=invalidated&limit=50.
 
-        Retrieves invalidated memories and filters by substring match
-        against *query* on content/text fields. Returns a list of
-        ``{id, content, text}`` dicts, or empty when nothing matches.
+        Uses server-side full-text search via ``q=`` param. Returns a list of
+        ``{id, text}`` dicts parsed from the ``items`` key, or empty when
+        nothing matches. Surfaces truncation when ``total > len(items)``.
         """
         import urllib.error
         import urllib.request
+        import urllib.parse
 
+        encoded_query = urllib.parse.quote(query, safe="")
         url = (
-            f"{self._api_url.rstrip('/')}"
-            f"/v1/default/banks/{self._bank_id}/memories"
-            f"?state=invalidated&limit=50"
+            f"{self._probe_url().rstrip('/')}"
+            f"/v1/default/banks/{self._bank_id}/memories/list"
+            f"?q={encoded_query}&state=invalidated&limit=50"
         )
         req = urllib.request.Request(url, headers={})
         if self._api_key:
             req.add_header("Authorization", f"Bearer {self._api_key}")
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             body_raw = e.read().decode(errors="replace")
             raise RuntimeError(f"HTTP {e.code}: {body_raw[:300]}") from None
 
-        items = body if isinstance(body, list) else body.get("memories", [])
-        query_lower = query.lower()
+        items = body.get("items", [])
+        total = body.get("total", 0)
         matched = []
         for m in items:
             if not isinstance(m, dict):
                 continue
-            content = (m.get("content") or m.get("text") or "").lower()
-            if query_lower in content:
-                matched.append({
-                    "id": m.get("id", "?"),
-                    "content": m.get("content", ""),
-                    "text": m.get("text", ""),
-                })
+            matched.append({
+                "id": m.get("id", "?"),
+                "text": m.get("text", ""),
+            })
+        if total > len(items):
+            logger.warning(
+                "hindsight_invalidate query returned %d of %d total matches; results truncated",
+                len(items), total,
+            )
         return matched
+
+    # -- session lifecycle -------------------------------------------------------
 
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "",
                           reset: bool = False, **kwargs) -> None:

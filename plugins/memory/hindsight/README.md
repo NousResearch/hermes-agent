@@ -84,9 +84,9 @@ Config file: `~/.hermes/hindsight/config.json`
 >
 > Previously recall returned all three fact types. It now returns only observations.
 >
-> Per [Hindsight's docs](https://hindsight.vectorize.io/developer/observations), observations are the **consolidated** knowledge layer Hindsight builds on top of raw facts: deduplicated beliefs grounded in evidence, refined as new facts arrive, with proof counts and freshness signals. Raw `world` / `experience` facts are the individual supporting evidence that feeds them. For per-turn context injection, observations are denser per token and avoid feeding the model multiple raw facts that one observation already summarizes.
+> Per [Hindsight's docs](https://hindsight.vectorize.io/developer/observations), observations are the **consolidated** knowledge layer Hindsight builds on top of raw facts: deduplicated beliefs grounded in evidence, refined as new facts arrive, with proof counts and freshness signals. Raw `world` / `experience` facts are the individual supporting evidence that feeds them. For per-turn context injection, observations are denser per token and avoid feeding the model multiple raw facts that one observation already summarizes. The `hindsight_recall` tool accepts an optional per-call `types` parameter to override the default for a single invocation.
 >
-> Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.hermes/hindsight/config.json`. This applies to **both** auto-recall and the `hindsight_recall` tool — both read the same `recall_types` setting (the tool schema has no per-call `types` argument), so narrowing the default narrows both paths.
+> Restore the broad recall with `"recall_types": "observation,world,experience"` (string or JSON list) in `~/.hermes/hindsight/config.json`. Or override per-call via the tool's `types` parameter (e.g. `["world", "experience"]`).
 
 ### Retain
 
@@ -139,7 +139,7 @@ Available in `hybrid` and `tools` memory modes:
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
 | `hindsight_recall` | Multi-strategy search (semantic + entity graph); supports optional `types` param |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
-| `hindsight_invalidate` | Soft-delete or restore memories (world/experience only) |
+| `hindsight_invalidate` | Soft-delete or restore memories (world/experience only). Two modes: mutation (invalidate/restore by ID) and discovery (search for previously-invalidated memories by query). Use query mode to find IDs, then mutation mode to restore. |
 
 ## Environment Variables
 

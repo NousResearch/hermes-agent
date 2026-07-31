@@ -83,8 +83,8 @@ def _make_mock_client():
     client.arecall = AsyncMock(
         return_value=SimpleNamespace(
             results=[
-                SimpleNamespace(id="5e79c849-f3b6-4a1e-b789-123456789abc", text="Memory 1", state="valid"),
-                SimpleNamespace(id="baee4d5b-84bd-4c3e-9f12-abcdef123456", text="Memory 2", state="valid"),
+                SimpleNamespace(id="5e79c849-f3b6-4a1e-b789-123456789abc", text="Memory 1"),
+                SimpleNamespace(id="baee4d5b-84bd-4c3e-9f12-abcdef123456", text="Memory 2"),
             ]
         )
     )
@@ -528,17 +528,6 @@ class TestToolHandlers:
         call_kwargs = provider._client.arecall.call_args.kwargs
         assert call_kwargs["types"] == ["observation"]
 
-    def test_recall_invalidated_flag(self, provider, monkeypatch):
-        """Results with state=invalidated show [INVALIDATED] flag."""
-        mock_resp = SimpleNamespace(results=[
-            SimpleNamespace(id="abc-def-123", text="Old address", state="invalidated"),
-        ])
-        provider._client.arecall = AsyncMock(return_value=mock_resp)
-        result = json.loads(provider.handle_tool_call(
-            "hindsight_recall", {"query": "address"}
-        ))
-        assert "[INVALIDATED]" in result["result"]
-
     def test_recall_missing_id(self, provider, monkeypatch):
         """Results without an id attribute show '?' gracefully."""
         mock_resp = SimpleNamespace(results=[
@@ -633,7 +622,7 @@ class TestToolHandlers:
         monkeypatch.setattr(
             provider, "_http_list_invalidated",
             MagicMock(return_value=[
-                {"id": "abc-123", "content": "old server address"},
+                {"id": "abc-123", "text": "old server address"},
                 {"id": "def-456", "text": "deprecated config"},
             ]),
         )
@@ -675,6 +664,75 @@ class TestToolHandlers:
         ))
         assert "error" in result
         assert "422" in result["error"]
+
+
+class TestHttpHelpersWire:
+    """Wire-level tests for _http_list_invalidated and _http_patch_memory."""
+
+    @pytest.fixture()
+    def _http_server(self):
+        """Start a local ThreadingHTTPServer recording requests."""
+        import json as _json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        captured = {"path": "", "method": "", "body": b""}
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                captured["path"] = self.path
+                captured["method"] = "GET"
+                resp = _json.dumps({
+                    "items": [
+                        {"id": "abc-123", "text": "old server address"},
+                    ],
+                    "total": 1, "limit": 50, "offset": 0,
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+            def do_PATCH(self):
+                captured["path"] = self.path
+                captured["method"] = "PATCH"
+                length = int(self.headers.get("Content-Length", 0))
+                captured["body"] = self.rfile.read(length)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        port = server.server_address[1]
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        yield f"http://127.0.0.1:{port}", captured
+        server.shutdown()
+
+    def test_list_invalidated_endpoint(self, provider, _http_server):
+        """_http_list_invalidated hits the correct endpoint with q= and state=."""
+        base_url, captured = _http_server
+        provider._api_url = base_url
+        provider._timeout = 5
+        result = provider._http_list_invalidated("server")
+        assert result == [{"id": "abc-123", "text": "old server address"}]
+        assert "/memories/list" in captured["path"]
+        assert "q=server" in captured["path"]
+        assert "state=invalidated" in captured["path"]
+        assert captured["method"] == "GET"
+
+    def test_patch_memory_quotes_id(self, provider, _http_server):
+        """_http_patch_memory URL-encodes the memory_id in the path."""
+        base_url, captured = _http_server
+        provider._api_url = base_url
+        provider._timeout = 5
+        provider._http_patch_memory("abc#frag?x=1", "invalidated")
+        assert captured["method"] == "PATCH"
+        assert "abc%23frag%3Fx%3D1" in captured["path"]
+        assert "#" not in captured["path"]
 
 
 # ---------------------------------------------------------------------------

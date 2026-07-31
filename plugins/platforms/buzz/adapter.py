@@ -42,9 +42,11 @@ environment and is never logged.
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
+import tempfile
 import time
 from collections import OrderedDict
 from datetime import datetime
@@ -258,6 +260,95 @@ _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 # Where to look for a credentials JSON (keys: nsec / private_key_hex) when
 # BUZZ_PRIVATE_KEY is not set.  Module-level so tests can point it at a tmpdir.
 _DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
+
+# Buzz-hosted Blossom media is private to the community. Inbound messages
+# carry media as markdown or bare relay URLs, so the adapter must authenticate
+# and localise those references before the gateway hands them to vision.
+_MEDIA_URL_PATTERN = (
+    r"https?://[^\s<>\[\]()]+/media/"
+    r"[0-9a-f]{64}(?:\.[a-z0-9]{1,10})?(?:\?[^\s<>\[\]()]*)?"
+)
+_MARKDOWN_MEDIA_RE = re.compile(
+    rf"!\[[^\]]*\]\(\s*(?P<url>{_MEDIA_URL_PATTERN})"
+    r"(?:\s+[\"'][^\"']*[\"'])?\s*\)",
+    re.IGNORECASE,
+)
+_BARE_MEDIA_RE = re.compile(_MEDIA_URL_PATTERN, re.IGNORECASE)
+_MEDIA_PATH_RE = re.compile(
+    r"^/media/(?P<sha>[0-9a-f]{64})(?P<ext>\.[a-z0-9]{1,10})?/?$",
+    re.IGNORECASE,
+)
+
+
+def _effective_port(parsed) -> Optional[int]:
+    try:
+        if parsed.port is not None:
+            return parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme in ("https", "wss"):
+        return 443
+    if parsed.scheme in ("http", "ws"):
+        return 80
+    return None
+
+
+def _is_relay_media_url(url: str, relay_url: str) -> bool:
+    """Return whether *url* is a Buzz media object on the configured relay."""
+    candidate = urlsplit(url)
+    relay = urlsplit(relay_url)
+    if candidate.scheme not in ("http", "https"):
+        return False
+    if not candidate.hostname or not relay.hostname:
+        return False
+    if candidate.hostname.lower() != relay.hostname.lower():
+        return False
+    if _effective_port(candidate) != _effective_port(relay):
+        return False
+    return bool(_MEDIA_PATH_RE.fullmatch(candidate.path))
+
+
+def _find_relay_media_refs(
+    text: str, relay_url: str
+) -> Tuple[List[str], List[Tuple[int, int]]]:
+    """Find same-relay media URLs and the content spans that contain them."""
+    urls: List[str] = []
+    spans: List[Tuple[int, int]] = []
+    markdown_spans: List[Tuple[int, int]] = []
+
+    for match in _MARKDOWN_MEDIA_RE.finditer(text):
+        url = match.group("url")
+        if not _is_relay_media_url(url, relay_url):
+            continue
+        markdown_spans.append(match.span())
+        spans.append(match.span())
+        if url not in urls:
+            urls.append(url)
+
+    for match in _BARE_MEDIA_RE.finditer(text):
+        if any(
+            start <= match.start() and match.end() <= end
+            for start, end in markdown_spans
+        ):
+            continue
+        url = match.group(0)
+        if not _is_relay_media_url(url, relay_url):
+            continue
+        spans.append(match.span())
+        if url not in urls:
+            urls.append(url)
+
+    return urls, spans
+
+
+def _remove_media_spans(text: str, spans: List[Tuple[int, int]]) -> str:
+    chars = list(text)
+    for start, end in sorted(spans, reverse=True):
+        del chars[start:end]
+    cleaned = "".join(chars)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def _load_nostr_auth():
@@ -2270,6 +2361,100 @@ class BuzzAdapter(BasePlatformAdapter):
         if not entry or not isinstance(entry, tuple) or len(entry) < 2:
             return None
         return str(entry[0] or ""), str(entry[1] or "")
+    async def _localize_inbound_media(
+        self, text: str, message_id: str
+    ) -> Tuple[str, List[str], List[str], MessageType]:
+        """Authenticate and cache same-relay media references in *text*.
+
+        Each object is independent: one failed download is logged and skipped
+        without discarding the caption or any other successfully cached files.
+        """
+        urls, spans = _find_relay_media_refs(text, self.relay_url)
+        if not urls:
+            return text, [], [], MessageType.TEXT
+
+        cleaned_text = _remove_media_spans(text, spans)
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        media_kinds: List[str] = []
+
+        from gateway.platforms.base import (
+            cache_media_bytes,
+            validate_inbound_media_size,
+        )
+
+        for url in urls:
+            path_match = _MEDIA_PATH_RE.fullmatch(urlsplit(url).path)
+            if path_match is None:
+                continue
+            ext = (path_match.group("ext") or ".bin").lower()
+            label = f"{path_match.group('sha')[:12]}{ext}"
+            try:
+                with tempfile.TemporaryDirectory(prefix="hermes-buzz-media-") as temp_dir:
+                    download_path = Path(temp_dir) / f"buzz_{label}"
+                    code, _out, _err = await self._run_cli(
+                        ["media", "get", "-o", str(download_path), url]
+                    )
+                    if code != 0 or not download_path.is_file():
+                        logger.warning(
+                            "Buzz: failed to localize inbound media %s (exit %d)",
+                            label,
+                            code,
+                        )
+                        continue
+                    validate_inbound_media_size(
+                        download_path.stat().st_size,
+                        media_type="Buzz media",
+                    )
+                    mime_type = (
+                        mimetypes.guess_type(download_path.name)[0]
+                        or "application/octet-stream"
+                    )
+                    cached = cache_media_bytes(
+                        download_path.read_bytes(),
+                        filename=download_path.name,
+                        mime_type=mime_type,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Buzz: failed to localize inbound media %s (%s)",
+                    label,
+                    type(exc).__name__,
+                )
+                continue
+
+            if cached is None:
+                logger.warning("Buzz: rejected invalid inbound media %s", label)
+                continue
+            media_urls.append(cached.path)
+            media_types.append(cached.media_type)
+            media_kinds.append(cached.kind)
+
+        if media_urls:
+            logger.info(
+                "Buzz: localized %d inbound media attachment(s) for message %s",
+                len(media_urls),
+                message_id[:12],
+            )
+
+        if "image" in media_kinds:
+            message_type = MessageType.PHOTO
+        elif "audio" in media_kinds:
+            message_type = MessageType.AUDIO
+        elif "video" in media_kinds:
+            message_type = MessageType.VIDEO
+        elif media_kinds:
+            message_type = MessageType.DOCUMENT
+        else:
+            message_type = MessageType.TEXT
+
+        if not cleaned_text:
+            cleaned_text = (
+                "(attachment)"
+                if media_urls
+                else "(Buzz media attachment unavailable)"
+            )
+        return cleaned_text, media_urls, media_types, message_type
 
     async def _dispatch_message(
         self,
@@ -2290,6 +2475,10 @@ class BuzzAdapter(BasePlatformAdapter):
         if not self._message_handler:
             return
 
+        text, media_urls, media_types, message_type = await self._localize_inbound_media(
+            text, message_id
+        )
+
         source = self.build_source(
             chat_id=chat_id,
             chat_name=self._channel_names.get(chat_id, chat_id),
@@ -2301,7 +2490,7 @@ class BuzzAdapter(BasePlatformAdapter):
 
         event = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT,
+            message_type=message_type,
             source=source,
             message_id=message_id,
             timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
@@ -2309,6 +2498,8 @@ class BuzzAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             reply_to_author_id=reply_to_author_id,
             reply_to_is_own_message=reply_to_is_own_message,
+            media_urls=media_urls,
+            media_types=media_types,
         )
 
         await self.handle_message(event)

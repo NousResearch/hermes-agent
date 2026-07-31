@@ -1,12 +1,14 @@
 """Tests for the Buzz platform adapter plugin."""
 
 import asyncio
+import base64
 import json
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+from gateway.platforms.base import MessageType
 
 # Load plugins/platforms/buzz/adapter.py under a unique module name
 # (plugin_adapter_buzz) so it cannot collide with other plugin adapters
@@ -1557,6 +1559,296 @@ class TestThreadAnchoring:
         await adapter.send(CHANNEL, "in-thread answer", reply_to="m3")
         args, _stdin = cli.calls[0]
         assert args[args.index("--reply-to") + 1] == "root1"
+
+
+# ── Inbound media localisation ─────────────────────────────────────────────────
+
+
+class TestInboundMediaLocalisation:
+
+    @staticmethod
+    def _capture_dispatch(adapter, *, failed_urls=None):
+        captured = []
+        cli_calls = []
+        failed_urls = set(failed_urls or [])
+
+        async def capture(event):
+            captured.append(event)
+
+        async def cli(args, *, input_text=None):
+            cli_calls.append(list(args))
+            assert args[:2] == ["media", "get"]
+            url = args[-1]
+            if url in failed_urls:
+                return 2, "", '{"error":"relay_error","message":"denied"}'
+            output_path = args[args.index("-o") + 1]
+            if url.endswith(".jpg"):
+                payload = b"\xff\xd8\xff\xe0JFIF test image"
+            elif url.endswith(".pdf"):
+                payload = b"%PDF-1.4\n% test document\n"
+            else:
+                payload = base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+                    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                )
+            with open(output_path, "wb") as handle:
+                handle.write(payload)
+            return 0, "", ""
+
+        adapter.handle_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+        adapter._run_cli = cli
+        return captured, cli_calls
+
+    @pytest.mark.asyncio
+    async def test_markdown_relay_image_is_localised_before_dispatch(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        captured, cli_calls = self._capture_dispatch(adapter)
+        media_url = f"https://test.relay/media/{'a' * 64}.png"
+
+        await adapter._dispatch_message(
+            text=f"Please inspect this screenshot\n\n![]({media_url})",
+            chat_id=CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="media-event",
+            created_at=1000,
+        )
+
+        assert len(captured) == 1
+        event = captured[0]
+        assert event.text == "Please inspect this screenshot"
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/png"]
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0].startswith(str(tmp_path / "hermes" / "cache"))
+        assert media_url not in event.text
+        assert cli_calls[0][-1] == media_url
+
+    @pytest.mark.asyncio
+    async def test_bare_relay_image_url_is_localised(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        captured, _calls = self._capture_dispatch(adapter)
+        media_url = f"https://test.relay/media/{'b' * 64}.png"
+
+        await adapter._dispatch_message(
+            text=f"What is in this? {media_url}",
+            chat_id=CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="bare-media-event",
+            created_at=1001,
+        )
+
+        event = captured[0]
+        assert event.text == "What is in this?"
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/png"]
+        assert len(event.media_urls) == 1
+
+    @pytest.mark.asyncio
+    async def test_image_only_message_gets_attachment_placeholder(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        captured, _calls = self._capture_dispatch(adapter)
+        media_url = f"https://test.relay/media/{'5' * 64}.png"
+
+        await adapter._dispatch_message(
+            text=f"![]({media_url})",
+            chat_id=CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="image-only-event",
+            created_at=1002,
+        )
+
+        event = captured[0]
+        assert event.text == "(attachment)"
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/png"]
+        assert len(event.media_urls) == 1
+
+    @pytest.mark.asyncio
+    async def test_multiple_images_are_localised_in_content_order(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        captured, calls = self._capture_dispatch(adapter)
+        first = f"https://test.relay/media/{'c' * 64}.png"
+        second = f"https://test.relay/media/{'d' * 64}.jpg"
+
+        await adapter._dispatch_message(
+            text=f"Compare these\n![]({first})\n{second}",
+            chat_id=CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="multi-media-event",
+            created_at=1002,
+        )
+
+        event = captured[0]
+        assert event.text == "Compare these"
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/png", "image/jpeg"]
+        assert len(event.media_urls) == 2
+        assert [call[-1] for call in calls] == [first, second]
+
+    @pytest.mark.asyncio
+    async def test_non_image_attachment_is_cached_as_document(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        captured, _calls = self._capture_dispatch(adapter)
+        media_url = f"https://test.relay/media/{'e' * 64}.pdf"
+
+        await adapter._dispatch_message(
+            text=f"Read this report\n{media_url}",
+            chat_id=CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="document-media-event",
+            created_at=1003,
+        )
+
+        event = captured[0]
+        assert event.text == "Read this report"
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["application/pdf"]
+        assert len(event.media_urls) == 1
+        assert "/cache/documents/" in event.media_urls[0]
+
+    @pytest.mark.asyncio
+    async def test_download_failure_keeps_caption_and_dispatches_text(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        media_url = f"https://test.relay/media/{'f' * 64}.png"
+        captured, _calls = self._capture_dispatch(adapter, failed_urls=[media_url])
+
+        await adapter._dispatch_message(
+            text=f"The error is visible here\n![]({media_url})",
+            chat_id=CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="failed-media-event",
+            created_at=1004,
+        )
+
+        event = captured[0]
+        assert event.text == "The error is visible here"
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+        assert event.media_types == []
+
+    @pytest.mark.asyncio
+    async def test_one_failed_download_does_not_drop_other_media(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        failed = f"https://test.relay/media/{'2' * 64}.png"
+        succeeded = f"https://test.relay/media/{'3' * 64}.jpg"
+        captured, calls = self._capture_dispatch(adapter, failed_urls=[failed])
+
+        await adapter._dispatch_message(
+            text=f"Compare what loaded\n![]({failed})\n![]({succeeded})",
+            chat_id=CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="partial-media-event",
+            created_at=1005,
+        )
+
+        event = captured[0]
+        assert event.text == "Compare what loaded"
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_types == ["image/jpeg"]
+        assert len(event.media_urls) == 1
+        assert [call[-1] for call in calls] == [failed, succeeded]
+
+    @pytest.mark.asyncio
+    async def test_real_event_handler_localises_media_before_gateway_dispatch(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        adapter._channel_state[DM_CHANNEL] = {
+            "chat_type": "dm",
+            "last_ts": 0,
+            "seen": {},
+        }
+        captured = []
+        media_url = f"https://test.relay/media/{'4' * 64}.png"
+
+        async def capture(event):
+            captured.append(event)
+
+        async def cli(args, *, input_text=None):
+            if args[:2] == ["users", "get"]:
+                return 0, json.dumps([{"display_name": "Joel"}]), ""
+            assert args[:2] == ["media", "get"]
+            output_path = args[args.index("-o") + 1]
+            payload = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+                "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            )
+            with open(output_path, "wb") as handle:
+                handle.write(payload)
+            return 0, "", ""
+
+        adapter.handle_message = capture
+        adapter._message_handler = AsyncMock()
+        adapter.send_reaction = AsyncMock(return_value=True)
+        adapter._run_cli = cli
+
+        await adapter._handle_event(
+            DM_CHANNEL,
+            adapter._channel_state[DM_CHANNEL],
+            _tagged_event(
+                "handler-media-event",
+                DM_CHANNEL,
+                content=f"Can you read this? ![]({media_url})",
+                p=SELF_PUBKEY,
+            ),
+        )
+
+        assert len(captured) == 1
+        assert captured[0].text == "Can you read this?"
+        assert captured[0].message_type == MessageType.PHOTO
+        assert len(captured[0].media_urls) == 1
+
+    @pytest.mark.asyncio
+    async def test_external_media_url_is_left_untouched(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        adapter = _make_adapter()
+        captured, calls = self._capture_dispatch(adapter)
+        media_url = f"https://cdn.example/media/{'1' * 64}.png"
+        text = f"External reference: ![]({media_url})"
+
+        await adapter._dispatch_message(
+            text=text,
+            chat_id=CHANNEL,
+            chat_type="dm",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="external-media-event",
+            created_at=1006,
+        )
+
+        event = captured[0]
+        assert event.text == text
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+        assert calls == []
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────

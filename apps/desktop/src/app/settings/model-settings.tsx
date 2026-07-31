@@ -1103,7 +1103,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               <ListRow
                 action={
                   <Switch
-                    aria-label={`${slot.enabled !== false ? 'Disable' : 'Enable'} reference ${index + 1}`}
+                    aria-label={
+                      slot.enabled !== false
+                        ? m.moaDisableRef(index + 1)
+                        : m.moaEnableRef(index + 1)
+                    }
                     checked={slot.enabled !== false}
                     disabled={applying}
                     onCheckedChange={checked =>

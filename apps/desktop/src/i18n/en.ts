@@ -845,6 +845,8 @@ export const en: Translations = {
       moaRemove: 'Remove',
       moaAddRefModel: 'Add reference model',
       moaAggregator: 'Aggregator',
+      moaDisableRef: index => `Disable reference ${index}`,
+      moaEnableRef: index => `Enable reference ${index}`
     },
     customEndpoints: {
       title: 'Custom Endpoints',
@@ -1025,6 +1027,8 @@ export const en: Translations = {
           messageByAdmin: 'An admin stopped remote spending for this terminal.',
           messageBySelf: 'You stopped remote spending for this terminal.'
         },
+        remoteSpendingReconnect: who =>
+          `${who} Reconnect from Settings -> Gateway to re-authorize this device.`,
         sessionRevoked: {
           title: 'Session logged out',
           message: 'Your session was logged out. Sign in again from Settings → Gateway.'

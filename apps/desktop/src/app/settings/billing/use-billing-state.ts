@@ -601,16 +601,18 @@ function buyCreditsRow(billing: BillingStateResponse): BillingAccountRowView {
 // The generic first sentence shared by the off / absent / divergent states,
 // where the concrete amounts aren't the headline. The configured state overrides
 // this with the disambiguating "Charges $X … below $Y." sentence (spec §8).
-const AUTO_REFILL_GENERIC = translateNow('settings.billing.state.autoRefill.genericDescription')
+// Read inside the view-building path (not at module init) so the description
+// follows the active locale after a runtime locale switch.
 
 function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
   const autoReload = billing.auto_reload
+  const autoRefillGeneric = translateNow('settings.billing.state.autoRefill.genericDescription')
 
   if (!autoReload) {
     return {
       action: { disabled: true, label: translateNow('settings.billing.autoReload.manage') },
       caption: translateNow('settings.billing.state.autoRefill.manageCaption'),
-      description: AUTO_REFILL_GENERIC,
+      description: autoRefillGeneric,
       id: 'auto_reload',
       pill: { label: EMPTY_BILLING_VALUE, tone: 'muted' },
       title: translateNow('settings.billing.state.autoRefill.title')
@@ -620,7 +622,7 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
   if (!autoReload.enabled) {
     return {
       caption: translateNow('settings.billing.state.autoRefill.turnOnCaption'),
-      description: AUTO_REFILL_GENERIC,
+      description: autoRefillGeneric,
       id: 'auto_reload',
       pill: { label: translateNow('settings.billing.state.autoRefill.offPill'), tone: 'muted' },
       title: translateNow('settings.billing.state.autoRefill.title')
@@ -637,7 +639,7 @@ function autoReloadRow(billing: BillingStateResponse): BillingAccountRowView {
     return {
       action: { label: translateNow('settings.billing.state.autoRefill.reconcileAction'), url: portalUrl },
       caption: translateNow('settings.billing.state.autoRefill.distinctCardCaption', cardLabel),
-      description: AUTO_REFILL_GENERIC,
+      description: autoRefillGeneric,
       id: 'auto_reload',
       pill: { label: translateNow('settings.billing.state.autoRefill.enabledPill'), tone: 'primary' },
       title: translateNow('settings.billing.state.autoRefill.title')

@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { translateNow } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { ListRow, Pill } from '../primitives'
@@ -95,7 +96,7 @@ export function AutoReloadRow({
     }
 
     await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill updated.' })
+    setMessage({ kind: 'success', text: translateNow('settings.billing.autoReload.updated') })
     setEditing(false)
   }
 

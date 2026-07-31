@@ -45,7 +45,7 @@ export const resolveRefusal = (refusal: BillingRefusal): BillingRefusalPresentat
 
       return {
         action: portalAction(refusal.portalUrl),
-        message: `${who} Reconnect from Settings → Gateway to re-authorize this device.`,
+        message: translateNow('settings.billing.errors.remoteSpendingReconnect', who),
         title: translateNow('settings.billing.errors.remoteSpendingRevoked.title')
       }
     }

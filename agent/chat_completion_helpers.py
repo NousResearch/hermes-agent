@@ -2842,6 +2842,31 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
             # Keep whatever reasoning_config was active — don't break the fallback swap.
 
+        # Re-resolve extra_body for the fallback provider (Closes #75091).
+        # The primary's provider-specific extra_body (e.g. reasoning_effort)
+        # must not ride along onto the fallback provider, which is a different
+        # API that may reject those fields.  Clear the stale extra_body first,
+        # then re-resolve from the fallback provider's config.
+        try:
+            from agent.agent_init import _merge_custom_provider_extra_body
+            _custom_providers = getattr(agent, "_custom_providers", None) or []
+            # Strip the primary's extra_body so it doesn't contaminate the
+            # fallback (existing_extra_body in _merge wins on conflict).
+            _overrides = dict(getattr(agent, "request_overrides", {}) or {})
+            _overrides.pop("extra_body", None)
+            agent.request_overrides = _overrides
+            _merge_custom_provider_extra_body(agent, _custom_providers)
+            logger.info(
+                "Fallback %s: extra_body resolved: %s",
+                agent.model,
+                (getattr(agent, "request_overrides", {}) or {}).get("extra_body"),
+            )
+        except Exception as _eb_err:
+            logger.debug(
+                "Failed to resolve extra_body for fallback %s; keeping current: %s",
+                agent.model, _eb_err,
+            )
+
         # Keep the prompt's self-identity in sync with the model actually
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)

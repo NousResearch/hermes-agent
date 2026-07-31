@@ -718,6 +718,108 @@ def test_native_refresh_cache_does_not_cross_provider_hint_boundary(
     assert third.json()["refresh_token"] == first.json()["refresh_token"]
 
 
+def test_native_refresh_unknown_provider_hints_share_cache_boundary(gated_client):
+    """Two different, unrecognized provider hints must canonicalize to the
+    same replay-cache/lock key.
+
+    ``provider_hint`` is client-supplied and unvalidated. A hint that does
+    not name a currently registered provider cannot alter provider
+    ordering (see the sort in ``_refresh_native_session_sync``), so it must
+    not be allowed to fragment the cache/lock key either. Otherwise a
+    client could dodge single-flight coalescing and the negative-cache
+    retry-storm guard just by relabelling repeated requests for the same
+    old refresh token with a fresh, unrecognized hint each time.
+
+    Contrast with ``test_native_refresh_cache_does_not_cross_provider_hint_boundary``,
+    which proves two *valid* provider hints remain isolated.
+    """
+
+    class CountingProvider(StubAuthProvider):
+        name = "known-provider"
+        display_name = "Known Provider"
+
+        def __init__(self):
+            super().__init__(default_ttl=900)
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            return super().refresh_session(refresh_token=refresh_token)
+
+    provider = CountingProvider()
+    clear_providers()
+    register_provider(provider)
+
+    shared_rt = _sign({
+        "sub": "stub-user-1",
+        "kind": "refresh",
+        "exp": int(time.time()) + 3600,
+    })
+
+    first = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": shared_rt, "provider": "unknown-hint-one"},
+    )
+    assert first.status_code == 200, first.text
+    assert provider.refresh_calls == 1
+
+    # A different unrecognized hint, same old RT and client IP: this must
+    # still be served from the first request's cached rotation rather than
+    # calling the provider again.
+    second = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": shared_rt, "provider": "unknown-hint-two"},
+    )
+    assert second.status_code == 200, second.text
+    assert provider.refresh_calls == 1
+    assert second.json()["access_token"] == first.json()["access_token"]
+    assert second.json()["refresh_token"] == first.json()["refresh_token"]
+
+
+def test_native_refresh_negative_cache_not_bypassed_by_unknown_hint(gated_client):
+    """A rejected old RT stays rejected-from-cache across unknown hints.
+
+    Mirrors ``test_native_refresh_negative_cache_absorbs_retry_storm`` but
+    varies the provider hint between requests. If unknown hints were still
+    allowed to fragment the cache key, a client could keep resending an
+    already-consumed refresh token to the IdP indefinitely just by picking
+    a new made-up provider name each time.
+    """
+
+    class RejectingProvider(StubAuthProvider):
+        name = "rejecting-unknown-hint"
+        display_name = "Rejecting IdP"
+
+        def __init__(self):
+            super().__init__()
+            self.refresh_calls = 0
+
+        def refresh_session(self, *, refresh_token: str) -> Session:
+            self.refresh_calls += 1
+            raise RefreshExpiredError("simulated dead rotating token")
+
+    provider = RejectingProvider()
+    clear_providers()
+    register_provider(provider)
+
+    old_rt = "already-consumed-unknown-hint-refresh-token"
+
+    first = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": old_rt, "provider": "bogus-provider-alpha"},
+    )
+    second = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": old_rt, "provider": "bogus-provider-beta"},
+    )
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert first.json()["error"] == "session_expired"
+    assert second.json()["error"] == "session_expired"
+    assert provider.refresh_calls == 1
+
+
 def test_native_refresh_concurrent_different_provider_hints_use_independent_locks():
     """Two truly concurrent refreshes with different provider hints must not
     share a single-flight lock, even when the opaque RT and client IP match.
@@ -1035,7 +1137,6 @@ def test_native_refresh_keeps_registered_lock_while_waiter_exists():
             third = pool.submit(auth_routes._refresh_native_session_sync, *args)
             assert wait_for_lock_users(2) is original_lock
 
-            time.sleep(0.05)
             assert provider.refresh_calls == 2
         finally:
             provider.release_first.set()

@@ -47,6 +47,7 @@ from datetime import datetime
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
+from agent.account_usage import fetch_account_usage
 from agent.conversation_compression import (
     COMPACTION_STATUS,
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
@@ -2459,6 +2460,52 @@ from gateway.whatsapp_identity import (
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
 
+
+# Short-lived runtime-footer quota cache: keyed by provider/base_url/credential
+# fingerprint so credential-pool rotation never reuses another account's snapshot.
+_FOOTER_ACCOUNT_USAGE_CACHE: dict[tuple[str, str, str], tuple[float, object]] = {}
+_FOOTER_ACCOUNT_USAGE_TTL_SECONDS = 90.0
+
+
+def _footer_account_usage_cache_key(
+    provider: str | None,
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> tuple[str, str, str]:
+    import hashlib
+
+    token = str(api_key or "").strip()
+    digest = hashlib.sha256(token.encode()).hexdigest()[:16] if token else ""
+    return (
+        str(provider or "").strip().lower(),
+        str(base_url or "").strip().rstrip("/").lower(),
+        digest,
+    )
+
+
+def _fetch_footer_account_usage_cached(
+    provider: str | None,
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+):
+    """Fetch account usage for footer rendering with a short per-credential cache."""
+    import time
+
+    key = _footer_account_usage_cache_key(provider, base_url=base_url, api_key=api_key)
+    now = time.monotonic()
+    cached = _FOOTER_ACCOUNT_USAGE_CACHE.get(key)
+    if cached is not None:
+        expires_at, snapshot = cached
+        if now < expires_at:
+            return snapshot
+    try:
+        snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+    except Exception:
+        snapshot = None
+    _FOOTER_ACCOUNT_USAGE_CACHE[key] = (now + _FOOTER_ACCOUNT_USAGE_TTL_SECONDS, snapshot)
+    return snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -5755,6 +5802,9 @@ class TurnRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": getattr(agent, "provider", None) if agent else None,
+                "base_url": getattr(agent, "base_url", None) if agent else None,
+                "api_key": getattr(agent, "api_key", None) if agent else None,
                 "context_length": _context_length,
             }
 
@@ -5832,6 +5882,9 @@ class TurnRunner:
             "input_tokens": _input_toks,
             "output_tokens": _output_toks,
             "model": _resolved_model,
+            "provider": getattr(agent, "provider", None) if agent else None,
+            "base_url": getattr(agent, "base_url", None) if agent else None,
+            "api_key": getattr(agent, "api_key", None) if agent else None,
             "context_length": _context_length,
             "session_id": effective_session_id,
             "response_previewed": result.get("response_previewed", False),
@@ -18245,15 +18298,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # text, so we fire a separate trailing send below.
             _footer_line = ""
             try:
-                from gateway.runtime_footer import build_footer_line as _bfl
+                from gateway.runtime_footer import build_footer_line as _bfl, resolve_footer_config as _rfc
+                _footer_user_config = _load_gateway_config()
+                _footer_platform_key = _platform_config_key(source.platform)
+                _footer_cfg = _rfc(_footer_user_config, _footer_platform_key)
+                _footer_fields = {
+                    str(field).strip().lower()
+                    for field in (_footer_cfg.get("fields") or [])
+                }
+                _footer_provider = agent_result.get("provider")
+                _footer_base_url = agent_result.get("base_url")
+                _footer_api_key = agent_result.get("api_key")
+                _footer_account_usage = None
+                _footer_account_label = None
+                if "quota" in _footer_fields or "account" in _footer_fields:
+                    try:
+                        _footer_account_usage = await asyncio.to_thread(
+                            _fetch_footer_account_usage_cached,
+                            _footer_provider,
+                            base_url=_footer_base_url,
+                            api_key=_footer_api_key,
+                        )
+                    except Exception as _footer_usage_err:
+                        logger.debug("runtime_footer usage lookup failed: %s", _footer_usage_err)
+                        _footer_account_usage = None
+                    if _footer_account_usage is not None:
+                        _footer_account_label = (
+                            getattr(_footer_account_usage, "account_label", None)
+                            or getattr(_footer_account_usage, "plan", None)
+                        )
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
+                    user_config=_footer_user_config,
+                    platform_key=_footer_platform_key,
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                     turn_seconds=_turn_seconds,
+                    provider=_footer_provider,
+                    account_label=_footer_account_label,
+                    account_usage=_footer_account_usage,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

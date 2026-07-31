@@ -13,14 +13,20 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // Shared webPreferences for every window that renders the chat transcript — the
 // primary window AND the secondary session windows. Keeping it in one place is
 // the whole point: the two BrowserWindow definitions in main.ts used to be
-// hand-copied, and the secondary windows silently lost `backgroundThrottling:
-// false`, so a streamed answer stalled until the window regained focus.
+// hand-copied, and the secondary windows silently drifted apart (a streamed
+// answer stalled until the window regained focus because one of them lost the
+// throttling opt-out).
 //
-// `backgroundThrottling: false` is load-bearing: the transcript streams to the
-// screen through a bounded timer flush, which Chromium clamps for blurred/
-// occluded windows. A streaming chat app must keep painting in the
-// background, so every chat window opts out. The preload path is injected
-// because it depends on the Electron entry's __dirname.
+// Background throttling is deliberately NOT set here. It is managed at runtime
+// by main.ts (`setBackgroundThrottling` driven by the merged `hermes:active-work`
+// reports): while any turn is in flight every chat window is unthrottled so the
+// transcript's bounded timer flush keeps painting while blurred, occluded, or
+// minimized — and once all turns finish, Chromium's default throttling returns
+// so an idle hidden window costs ~nothing. A static `backgroundThrottling:
+// false` here would pin `document.visibilityState` to 'visible' forever,
+// turning every visibility-gated poll in the renderer into an always-on timer
+// (the "Hermes idles at 20% CPU while minimized" bug). The preload path is
+// injected because it depends on the Electron entry's __dirname.
 //
 // `autoplayPolicy: 'no-user-gesture-required'` is load-bearing for voice:
 // Chromium's default autoplay policy suspends audio (HTMLAudioElement.play()
@@ -39,7 +45,6 @@ function chatWindowWebPreferences(preloadPath: string) {
     sandbox: true,
     nodeIntegration: false,
     devTools: true,
-    backgroundThrottling: false,
     autoplayPolicy: 'no-user-gesture-required' as const
   }
 }

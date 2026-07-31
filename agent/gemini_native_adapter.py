@@ -875,6 +875,22 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 sort_keys=True,
             )
             slot = tool_call_indices.get(call_key)
+            if slot is not None:
+                # ``part_index`` restarts at 0 on every stream event, so two
+                # *different* calls to the same tool arriving in separate
+                # events collide on one slot and their arguments get
+                # concatenated into unparseable JSON. A continuation always
+                # extends what we already have; anything else that follows a
+                # complete JSON object is a new call and needs its own slot.
+                _prev = str(slot.get("last_arguments") or "")
+                if _prev and not args_str.startswith(_prev):
+                    try:
+                        json.loads(_prev)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass
+                    else:
+                        call_key = f"{call_key}#{len(tool_call_indices)}"
+                        slot = tool_call_indices.get(call_key)
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),

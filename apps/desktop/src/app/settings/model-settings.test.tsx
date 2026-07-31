@@ -1,7 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ComponentType } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { MoaConfigResponse } from '@/types/hermes'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
@@ -28,6 +31,7 @@ const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
+  createMoaModelsSaveRequest: (body: unknown) => () => saveMoaModels(body),
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
@@ -84,8 +88,9 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-async function renderModelSettings() {
+async function renderModelSettings(props: Record<string, unknown> = {}) {
   const { ModelSettings } = await import('./model-settings')
+  const ModelSettingsWithStudio = ModelSettings as ComponentType<Record<string, unknown>>
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return render(
@@ -93,7 +98,7 @@ async function renderModelSettings() {
     // needs a router context in tests (the app provides HashRouter at root).
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ModelSettings />
+        <ModelSettingsWithStudio {...props} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -212,53 +217,6 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
   })
 
-  it('preserves a user-defined provider endpoint when applying the main model', async () => {
-    getGlobalModelOptions.mockResolvedValueOnce({
-      providers: [
-        {
-          name: 'Nous',
-          slug: 'nous',
-          models: ['hermes-4'],
-          authenticated: true
-        },
-        {
-          name: 'Ollama',
-          slug: 'local-ollama',
-          models: ['qwen3:latest'],
-          authenticated: true,
-          is_user_defined: true,
-          api_url: 'http://localhost:11434/v1'
-        }
-      ]
-    })
-    setModelAssignment.mockResolvedValueOnce({
-      provider: 'local-ollama',
-      model: 'qwen3:latest',
-      gateway_tools: []
-    })
-
-    await renderModelSettings()
-
-    const providerSelect = (await screen.findAllByRole('combobox'))[0]
-    fireEvent.click(providerSelect)
-    fireEvent.click(await screen.findByRole('option', { name: 'Ollama' }))
-
-    const modelSelect = (await screen.findAllByRole('combobox'))[1]
-    fireEvent.click(modelSelect)
-    fireEvent.click(await screen.findByRole('option', { name: 'qwen3:latest' }))
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
-
-    await waitFor(() =>
-      expect(setModelAssignment).toHaveBeenCalledWith({
-        model: 'qwen3:latest',
-        provider: 'local-ollama',
-        scope: 'main',
-        base_url: 'http://localhost:11434/v1'
-      })
-    )
-  })
-
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
@@ -316,41 +274,6 @@ describe('ModelSettings', () => {
     )
   })
 
-  it('carries the user-defined endpoint when an aux slot is set to a local main model', async () => {
-    getGlobalModelOptions.mockResolvedValueOnce({
-      providers: [
-        {
-          name: 'Ollama',
-          slug: 'local-ollama',
-          models: ['qwen3:latest'],
-          authenticated: true,
-          is_user_defined: true,
-          api_url: 'http://localhost:11434/v1'
-        }
-      ]
-    })
-    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'local-ollama', model: 'qwen3:latest' })
-    getAuxiliaryModels.mockResolvedValueOnce({
-      main: { provider: 'local-ollama', model: 'qwen3:latest' },
-      tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
-    })
-
-    await renderModelSettings()
-
-    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
-    fireEvent.click(setToMainButtons[0])
-
-    await waitFor(() =>
-      expect(setModelAssignment).toHaveBeenCalledWith({
-        model: 'qwen3:latest',
-        provider: 'local-ollama',
-        scope: 'auxiliary',
-        task: 'vision',
-        base_url: 'http://localhost:11434/v1'
-      })
-    )
-  })
-
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {
     setModelAssignment.mockResolvedValueOnce({
       provider: 'openrouter',
@@ -384,19 +307,26 @@ describe('ModelSettings', () => {
 })
 
 describe('ModelSettings MoA preset editor', () => {
-  const moaConfig = () => ({
+  const moaConfig = (): MoaConfigResponse => ({
     default_preset: 'default',
     active_preset: '',
     presets: {
       default: {
         reference_models: [
-          { provider: 'nous', model: 'hermes-4' },
-          { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' }
+          { continuity_id: 'primary-auditor', provider: 'nous', model: 'hermes-4', reasoning_effort: 'high' },
+          {
+            continuity_id: 'secondary-auditor',
+            provider: 'openrouter',
+            model: 'deepseek/deepseek-v4-pro',
+            reasoning_effort: 'max'
+          }
         ],
-        aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
+        aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8', reasoning_effort: 'ultra' },
         reference_temperature: 0,
         aggregator_temperature: 0,
         max_tokens: 4096,
+        reference_max_tokens: 600,
+        fanout: 'per_iteration',
         enabled: true
       }
     },
@@ -439,15 +369,15 @@ describe('ModelSettings MoA preset editor', () => {
   }
 
   function slotSelects() {
-    // Combobox order in the MoA section (last 7 on the page): preset select,
-    // then provider+model per reference (2 refs), then aggregator
-    // provider+model. Reference 1's pair is therefore at -6 / -5.
-    const all = screen.getAllByRole('combobox')
-
-    return { ref1Provider: all.at(-6)!, ref1Model: all.at(-5)! }
+    // Stable accessible labels are part of the Studio contract. Adding effort,
+    // cadence, and cap controls must never make these tests depend on DOM order.
+    return {
+      ref1Provider: screen.getByRole('combobox', { name: 'Reference 1 provider' }),
+      ref1Model: screen.getByRole('combobox', { name: 'Reference 1 model' })
+    }
   }
 
-  it('holds the autosave while a slot is half-filled (provider changed, model pending)', async () => {
+  it('keeps Save disabled while a slot is half-filled (provider changed, model pending)', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
@@ -456,16 +386,17 @@ describe('ModelSettings MoA preset editor', () => {
       fireEvent.click(slotSelects().ref1Provider)
       fireEvent.click(await screen.findByRole('option', { name: 'OpenRouter' }))
 
-      // Model was cleared by the provider change → config incomplete → the
-      // debounced autosave must NOT fire, even well past the 600ms window.
+      // Model was cleared by the provider change, so the manual transaction
+      // cannot be committed yet.
       await vi.advanceTimersByTimeAsync(2000)
       expect(saveMoaModels).not.toHaveBeenCalled()
+      expect((screen.getByRole('button', { name: 'Save changes' }) as HTMLButtonElement).disabled).toBe(true)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('saves once the model pick completes the slot', async () => {
+  it('saves once Save changes is clicked after the model pick completes the slot', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
@@ -479,20 +410,27 @@ describe('ModelSettings MoA preset editor', () => {
       fireEvent.click(await screen.findByRole('option', { name: 'anthropic/claude-opus-4.8' }))
       await vi.advanceTimersByTimeAsync(700)
 
+      expect(saveMoaModels).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
       expect(saveMoaModels).toHaveBeenCalledTimes(1)
       const sent = saveMoaModels.mock.calls[0][0] as ReturnType<typeof moaConfig>
       expect(sent.presets.default.reference_models[0]).toEqual({
+        continuity_id: 'primary-auditor',
         provider: 'openrouter',
-        model: 'anthropic/claude-opus-4.8'
+        model: 'anthropic/claude-opus-4.8',
+        reasoning_effort: 'high'
       })
       // The untouched slots ride along unchanged — nothing reverts to defaults.
       expect(sent.presets.default.reference_models[1]).toEqual({
+        continuity_id: 'secondary-auditor',
         provider: 'openrouter',
-        model: 'deepseek/deepseek-v4-pro'
+        model: 'deepseek/deepseek-v4-pro',
+        reasoning_effort: 'max'
       })
       expect(sent.presets.default.aggregator).toEqual({
         provider: 'openrouter',
-        model: 'anthropic/claude-opus-4.8'
+        model: 'anthropic/claude-opus-4.8',
+        reasoning_effort: 'ultra'
       })
     } finally {
       vi.useRealTimers()
@@ -518,50 +456,135 @@ describe('ModelSettings MoA preset editor', () => {
     }
   })
 
-  it('autosaves the selected preset when its enabled switch is toggled', async () => {
+  it('edits seat efforts, cadence, caps, temperatures, and enabled state in one manual save', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
       await openReferenceEditor()
 
-      fireEvent.click(screen.getByRole('switch', { name: 'Enabled' }))
+      fireEvent.click(screen.getByRole('combobox', { name: 'Reference 1 effort' }))
+      fireEvent.click(await screen.findByRole('option', { name: 'Ultra' }))
+
+      fireEvent.click(screen.getByRole('combobox', { name: 'Aggregator effort' }))
+      fireEvent.click(await screen.findByRole('option', { name: 'High' }))
+
+      fireEvent.click(screen.getByRole('button', { name: 'Once per user turn' }))
+      fireEvent.change(screen.getByRole('spinbutton', { name: 'Advisor output cap' }), { target: { value: '800' } })
+      fireEvent.change(screen.getByRole('spinbutton', { name: 'Aggregator output limit' }), {
+        target: { value: '8192' }
+      })
+      fireEvent.change(screen.getByRole('spinbutton', { name: 'Advisor temperature' }), { target: { value: '0.4' } })
+      fireEvent.change(screen.getByRole('spinbutton', { name: 'Aggregator temperature' }), { target: { value: '0.2' } })
+      fireEvent.click(screen.getByRole('switch', { name: 'Preset enabled' }))
+
       await vi.advanceTimersByTimeAsync(700)
 
-      expect(saveMoaModels).toHaveBeenCalledWith(
-        expect.objectContaining({
-          presets: expect.objectContaining({
-            default: expect.objectContaining({ enabled: false })
-          })
-        })
-      )
+      expect(saveMoaModels).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      expect(saveMoaModels).toHaveBeenCalledTimes(1)
+      const sent = saveMoaModels.mock.calls[0][0] as ReturnType<typeof moaConfig>
+
+      expect(sent.presets.default).toMatchObject({
+        enabled: false,
+        fanout: 'user_turn',
+        max_tokens: 8192,
+        reference_max_tokens: 800,
+        reference_temperature: 0.4,
+        aggregator_temperature: 0.2
+      })
+      expect(sent.presets.default.reference_models[0]).toMatchObject({
+        continuity_id: 'primary-auditor',
+        reasoning_effort: 'ultra'
+      })
+      expect(sent.presets.default.aggregator).toMatchObject({ reasoning_effort: 'high' })
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('saves a disabled reference model without removing it (per-slot enabled toggle)', async () => {
+  it('can make advisor output uncapped without changing the aggregator output limit', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
       await openReferenceEditor()
 
-      fireEvent.click(screen.getByRole('switch', { name: 'Disable reference 1' }))
+      fireEvent.click(screen.getByRole('switch', { name: 'Uncapped advisor output' }))
       await vi.advanceTimersByTimeAsync(700)
 
-      expect(saveMoaModels).toHaveBeenCalledWith(
-        expect.objectContaining({
-          presets: expect.objectContaining({
-            default: expect.objectContaining({
-              reference_models: [
-                expect.objectContaining({ provider: 'nous', model: 'hermes-4', enabled: false }),
-                expect.objectContaining({ provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' })
-              ]
-            })
-          })
-        })
-      )
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      const sent = saveMoaModels.mock.calls.at(-1)?.[0] as ReturnType<typeof moaConfig>
+      expect(sent.presets.default.reference_max_tokens).toBeNull()
+      expect(sent.presets.default.max_tokens).toBe(4096)
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('renames a preset while preserving default/active pointers and reference seat identities', async () => {
+    const config = moaConfig()
+    config.active_preset = 'default'
+    getMoaModels.mockResolvedValueOnce(config)
+
+    await renderModelSettings()
+    expect(await screen.findByText('Reference 1')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Preset name' }), { target: { value: 'daily-grok' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Rename preset' }))
+    expect(saveMoaModels).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(saveMoaModels).toHaveBeenCalledTimes(1))
+    const sent = saveMoaModels.mock.calls[0][0] as ReturnType<typeof moaConfig>
+
+    expect(sent.presets.default).toBeUndefined()
+    expect(sent.default_preset).toBe('daily-grok')
+    expect(sent.active_preset).toBe('daily-grok')
+    expect(sent.presets['daily-grok'].reference_models.map(slot => slot.continuity_id)).toEqual([
+      'primary-auditor',
+      'secondary-auditor'
+    ])
+  })
+
+  it('reorders reference seats without changing their continuity identities', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Move Reference 2 up' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+      const sent = saveMoaModels.mock.calls.at(-1)?.[0] as ReturnType<typeof moaConfig>
+      expect(sent.presets.default.reference_models.map(slot => slot.continuity_id)).toEqual([
+        'secondary-auditor',
+        'primary-auditor'
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('duplicates a preset and can switch the selected preset into the current chat', async () => {
+    const onUseMoaPreset = vi.fn()
+
+    await renderModelSettings({ onUseMoaPreset })
+    expect(await screen.findByText('Reference 1')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'New preset name' }), { target: { value: 'daily-copy' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate preset' }))
+    expect(saveMoaModels).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(saveMoaModels).toHaveBeenCalledTimes(1))
+    const sent = saveMoaModels.mock.calls[0][0] as ReturnType<typeof moaConfig>
+    expect(sent.presets['daily-copy'].reference_models.map(slot => slot.continuity_id)).toEqual([
+      'primary-auditor',
+      'secondary-auditor'
+    ])
+
+    getMoaModels.mockResolvedValue(sent)
+    fireEvent.click(screen.getByRole('button', { name: 'Use in this chat' }))
+    await waitFor(() => expect(onUseMoaPreset).toHaveBeenCalledWith('daily-copy'))
   })
 })

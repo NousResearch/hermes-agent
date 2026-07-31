@@ -1,8 +1,16 @@
+import { QueryClient } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
+import type { MoaConfigResponse } from '@/types/hermes'
 
-import { manualPickRemoved, modelOptionsQueryKey, requestModelOptions } from './model-options'
+import {
+  manualPickRemoved,
+  moaMenuConfigQueryKey,
+  modelOptionsQueryKey,
+  requestModelOptions,
+  setMoaMenuConfigQueryData
+} from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -58,6 +66,27 @@ describe('modelOptionsQueryKey', () => {
 
   it('keeps session catalogs inside the owning profile namespace', () => {
     expect(modelOptionsQueryKey(' compass ', 'session-1')).toEqual(['model-options', 'compass', 'session-1'])
+  })
+})
+
+describe('MoA menu config cache', () => {
+  it('preserves an own __proto__ preset across divergent cache writes', () => {
+    const queryClient = new QueryClient()
+
+    const config = (safeEnabled: boolean) =>
+      JSON.parse(
+        `{"enabled":true,"presets":{"__proto__":{"enabled":true},"safe":{"enabled":${safeEnabled}}}}`
+      ) as MoaConfigResponse
+
+    setMoaMenuConfigQueryData(queryClient, 'default', config(true))
+    setMoaMenuConfigQueryData(queryClient, 'default', config(false))
+
+    const cached = queryClient.getQueryData<MoaConfigResponse>(moaMenuConfigQueryKey('default'))
+
+    expect(Object.prototype.hasOwnProperty.call(cached?.presets, '__proto__')).toBe(true)
+    expect(Object.keys(cached?.presets ?? {})).toEqual(['__proto__', 'safe'])
+    expect(Object.getPrototypeOf(cached?.presets)).toBe(Object.prototype)
+    expect(cached?.presets.safe.enabled).toBe(false)
   })
 })
 

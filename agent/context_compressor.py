@@ -1836,6 +1836,13 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         self._last_aux_call_provider: str = ""
         self._last_aux_call_model: str = ""
         self._last_aux_call_base_url: str = ""
+        # Per-attempt failure classification ("auth" | "network" | "other" |
+        # None). Unlike _last_summary_auth_failure / _last_summary_network_failure,
+        # which are intentionally sticky across compress() calls to preserve
+        # the cooldown guard (see compress()), this field is reset at the top
+        # of every summary attempt so the abort diagnostic reflects the
+        # CURRENT attempt's failure mode, not a stale prior one (#72636).
+        self._last_attempt_failure_class: Optional[str] = None
         self._consecutive_timeout_failures = 0
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
@@ -3183,6 +3190,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """Issue the single aux summary call; return validated content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
+        # Per-attempt reset: this attempt's failure classification must
+        # reflect THIS attempt's outcome, not a sticky prior one (#72636).
+        # _last_summary_auth_failure / _last_summary_network_failure stay
+        # sticky for the cooldown guard (see compress()); this field is the
+        # authoritative "what went wrong this attempt" for the abort path.
+        self._last_attempt_failure_class = None
         # call_llm writes the route it actually selected; never pre-resolve a second, stale pair.
         _aux_route: Dict[str, str] = {}
         call_kwargs: Dict[str, Any] = {
@@ -3505,6 +3518,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         if _is_summary_access_or_quota_error(e):
             # Field name kept for caller compatibility; now covers the whole access/quota class.
             self._last_summary_auth_failure = True
+            self._last_attempt_failure_class = "auth"
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
             logger.error(
                 "Context compression failed: auxiliary LLM returned a non-JSON response. provider=%s "
@@ -3536,10 +3550,21 @@ Write only the summary body. Do not include any preamble or prefix."""
             # destroying the middle window for a placeholder marker — retrying once the provider recovers is
             # strictly better than dropping context (#29559, #25585, #94448).
             self._last_summary_network_failure = True
+            self._last_attempt_failure_class = "network"
         elif kind.truncated:
             self._last_summary_truncated_failure = True
+            if self._last_attempt_failure_class is None:
+                self._last_attempt_failure_class = "other"
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
+            if self._last_attempt_failure_class is None:
+                self._last_attempt_failure_class = "other"
+        elif self._last_attempt_failure_class is None:
+            # Any other transient failure (timeout, JSON decode, 5xx, ...)
+            # that reached this branch — not auth, not a network stream
+            # close. Classified so the abort diagnostic does not inherit a
+            # stale "auth" verdict from a prior attempt (#72636).
+            self._last_attempt_failure_class = "other"
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

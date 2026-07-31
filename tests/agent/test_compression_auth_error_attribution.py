@@ -1,37 +1,30 @@
-"""End-to-end regression for #72636: when ``auxiliary.compression`` fails
-with an auth/quota error (HTTP 401/403), the compression-abort warning
-must point the user at the *compression* model's provider/model/endpoint,
-NOT the main model's.
+"""End-to-end regression for #72636: when ``auxiliary.compression``
+fails, the compression-abort diagnostic must (a) point at the
+*compression* model's provider/model/endpoint (not the main model's),
+(b) classify the CURRENT attempt's failure mode correctly (a 401 then
+a forced retry that fails with a 500 must NOT be mis-attributed as an
+auth failure), and (c) actually reach messaging gateways rather than
+be swallowed by the noise filter.
 
-Two failure modes are guarded here, both reported by the original
-reviewer / follow-up:
+Three failure modes are guarded:
 
-1. **Ordering** — the diagnostic must render from the centralized
+1. **Ordering + identity** — the diagnostic renders from the
    compression-abort branch in ``compress_context`` (after the
-   compressor has set ``_last_summary_auth_failure``), not from a
-   main-model API-error display site in the conversation loop (where
-   the flag is still false for a fresh 401/403 and goes stale until
-   the next successful summary).
+   compressor has recorded the failure), reads the resolved auxiliary
+   identity (``_last_aux_call_*``) rather than the main-model fields on
+   the compressor, and runs after the current attempt completed.
 
-2. **Identity attribution** — the compressor's ``provider`` /
-   ``summary_model`` / ``base_url`` fields carry the *main* model's
-   identity (the compressor is initialized against the main runtime).
-   The identity actually used on the wire for the summary call is
-   resolved from ``auxiliary.compression`` config and recorded by the
-   compressor as ``_last_aux_call_provider`` / ``_last_aux_call_model``
-   / ``_last_aux_call_base_url``. The diagnostic must read those, not
-   the main-model fields — otherwise it points the user at the wrong
-   endpoint whenever the compression auxiliary is configured
-   separately.
+2. **Per-attempt classification** — the gate is the per-attempt
+   ``_last_attempt_failure_class`` (reset on every ``_generate_summary``
+   entry), NOT the sticky ``_last_summary_auth_failure`` (which persists
+   across compress() calls to protect the cooldown guard). Without this,
+   a 401 followed by a forced retry that fails with a 500 would surface
+   a stale "auth failure" verdict.
 
-These tests drive the real ``agent._compress_context`` →
-``compress_context`` → abort path with a mock compressor whose
-``compress()`` mirrors what the real ``ContextCompressor.compress``
-does when the auxiliary summary call 401s: abort, preserve the
-transcript unchanged, and record both the failure flag and the
-resolved auxiliary identity on itself. The main-model identity on the
-compressor is deliberately distinct from the auxiliary identity, so a
-diagnostic that reads the wrong fields is caught.
+3. **Gateway visibility** — the diagnostic wording is chosen to pass
+   ``_TELEGRAM_NOISY_STATUS_RE`` so it reaches Telegram/Discord/Slack,
+   not just local/CLI. The generic "Compression aborted" warning is
+   already visible; the companion identity block must be too.
 """
 
 from __future__ import annotations
@@ -61,7 +54,7 @@ def _build_agent_with_compressor(
     db: SessionDB,
     session_id: str,
     *,
-    auth_failure: bool,
+    failure_class: str | None,  # "auth" | "network" | "other" | None
     compression_count: int = 0,
     aux_provider: str = _AUX_PROVIDER,
     aux_model: str = _AUX_MODEL,
@@ -84,19 +77,14 @@ def _build_agent_with_compressor(
     compressor = MagicMock()
 
     def _noop_compress(messages, **_kwargs):
-        # Mirror what ContextCompressor.compress does when the auxiliary
-        # summary call 401s: the identity was already resolved from
-        # auxiliary.compression config and recorded on the instance
-        # (_last_aux_call_*), then the call failed and the compressor
-        # aborts, preserving the transcript unchanged with the auth-failure
-        # flag set. compress_context's abort branch fires because the
-        # returned list is left equal to the input.
+        # Mirror what ContextCompressor.compress does after a failed
+        # auxiliary summary call: the identity was already resolved and
+        # recorded on the instance, then the call failed and the compressor
+        # aborted, preserving the transcript unchanged. compress_context's
+        # abort branch fires because the returned list equals the input.
         compressor._last_compress_aborted = True
-        compressor._last_summary_error = "401 Client Error: Unauthorized"
-        if auth_failure:
-            compressor._last_summary_auth_failure = True
-        # The resolved auxiliary identity — recorded BEFORE the call_llm
-        # that 401'd, so it is present at abort time.
+        compressor._last_summary_error = "simulated summary failure"
+        compressor._last_attempt_failure_class = failure_class
         compressor._last_aux_call_provider = aux_provider
         compressor._last_aux_call_model = aux_model
         compressor._last_aux_call_base_url = aux_base_url
@@ -108,7 +96,7 @@ def _build_agent_with_compressor(
     compressor.last_completion_tokens = 0
     compressor._last_summary_error = None
     compressor._last_compress_aborted = False
-    compressor._last_summary_auth_failure = bool(auth_failure)
+    compressor._last_attempt_failure_class = None
     # IMPORTANT: these carry the MAIN model's identity, mirroring production
     # (the compressor is initialized against the main runtime). They are
     # distinct from the auxiliary identity above. A diagnostic that reads
@@ -140,24 +128,17 @@ def _run_compression(agent) -> list[str]:
     return emitted
 
 
-# ── Auth-failure attribution (the fix) ─────────────────────────────────
+# ── Failure-class attribution (the fix) ───────────────────────────────
 
 
-def test_aux_auth_failure_abort_surfaces_compression_identity(tmp_path: Path) -> None:
-    """Compression aborted on an auxiliary 401 → the user must see the
-    *compression* provider/model/endpoint, never the main model's.
-
-    This is the end-to-end ordering the fix targets: overflow → compress →
-    auxiliary auth failure → abort → diagnostic. It also pins identity
-    attribution: the compressor's main-model fields (provider / model /
-    base_url) are the SiliconFlow main runtime, but the diagnostic must
-    surface the DeepSeek auxiliary identity actually used on the wire.
-    """
+def test_auth_failure_abort_surfaces_compression_identity(tmp_path: Path) -> None:
+    """Compression aborted on an auxiliary auth failure → the user must see
+    the *compression* provider/model/endpoint, never the main model's."""
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "PARENT_72636_AUTH"
     db.create_session(sid, source="cli")
 
-    agent, _ = _build_agent_with_compressor(db, sid, auth_failure=True)
+    agent, _ = _build_agent_with_compressor(db, sid, failure_class="auth")
     emitted = _run_compression(agent)
 
     rendered = "\n".join(emitted)
@@ -172,48 +153,61 @@ def test_aux_auth_failure_abort_surfaces_compression_identity(tmp_path: Path) ->
     assert _AUX_BASE_URL in rendered, (
         f"compression endpoint missing from abort output: {emitted}"
     )
-    # The MAIN model is healthy and must NOT be named as the failing endpoint —
-    # that misattribution is exactly the bug this regression guards against.
+    # The MAIN model is healthy and must NOT be named as the failing endpoint.
     assert "siliconflow.cn" not in rendered, (
-        f"main endpoint leaked into compression auth diagnostic: {emitted}"
+        f"main endpoint leaked into compression diagnostic: {emitted}"
     )
     assert _MAIN_MODEL not in rendered, (
-        f"main model leaked into compression auth diagnostic: {emitted}"
+        f"main model leaked into compression diagnostic: {emitted}"
     )
 
 
-def test_aux_auth_diagnostic_silent_on_non_auth_abort(tmp_path: Path) -> None:
-    """When compression ABORTS but NOT on an auth failure (e.g. transient
-    network, summary-abort), the compression-identity diagnostic must stay
-    silent — only the generic "Compression aborted" warning fires.
-
-    Pins that the gate is ``_last_summary_auth_failure``, not
-    ``_last_compress_aborted``.
-    """
+def test_network_failure_abort_uses_network_guidance(tmp_path: Path) -> None:
+    """A network/connection abort surfaces the compression identity with the
+    transient-error guidance, not the auth credential guidance."""
     db = SessionDB(db_path=tmp_path / "state.db")
-    sid = "PARENT_72636_NOAUTH"
+    sid = "PARENT_72636_NET"
     db.create_session(sid, source="cli")
 
-    agent, _ = _build_agent_with_compressor(db, sid, auth_failure=False)
+    agent, _ = _build_agent_with_compressor(db, sid, failure_class="network")
     emitted = _run_compression(agent)
-
     rendered = "\n".join(emitted)
+
+    assert _AUX_BASE_URL in rendered, f"compression endpoint missing: {emitted}"
+    assert "transient" in rendered.lower(), (
+        f"network guidance missing on network abort: {emitted}"
+    )
+    # Must NOT show the auth credential guidance for a network failure.
+    assert "credential" not in rendered.lower(), (
+        f"auth guidance leaked into network abort: {emitted}"
+    )
+
+
+def test_diagnostic_silent_when_no_failure_class(tmp_path: Path) -> None:
+    """When compression ABORTS but no failure was classified (e.g. the
+    compressor aborted for a non-summary reason), the identity diagnostic
+    must stay silent — only the generic "Compression aborted" warning fires.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "PARENT_72636_NOCLASS"
+    db.create_session(sid, source="cli")
+
+    agent, _ = _build_agent_with_compressor(db, sid, failure_class=None)
+    emitted = _run_compression(agent)
+    rendered = "\n".join(emitted)
+
     # Generic abort warning is expected...
     assert any("Compression aborted" in m for m in emitted), (
         f"generic abort warning missing: {emitted}"
     )
     # ...but the compression-identity block must NOT appear.
     assert _AUX_PROVIDER not in rendered, (
-        f"compression identity leaked on a non-auth abort: {emitted}"
-    )
-    assert _AUX_MODEL not in rendered, (
-        f"compression model leaked on a non-auth abort: {emitted}"
+        f"compression identity leaked when no failure was classified: {emitted}"
     )
 
 
-def test_successful_compression_emits_no_auth_diagnostic(tmp_path: Path) -> None:
-    """When compression succeeds, no auth diagnostic fires — otherwise every
-    healthy compression would spam a phantom auth-error banner."""
+def test_successful_compression_emits_no_diagnostic(tmp_path: Path) -> None:
+    """When compression succeeds, no diagnostic fires."""
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "PARENT_72636_OK"
     db.create_session(sid, source="cli")
@@ -232,7 +226,6 @@ def test_successful_compression_emits_no_auth_diagnostic(tmp_path: Path) -> None
             skip_memory=True,
         )
 
-    # A *successful* compressor: returns a compressed transcript, no abort.
     compressor = MagicMock()
     compressor.compress.return_value = [
         {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
@@ -243,7 +236,7 @@ def test_successful_compression_emits_no_auth_diagnostic(tmp_path: Path) -> None
     compressor.last_completion_tokens = 0
     compressor._last_summary_error = None
     compressor._last_compress_aborted = False
-    compressor._last_summary_auth_failure = False
+    compressor._last_attempt_failure_class = None
     compressor.provider = _MAIN_PROVIDER
     compressor.summary_model = ""
     compressor.base_url = _MAIN_BASE_URL
@@ -263,22 +256,114 @@ def test_successful_compression_emits_no_auth_diagnostic(tmp_path: Path) -> None
     )
 
 
+# ── Per-attempt classification: the 401 → 500 sequence ────────────────
+
+
+def test_stale_auth_flag_does_not_poison_subsequent_non_auth_abort(
+    tmp_path: Path,
+) -> None:
+    """Regression for the sticky-flag bug: a 401 that sets
+    ``_last_summary_auth_failure`` must NOT cause a later, unrelated abort
+    (e.g. a 500 on a forced retry) to be mis-attributed as an auth failure.
+
+    The gate is the per-attempt ``_last_attempt_failure_class``, reset on
+    every ``_generate_summary`` entry — not the sticky
+    ``_last_summary_auth_failure`` (which intentionally persists across
+    compress() calls to protect the cooldown guard).
+
+    This test simulates the two-attempt sequence directly against the
+    helper's contract: the SECOND abort carries a non-auth
+    ``_last_attempt_failure_class`` even though the sticky auth flag from
+    the first attempt is still set on the compressor.
+    """
+    from agent.conversation_compression import _emit_compression_auth_hint
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "PARENT_72636_SEQ"
+    db.create_session(sid, source="cli")
+
+    agent, comp = _build_agent_with_compressor(db, sid, failure_class="other")
+    # Simulate the aftermath of a PRIOR 401: the sticky auth flag is still
+    # True (compress() never clears it — only a successful summary does).
+    comp._last_summary_auth_failure = True
+    # But the CURRENT attempt failed with a 500 (transient/other), so the
+    # per-attempt class must win.
+    comp._last_attempt_failure_class = "other"
+
+    emitted: list[str] = []
+    agent._emit_warning = lambda message: emitted.append(message)
+    _emit_compression_auth_hint(agent)
+
+    rendered = "\n".join(emitted)
+    # The diagnostic DID fire (the current attempt failed)...
+    assert any("Compression auxiliary endpoint" in m for m in emitted), (
+        f"diagnostic missing for current 'other' attempt: {emitted}"
+    )
+    # ...but it must NOT show auth credential guidance — the current
+    # attempt is not an auth failure, regardless of the stale sticky flag.
+    assert "credential" not in rendered.lower(), (
+        f"stale auth flag mis-attributed a 500 as an auth failure: {emitted}"
+    )
+    assert "see agent.log" in rendered.lower(), (
+        f"'other' guidance missing on non-auth abort: {emitted}"
+    )
+
+
+# ── Gateway visibility (the diagnostic must not be swallowed) ─────────
+
+
+def test_diagnostic_survives_gateway_noise_filter() -> None:
+    """The diagnostic wording must pass ``_TELEGRAM_NOISY_STATUS_RE`` so it
+    reaches Telegram/Discord/Slack, not just local/CLI. The generic
+    "Compression aborted" warning already passes; this pins that the
+    companion identity block does too — across the failure classes.
+    """
+    from gateway.platforms.base import Platform
+    from gateway.run import _prepare_gateway_status_message
+
+    from agent.conversation_compression import _emit_compression_auth_hint
+
+    # Build a minimal stand-in agent whose _emit_warning captures the
+    # message, then route that message through the real gateway filter.
+    for failure_class in ("auth", "network", "other"):
+        comp = MagicMock()
+        comp._last_attempt_failure_class = failure_class
+        comp._last_aux_call_provider = _AUX_PROVIDER
+        comp._last_aux_call_model = _AUX_MODEL
+        comp._last_aux_call_base_url = _AUX_BASE_URL
+        comp.provider = _MAIN_PROVIDER
+        comp.model = _MAIN_MODEL
+        comp.base_url = _MAIN_BASE_URL
+        agent = MagicMock()
+        agent.context_compressor = comp
+        captured: list[str] = []
+        agent._emit_warning = lambda message, _c=captured: _c.append(message)
+
+        _emit_compression_auth_hint(agent)
+        assert captured, f"no diagnostic emitted for class={failure_class}"
+
+        for platform in (Platform.TELEGRAM, "discord", "slack"):
+            result = _prepare_gateway_status_message(platform, "warn", captured[0])
+            assert result is not None, (
+                f"diagnostic swallowed by gateway filter "
+                f"(class={failure_class}, platform={platform}): {captured[0]}"
+            )
+
+
 # ── Identity fallback when auxiliary is not separately configured ──────
 
 
 def test_aux_unset_falls_back_to_main_model_with_note(tmp_path: Path) -> None:
     """When ``auxiliary.compression`` is unset / "auto", the summary call
     runs against the main model — no separate auxiliary identity was
-    resolved. The diagnostic must NOT invent a phantom endpoint; it falls
-    back to the main-model identity and says so explicitly, so the user
-    is not sent chasing a non-existent auxiliary config."""
+    resolved. The diagnostic falls back to the main-model identity and
+    says so explicitly, rather than inventing a phantom auxiliary endpoint."""
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "PARENT_72636_AUTO"
     db.create_session(sid, source="cli")
 
-    # No auxiliary identity resolved — all _last_aux_call_* empty.
     agent, _ = _build_agent_with_compressor(
-        db, sid, auth_failure=True, aux_provider="", aux_model="", aux_base_url=""
+        db, sid, failure_class="auth", aux_provider="", aux_model="", aux_base_url=""
     )
     emitted = _run_compression(agent)
 
@@ -287,8 +372,7 @@ def test_aux_unset_falls_back_to_main_model_with_note(tmp_path: Path) -> None:
     assert _MAIN_BASE_URL in rendered, (
         f"main endpoint missing from fallback diagnostic: {emitted}"
     )
-    # ...and explicitly flags that auxiliary.compression is not configured,
-    # so the user knows the main model is the one to fix.
+    # ...and explicitly flags that auxiliary.compression is not configured.
     assert "not configured" in rendered, (
         f"missing 'not configured' note on aux-unset fallback: {emitted}"
     )
@@ -298,10 +382,9 @@ def test_aux_unset_falls_back_to_main_model_with_note(tmp_path: Path) -> None:
 
 
 def test_missing_compressor_identity_does_not_crash_abort(tmp_path: Path) -> None:
-    """A misbehaving compressor that aborts on auth failure but is missing
-    the resolved auxiliary identity must not crash the abort path — the
-    generic "Compression aborted" warning must still reach the user, and
-    the diagnostic falls back to the main-model identity."""
+    """A misbehaving compressor that aborts but is missing the resolved
+    auxiliary identity must not crash the abort path — the diagnostic falls
+    back to the main-model identity."""
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "PARENT_72636_PARTIAL"
     db.create_session(sid, source="cli")
@@ -309,19 +392,16 @@ def test_missing_compressor_identity_does_not_crash_abort(tmp_path: Path) -> Non
     agent, _ = _build_agent_with_compressor(
         db,
         sid,
-        auth_failure=True,
+        failure_class="auth",
         aux_provider="",
         aux_model="",
         aux_base_url="",
     )
     emitted = _run_compression(agent)
 
-    # Did not raise, and the generic abort warning still fired...
     assert any("Compression aborted" in m for m in emitted), (
         f"generic abort warning missing on partial-compressor abort: {emitted}"
     )
-    # ...and the diagnostic still emitted, falling back to the main-model
-    # identity rather than crashing.
-    assert any("auth/permission" in m for m in emitted), (
-        f"compression auth diagnostic missing on partial-compressor abort: {emitted}"
+    assert any("Compression auxiliary endpoint" in m for m in emitted), (
+        f"diagnostic missing on partial-compressor abort: {emitted}"
     )

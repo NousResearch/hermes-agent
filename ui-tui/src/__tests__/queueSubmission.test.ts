@@ -26,8 +26,6 @@ describe('/queue collapsed paste submission', () => {
     const paste: ComposerToken = { kind: 'paste', label: '[[ paste [2 lines] ]]', text: 'one\ntwo' }
     const image: ComposerToken = { kind: 'image', index: 1, label: imageToken(1), path: '/tmp/image.png' }
 
-    expect(expandPasteTokens([paste, image])(`${paste.label} and ${image.label}`)).toBe(
-      `one\ntwo and ${image.label}`
-    )
+    expect(expandPasteTokens([paste, image])(`${paste.label} and ${image.label}`)).toBe(`one\ntwo and ${image.label}`)
   })
 })

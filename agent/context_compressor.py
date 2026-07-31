@@ -137,6 +137,12 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # "is_compressed_summary" would reach the wire and trip exactly that.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
+# Distinguishes rolling micro-compaction markers from batch-compaction
+# markers (both carry COMPRESSED_SUMMARY_METADATA_KEY so resume/handoff
+# treat them alike). Supersede/defrag/rehydration must only ever touch
+# micro markers: a batch marker's content is NOT contained in the micro
+# rolling summary, so dropping or rewriting one destroys history.
+MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
 _DB_PERSISTED_MARKER = "_db_persisted"
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
@@ -5052,6 +5058,14 @@ This compaction should PRIORITISE preserving all information related to the focu
                 )
                 if recovered:
                     self._micro_compact_rolling_summary = recovered
+                    # Rehydration is containment proof: this marker's text now
+                    # lives inside the rolling summary, so it becomes
+                    # supersede/defrag-eligible. This also covers a BATCH
+                    # marker adopted as the rolling base after a batch
+                    # compaction reset — safe precisely because we just
+                    # absorbed its content. Markers whose content we did NOT
+                    # absorb never get the key and are never dropped.
+                    messages[last_summary_idx][MICRO_COMPACT_MARKER_KEY] = True
                     logger.info(
                         "Micro-compaction: recovered rolling summary from "
                         "transcript (%d chars)", len(recovered),
@@ -5132,17 +5146,22 @@ This compaction should PRIORITISE preserving all information related to the focu
         if idx <= exchange_start:
             return None
 
-        # Splice-boundary guard: the message right after the exchange must be
-        # a user turn (or a summary marker, which stands in for one
-        # structurally).  If the walk stopped because it ran into *tail_start*
-        # mid-turn, splicing here would leave the assistant-role marker
-        # adjacent to the turn's remaining assistant/tool messages — invalid
-        # alternation.  Skip this pass; the tail recedes as the conversation
-        # grows and the turn becomes absorbable later.
+        # Splice-boundary guard: the message right after the exchange must
+        # close the turn. If the walk stopped because it ran into
+        # *tail_start* mid-turn (boundary is assistant or tool — including
+        # an assistant-role summary marker), splicing here would leave the
+        # assistant-role marker adjacent to the turn's remaining
+        # assistant/tool messages — invalid alternation. Skip this pass; the
+        # tail recedes as the conversation grows and the turn becomes
+        # absorbable later. Any other boundary role (user, or a stray
+        # system/injected message) is a safe splice point — the marker is
+        # assistant-role, so no same-role adjacency is possible — and
+        # accepting them keeps one odd message from wedging the cursor
+        # forever.
         if idx >= n:
             return None
         boundary = messages[idx]
-        if not isinstance(boundary, dict) or boundary.get("role") != "user":
+        if not isinstance(boundary, dict) or boundary.get("role") in ("assistant", "tool"):
             return None
         return (exchange_start, idx)
 
@@ -5154,72 +5173,11 @@ This compaction should PRIORITISE preserving all information related to the focu
     ) -> str:
         """Serialize a single exchange for the micro-summarizer.
 
-        Uses the same content-max truncation and redaction as the batch
-        ``_serialize_for_summary`` method, but scoped to one exchange.
+        Delegates to the batch path's ``_serialize_for_summary`` (same
+        truncation, redaction, think-block stripping, and media labeling),
+        scoped to one exchange — one serializer, one place to fix.
         """
-        from agent.agent_runtime_helpers import strip_think_blocks
-
-        parts = []
-        for msg in messages[start:end]:
-            role = msg.get("role", "unknown")
-            content = msg.get("content")
-            if isinstance(content, list):
-                text_parts: list[str] = []
-                for part in content:
-                    if isinstance(part, dict):
-                        ptype = part.get("type")
-                        if ptype == "text":
-                            text_parts.append(part.get("text", ""))
-                        elif ptype in {"image", "image_url", "input_image"}:
-                            text_parts.append(_image_part_label(part))
-                        else:
-                            text_parts.append(f"[{ptype or 'attachment'}]")
-                    elif isinstance(part, str):
-                        text_parts.append(part)
-                content = "\n".join(text_parts)
-            content = _redact_compaction_text(content or "")
-            content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
-            if role == "assistant" and content:
-                content = strip_think_blocks(None, content)
-
-            if role == "tool":
-                tool_id = msg.get("tool_call_id", "")
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
-                parts.append(f"[TOOL RESULT {tool_id}]: {content}")
-                continue
-
-            if role == "assistant":
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
-                tool_calls = msg.get("tool_calls", [])
-                if tool_calls:
-                    tc_parts = []
-                    for tc in tool_calls:
-                        if isinstance(tc, dict):
-                            fn = tc.get("function", {})
-                            name = fn.get("name", "?")
-                            args = _redact_compaction_text(fn.get("arguments", ""))
-                            if len(args) > self._TOOL_ARGS_MAX:
-                                args = args[:self._TOOL_ARGS_HEAD] + "..."
-                            tc_parts.append(f"  {name}({args})")
-                        else:
-                            fn = getattr(tc, "function", None)
-                            name = getattr(fn, "name", "?") if fn else "?"
-                            tc_parts.append(f"  {name}(...)")
-                    content += "\n[Tool calls:\n" + "\n".join(tc_parts) + "\n]"
-                parts.append(f"[ASSISTANT]: {content}")
-                continue
-
-            if role == "user":
-                if len(content) > self._CONTENT_MAX:
-                    content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
-                parts.append(f"[USER]: {content}")
-                continue
-
-            parts.append(f"[{role.upper()}]: {content}")
-
-        return "\n---\n".join(parts)
+        return self._serialize_for_summary(messages[start:end])
 
     def _build_micro_summary_prompt(
         self,
@@ -5349,11 +5307,17 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._micro_compact_rolling_summary = old_summary
             return False
         self._micro_compact_rolling_summary = fresh_summary
-        # Rewrite the newest marker's content in place so the transcript and
-        # the in-memory summary stay in step (resume rehydrates from it).
+        # Rewrite the newest MICRO marker's content in place so the transcript
+        # and the in-memory summary stay in step (resume rehydrates from it).
+        # Scoped to micro-tagged markers: rewriting a batch-compaction marker
+        # would overwrite history the rolling summary does not contain.
         for idx in range(len(messages) - 1, -1, -1):
             entry = messages[idx]
-            if isinstance(entry, dict) and entry.get(COMPRESSED_SUMMARY_METADATA_KEY):
+            if (
+                isinstance(entry, dict)
+                and entry.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                and entry.get(MICRO_COMPACT_MARKER_KEY)
+            ):
                 entry["content"] = self._render_micro_marker_content(fresh_summary)
                 # Content changed after a possible flush — clear the persisted
                 # stamp so the DB sync/flush rewrites the row.
@@ -5700,6 +5664,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             "role": "assistant",
             "content": self._render_micro_marker_content(summary_text),
             COMPRESSED_SUMMARY_METADATA_KEY: True,
+            # Micro-created marker: eligible for supersede/defrag rewrites.
+            # Batch markers never carry this key and are never touched —
+            # their content is not contained in the rolling summary.
+            MICRO_COMPACT_MARKER_KEY: True,
             # Honest provenance (#64650): this marker absorbs only
             # assistant/tool content — user turns are never micro-compacted,
             # so they remain in the transcript and _transcript_has_real_user_turn
@@ -5715,22 +5683,39 @@ This compaction should PRIORITISE preserving all information related to the focu
         # its own prefix/heading/end-marker scaffolding — so the transcript
         # grows with every turn instead of shrinking, which defeats the point.
         # Keep only the newest marker.
-        # Only drop earlier markers when this one demonstrably contains them:
-        # the rolling summary must have been non-empty going into this pass.
-        # A pass that started from nothing (a resume that could not rehydrate)
-        # produces a marker covering one exchange, and dropping the previous
-        # marker would throw away the entire compacted history.
+        # Two containment gates before dropping an earlier marker:
+        # 1. supersede (the rolling summary was non-empty going into this
+        #    pass) — a pass that started from nothing (a resume that could
+        #    not rehydrate) covers one exchange, and dropping the previous
+        #    marker would throw away the entire compacted history.
+        # 2. MICRO_COMPACT_MARKER_KEY on the candidate — only markers whose
+        #    text is provably inside the rolling summary (created by our own
+        #    splice, or rehydrated into the summary by
+        #    _resolve_compact_cursor) carry it. A batch-compaction marker
+        #    that landed after our last pass holds MORE history than the
+        #    stale rolling summary; dropping it would destroy that history.
         if supersede:
             marker_idxs = [
                 i for i, m in enumerate(result)
-                if isinstance(m, dict) and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                if isinstance(m, dict)
+                and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                and m.get(MICRO_COMPACT_MARKER_KEY)
             ]
             if len(marker_idxs) > 1:
                 superseded = set(marker_idxs[:-1])
                 result = [m for i, m in enumerate(result) if i not in superseded]
                 result = self._merge_adjacent_user_turns(result)
 
-        _strip_persistence_markers(result)
+        # NOTE: deliberately NO _strip_persistence_markers here. The batch
+        # path strips because compress() copies head/tail into a rotated
+        # child session (#57491); micro-compaction archives in place under
+        # the SAME session id, and the surviving dicts' _db_persisted stamps
+        # are accurate. Stripping them meant an archive_and_compact failure
+        # left every previously-persisted message unstamped, and the next
+        # append-only flush re-inserted them as duplicate active rows on top
+        # of the still-active originals. _sync_micro_compact_to_db re-stamps
+        # everything after a SUCCESSFUL archive; on failure the old stamps
+        # keep the flush idempotent (only the new marker row is appended).
         return result
 
     @staticmethod
@@ -6467,6 +6452,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
         self._last_compression_made_progress = True
+
+        # Batch compaction invalidates micro-compaction state: the batch
+        # marker now holds MORE history than the in-memory rolling summary
+        # (it summarized everything in the window, including exchanges micro
+        # never absorbed). Keeping the stale summary would let the next micro
+        # pass supersede-drop or defrag-rewrite content it does not contain.
+        # Reset instead; the next micro pass rehydrates from the batch marker
+        # via _resolve_compact_cursor, which re-tags it as micro-eligible
+        # only after absorbing its content into the rolling summary.
+        self._micro_compact_rolling_summary = ""
+        self._micro_compact_cursor = 0
+        self._micro_compact_consecutive_failures = 0
+        self._micro_compact_last_failure_cursor = -1
 
         return compressed
 

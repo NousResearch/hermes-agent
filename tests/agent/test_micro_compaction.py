@@ -631,3 +631,124 @@ class TestMicroCompaction:
         marker = _summary_markers(result)[0]
 
         assert marker[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
+
+    def test_supersede_never_drops_a_batch_compaction_marker(self):
+        """A batch marker holds history the rolling summary does NOT contain.
+
+        Sequence: micro absorbs some exchanges (rolling summary = those k
+        exchanges only), then batch compaction fires and its marker
+        summarizes MORE (exchanges 1..m). The next micro pass's supersede
+        must not treat the batch marker as redundant — dropping it destroys
+        everything batch summarized beyond exchange k. Only micro-tagged
+        markers (whose text is provably inside the rolling summary) may be
+        superseded.
+        """
+        cc = _compressor(summary="MICRO SUMMARY (exchanges 1..k only)")
+        msgs = _conversation(exchanges=8)
+        msgs = cc._micro_compact(msgs)
+        assert cc._micro_compact_rolling_summary
+
+        # Simulate a batch-compaction marker replacing the middle (batch
+        # markers carry the shared metadata key but NOT the micro tag).
+        batch_marker = {
+            "role": "user",
+            "content": "[batch summary] CRITICAL HISTORY: exchanges 1..m",
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+        }
+        micro_idx = next(
+            i for i, m in enumerate(msgs)
+            if m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+        )
+        msgs = msgs[:micro_idx] + [batch_marker] + msgs[micro_idx + 3:]
+
+        out = cc._micro_compact(msgs)
+
+        assert any(
+            "CRITICAL HISTORY" in str(m.get("content")) for m in out
+        ), "batch-compaction summary destroyed by micro supersede"
+
+    def test_defrag_never_rewrites_a_batch_compaction_marker(self):
+        """Defrag rewrites only micro-tagged markers, never batch markers."""
+        cc = _compressor(summary="DEFRAGGED")
+        msgs = [{"role": "system", "content": "sys"}]
+        msgs.append({
+            "role": "user",
+            "content": "[batch summary] CRITICAL HISTORY: exchanges 1..m",
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+        })
+        for i in range(6):
+            msgs.append({"role": "user", "content": f"q{i}"})
+            msgs.append({"role": "assistant", "content": f"a{i} " + "z" * 400})
+
+        cc._micro_compact_rolling_summary = "x" * 40_000  # force defrag
+        result = cc._micro_compact(list(msgs))
+
+        batch = [m for m in result if "CRITICAL HISTORY" in str(m.get("content"))]
+        assert batch, "batch marker content overwritten by defrag"
+
+    def test_batch_compress_resets_micro_state(self):
+        """compress() success path invalidates the stale rolling summary.
+
+        Without the reset, the in-memory micro summary (exchanges 1..k)
+        outlives a batch compaction whose marker covers 1..m — the next
+        micro pass would then treat its stale summary as cumulative.
+        """
+        cc = _compressor()
+        msgs = _conversation(exchanges=8)
+        msgs = cc._micro_compact(msgs)
+        assert cc._micro_compact_rolling_summary
+        assert cc._micro_compact_cursor > 0
+
+        cc.compress(msgs, force=True)
+
+        assert cc._micro_compact_rolling_summary == ""
+        assert cc._micro_compact_cursor == 0
+
+    def test_persist_disabled_agent_never_micro_compacts(self):
+        """finalize_turn must skip micro-compaction on isolated fork agents.
+
+        The background-review fork sets _persist_disabled=True; running a
+        pass there burns an aux-LLM call on a throwaway replay transcript
+        and, if the compressor ever holds a DB binding, would
+        archive_and_compact the CANONICAL session rows.
+        """
+        import inspect
+
+        from agent import turn_finalizer
+
+        src = inspect.getsource(turn_finalizer.finalize_turn)
+        micro_block = src.split("Post-turn micro-compaction", 1)[1]
+        # Scope to the micro block only: stop at the persist call that follows.
+        micro_block = micro_block.split("agent._persist_session", 1)[0]
+        assert "_persist_disabled" in micro_block, (
+            "micro-compaction gate must check agent._persist_disabled"
+        )
+
+    def test_splice_preserves_db_persisted_stamps(self):
+        """Surviving messages keep their _db_persisted stamps through a splice.
+
+        Micro-compaction archives in place under the SAME session id, so the
+        stamps on untouched messages stay accurate. Stripping them (as the
+        batch path does for its child-session rotation) meant an
+        archive_and_compact failure left every previously-persisted message
+        unstamped and the next append-only flush re-inserted them all as
+        duplicate active rows.
+        """
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        cc = _compressor()
+        messages = _conversation(exchanges=8)
+        for m in messages:
+            m[_DB_PERSISTED_MARKER] = True
+
+        # No DB bound -> _sync_micro_compact_to_db no-ops (the failure shape).
+        result = cc._micro_compact(messages)
+
+        unstamped = [
+            m for m in result
+            if not m.get(_DB_PERSISTED_MARKER)
+            and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+        ]
+        assert not unstamped, (
+            "splice must not strip _db_persisted from surviving messages"
+        )

@@ -166,7 +166,10 @@ def main():
             req = json.loads(line)
             rid = req.get("id")
             out = _run(cli, req.get("command", ""))
-            sys.stdout.write(json.dumps({"id": rid, "ok": True, "output": out}) + "\n")
+            meta = getattr(cli, "_last_slash_metadata", None)
+            sys.stdout.write(
+                json.dumps({"id": rid, "ok": True, "output": out, "meta": meta}) + "\n"
+            )
             sys.stdout.flush()
         except Exception as e:
             sys.stdout.write(json.dumps({"id": rid, "ok": False, "error": str(e)}) + "\n")

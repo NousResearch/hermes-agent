@@ -398,6 +398,24 @@ class _SlashWorker:
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
     def run(self, command: str) -> str:
+        """Run a slash command; return the captured Rich output string.
+
+        Kept for backwards compatibility with existing callers. New code
+        that needs the worker-reported canonical side-effect metadata
+        (e.g. ``model_switch``) should use ``run_with_meta()``.
+        """
+        return self.run_with_meta(command)[0]
+
+    def run_with_meta(self, command: str) -> tuple[str, dict | None]:
+        """Run a slash command and return ``(output, meta)``.
+
+        ``meta`` is the structured side-effect metadata the worker set on
+        its HermesCLI instance during command execution. ``None`` when the
+        command is non-model (built-in / quick / plugin / bundle / skill).
+        The metadata is read INSIDE the worker's session profile scope,
+        so Profile A and Profile B can each report different model
+        targets without cross-contamination.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
 
@@ -418,7 +436,10 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
-                return str(msg.get("output", "")).rstrip()
+                return (
+                    str(msg.get("output", "")).rstrip(),
+                    msg.get("meta"),
+                )
 
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}"

@@ -59,12 +59,17 @@ def session(server):
     return sid, session_key, s
 
 
-def _make_worker_double():
-    """Return a MagicMock that stands in for _SlashWorker.run() so we
+def _make_worker_double(slash_meta=None, output=""):
+    """Return a MagicMock that stands in for _SlashWorker so we
     can drive slash.exec without spawning the real worker subprocess.
+
+    ``run_with_meta`` is the canonical hook the parent uses to learn
+    the worker's structured side-effect metadata; ``run`` is kept for
+    backwards-compatible callers that only need the captured output.
     """
     w = MagicMock()
-    w.run = MagicMock(return_value="")
+    w.run = MagicMock(return_value=output)
+    w.run_with_meta = MagicMock(return_value=(output, slash_meta))
     w.close = MagicMock()
     return w
 
@@ -83,9 +88,12 @@ def _apply_model_switch_double(server):
 
 
 def test_alias_mirror_command_is_canonical_model(server, session, monkeypatch):
-    """When slash.exec receives /sonnet, the command passed to
+    """When slash.exec receives /sonnet and the worker reports the
+    canonical ``model`` side-effect, the command passed to
     _mirror_slash_side_effects must be rewritten to /model sonnet so
-    the live agent actually switches."""
+    the live agent actually switches. The parent's mirror decision is
+    driven by the worker's structured metadata — not by re-deriving
+    whether the typed token is in any global alias cache."""
     sid, _, sess = session
 
     captured_mirror_cmd: list[str] = []
@@ -95,8 +103,17 @@ def test_alias_mirror_command_is_canonical_model(server, session, monkeypatch):
         return ""
 
     monkeypatch.setattr(server, "_mirror_slash_side_effects", fake_mirror)
-    # Stub the worker so we don't spawn a real subprocess.
-    fake_worker = _make_worker_double()
+    # The real worker reports model_switch because it routed /sonnet
+    # through the canonical /model path inside the session's profile.
+    fake_worker = _make_worker_double(
+        slash_meta={
+            "canonical": "model",
+            "raw_args": "sonnet",
+            "args": "sonnet",
+            "target": "anthropic/claude-sonnet",
+            "side_effect": "model_switch",
+        }
+    )
     _install_worker(server, sess, fake_worker)
 
     r = server._methods["slash.exec"](1, {"command": "/sonnet", "session_id": sid})
@@ -105,7 +122,6 @@ def test_alias_mirror_command_is_canonical_model(server, session, monkeypatch):
         f"_mirror_slash_side_effects must be called exactly once, "
         f"got calls: {captured_mirror_cmd}"
     )
-    # The mirror must receive /model sonnet, NOT /sonnet.
     cmd = captured_mirror_cmd[0].lower()
     assert cmd.startswith("/model"), (
         f"alias /sonnet must be rewritten to /model sonnet before "
@@ -115,9 +131,10 @@ def test_alias_mirror_command_is_canonical_model(server, session, monkeypatch):
 
 
 def test_alias_mirror_preserves_extra_args(server, session, monkeypatch):
-    """If the user types /sonnet --provider openrouter, the rewritten
-    mirror command must preserve the trailing flags so the model
-    switch respects them."""
+    """If the user types /sonnet --provider openrouter, the worker's
+    metadata ``raw_args`` field carries those flags verbatim and the
+    mirror command must include them so the live-session model switch
+    respects them."""
     sid, _, sess = session
 
     captured: list[str] = []
@@ -127,7 +144,15 @@ def test_alias_mirror_preserves_extra_args(server, session, monkeypatch):
         return ""
 
     monkeypatch.setattr(server, "_mirror_slash_side_effects", fake_mirror)
-    fake_worker = _make_worker_double()
+    fake_worker = _make_worker_double(
+        slash_meta={
+            "canonical": "model",
+            "raw_args": "sonnet --provider openrouter",
+            "args": "sonnet --provider openrouter",
+            "target": "anthropic/claude-sonnet",
+            "side_effect": "model_switch",
+        }
+    )
     _install_worker(server, sess, fake_worker)
 
     r = server._methods["slash.exec"](
@@ -145,8 +170,9 @@ def test_canonical_model_command_still_routes_to_model(
     server, session, monkeypatch
 ):
     """Sanity: typing /model sonnet directly must still route to
-    /model sonnet in the mirror (the rewrite must not double-rewrite
-    or strip the canonical command name)."""
+    /model sonnet in the mirror. The worker reports
+    ``side_effect == "model_switch"`` for canonical /model too, so the
+    parent re-emits ``/model sonnet`` unchanged."""
     sid, _, sess = session
 
     captured: list[str] = []
@@ -156,7 +182,15 @@ def test_canonical_model_command_still_routes_to_model(
         return ""
 
     monkeypatch.setattr(server, "_mirror_slash_side_effects", fake_mirror)
-    fake_worker = _make_worker_double()
+    fake_worker = _make_worker_double(
+        slash_meta={
+            "canonical": "model",
+            "raw_args": "sonnet",
+            "args": "sonnet",
+            "target": "anthropic/claude-sonnet",
+            "side_effect": "model_switch",
+        }
+    )
     _install_worker(server, sess, fake_worker)
 
     r = server._methods["slash.exec"](
@@ -164,7 +198,6 @@ def test_canonical_model_command_still_routes_to_model(
     )
     assert "result" in r
     assert len(captured) == 1
-    # /model sonnet → /model sonnet (unchanged)
     cmd = captured[0].lower()
     assert cmd.startswith("/model")
     assert "sonnet" in cmd
@@ -173,9 +206,10 @@ def test_canonical_model_command_still_routes_to_model(
 def test_non_alias_command_is_passed_through_unchanged(
     server, session, monkeypatch
 ):
-    """Non-alias commands must be passed to the mirror unchanged so
+    """Non-model commands must be passed to the mirror unchanged so
     the live-session sync continues to work for every other slash
-    command (personality, prompt, fast, etc.)."""
+    command (personality, prompt, fast, etc.). Worker reports
+    ``meta=None`` for these, so the parent never rewrites."""
     sid, _, sess = session
 
     captured: list[str] = []
@@ -185,10 +219,9 @@ def test_non_alias_command_is_passed_through_unchanged(
         return ""
 
     monkeypatch.setattr(server, "_mirror_slash_side_effects", fake_mirror)
-    fake_worker = _make_worker_double()
+    fake_worker = _make_worker_double()  # meta=None
     _install_worker(server, sess, fake_worker)
 
-    # /personality is a command that reaches the mirror verbatim.
     r = server._methods["slash.exec"](
         1, {"command": "/personality", "session_id": sid}
     )

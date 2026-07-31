@@ -1195,30 +1195,27 @@ def _(rid, params: dict) -> dict:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
 
     try:
-        output = worker.run(cmd)
-        # Side-effect mirror only recognises canonical command names, so a
-        # typed alias like /sonnet must be rewritten to /model sonnet before
-        # it reaches _mirror_slash_side_effects — otherwise the live TUI
-        # session stays pinned to the old model while the worker thread
-        # (which already dispatches /<alias> through the canonical /model
-        # path) appears to switch it. The rewrite is lazy-imported because
-        # the slash worker already exercises the alias resolver; this site
-        # only needs to recognise the same set of keys.
+        output, slash_meta = worker.run_with_meta(cmd)
+        # Mirror decision MUST come from the worker-reported canonical
+        # metadata, not from re-deriving whether the typed token is in a
+        # global alias cache. The worker ran inside the session's
+        # ``profile_home`` scope, so ``slash_meta`` reflects that profile's
+        # resolution (built-in / quick / plugin / bundle / skill / model)
+        # — and never the parent process's global cache. This kills two
+        # cross-profile correctness bugs at once:
+        #
+        #   1. ``/version`` when ``version`` is configured as a model alias:
+        #      worker resolves the built-in ``version`` command; the parent
+        #      would otherwise see ``version`` in ``MODEL_ALIASES`` and
+        #      falsely flip the live session to the alias target.
+        #
+        #   2. Profile A and Profile B sharing a name mapped to different
+        #      models: the parent would otherwise read the global cache
+        #      and pin B's session to A's resolution.
         mirror_cmd = cmd
-        try:
-            from hermes_cli.model_switch import (
-                _ensure_direct_aliases,
-                DIRECT_ALIASES,
-                MODEL_ALIASES,
-            )
-            _ensure_direct_aliases()
-            _parts = cmd.lstrip("/").split(None, 1)
-            _head = _parts[0].lower() if _parts else ""
-            if _head in DIRECT_ALIASES or _head in MODEL_ALIASES:
-                _tail = (" " + _parts[1]) if len(_parts) > 1 else ""
-                mirror_cmd = f"/model {_parts[0]}{_tail}"
-        except ImportError:
-            pass
+        if isinstance(slash_meta, dict) and slash_meta.get("side_effect") == "model_switch":
+            args = slash_meta.get("raw_args") or slash_meta.get("args") or ""
+            mirror_cmd = f"/model {args}".strip()
         warning = _mirror_slash_side_effects(params.get("session_id", ""), session, mirror_cmd)
         payload = {"output": output or "(no output)"}
         if warning:

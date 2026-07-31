@@ -9397,6 +9397,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
+        # Surface structured side-effect metadata so a parent process can
+        # mirror the model switch without re-deriving whether the typed
+        # command was an alias. ``raw_args`` is what the user actually
+        # typed after /model (preserved verbatim); ``target`` is the
+        # resolved model name. ``side_effect`` is always ``"model_switch"``
+        # because /model is the only canonical command that mutates the
+        # live model.
+        self._last_slash_metadata = {
+            "canonical": "model",
+            "raw_args": raw_args,
+            "args": model_input,
+            "target": result.new_model if result is not None else model_input,
+            "side_effect": "model_switch",
+        }
+
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
 
@@ -9570,6 +9585,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Lowercase only for dispatch matching; preserve original case for arguments
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
+
+        # Reset side-effect metadata for the next command. Each ``process_command``
+        # invocation produces its own metadata snapshot; stale snapshots from a
+        # previous turn must NOT leak into the parent process's mirror decision.
+        self._last_slash_metadata = None
 
         # Resolve aliases via central registry so adding an alias is a one-line
         # change in hermes_cli/commands.py instead of touching every dispatch site.

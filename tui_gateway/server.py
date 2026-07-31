@@ -13312,14 +13312,22 @@ def _(rid, params: dict) -> dict:
         from tools.wake_word import (
             audio_is_silent,
             check_wake_word_requirements,
+            detector_frame_info,
             get_input_device_status,
             is_listening,
             load_wake_word_config,
             owns_listener,
+            resolve_capture_mode,
             silent_audio_hint,
         )
         cfg = load_wake_word_config()
-        reqs = check_wake_word_requirements(cfg)
+        # Prefer client when the GUI asks (desktop remote re-arm / status).
+        prefer_client = bool(params.get("client_capture")) or str(
+            params.get("surface") or ""
+        ).strip().lower() in ("gui", "desktop")
+        probe_cfg = dict(cfg)
+        probe_cfg["capture"] = resolve_capture_mode(cfg, prefer_client=prefer_client)
+        reqs = check_wake_word_requirements(probe_cfg)
         transport = current_transport() or _stdio_transport
         owner, owner_surface = _wake_owner_snapshot()
         owned_by_caller = owns_listener(transport)
@@ -13331,7 +13339,19 @@ def _(rid, params: dict) -> dict:
             hint = f"Wake-word input device could not be resolved: {input_device['error']}"
         if silent and not hint:
             hint = silent_audio_hint(input_device)
-        capture = reqs.get("capture") or str(cfg.get("capture") or "auto")
+        # Effective capture: prefer the *armed* detector over config/auto.
+        # With capture:auto the GUI arms client mode, but a bare status probe
+        # would otherwise report "local" and the desktop would not reattach
+        # the PCM feeder after wake.detected.
+        frame = detector_frame_info()
+        if owned_by_caller and frame.get("external_audio"):
+            capture = "client"
+        elif owned_by_caller and listening:
+            capture = "local"
+        else:
+            capture = probe_cfg.get("capture") or reqs.get("capture") or str(
+                cfg.get("capture") or "auto"
+            )
         return _ok(rid, {
             "listening": listening,
             "owned_by_caller": owned_by_caller,
@@ -13349,6 +13369,8 @@ def _(rid, params: dict) -> dict:
             "audio_silent": silent,
             "capture": capture,
             "local_input_available": bool(reqs.get("local_input_available")),
+            "sample_rate": frame.get("sample_rate", 16000),
+            "frame_length": frame.get("frame_length", 1280),
         })
     except Exception as e:
         return _err(rid, 5026, str(e))

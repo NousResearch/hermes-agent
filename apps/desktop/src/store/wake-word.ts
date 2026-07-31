@@ -89,6 +89,7 @@ export interface WakeStatusResponse {
   configured_surface?: string
   /** Config truth (wake_word.enabled) — drives post-voice re-arm. */
   enabled?: boolean
+  frame_length?: number
   hint?: string
   input_device?: WakeInputDeviceStatus
   listening?: boolean
@@ -97,6 +98,7 @@ export interface WakeStatusResponse {
   owner_surface?: string | null
   phrase?: string
   provider?: string
+  sample_rate?: number
 }
 
 export interface WakeStartResponse {
@@ -249,10 +251,24 @@ export function applyWakeStopResult(result: WakeStopResponse | null | undefined)
  */
 export async function armWakeWord(request: WakeRequester = gatewayRequester): Promise<void> {
   try {
-    const status = await request<WakeStatusResponse>('wake.status', {})
+    const status = await request<WakeStatusResponse>('wake.status', {
+      client_capture: true,
+      surface: 'gui'
+    })
     applyWakeStatus(status)
 
     if (!status?.available || status.listening) {
+      // Armed already (e.g. another surface/restart) — reattach feeder if client.
+      if (status?.listening) {
+        const mode = (status.capture || '').toLowerCase()
+        if (mode === 'client' || mode === 'remote' || mode === 'external') {
+          void maybeStartClientCapture({
+            started: true,
+            capture: 'client',
+            frame_length: status.frame_length ?? 1280
+          })
+        }
+      }
       return
     }
 
@@ -330,7 +346,10 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const status = await request<WakeStatusResponse>('wake.status', {})
+      const status = await request<WakeStatusResponse>('wake.status', {
+        client_capture: true,
+        surface: 'gui'
+      })
       applyWakeStatus(status)
 
       // Config says off (or the feature can't run) — off is the correct rest
@@ -347,7 +366,7 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
           void maybeStartClientCapture({
             started: true,
             capture: 'client',
-            frame_length: 1280
+            frame_length: status.frame_length ?? 1280
           })
         }
         return

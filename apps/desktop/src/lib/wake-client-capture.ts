@@ -108,24 +108,53 @@ export async function startClientWakeCapture(
 
   let pending = new Float32Array(0)
   let stopped = false
-  let inflight = false
+  // Bounded ordered queue of 16 kHz frames. We never drop the frame that is
+  // currently being sent; under remote latency we drop the oldest queued
+  // frames so the detector still sees contiguous recent PCM rather than gaps
+  // from fire-and-forget discard-while-inflight.
+  const MAX_QUEUED_FRAMES = 24 // ~1.9s at 80 ms/frame
+  const queue: Float32Array[] = []
+  let draining = false
 
-  const pushFrame = async (frame: Float32Array) => {
-    if (stopped || inflight) {
+  const drainQueue = async () => {
+    if (draining) {
       return
     }
-    inflight = true
+    draining = true
     try {
-      const pcm = floatToInt16LE(frame)
-      await options.request('wake.feed', {
-        pcm: bytesToBase64(pcm),
-        sample_rate: TARGET_RATE
-      })
-    } catch (error) {
-      options.onError?.(error instanceof Error ? error : new Error(String(error)))
+      while (!stopped && queue.length > 0) {
+        const frame = queue.shift()
+        if (!frame) {
+          break
+        }
+        try {
+          const pcm = floatToInt16LE(frame)
+          await options.request('wake.feed', {
+            pcm: bytesToBase64(pcm),
+            sample_rate: TARGET_RATE
+          })
+        } catch (error) {
+          options.onError?.(error instanceof Error ? error : new Error(String(error)))
+          // Keep draining later frames; one failed RPC should not freeze the ear.
+        }
+      }
     } finally {
-      inflight = false
+      draining = false
+      if (!stopped && queue.length > 0) {
+        void drainQueue()
+      }
     }
+  }
+
+  const enqueueFrame = (frame: Float32Array) => {
+    if (stopped) {
+      return
+    }
+    queue.push(frame)
+    while (queue.length > MAX_QUEUED_FRAMES) {
+      queue.shift()
+    }
+    void drainQueue()
   }
 
   processor.onaudioprocess = event => {
@@ -142,7 +171,7 @@ export async function startClientWakeCapture(
     while (offset + frameLength <= merged.length) {
       const frame = merged.subarray(offset, offset + frameLength)
       offset += frameLength
-      void pushFrame(new Float32Array(frame))
+      enqueueFrame(new Float32Array(frame))
     }
     pending = merged.subarray(offset)
   }
@@ -164,6 +193,7 @@ export async function startClientWakeCapture(
         return
       }
       stopped = true
+      queue.length = 0
       try {
         processor.disconnect()
         source.disconnect()

@@ -17,13 +17,7 @@ type InkNode = {
 
 export type TextName = '#text'
 export type ElementNames =
-  | 'ink-root'
-  | 'ink-box'
-  | 'ink-text'
-  | 'ink-virtual-text'
-  | 'ink-link'
-  | 'ink-progress'
-  | 'ink-raw-ansi'
+  'ink-root' | 'ink-box' | 'ink-text' | 'ink-virtual-text' | 'ink-link' | 'ink-progress' | 'ink-raw-ansi'
 
 export type NodeNames = ElementNames | TextName
 

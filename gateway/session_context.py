@@ -350,6 +350,7 @@ NON_MESSAGING_SESSION_SURFACES = frozenset(
         "codex",
         "desktop",
         "gateway",
+        "kanban",
         "local",
         "msgraph_webhook",
         "tool",

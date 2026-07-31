@@ -37,9 +37,7 @@ import { sessionTileDelegate } from '@/store/session-states'
  *  - `variant`: a separate `…-fast` sibling model selected via the model field.
  */
 export type FastControl =
-  | { kind: 'none' }
-  | { kind: 'param'; on: boolean }
-  | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
+  { kind: 'none' } | { kind: 'param'; on: boolean } | { kind: 'variant'; baseId: string; fastId: string; on: boolean }
 
 /** Resolve the fast mechanism for a model: prefer the speed=fast parameter
  *  when the backend supports it, else fall back to a `…-fast` sibling model. */

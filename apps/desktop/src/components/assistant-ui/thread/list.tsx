@@ -31,8 +31,7 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
 export type MessageGroup = { id: string; weight: number } & (
-  | { index: number; kind: 'standalone' }
-  | { indices: number[]; kind: 'turn' }
+  { index: number; kind: 'standalone' } | { indices: number[]; kind: 'turn' }
 )
 
 // DOM is bounded by a rendered-PART budget, not a message/turn count: a single

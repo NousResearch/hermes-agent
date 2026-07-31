@@ -2305,6 +2305,14 @@ class ContextCompressor(
         # may differ from ``summary_model``/``model``). Recorded so a failed auto-resolved model is
         # named in the user-visible warning and falls back to the main model (#116472).
         self._last_aux_resolved_model = None
+        # The auxiliary identity actually used on the wire for the most
+        # recent summary call — resolved from auxiliary.compression config
+        # by _resolve_task_provider_model, distinct from the main-model
+        # identity on self.provider / self.summary_model / self.base_url.
+        # Read by the compression-abort diagnostic (#72636).
+        self._last_aux_call_provider: str = ""
+        self._last_aux_call_model: str = ""
+        self._last_aux_call_base_url: str = ""
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         # Sustained-overload escalation bookkeeping (#123167): per-session, reset by success.
         self._consecutive_overload_aborts = 0
@@ -3925,6 +3933,40 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         }
         # Pinned route (stall fallback) replaces task routing so the retry leaves the stalled backend.
         self._apply_summary_route(call_kwargs, _pinned_summary_call_kwargs())
+        # Failure attribution (#72636): resolve the auxiliary identity
+        # BEFORE dispatch and persist it on the instance. Auth errors that
+        # abort the call pre-dispatch never populate ``_aux_route``, so
+        # callers attributing the failure need the resolved provider/
+        # model/base_url rather than the main-model identity stored on
+        # self.provider / self.summary_model / self.base_url. These differ
+        # whenever auxiliary.compression.{provider,model,base_url} is
+        # configured separately from the main runtime.
+        # Attribution-only: never fed back into ``call_kwargs`` — the wire
+        # route stays whatever ``call_llm`` selects and records in
+        # ``_aux_route``.
+        _aux_provider = ""
+        _aux_model = self.summary_model or ""
+        _aux_base_url: Optional[str] = None
+        _aux_context = None
+        try:
+            from agent.auxiliary_client import _resolve_task_provider_model
+
+            _resolved_provider, _resolved_model, _resolved_base_url, _, _ = (
+                _resolve_task_provider_model(
+                    "compression",
+                    model=(self.summary_model or ""),
+                )
+            )
+            _aux_provider = _resolved_provider or ""
+            _aux_model = _resolved_model or _aux_model or self.model or ""
+            _aux_base_url = _resolved_base_url
+            if _aux_model == self.model:
+                _aux_context = self.context_length
+        except Exception:
+            pass
+        self._last_aux_call_provider = _aux_provider or ""
+        self._last_aux_call_model = _aux_model or ""
+        self._last_aux_call_base_url = _aux_base_url or ""
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
         # Without this, an incoming user message aborts the summary and compression falls back to a degraded
         # static marker, losing the real handoff (#23975). Re-entrant: a main-model retry (_generate_summary

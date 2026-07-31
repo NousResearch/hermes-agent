@@ -1070,6 +1070,69 @@ def _parents_blocking_ready(
     ]
 
 
+def _invalidate_descendants_for_parent_reopen(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    terminations: list[tuple[Optional[int], Optional[str]]],
+) -> None:
+    """Retract every dispatchable/completed descendant of a reopened parent."""
+    rows = conn.execute(
+        """
+        WITH RECURSIVE descendants(id) AS (
+            SELECT child_id FROM task_links WHERE parent_id = ?
+            UNION
+            SELECT l.child_id
+            FROM task_links l
+            JOIN descendants d ON d.id = l.parent_id
+        )
+        SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock
+        FROM descendants d
+        JOIN tasks t ON t.id = d.id
+        ORDER BY t.id
+        """,
+        (parent_id,),
+    ).fetchall()
+    for row in rows:
+        previous_status = row["status"]
+        if previous_status not in {"ready", "review", "running", "done"}:
+            continue
+        resume_status = "ready"
+        run_id = None
+        if previous_status == "review":
+            resume_status = "review"
+        elif previous_status == "running":
+            resume_status = kanban_db._retry_status_for_run(
+                conn, row["id"], row["current_run_id"]
+            )
+            terminations.append((row["worker_pid"], row["claim_lock"]))
+            run_id = kanban_db._end_run(
+                conn,
+                row["id"],
+                outcome="reclaimed",
+                status="todo",
+                summary=f"ancestor {parent_id} reopened",
+            )
+        conn.execute(
+            "UPDATE tasks SET status = 'todo', completed_at = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "current_run_id = NULL WHERE id = ?",
+            (row["id"],),
+        )
+        kanban_db._append_event(
+            conn,
+            row["id"],
+            "status",
+            {
+                "status": "todo",
+                "reason": "ancestor_reopened",
+                "parent": parent_id,
+                "previous_status": previous_status,
+                "resume_status": resume_status,
+            },
+            run_id=run_id,
+        )
+
+
 def _set_status_direct(
     conn: sqlite3.Connection, task_id: str, new_status: str,
 ) -> bool:
@@ -1083,19 +1146,33 @@ def _set_status_direct(
     orphaned. ``running -> ready`` via drag-drop is the common case
     (user yanking a stuck worker back to the queue).
     """
+    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    effective_status = new_status
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
-            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            "SELECT status, current_run_id, worker_pid, claim_lock "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if prev is None:
             return False
 
+        if prev["status"] == "running" and new_status == "ready":
+            resume_status = kanban_db._retry_status_for_run(
+                conn, task_id, prev["current_run_id"]
+            )
+            if resume_status == "review":
+                effective_status = (
+                    "review"
+                    if kanban_db._parents_satisfied(conn, task_id)
+                    else "todo"
+                )
+
         # Guard: don't allow promoting to 'ready' unless all parents are done.
         # Prevents the dispatcher from spawning a child whose upstream work
         # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
-        if new_status == "ready":
+        if effective_status == "ready":
             parent_statuses = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
@@ -1103,14 +1180,14 @@ def _set_status_direct(
                 (task_id,),
             ).fetchall()
             if parent_statuses and not all(
-                p["status"] == "done" for p in parent_statuses
+                p["status"] in {"done", "archived"} for p in parent_statuses
             ):
                 return False
 
         was_running = prev["status"] == "running"
         reopening_satisfied_parent = (
             prev["status"] in {"done", "archived"}
-            and new_status not in {"done", "archived"}
+            and effective_status not in {"done", "archived"}
         )
 
         cur = conn.execute(
@@ -1119,61 +1196,49 @@ def _set_status_direct(
             "  claim_expires = CASE WHEN ? = 'running' THEN claim_expires ELSE NULL END, "
             "  worker_pid = CASE WHEN ? = 'running' THEN worker_pid ELSE NULL END "
             "WHERE id = ?",
-            (new_status, new_status, new_status, new_status, task_id),
+            (
+                effective_status,
+                effective_status,
+                effective_status,
+                effective_status,
+                task_id,
+            ),
         )
         if cur.rowcount != 1:
             return False
         run_id = None
-        if was_running and new_status != "running" and prev["current_run_id"]:
+        if was_running and effective_status != "running" and prev["current_run_id"]:
             run_id = kanban_db._end_run(
                 conn, task_id,
                 outcome="reclaimed", status="reclaimed",
-                summary=f"status changed to {new_status} (dashboard/direct)",
+                summary=f"status changed to {effective_status} (dashboard/direct)",
             )
+            terminations.append((prev["worker_pid"], prev["claim_lock"]))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
             "VALUES (?, ?, 'status', ?, ?)",
-            (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
+            (
+                task_id,
+                run_id,
+                json.dumps(
+                    {
+                        "status": effective_status,
+                        "requested_status": new_status,
+                    }
+                ),
+                int(time.time()),
+            ),
         )
         if reopening_satisfied_parent:
-            # A parent leaving done/archived invalidates any direct child that
-            # was sitting in ready solely because that parent used to satisfy
-            # the dependency gate. Demote those children immediately so the
-            # dashboard does not keep advertising stale-ready work.
-            for row in conn.execute(
-                "SELECT c.id AS child_id, c.status AS child_status "
-                "FROM task_links l JOIN tasks c ON c.id = l.child_id "
-                "WHERE l.parent_id = ? ORDER BY c.id",
-                (task_id,),
-            ).fetchall():
-                child_id = row["child_id"]
-                child_status = row["child_status"]
-                demoted = conn.execute(
-                    "UPDATE tasks SET status = 'todo' "
-                    "WHERE id = ? AND status IN ('ready', 'review')",
-                    (child_id,),
-                )
-                if demoted.rowcount == 1 and child_status in {"ready", "review"}:
-                    conn.execute(
-                        "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                        "VALUES (?, 'status', ?, ?)",
-                        (
-                            child_id,
-                            json.dumps(
-                                {
-                                    "status": "todo",
-                                    "reason": "parent_reopened",
-                                    "parent": task_id,
-                                    "resume_status": (
-                                        "review" if child_status == "review" else "ready"
-                                    ),
-                                }
-                            ),
-                            int(time.time()),
-                        ),
-                    )
+            _invalidate_descendants_for_parent_reopen(
+                conn,
+                task_id,
+                terminations,
+            )
+    for pid, claim_lock in terminations:
+        kanban_db._terminate_reclaimed_worker(pid, claim_lock)
     # If we re-opened something, children may have gone stale.
-    if new_status in {"done", "ready"}:
+    if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)
     return True
 

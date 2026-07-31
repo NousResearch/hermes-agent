@@ -2428,7 +2428,12 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        print(f"Requested review for {tid}" + (f": {summary}" if summary else ""))
+        persisted_run = kb.latest_run(conn, tid)
+        display_summary = persisted_run.summary if persisted_run else None
+        print(
+            f"Requested review for {tid}"
+            + (f": {display_summary}" if display_summary else "")
+        )
     return 0
 
 

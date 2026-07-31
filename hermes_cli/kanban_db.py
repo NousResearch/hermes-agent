@@ -4217,6 +4217,8 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         payload = json.loads(row["payload"]) if row and row["payload"] else {}
     except (json.JSONDecodeError, TypeError):
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
     for key in ("resume_status", "retry_status", "source_status"):
         if payload.get(key) == "review":
             return "review"
@@ -4571,6 +4573,8 @@ def _retry_status_for_run(
     try:
         payload = json.loads(event["payload"]) if event and event["payload"] else {}
     except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
         payload = {}
     return "review" if payload.get("source_status") == "review" else "ready"
 
@@ -5077,6 +5081,11 @@ def complete_task(
         # ``review`` or ``running``.
         if not _parents_satisfied(conn, task_id):
             return False
+        prior = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        prior_status = prior["status"] if prior else None
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -5136,18 +5145,31 @@ def complete_task(
         # blocked → done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
         # attempt history instead of silently lost.
-        if run_id is None and (summary or metadata or result):
+        if run_id is None and (
+            summary or metadata or result or prior_status == "review"
+        ):
+            synth_summary = summary if summary is not None else result
+            synth_metadata = metadata
+            if prior_status == "review" and not synth_summary and not synth_metadata:
+                synth_summary = "Review approved without additional evidence."
+                synth_metadata = {
+                    "source_status": "review",
+                    "approval": "manual",
+                }
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
-                summary=summary if summary is not None else result,
-                metadata=metadata,
+                summary=synth_summary,
+                metadata=synth_metadata,
             )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the
         # full summary stays on the run row.
-        _ev_lines = ((summary if summary is not None else result) or "").strip().splitlines()
+        event_summary = summary if summary is not None else result
+        if prior_status == "review" and not event_summary:
+            event_summary = "Review approved without additional evidence."
+        _ev_lines = (event_summary or "").strip().splitlines()
         ev_summary = _ev_lines[0][:400] if _ev_lines else ""
         completed_payload: dict = {
             "result_len": len(result) if result else 0,
@@ -6016,6 +6038,21 @@ def block_task(
 
 
 
+def _redact_review_value(value: Any) -> Any:
+    """Redact secrets at the domain boundary for durable review handoffs."""
+    if isinstance(value, str):
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, dict):
+        return {key: _redact_review_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_review_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_review_value(item) for item in value)
+    return value
+
+
 def request_review(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6033,6 +6070,8 @@ def request_review(
     right profile.  Supplying ``reviewer`` also reassigns the task before it is
     exposed to the review dispatcher.
     """
+    summary = _redact_review_value(summary)
+    metadata = _redact_review_value(metadata)
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return False
@@ -6117,7 +6156,7 @@ def request_changes(
     ``changes_requested`` event.  The second tuple item is the implementer on
     success or a diagnostic reason on failure.
     """
-    reason = (reason or "").strip()
+    reason = str(_redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
 
@@ -6148,6 +6187,8 @@ def request_changes(
             )
         except (json.JSONDecodeError, TypeError):
             claimed_payload = {}
+        if not isinstance(claimed_payload, dict):
+            claimed_payload = {}
         if claimed_payload.get("source_status") != "review":
             return False, "active run was not claimed from review"
 
@@ -6166,6 +6207,8 @@ def request_changes(
                 else {}
             )
         except (json.JSONDecodeError, TypeError):
+            requested_payload = {}
+        if not isinstance(requested_payload, dict):
             requested_payload = {}
         implementer = requested_payload.get("implementer")
         if not isinstance(implementer, str) or not implementer.strip():
@@ -9146,6 +9189,7 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
+            spawned += 1
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
@@ -9269,6 +9313,7 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            spawned += 1
             if _per_profile_cap is not None:
                 _per_profile_running[row["assignee"]] = (
                     _per_profile_running.get(row["assignee"], 0) + 1

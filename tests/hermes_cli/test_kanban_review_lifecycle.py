@@ -400,7 +400,8 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
 
     with kb.connect() as conn:
         running_id = kb.create_task(conn, title="already running", assignee="builder")
-        assert kb.claim_task(conn, running_id) is not None
+        running = kb.claim_task(conn, running_id)
+        assert running is not None
 
         review_ids: list[str] = []
         for title in ("review one", "review two"):
@@ -423,6 +424,20 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
         assert not [
             task for task in globally_capped.spawned if task[0] in review_ids
         ]
+
+        assert kb.complete_task(
+            conn,
+            running_id,
+            expected_run_id=running.current_run_id,
+        )
+        global_dry_run = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            max_in_progress=1,
+        )
+        assert len([
+            task for task in global_dry_run.spawned if task[0] in review_ids
+        ]) == 1
 
         per_profile_capped = kb.dispatch_once(
             conn,

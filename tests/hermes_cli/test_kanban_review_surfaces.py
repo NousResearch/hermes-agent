@@ -159,6 +159,72 @@ def test_review_cli_round_trip_preserves_handoff(
         assert task.assignee == "builder"
 
 
+def test_domain_and_cli_review_handoffs_redact_before_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    secret = "ghp_" + "R" * 40
+
+    with kb.connect() as conn:
+        direct_id = kb.create_task(conn, title="direct redaction", assignee="builder")
+        direct_run = kb.claim_task(conn, direct_id)
+        assert direct_run is not None
+        assert kb.request_review(
+            conn,
+            direct_id,
+            summary=f"direct {secret}",
+            metadata={"nested": [secret]},
+            expected_run_id=direct_run.current_run_id,
+        )
+        run = kb.latest_run(conn, direct_id)
+        event = [
+            item for item in kb.list_events(conn, direct_id)
+            if item.kind == "review_requested"
+        ][-1]
+        assert run is not None
+        assert secret not in str(run.summary)
+        assert secret not in json.dumps(run.metadata)
+        assert secret not in json.dumps(event.payload)
+
+        review = kb.claim_review_task(conn, direct_id)
+        assert review is not None
+        assert kb.request_changes(
+            conn,
+            direct_id,
+            reason=f"change {secret}",
+            expected_run_id=review.current_run_id,
+        ) == (True, "builder")
+        run = kb.latest_run(conn, direct_id)
+        event = [
+            item for item in kb.list_events(conn, direct_id)
+            if item.kind == "changes_requested"
+        ][-1]
+        assert run is not None
+        assert secret not in str(run.summary)
+        assert secret not in json.dumps(event.payload)
+
+        cli_id = kb.create_task(conn, title="CLI redaction", assignee="builder")
+    cli_output = kc.run_slash(
+        f'request-review {cli_id} --summary "cli {secret}" '
+        f"--metadata '{{\"token\":\"{secret}\"}}'"
+    )
+    assert "Requested review" in cli_output
+    assert secret not in cli_output
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, cli_id)
+        event = [
+            item for item in kb.list_events(conn, cli_id)
+            if item.kind == "review_requested"
+        ][-1]
+        assert run is not None
+        assert secret not in str(run.summary)
+        assert secret not in json.dumps(run.metadata)
+        assert secret not in json.dumps(event.payload)
+
+
 def test_worker_guidance_distinguishes_same_card_and_downstream_review() -> None:
     from agent.prompt_builder import KANBAN_GUIDANCE
     from hermes_cli.config_defaults import DEFAULT_CONFIG

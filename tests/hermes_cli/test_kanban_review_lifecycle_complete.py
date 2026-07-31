@@ -208,7 +208,11 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     )
 
 
-def test_request_changes_fails_closed_on_malformed_review_provenance(conn):
+@pytest.mark.parametrize("bad_payload", ["{not-json", "[]"])
+def test_request_changes_fails_closed_on_malformed_review_provenance(
+    conn,
+    bad_payload: str,
+):
     task_id = kb.create_task(conn, title="Malformed handoff", assignee="builder")
     implementation = kb.claim_task(conn, task_id, claimer="builder:1")
     assert implementation is not None
@@ -222,7 +226,7 @@ def test_request_changes_fails_closed_on_malformed_review_provenance(conn):
     conn.execute(
         "UPDATE task_events SET payload = ? "
         "WHERE task_id = ? AND kind = 'review_requested'",
-        ("{malformed-json", task_id),
+        (bad_payload, task_id),
     )
     conn.commit()
     review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
@@ -241,6 +245,21 @@ def test_request_changes_fails_closed_on_malformed_review_provenance(conn):
     assert task.status == "running"
     assert task.assignee == "reviewer"
     assert task.current_run_id == review.current_run_id
+
+
+def test_reclaim_fails_safe_on_non_object_claim_provenance(conn) -> None:
+    task_id, _review = _claimed_review(conn, "Non-object claimed payload")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_events SET payload = '[]' "
+            "WHERE task_id = ? AND kind = 'claimed' "
+            "AND run_id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+            (task_id, task_id),
+        )
+    assert kb.reclaim_task(conn, task_id, signal_fn=lambda *_args: None)
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "ready"
 
 
 @pytest.mark.parametrize(
@@ -413,6 +432,24 @@ def test_crashed_and_timed_out_review_runs_retry_in_review_phase(
     crashed = kb.get_task(conn, crashed_id)
     assert crashed is not None
     assert crashed.status == "review"
+
+
+def test_parked_review_approval_without_evidence_still_creates_audit_run(conn) -> None:
+    task_id = kb.create_task(conn, title="Manual approval", assignee="reviewer")
+    assert kb.request_review(conn, task_id, summary="implementation handoff")
+    assert kb.complete_task(conn, task_id)
+    completed_event = _event(kb.list_events(conn, task_id), "completed")
+    assert completed_event.run_id is not None
+    run = kb.latest_run(conn, task_id)
+    assert run is not None
+    assert run.id == completed_event.run_id
+    assert run.outcome == "completed"
+    assert run.profile == "reviewer"
+    assert run.summary == "Review approved without additional evidence."
+    assert run.metadata == {
+        "source_status": "review",
+        "approval": "manual",
+    }
 
 
 def test_legacy_review_child_deadlock_is_reported_immediately(conn):

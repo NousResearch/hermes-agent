@@ -8,6 +8,7 @@ REST surface without spinning up the whole dashboard.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -225,6 +226,7 @@ def test_task_detail_includes_links_and_events(client):
 
 
 def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
+    secret = "ghp_" + "D" * 40
     task = client.post(
         "/api/plugins/kanban/tasks", json={"title": "review me", "assignee": "builder"},
     ).json()["task"]
@@ -233,8 +235,8 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
         f"/api/plugins/kanban/tasks/{task['id']}",
         json={
             "status": "review",
-            "summary": "Implementation ready.",
-            "metadata": {"tests_run": 4},
+            "summary": f"Implementation ready. {secret}",
+            "metadata": {"tests_run": 4, "token": secret},
         },
     )
     assert response.status_code == 200, response.text
@@ -243,7 +245,15 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
         run = kb.latest_run(conn, task["id"])
         assert run is not None
         assert run.outcome == "review_requested"
-        assert run.metadata == {"tests_run": 4}
+        assert run.metadata is not None
+        assert run.metadata["tests_run"] == 4
+        assert secret not in str(run.summary)
+        assert secret not in json.dumps(run.metadata)
+        review_event = [
+            event for event in kb.list_events(conn, task["id"])
+            if event.kind == "review_requested"
+        ][-1]
+        assert secret not in json.dumps(review_event.payload)
         assert kb.assign_task(conn, task["id"], "reviewer")
 
     response = client.patch(
@@ -333,18 +343,12 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
     with kb.connect() as conn:
         child = kb.get_task(conn, child_id)
         assert child is not None
-        assert child.status == "running"
-        assert not kb.complete_task(
-            conn,
-            child_id,
-            summary="must not approve",
-            expected_run_id=active_review.current_run_id,
-        )
-        assert kb.reclaim_task(conn, child_id, signal_fn=lambda *_args: None)
-        assert kb.claim_review_task(conn, child_id) is None
-        child = kb.get_task(conn, child_id)
-        assert child is not None
         assert child.status == "todo"
+        reclaimed = kb.latest_run(conn, child_id)
+        assert reclaimed is not None
+        assert reclaimed.outcome == "reclaimed"
+        assert kb.claim_review_task(conn, child_id) is None
+        assert not kb.complete_task(conn, child_id, summary="must not approve")
         grandchild = kb.get_task(conn, grandchild_id)
         assert grandchild is not None
         assert grandchild.status == "todo"
@@ -370,6 +374,84 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
         grandchild = kb.get_task(conn, grandchild_id)
         assert grandchild is not None
         assert grandchild.status == "ready"
+
+
+def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
+    with kb.connect() as conn:
+        parent_id = kb.create_task(conn, title="root", assignee="planner")
+        assert kb.complete_task(conn, parent_id)
+        child_id = kb.create_task(
+            conn,
+            title="accepted child",
+            assignee="builder",
+            parents=[parent_id],
+        )
+        assert kb.complete_task(conn, child_id)
+        grandchild_id = kb.create_task(
+            conn,
+            title="running grandchild",
+            assignee="writer",
+            parents=[child_id],
+        )
+        grandchild_run = kb.claim_task(conn, grandchild_id)
+        assert grandchild_run is not None
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent_id}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_id)
+        grandchild = kb.get_task(conn, grandchild_id)
+        assert child is not None and child.status == "todo"
+        assert grandchild is not None and grandchild.status == "todo"
+        assert grandchild.current_run_id is None
+        assert kb.claim_task(conn, grandchild_id) is None
+        reclaimed = kb.latest_run(conn, grandchild_id)
+        assert reclaimed is not None
+        assert reclaimed.outcome == "reclaimed"
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{parent_id}",
+        json={"status": "done"},
+    )
+    assert response.status_code == 200, response.text
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_id)
+        grandchild = kb.get_task(conn, grandchild_id)
+        assert child is not None and child.status == "ready"
+        assert grandchild is not None and grandchild.status == "todo"
+
+
+def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="active review", assignee="reviewer")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id)
+        assert review is not None
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "ready"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "review"
+    assert response.json()["task"]["assignee"] == "reviewer"
+    with kb.connect() as conn:
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        assert run.outcome == "reclaimed"
+        next_review = kb.claim_review_task(conn, task_id)
+        assert next_review is not None
 
 
 # ---------------------------------------------------------------------------

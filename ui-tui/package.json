@@ -30,17 +30,9 @@
     "unicode-animations": "1.0.3"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.5",
     "@types/node": "22.20.1",
     "@types/react": "19.2.17",
-    "@typescript-eslint/eslint-plugin": "8.64.0",
-    "@typescript-eslint/parser": "8.64.0",
     "esbuild": "0.28.1",
-    "eslint": "10.8.0",
-    "eslint-plugin-perfectionist": "5.10.0",
-    "eslint-plugin-react-hooks": "7.1.1",
-    "eslint-plugin-unused-imports": "4.4.1",
-    "globals": "17.7.0",
     "prettier": "3.9.5",
     "tsx": "4.23.1",
     "typescript": "6.0.3",

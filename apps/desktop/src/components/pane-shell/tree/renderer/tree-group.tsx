@@ -36,6 +36,7 @@ import {
   activateTreePane,
   closeAllTreeTabs,
   closeOtherTreeTabs,
+  closeTabPane,
   closeTreePane,
   closeTreeTabsToRight,
   collapseTreePane,
@@ -101,7 +102,7 @@ function ZoneMenu({
           renderActionItem(kit, {
             icon: 'close',
             label: t.common.close,
-            onSelect: () => closeTreePane(paneId)
+            onSelect: () => closeTabPane(paneId)
           })}
         {renderActionItem(kit, {
           disabled: !targets.others,
@@ -287,10 +288,9 @@ export function TreeGroup({
   // MAIN strands the whole app behind a strip.
   const minimizable = !shown.some(id => paneChrome(paneFor(id)).uncloseable)
 
-  // Tab ✕: a tool panel (terminal/logs) is REMOVED from the layout (comes back
-  // via its toggle); everything else routes through its Close (a session tile
-  // closes the session, a store-bound pane collapses).
-  const closeTab = (paneId: string) => (isCollapsePane(paneId) ? dismissTreePane(paneId) : closeTreePane(paneId))
+  // Middle-click / ⌘-click on a tab: one routing for every tab kind, the same
+  // one the zone menu's Close and ⌘W use.
+  const closeTab = (paneId: string) => closeTabPane(paneId)
 
   // A pane whose store owns Close keeps the gesture even when the pane itself
   // is uncloseable — the workspace tab empties to a fresh draft rather than
@@ -324,6 +324,16 @@ export function TreeGroup({
       // Advertises the visible tab strip so panes can drop their own
       // self-naming labels (see [data-pane-self-label] in styles.css).
       data-zone-header={headerVisible || undefined}
+      // The zone menu opens from the strip, the rail, the edit veil and the
+      // body. Only the strip can name a chip, so resolve the target HERE for
+      // every one of them — otherwise a right-click off the strip reused the
+      // PREVIOUS target, and landing on the uncloseable workspace dropped
+      // Close from the menu for a pane that closes fine.
+      onContextMenu={e => {
+        setMenuPane(
+          (e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined
+        )
+      }}
       ref={ref}
       style={wcOverlap ? { paddingTop: wcOverlap.y + wcOverlap.height } : undefined}
     >
@@ -392,11 +402,6 @@ export function TreeGroup({
             // data-zone-tabstrip: a drop over here STACKS (drag-session reads it).
             className="group/pane-header relative flex h-7 shrink-0 select-none bg-(--ui-sidebar-surface-background) [-webkit-app-region:no-drag] [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]"
             data-zone-tabstrip={node.id}
-            onContextMenu={e => {
-              setMenuPane(
-                (e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined
-              )
-            }}
             onPointerDown={e =>
               // Tap the header to collapse to it / expand back — the DetailPane
               // / sidebar-section gesture (never for the main zone). Double-tap

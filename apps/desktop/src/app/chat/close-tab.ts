@@ -1,7 +1,7 @@
 import { mainChatOccupied } from '@/app/open-session'
 import { closeActiveTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { $workspaceIsPage } from '@/app/routes'
-import { closeFocusedSessionTab } from '@/components/pane-shell/tree/store'
+import { closeFocusedSessionTab, closeFocusedToolTab } from '@/components/pane-shell/tree/store'
 import { isFocusWithin } from '@/lib/keybinds/combo'
 import { $previewTabs, closeActiveRightRailTab } from '@/store/preview'
 import { requestFreshSession } from '@/store/profile'
@@ -56,12 +56,13 @@ export function closeWorkspaceTab(loadSessionIntoWorkspace?: (storedSessionId: s
  *   1. a focused terminal → its active terminal tab,
  *   2. right-rail tabs (live preview and/or file peeks),
  *   3. the FOCUSED chat zone → its active tab (a session tile stacked into it).
- *   4. the workspace tab itself — see `closeWorkspaceTab`.
+ *   4. a focused TOOL PANEL zone (terminal / logs) → its active tab.
+ *   5. the workspace tab itself — see `closeWorkspaceTab`.
  * Returns false when nothing closes, so ⌘W is a no-op — it never closes the
  * window. Shared by the keyboard path (Win/Linux) and the macOS
  * menu-accelerator IPC.
  *
- * Steps 3-4 follow the same focused zone ⌘1…⌘9 indexes, so a second chat zone
+ * Steps 3-5 follow the same focused zone ⌘1…⌘9 indexes, so a second chat zone
  * with its own tab strip closes ITS tab instead of main's.
  */
 export function closeActiveTab(loadSessionIntoWorkspace?: (storedSessionId: string) => void): boolean {
@@ -81,6 +82,12 @@ export function closeActiveTab(loadSessionIntoWorkspace?: (storedSessionId: stri
   // A closeable tab in the focused chat zone (a session tile that's the active
   // tab) closes outright; the uncloseable workspace tab falls through.
   if (closeFocusedSessionTab()) {
+    return true
+  }
+
+  // A tool panel zone hosts no chat strip, so the chat rung skips it — but its
+  // tabs close like any other. Without this ⌘W was dead over terminal / logs.
+  if (closeFocusedToolTab()) {
     return true
   }
 

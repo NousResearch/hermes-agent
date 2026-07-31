@@ -1025,3 +1025,211 @@ def test_guard_first_when_no_guard_hook_registered(tmp_path):
     assert result["success"] is False
     assert "not found" in result["error"].lower()
     assert len(pre_fired) == 0
+
+
+# ─── :guard block / fallthrough tests (completeness) ───────────────────────
+
+def test_patch_guard_block(tmp_path):
+    """pre_skill_patch:guard can block a patch."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_patch:guard", []).append(
+        lambda **kw: {"action": "block", "reason": "patch blocked by guard"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _patch_skill("any-skill", "old", "new")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "patch blocked by guard" in result["error"]
+
+
+def test_patch_guard_none_falls_through(tmp_path):
+    """pre_skill_patch:guard returning None falls through to existence check."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_patch:guard", []).append(
+        lambda **kw: None
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _patch_skill("nonexistent", "old", "new")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
+
+
+def test_delete_guard_block(tmp_path):
+    """pre_skill_delete:guard can block a delete."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_delete:guard", []).append(
+        lambda **kw: {"action": "block", "reason": "delete blocked by guard"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _delete_skill("any-skill")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "delete blocked by guard" in result["error"]
+
+
+def test_delete_guard_none_falls_through(tmp_path):
+    """pre_skill_delete:guard returning None falls through to existence check."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_delete:guard", []).append(
+        lambda **kw: None
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _delete_skill("nonexistent")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
+
+
+def test_write_file_guard_block(tmp_path):
+    """pre_skill_write_file:guard can block a write_file."""
+    from tools.skill_manager_tool import _write_file
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_write_file:guard", []).append(
+        lambda **kw: {"action": "block", "reason": "write_file blocked by guard"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _write_file("any-skill", "references/test.md", "text")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "write_file blocked by guard" in result["error"]
+
+
+def test_write_file_guard_none_falls_through(tmp_path):
+    """pre_skill_write_file:guard returning None falls through to existence check."""
+    from tools.skill_manager_tool import _write_file
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_write_file:guard", []).append(
+        lambda **kw: None
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _write_file("nonexistent", "references/test.md", "text")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
+
+
+def test_remove_file_guard_block(tmp_path):
+    """pre_skill_remove_file:guard can block a remove_file."""
+    from tools.skill_manager_tool import _remove_file
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_remove_file:guard", []).append(
+        lambda **kw: {"action": "block", "reason": "remove_file blocked by guard"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _remove_file("any-skill", "references/test.md")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "remove_file blocked by guard" in result["error"]
+
+
+def test_remove_file_guard_none_falls_through(tmp_path):
+    """pre_skill_remove_file:guard returning None falls through to existence check."""
+    from tools.skill_manager_tool import _remove_file
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_remove_file:guard", []).append(
+        lambda **kw: None
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _remove_file("nonexistent", "references/test.md")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "not found" in result["error"].lower()
+
+
+# ─── pre_skill_create:guard ────────────────────────────────────────────────
+
+def test_create_guard_handled(tmp_path):
+    """pre_skill_create:guard can handle a create."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_create:guard", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _create_skill("any-skill", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+    # Skill directory should NOT be created on handled
+    import os
+    skills = os.environ.get("HERMES_SKILLS_DIR", "")
+    if skills:
+        assert not (Path(skills) / "any-skill").exists()
+
+
+def test_create_guard_block(tmp_path):
+    """pre_skill_create:guard can block a create."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_create:guard", []).append(
+        lambda **kw: {"action": "block", "reason": "create blocked by guard"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            result = _create_skill("any-skill", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "create blocked by guard" in result["error"]
+
+
+def test_create_guard_none_falls_through_to_existing_check(tmp_path):
+    """pre_skill_create:guard returning None falls through to existence check."""
+    # Create a skill first, then try to create it again with a guard that
+    # returns None.  The guard should not block; the existence check should.
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_create:guard", []).append(
+        lambda **kw: None
+    )
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            (skills_dir / "existing-skill").mkdir()
+            (skills_dir / "existing-skill" / "SKILL.md").write_text(SKILL_CONTENT)
+            result = _create_skill("existing-skill", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "already exists" in result["error"].lower()

@@ -926,6 +926,28 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
+    # ── pre_skill_create:guard (fires before existence check) ──
+    from hermes_cli.plugins import has_hook, invoke_hook as _invoke_skill_hook
+
+    _skill_dir_override: Optional[Path] = None
+    if has_hook("pre_skill_create:guard"):
+        for _hr in _invoke_skill_hook("pre_skill_create:guard", name=name,
+                                       content=content, category=category):
+            if not isinstance(_hr, dict):
+                continue
+            _act = _hr.get("action")
+            if _act == "block":
+                return {"success": False, "error": _hr.get("reason", "Skill creation blocked by plugin")}
+            if _act == "redirect":
+                _skill_dir_override = Path(os.path.expandvars(os.path.expanduser(str(_hr["path"]))))
+                break
+            if _act == "handled":
+                result = {"success": True, "message": f"Skill '{name}' created by plugin.", "hook_handled": True}
+                if has_hook("post_skill_create"):
+                    _invoke_skill_hook("post_skill_create", name=name, category=category or "",
+                                       path="", success=True)
+                return result
+
     # Check for name collisions across all directories
     existing = _find_skill(name)
     if existing:
@@ -934,10 +956,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
-    # ── pre_skill_create hook (allow plugin redirect / block / handle) ──
+    # ── pre_skill_create hook (fires after existence check passes) ──
     from hermes_cli.plugins import has_hook, invoke_hook as _invoke_skill_hook
 
-    _skill_dir_override: Optional[Path] = None
     if has_hook("pre_skill_create"):
         for _hr in _invoke_skill_hook("pre_skill_create", name=name, content=content, category=category):
             if not isinstance(_hr, dict):

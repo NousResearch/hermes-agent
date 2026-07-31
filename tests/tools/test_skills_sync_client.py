@@ -39,6 +39,12 @@ class _MockState:
         # when org_role_admin is False, convert org-HEAD CAS to 202 proposals.
         self.org_feature = True
         self.org_role_admin = True
+        self.org_role_present = True
+        # Org objects live in a SEPARATE scope from personal ones, mirroring
+        # production's `org:<org_id>` scope key. Keeping them in a distinct
+        # dict is what makes a personal-route read of org content 404 in tests
+        # exactly as it does against the real plane.
+        self.org_objects = {}
         self.proposals = []  # [{n, to, base}]
 
 
@@ -79,35 +85,59 @@ def _make_handler(state: _MockState):
                     if part.startswith("prefix="):
                         from urllib.parse import unquote
                         prefix = unquote(part[len("prefix="):])
+                # FAITHFUL TO PRODUCTION: the personal refs route is scoped to
+                # the caller's own owner and does NOT serve org refs. Asking it
+                # for an `refs/org/...` prefix yields the caller's personal
+                # refs, not an error — the exact trap that let a broken client
+                # look healthy against an over-permissive mock.
                 refs = [
                     {"name": n, "hash": h}
                     for n, h in state.refs.items()
-                    if n.startswith(prefix)
+                    if n.startswith(prefix) and not n.startswith("refs/org/")
                 ]
                 return self._json(200, {"refs": refs})
 
+            if path == "/v1/sync/org/refs":
+                if not state.org_feature:
+                    return self._json(404, {"error": "unknown"})
+                if not state.org_role_present:
+                    return self._json(403, {"error": "org_workflow_unavailable"})
+                refs = [
+                    {"name": n, "hash": h}
+                    for n, h in state.refs.items()
+                    if n.startswith("refs/org/")
+                ]
+                return self._json(200, {"refs": refs})
+
+            if path.startswith("/v1/sync/org/objects/"):
+                if not state.org_role_present:
+                    return self._json(403, {"error": "org_workflow_unavailable"})
+                obj_hash = path[len("/v1/sync/org/objects/"):]
+                if obj_hash not in state.org_objects:
+                    return self._json(404, {"error": "not_found"})
+                return self._send_object(*state.org_objects[obj_hash])
+
             if path.startswith("/v1/sync/objects/"):
                 obj_hash = path[len("/v1/sync/objects/"):]
+                # Org-scoped objects are NOT readable through the personal
+                # route (production scopes it to the token owner).
                 if obj_hash not in state.objects:
                     return self._json(404, {"error": "not_found"})
-                kind, data = state.objects[obj_hash]
-                if kind == ssc.KIND_BLOB:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/octet-stream")
-                    self.send_header("X-HSP-Object-Type", "blob")
-                    self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    self.wfile.write(data)
-                    return
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("X-HSP-Object-Type", kind)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-                return
+                return self._send_object(*state.objects[obj_hash])
 
             self._json(404, {"error": "unknown"})
+
+        def _send_object(self, kind, data):
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/octet-stream" if kind == ssc.KIND_BLOB else "application/json",
+            )
+            self.send_header("X-HSP-Object-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
 
         def do_POST(self):
             length = int(self.headers.get("Content-Length", 0))
@@ -115,14 +145,14 @@ def _make_handler(state: _MockState):
             path = self.path.split("?", 1)[0]  # e.g. /v1/sync/objects?scope=org
 
             if path == "/v1/sync/objects":
-                return self._handle_put_objects(raw)
+                return self._handle_put_objects(raw, org="scope=org" in self.path)
 
             if path.startswith("/v1/sync/refs/"):
                 return self._handle_cas(raw)
 
             self._json(404, {"error": "unknown"})
 
-        def _handle_put_objects(self, raw):
+        def _handle_put_objects(self, raw, org=False):
             # multipart/form-data: parse parts (field=hash, filename=type,
             # body=raw bytes). The server recomputes each hash and 422s on
             # mismatch (contract §4.2).
@@ -163,10 +193,11 @@ def _make_handler(state: _MockState):
                     return self._json(422, {
                         "error": "hash_mismatch", "claimed": claimed_hash,
                     })
-                if claimed_hash in state.objects:
+                store = state.org_objects if org else state.objects
+                if claimed_hash in store:
                     already.append(claimed_hash)
                 else:
-                    state.objects[claimed_hash] = (kind, body)
+                    store[claimed_hash] = (kind, body)
                     accepted.append(claimed_hash)
             return self._json(200, {"accepted": accepted, "already_present": already})
 
@@ -890,7 +921,9 @@ class TestOrgEndToEnd:
         assert result.get("merged") is True
         head = state.refs["refs/org/org-1/HEAD"]
         assert head == result["head"]
-        commit = json.loads(state.objects[head][1])
+        # Org content lands in the ORG object scope, not the personal one.
+        assert head not in state.objects, "org commit must not be personal-scoped"
+        commit = json.loads(state.org_objects[head][1])
         assert commit["parents"] == []  # first org commit
 
     def test_member_propose_becomes_202_proposal(self, mock_server, synced_env):
@@ -931,8 +964,8 @@ class TestOrgEndToEnd:
         member_ident = {**identity, "org_id": "org-1", "org_role": "MEMBER"}
         result = ssc.propose_skill("alpha", client, identity=member_ident)
         # Walk the proposed commit's root: both skills present.
-        commit = json.loads(state.objects[result["commit"]][1])
-        root = json.loads(state.objects[commit["tree"]][1])
+        commit = json.loads(state.org_objects[result["commit"]][1])
+        root = json.loads(state.org_objects[commit["tree"]][1])
         names = {e["name"] for e in root["entries"]}
         assert "alpha" in names and "devops" in names
 
@@ -976,3 +1009,107 @@ class TestOrgEndToEnd:
         monkeypatch.setattr(auth_mod, "resolve_nous_runtime_credentials",
                             lambda **kw: {"api_key": token})
         assert ssc.maybe_pull_org_skills() is None
+
+
+class TestOrgEndpointScoping:
+    """Org reads must use the ORG endpoints, not the personal ones.
+
+    The personal refs route is scoped to the caller's own owner: asked for an
+    ``refs/org/...`` prefix it returns the caller's PERSONAL refs rather than
+    erroring. A client reading org state through it therefore concludes "this
+    org has no content" and every subsequent CAS races a head it never saw —
+    which is exactly how a second propose used to die on a raw SyncConflict.
+    """
+
+    def _admin(self, identity):
+        return {**identity, "org_id": "org-1", "org_role": "ADMIN"}
+
+    def test_org_head_is_not_visible_on_the_personal_route(
+        self, mock_server, synced_env
+    ):
+        base, state = mock_server
+        home, skills, identity = synced_env
+        state.refs["refs/org/org-1/HEAD"] = "sha256:" + "a" * 64
+        client = ssc.SyncClient(base, identity["api_key"])
+
+        personal = client.get_refs("refs/org/org-1/")
+        assert personal == [], (
+            "the personal refs route must not serve org refs — if it does, "
+            "the mock is more permissive than production and will hide bugs"
+        )
+        org = client.get_refs("refs/org/org-1/", org_scope=True)
+        assert [r["name"] for r in org] == ["refs/org/org-1/HEAD"]
+
+    def test_second_propose_splices_onto_the_existing_org_head(
+        self, mock_server, synced_env
+    ):
+        """The regression: propose #1 works, propose #2 used to raise."""
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin = self._admin(identity)
+        client = ssc.SyncClient(base, identity["api_key"])
+
+        # `synced_env` already seeds alpha and beta (beta under devops/).
+        first = ssc.propose_skill("alpha", client, identity=admin)
+        assert first["ok"] is True
+
+        # Previously: base_head read as None -> CAS from None -> 409 ->
+        # SyncConflict escaped to the caller.
+        second = ssc.propose_skill("beta", client, identity=admin)
+        assert second["ok"] is True
+
+        # And the splice preserved the first skill rather than replacing it.
+        head = state.refs["refs/org/org-1/HEAD"]
+        commit = json.loads(state.org_objects[head][1])
+        root = json.loads(state.org_objects[commit["tree"]][1])
+        names = {e["name"] for e in root["entries"]}
+        # beta is seeded under the devops/ category, so it appears as that
+        # category tree at the root.
+        assert "alpha" in names and "devops" in names
+        assert commit["parents"], "second commit must descend from the first"
+
+    def test_pull_org_skills_sees_an_existing_org_head(
+        self, mock_server, synced_env
+    ):
+        """pull_org_skills used to report head=None for a populated org."""
+        base, state = mock_server
+        home, skills, identity = synced_env
+        admin = self._admin(identity)
+        client = ssc.SyncClient(base, identity["api_key"])
+        ssc.propose_skill("alpha", client, identity=admin)
+
+        result = ssc.pull_org_skills(client=client, identity=admin)
+        assert result["ok"] is True
+        assert result["head"] == state.refs["refs/org/org-1/HEAD"], (
+            "pull must resolve the real org HEAD, not None"
+        )
+        assert result["updated"], "the org's skill must materialize"
+
+
+class TestEmptyActualConflict:
+    """A 409 with an empty ``actual`` means the ref does not exist."""
+
+    def test_conflict_actual_empty_becomes_none(self):
+        c = ssc.SyncConflict("")
+        assert c.actual is None
+        assert "does not exist" in str(c)
+
+    def test_push_recovers_from_a_stale_local_head(self, mock_server, synced_env):
+        """Switching sync planes leaves a foreign head in local state.
+
+        The CAS then fails against a ref that does not exist, and the server
+        answers 409 with an empty ``actual``. The client must redo the CAS as
+        a create rather than trying to fetch "" as a commit (which surfaced as
+        the bizarre `object  not found`, with a doubled space).
+        """
+        base, state = mock_server
+        home, skills, identity = synced_env
+        st = ssc.read_sync_state()
+        st["head"] = "sha256:" + "f" * 64  # head from another plane
+        ssc.write_sync_state(st)
+
+        client = ssc.SyncClient(base, identity["api_key"])
+        result = ssc.push_skills(client=client, identity=identity)
+        assert result["ok"] is True
+        assert result.get("recovered_stale_head") is True
+        assert state.refs[ssc.user_head_ref(identity["owner"])] == result["head"]

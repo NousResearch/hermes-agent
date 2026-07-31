@@ -132,7 +132,7 @@ type GestureAction = 'archive' | 'pin' | 'resume' | 'tab' | 'window'
 
 const GESTURE_CASES: readonly {
   action: GestureAction
-  event: 'auxclick' | 'click'
+  event: 'click' | 'middle-click'
   label: string
   modifiers?: MouseEventInit
 }[] = [
@@ -164,7 +164,7 @@ const GESTURE_CASES: readonly {
     label: 'Ctrl+Shift+Meta-click',
     modifiers: { ctrlKey: true, metaKey: true, shiftKey: true }
   },
-  { action: 'tab', event: 'auxclick', label: 'middle auxclick', modifiers: { button: 1 } }
+  { action: 'tab', event: 'middle-click', label: 'middle click', modifiers: { button: 1 } }
 ]
 
 describe('SidebarSessionRow', () => {
@@ -207,8 +207,9 @@ describe('SidebarSessionRow', () => {
 
     const row = screen.getByRole('button', { name: 'Gesture target' })
 
-    if (event === 'auxclick') {
-      fireEvent(row, new MouseEvent('auxclick', { bubbles: true, ...modifiers }))
+    if (event === 'middle-click') {
+      fireEvent.pointerDown(row, modifiers)
+      fireEvent.pointerUp(row, modifiers)
     } else {
       fireEvent.click(row, modifiers)
     }

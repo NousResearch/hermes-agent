@@ -1187,13 +1187,10 @@ export function ChatSidebar({
                         return
                       }
 
-                      startNewSessionDrag(
-                        placement => {
-                          $newChatProfile.set(null)
-                          onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
-                        },
-                        event
-                      )
+                      startNewSessionDrag(placement => {
+                        $newChatProfile.set(null)
+                        onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
+                      }, event)
                     }}
                     tooltip={
                       item.keybindActionId

@@ -21587,7 +21587,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "message": event.text or "",
         }
         try:
-            _pre_route_results = await self.hooks.emit_collect("message:pre_route", _pre_route_ctx)
+            _pre_route_results = await asyncio.wait_for(
+                self.hooks.emit_collect("message:pre_route", _pre_route_ctx),
+                timeout=5.0,
+            )
         except Exception:
             logger.warning("message:pre_route hook emit failed", exc_info=True)
             _pre_route_results = []

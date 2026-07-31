@@ -1,31 +1,20 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
+import { expandTokens } from '../domain/attachments.js'
 import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
-import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
+import type { ComposerActions, ComposerRefs, ComposerState } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
-
-export const expandSnips = (snips: PasteSnippet[]) => {
-  const byLabel = new Map<string, string[]>()
-
-  for (const { label, text } of snips) {
-    const hit = byLabel.get(label)
-    hit ? hit.push(text) : byLabel.set(label, [text])
-  }
-
-  return (value: string) => value.replace(PASTE_SNIPPET_RE, tok => byLabel.get(tok)?.shift() ?? tok)
-}
 
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
@@ -68,7 +57,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const send = useCallback(
     (text: string, showUserMessage = true, displayText?: string) => {
-      const expand = expandSnips(composerState.pasteSnips)
+      // Read tokens off the ref, not render state: a paste immediately followed
+      // by Enter submits before React has re-rendered with the new token.
+      const expand = expandTokens(composerRefs.tokensRef.current)
 
       submitPrompt(
         text,
@@ -84,7 +75,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         displayText
       )
     },
-    [appendMessage, composerActions, composerState.pasteSnips, gw, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerRefs, gw, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -217,10 +208,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
-      // History stores expanded paste content, not the `[[…]]` label: snips
-      // are cleared on submit, so recall must be self-contained. Idempotent on
-      // label-free text, so re-submitting a recalled entry stays stable.
-      const toHistory = expandSnips(composerState.pasteSnips)(full)
+      // History stores resolved content, not `[[…]]` labels: tokens are cleared
+      // on submit, so recall must be self-contained. Image tokens resolve to
+      // nothing — a detached image can't be re-attached by recalling the text.
+      // Idempotent on token-free text, so re-submitting a recalled entry is
+      // stable.
+      const toHistory = expandTokens(composerRefs.tokensRef.current)(full)
 
       if (looksLikeSlashCommand(full)) {
         appendMessage({ kind: 'slash', role: 'system', text: full })
@@ -294,7 +287,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
       appendMessage,
       composerActions,
       composerRefs,
-      composerState.pasteSnips,
       handleBusyInput,
       interpolate,
       send,

@@ -1,7 +1,7 @@
 ---
 name: himalaya
-description: "Himalaya CLI: IMAP/SMTP email from terminal."
-version: 1.1.0
+description: "Himalaya v2 mail CLI. Use when reading or sending email."
+version: 2.0.0
 author: community
 license: MIT
 platforms: [linux, macos, windows]
@@ -13,185 +13,217 @@ prerequisites:
   commands: [himalaya]
 ---
 
-# Himalaya Email CLI
+# Himalaya CLI v2.x
 
-Himalaya is a CLI email client that lets you manage emails from the terminal using IMAP, SMTP, Notmuch, or Sendmail backends.
+Himalaya is a Rust CLI for managing email from the terminal. **This skill targets himalaya v2.x** (v2.0.0+, post the v1→v2 breaking changes). The skill previously documented the v1.x schema; commands like `himalaya folder list` and `himalaya envelope list from x` no longer work in v2 and will trip agents loading the skill on first attempt.
 
-This skill is separate from the Hermes Email gateway adapter. The gateway
-adapter lets people email the agent and uses Hermes' built-in IMAP/SMTP
-adapter; this skill lets the agent operate a mailbox from terminal tools and
-requires the external `himalaya` CLI.
+This skill is separate from the Hermes Email gateway adapter. The gateway adapter lets people email the agent and uses Hermes' built-in IMAP/SMTP adapter; this skill lets the agent operate a mailbox from terminal tools and requires the external `himalaya` CLI.
+
+## Key v2 differences from v1
+
+| v1.x (don't use) | v2.x (current) |
+|---|---|
+| `folder list` | `mailbox list` |
+| `folder.aliases.sent` (singular, TOML sub-table) | `mailbox.alias.sent` (plural, dotted key under account) |
+| `[accounts.X] backend = { type=imap, host=..., port=..., auth={...} }` | Flat keys: `imap.server`, `imap.sasl.plain.username`, `imap.sasl.plain.password.command` |
+| `envelope list from x` (positional filters) | `envelope list`; filters moved to separate `envelope search "from x"` subcommand with its own DSL |
+| `message write` (no piped input) / `message reply` | `message compose --to ... --subject ... --body ...`; rich MIME via piped `mml`; legacy `template send` still exists |
+| `--output json` / `plain` | `--json` (global flag) |
+| Native keyring support | Removed; use `pass`, `gopass`, `secret-tool` via `password.command` |
+| OAuth flows built in | None; use [ortie](https://github.com/pimalaya/ortie) as token broker |
+
+Always verify `himalaya --version` reports **v2.0.0 or later** before using this skill.
 
 ## References
 
-- `references/configuration.md` (config file setup + IMAP/SMTP authentication)
-- `references/message-composition.md` (MML syntax for composing emails)
+- `references/configuration.md` (v2 TOML schema, Gmail/Outlook/Fastmail/iCloud examples, mailbox aliases)
+- `references/message-composition.md` (compose/reply/forward, mml integration)
 
 ## Prerequisites
 
-1. Himalaya CLI installed (`himalaya --version` to verify)
-2. A configuration file at `~/.config/himalaya/config.toml`
-3. IMAP/SMTP credentials configured (password stored securely)
+1. **Himalaya v2.0.0+** installed (`himalaya --version` to verify)
+2. A configuration file at one of these paths (first match wins):
+   - `$XDG_CONFIG_HOME/himalaya/config.toml`
+   - `$HOME/.config/himalaya/config.toml`
+   - `$HOME/.himalayarc`
+3. Credentials supplied either inline (`password.raw = "..."`) or via a `password.command` that prints the secret on stdout (recommended — use `pass`, `gopass`, or a custom script).
 
 ### Installation
 
 ```bash
-# Pre-built binary (Linux/macOS — recommended)
+# Pre-built binary (Linux/macOS — recommended, no sudo needed)
 curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | PREFIX=~/.local sh
 
 # macOS via Homebrew
 brew install himalaya
 
-# Or via cargo (any platform with Rust)
-cargo install himalaya --locked
+# From source (any platform with Rust)
+cargo install --locked --git https://github.com/pimalaya/himalaya.git
 ```
 
-## Configuration Setup
+The installer places the binary at `~/.local/bin/himalaya` (or `/usr/local/bin/himalaya` when run as root).
 
-Run the interactive wizard to set up an account:
+## Configuration
+
+### The wizard
+
+Run `himalaya` with **no subcommand** to launch the account setup wizard. It probes PACC, Thunderbird Autoconfiguration, RFC 6186 SRV records, and JMAP session discovery in parallel, then prints a ready-to-save TOML document on stdout. Redirect it into your config:
 
 ```bash
-himalaya account configure
+himalaya > /tmp/new-account.toml
+# review, then append to your config
+cat /tmp/new-account.toml >> ~/.config/himalaya/config.toml
 ```
 
-Or create `~/.config/himalaya/config.toml` manually:
+### Gmail (app password)
+
+Generate an app password at https://myaccount.google.com/apppasswords (requires 2-Step Verification), then:
 
 ```toml
-[accounts.personal]
-email = "you@example.com"
+[accounts.gmail]
+email = "you@gmail.com"
 display-name = "Your Name"
 default = true
 
-backend.type = "imap"
-backend.host = "imap.example.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "you@example.com"
-backend.auth.type = "password"
-backend.auth.cmd = "pass show email/imap"  # or use keyring
+imap.server = "imaps://imap.gmail.com:993"
+imap.sasl.plain.username = "you@gmail.com"
+imap.sasl.plain.password.command = "pass show email/gmail-app"
 
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.example.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "you@example.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.cmd = "pass show email/smtp"
+smtp.server = "smtp://smtp.gmail.com:587"
+smtp.starttls = true
+smtp.sasl.plain.username = "you@gmail.com"
+smtp.sasl.plain.password.command = "pass show email/gmail-app"
 
-# Folder aliases (himalaya v1.2.0+ syntax). Required whenever the
-# server's folder names don't match himalaya's canonical names
-# (inbox/sent/drafts/trash). Gmail is the common case — see
-# `references/configuration.md` for the `[Gmail]/Sent Mail` mapping.
-folder.aliases.inbox = "INBOX"
-folder.aliases.sent = "Sent"
-folder.aliases.drafts = "Drafts"
-folder.aliases.trash = "Trash"
+mailbox.alias.inbox = "INBOX"
+mailbox.alias.sent = "[Gmail]/Sent Mail"
+mailbox.alias.drafts = "[Gmail]/Drafts"
+mailbox.alias.trash = "[Gmail]/Trash"
+mailbox.alias.archive = "[Gmail]/All Mail"
+mailbox.alias.junk = "[Gmail]/Spam"
 ```
 
-> **Heads up on the alias syntax.** Pre-v1.2.0 docs used a
-> `[accounts.NAME.folder.alias]` sub-section (singular `alias`).
-> v1.2.0 silently ignores that form — TOML parses fine, but the
-> alias resolver never reads it, so every lookup falls through to
-> the canonical name. On Gmail this means save-to-Sent fails *after*
-> SMTP delivery succeeds, and `himalaya message send` exits non-zero.
-> Any caller (agent, script, user) that retries on that exit code
-> will re-run the entire send — including SMTP — producing duplicate
-> emails to recipients. Always use `folder.aliases.X` (plural, dotted
-> keys, directly under `[accounts.NAME]`).
+The `[Gmail]/` labels must be **quoted in the shell** when used as `-m` args: `himalaya -m "[Gmail]/Drafts"`. Aliases are case-insensitive lookups; raw backend ids work verbatim too.
 
-## Hermes Integration Notes
+### Outlook / Microsoft 365 (OAuth)
 
-- **Reading, listing, searching, moving, deleting** all work directly through the terminal tool
-- **Composing/replying/forwarding** — piped input (`cat << EOF | himalaya template send`) is recommended for reliability. Interactive `$EDITOR` mode works with `pty=true` + background + process tool, but requires knowing the editor and its commands
-- Use `--output json` for structured output that's easier to parse programmatically
-- The `himalaya account configure` wizard requires interactive input — use PTY mode: `terminal(command="himalaya account configure", pty=true)`
+Microsoft retired basic auth. Use OAuth 2.0 via `xoauth2` and a token broker like [ortie](https://github.com/pimalaya/ortie):
 
-## Common Operations
+```toml
+[accounts.outlook]
 
-### List Folders
+imap.server = "imaps://outlook.office365.com:993"
+imap.sasl.xoauth2.username = "you@outlook.com"
+imap.sasl.xoauth2.token.command = ["ortie", "token", "show", "-a", "outlook"]
+
+smtp.server = "smtp://smtp-mail.outlook.com:587"
+smtp.starttls = true
+smtp.sasl.xoauth2.username = "you@outlook.com"
+smtp.sasl.xoauth2.token.command = ["ortie", "token", "show", "-a", "outlook"]
+```
+
+Or skip SMTP entirely and use the Microsoft Graph REST API backend (`msgraph.auth.token.command = [...]`). Graph uses opaque folder ids — address them by name (`-m Archive`) or by well-known role (`-m inbox`).
+
+### Fastmail
+
+App password works for IMAP/SMTP. For the native JMAP API, replace both blocks with a single `jmap` one using an API token:
+
+```toml
+[accounts.fastmail]
+imap.server = "imaps://imap.fastmail.com"
+imap.sasl.plain.username = "you@fastmail.com"
+imap.sasl.plain.password.command = "pass show fastmail"
+
+smtp.server = "smtps://smtp.fastmail.com"
+smtp.sasl.plain.username = "you@fastmail.com"
+smtp.sasl.plain.password.command = "pass show fastmail"
+```
+
+### iCloud
+
+Note: IMAP login uses the local-part (`johnappleseed`), SMTP login uses the full address (`johnappleseed@icloud.com`). Requires an app-specific password.
+
+```toml
+[accounts.icloud]
+imap.server = "imaps://imap.mail.me.com:993"
+imap.sasl.plain.username = "johnappleseed"
+imap.sasl.plain.password.command = "pass show icloud"
+
+smtp.server = "smtp://smtp.mail.me.com:587"
+smtp.starttls = true
+smtp.sasl.plain.username = "johnappleseed@icloud.com"
+smtp.sasl.plain.password.command = "pass show icloud"
+
+mailbox.alias.sent = "Sent Messages"
+```
+
+## Hermes integration notes
+
+- **Reading, listing, searching, flagging, copying** — all work directly through the terminal tool.
+- **Composing / replying / forwarding** — use the `message compose` subcommand (flags-only) or chain `mml` for rich MIME / attachments / PGP. The legacy `template send` (pipe a complete RFC 822 message on stdin) still works for scripted sends.
+- For programmatic output (parsing in scripts), pass `--json` for structured envelopes / messages.
+- **Pitfall — clap parser order matters:** search query DSL tokens (`from`, `subject`, `after`, `order by`, etc.) start consuming characters from the next flag too. Always pass `--page-size=20` (with `=`) instead of `--page-size 20`, and put query positional args **last** on the command line. Spaces between a flag like `--page-size 20` get eaten as part of the search query.
+- **Pitfall — Gmail mailbox names:** `[Gmail]/Sent Mail` etc. contain `[`, `]`, and a space. Always quote in the shell.
+- **Pitfall — multiple accounts:** pass `-a <name>` or `--account <name>`. The account flagged `default = true` is used when omitted.
+
+## Common operations
+
+### List accounts
 
 ```bash
-himalaya folder list
+himalaya account list
+himalaya account check  # validates config
 ```
 
-### List Emails
+### List mailboxes (folders / labels)
 
-List emails in INBOX (default):
+```bash
+himalaya mailbox list
+himalaya mailbox list --account gmail
+```
+
+### List envelopes (default mailbox)
 
 ```bash
 himalaya envelope list
+himalaya envelope list --page 2 --page-size 50
+himalaya envelope list --recipient          # show To: instead of From: (sent folder)
+himalaya envelope list --has-attachment    # populate ATT column
 ```
 
-List emails in a specific folder:
+### Search envelopes
+
+`envelope search` takes a positional query using himalaya's cross-backend DSL. Conditions: `date <yyyy-mm-dd>`, `after <yyyy-mm-dd>`, `before <yyyy-mm-dd>`, `from <pattern>`, `to <pattern>`, `subject <pattern>`, `body <pattern>`, `flag <seen|answered|flagged|draft>`. Combine with `and`, `or`, `not`, group with parens. Sort with `order by <date|from|to|subject> [asc|desc]`.
 
 ```bash
-himalaya envelope list --folder "Sent"
+himalaya envelope search "from alice"
+himalaya envelope search "from alice and after 2026-01-01 order by date desc"
+himalaya envelope search "subject meeting or body invoice"
+himalaya envelope search --page-size=20 "from usvisascheduling"   # NOTE: --page-size=20 (equals form!)
 ```
 
-List with pagination:
+⚠️ **Quote-protect the query** — patterns with `$` (e.g. `"body $500"`) need single quotes so the shell doesn't expand `$5`.
+
+### Read a message
 
 ```bash
-himalaya envelope list --page 1 --page-size 20
+himalaya message read 42                       # rendered headers + text bodies
+himalaya message read 42 --raw                 # dump raw RFC 5322 bytes (pipe to mml/w3m)
+himalaya message read 42 --json                # parsed message as JSON
 ```
 
-### Search Emails
+### Send a new message
+
+The modern path uses `message compose` with flags:
 
 ```bash
-himalaya envelope list from john@example.com subject meeting
+himalaya message compose \
+  --to you@example.com \
+  --subject "Test" \
+  --body "Hello from Himalaya v2" \
+  --send
 ```
 
-### Read an Email
-
-Read email by ID (shows plain text):
-
-```bash
-himalaya message read 42
-```
-
-Export raw MIME:
-
-```bash
-himalaya message export 42 --full
-```
-
-### Reply to an Email
-
-To reply non-interactively from Hermes, read the original message, compose a reply, and pipe it:
-
-```bash
-# Get the reply template, edit it, and send
-himalaya template reply 42 | sed 's/^$/\nYour reply text here\n/' | himalaya template send
-```
-
-Or build the reply manually:
-
-```bash
-cat << 'EOF' | himalaya template send
-From: you@example.com
-To: sender@example.com
-Subject: Re: Original Subject
-In-Reply-To: <original-message-id>
-
-Your reply here.
-EOF
-```
-
-Reply-all (interactive — needs $EDITOR, use template approach above instead):
-
-```bash
-himalaya message reply 42 --all
-```
-
-### Forward an Email
-
-```bash
-# Get forward template and pipe with modifications
-himalaya template forward 42 | sed 's/^To:.*/To: newrecipient@example.com/' | himalaya template send
-```
-
-### Write a New Email
-
-**Non-interactive (use this from Hermes)** — pipe the message via stdin:
+The legacy path (piped RFC 822 over stdin) still works:
 
 ```bash
 cat << 'EOF' | himalaya template send
@@ -199,106 +231,97 @@ From: you@example.com
 To: recipient@example.com
 Subject: Test Message
 
-Hello from Himalaya!
+Hello from Himalaya v2!
 EOF
 ```
 
-Or with headers flag:
+### Reply to a message
 
 ```bash
-himalaya message write -H "To:recipient@example.com" -H "Subject:Test" "Message body here"
+# Quick reply with --body
+himalaya message reply 42 --body "Thanks, will do." --send
+
+# Reply-all
+himalaya message reply 42 --all --body "Looping everyone in." --send
+
+# Quote original
+himalaya message reply 42 --quote --body "See below." --send
 ```
 
-Note: `himalaya message write` without piped input opens `$EDITOR`. This works with `pty=true` + background mode, but piping is simpler and more reliable.
-
-### Move/Copy Emails
-
-Move to folder (target folder comes first, then the message ID):
+### Forward
 
 ```bash
-himalaya message move "Archive" 42
+himalaya message forward 42 --to other@example.com --send
 ```
 
-Copy to folder (target folder comes first, then the message ID):
+### Move / copy / delete
 
 ```bash
-himalaya message copy "Important" 42
+himalaya message copy --from INBOX --to Archives 42
+himalaya message move --from INBOX --to Archives 42    # if backend supports move
+himalaya message delete 42                              # sets \Deleted flag
+himalaya message expunge                                 # permanently remove flagged
 ```
 
-### Delete an Email
+### Manage flags
 
 ```bash
-himalaya message delete 42
+himalaya flag add --flag seen 1:3,5
+himalaya flag remove --flag seen 42
 ```
 
-### Manage Flags
+The `--flag` argument accepts `seen`, `answered`, `flagged`, `draft`, `recent`. Multiple message IDs can be comma-separated ranges (`1:3,5` = 1,2,3,5).
 
-Add flag:
+### Download attachments
 
 ```bash
-himalaya flag add 42 --flag seen
+himalaya attachment download 42                         # default ~/Downloads
+himalaya attachment download 42 --output-dir /tmp/attach
 ```
 
-Remove flag:
-
-```bash
-himalaya flag remove 42 --flag seen
-```
-
-## Multiple Accounts
-
-List accounts:
-
-```bash
-himalaya account list
-```
-
-Use a specific account:
+## Multiple accounts
 
 ```bash
 himalaya --account work envelope list
+himalaya --account gmail mailbox list
 ```
 
-## Attachments
+For accounts configured with multiple backends (e.g. IMAP+JMAP), force one with `-b/--backend imap|jmap|gmail|msgraph|maildir|smtp`. Default is `auto` (first configured).
 
-Save attachments from a message:
+## Output formats
 
-```bash
-himalaya attachment download 42
-```
-
-Save to specific directory:
+`--json` is a global flag that emits parsed JSON for any command:
 
 ```bash
-himalaya attachment download 42 --downloads-dir ~/Downloads
-```
-
-## Output Formats
-
-Most commands support `--output` for structured output:
-
-```bash
-himalaya envelope list --output json
-himalaya envelope list --output plain
+himalaya --json envelope list --page-size=5
+himalaya --json message read 42 | jq '.subject'
+himalaya --json mailbox list
 ```
 
 ## Debugging
 
-Enable debug logging:
-
 ```bash
-RUST_LOG=debug himalaya envelope list
+himalaya --log trace mailbox list
+RUST_LOG=trace himalaya envelope list 2>/tmp/himalaya.log
+RUST_BACKTRACE=1 himalaya envelope list
+NO_COLOR=1 himalaya envelope list
 ```
 
-Full trace with backtrace:
+Logs go to stderr; `--log-file <path>` writes to file directly.
 
-```bash
-RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
+## Re-using sessions (advanced)
+
+Every invocation opens a fresh TCP+TLS+SASL handshake. To amortize that, point `imap.server` / `smtp.server` at a [sirup](https://github.com/pimalaya/sirup) Unix socket holding a pre-authenticated session:
+
+```toml
+imap.server = "unix:///run/sirup/imap.sock"
+smtp.server = "unix:///run/sirup/smtp.sock"
 ```
 
 ## Tips
 
-- Use `himalaya --help` or `himalaya <command> --help` for detailed usage.
-- Message IDs are relative to the current folder; re-list after folder changes.
-- For composing rich emails with attachments, use MML syntax (see `references/message-composition.md`).
-- Store passwords securely using `pass`, system keyring, or a command that outputs the password.
+- `himalaya <subcommand> --help` is the source of truth — the help text is regenerated from the CLI definitions on every build.
+- Message IDs are relative to the current mailbox; re-list after folder changes.
+- For rich MIME with attachments, signatures, or encryption, chain [mml](https://github.com/pimalaya/mml) into `himalaya message send`.
+- Store passwords via `pass`, `gopass`, `secret-tool`, or any shell command that prints the secret on stdout.
+- The `imap.server` / `smtp.server` fields accept full URLs (`imaps://host:port`, `smtp://host:port`, `smtps://host:port`) for explicit TLS control.

@@ -1,6 +1,8 @@
 # Message Composition with MML (MIME Meta Language)
 
-Himalaya uses MML for composing emails. MML is a simple XML-based syntax that compiles to MIME messages.
+Himalaya uses MML for composing rich (multipart, attachments, inline images, PGP) emails. MML is a simple XML-based syntax that compiles to MIME messages.
+
+> **v2 CLI note.** The MML syntax itself is unchanged from v1.x. What changed is how you drive the composer from the CLI: v2 adds a flag-based `message compose --to ... --subject ... --body ... --send` for scripted sends and `message reply N --body ... --send` / `message forward N --to ... --send` for replies. The legacy `himalaya message write` (editor-driven) and `himalaya template send` (piped RFC 822) still work in v2.
 
 ## Basic Message Structure
 
@@ -155,13 +157,51 @@ Defines a message part.
 
 ## Composing from CLI
 
-### Interactive compose
+### Quick send (v2 flag-based API)
+
+```bash
+himalaya message compose \
+  --to recipient@example.com \
+  --subject "Quick note" \
+  --body "Hello from himalaya v2." \
+  --send
+
+# Multiple recipients, cc, bcc
+himalaya message compose \
+  --to alice@example.com --to bob@example.com \
+  --cc manager@example.com \
+  --subject "Group note" \
+  --body "Hi all." \
+  --send
+```
+
+### Quick reply / forward (v2 flag-based API)
+
+```bash
+# Reply with new body
+himalaya message reply 42 --body "Got it, thanks." --send
+
+# Reply-all
+himalaya message reply 42 --all --body "Looping everyone in." --send
+
+# Quote the original
+himalaya message reply 42 --quote --body "See below." --send
+
+# Forward
+himalaya message forward 42 --to other@example.com --body "FYI" --send
+```
+
+Run `himalaya message compose --help`, `himalaya message reply --help`, and `himalaya message forward --help` for the full flag list.
+
+### Interactive compose (editor-driven)
 
 Opens your `$EDITOR`:
 
 ```bash
 himalaya message write
 ```
+
+> **v2 behavior.** `message write` still opens `$EDITOR` like in v1.x. From Hermes, prefer the flag-based `message compose --send` or piped `template send` paths — the editor flow requires PTY mode and a configured `$EDITOR`, which is fiddlier from an agent runtime.
 
 ### Reply (opens editor with quoted message)
 
@@ -176,7 +216,7 @@ himalaya message reply 42 --all  # reply-all
 himalaya message forward 42
 ```
 
-### Send from stdin
+### Send a prepared message from stdin (legacy v1 path, still works)
 
 ```bash
 cat message.txt | himalaya template send
@@ -191,9 +231,37 @@ himalaya message write \
   "Message body here"
 ```
 
+### Save a draft without sending
+
+```bash
+# Modern path: pipe to message add with --flag draft
+himalaya message compose --to x@y.com --subject "Draft" --body "WIP" | \
+  himalaya message add --mailbox drafts --flag draft
+
+# Or use the legacy template form
+cat <<'EOF' | himalaya template send --draft
+From: you@example.com
+To: someone@example.com
+Subject: Draft
+
+WIP content here.
+EOF
+```
+
+### Rich MIME via external composer (mml)
+
+```bash
+# Install mml: cargo install mml
+mml compose > message.mml   # interactive (or scripted)
+himalaya message send < message.mml
+```
+
+This is the cleanest path for attachments, PGP signing, and inline images.
+
 ## Tips
 
 - The editor opens with a template; fill in headers and body.
 - Save and exit the editor to send; exit without saving to cancel.
 - MML parts are compiled to proper MIME when sending.
 - Use `himalaya message export --full` to inspect the raw MIME structure of received emails.
+- For Hermes integration, prefer `message compose --send` over editor-driven flows — they're deterministic and don't need `$EDITOR`.

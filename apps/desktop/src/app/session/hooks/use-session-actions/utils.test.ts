@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
+import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -615,6 +615,49 @@ describe('preserveLocalPendingTurnMessages', () => {
       expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
     }
   )
+
+  it('does not duplicate a directive-only file turn', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', '', {
+        attachmentRefs: ['@file:X']
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', '@file:X')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('does not duplicate a turn with multiple CRLF directives and Unicode payloads', () => {
+    const refs = ['@file:`資料/über notes.md`', '@url:`https://example.com/café?q=✓`']
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'text', {
+        attachmentRefs: refs
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first'),
+      msg('2-assistant-stored', 'assistant', 'first answer'),
+      msg('3-user-stored', 'user', `${refs.join('\r\n')}\r\n\r\ntext`)
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('strips only complete reference lines from visible text', () => {
+    expect(textWithoutReferenceLines('see @file:X here')).toBe('see @file:X here')
+    expect(textWithoutReferenceLines('@file:X trailing prose')).toBe('@file:X trailing prose')
+    expect(textWithoutReferenceLines('  @file:X')).toBe('@file:X')
+  })
 
   it('still keeps a genuinely uncommitted optimistic image turn when the persisted text differs', () => {
     const previous = [

@@ -6134,12 +6134,21 @@ def request_review(
             return False
         implementer = trow["assignee"]
         if reviewer is None:
-            changes_event = conn.execute(
-                "SELECT payload FROM task_events "
-                "WHERE task_id = ? AND kind = 'changes_requested' "
+            changes_run = conn.execute(
+                "SELECT id FROM task_runs "
+                "WHERE task_id = ? AND outcome = 'changes_requested' "
                 "ORDER BY id DESC LIMIT 1",
                 (task_id,),
             ).fetchone()
+            changes_event = None
+            if changes_run is not None:
+                changes_event = conn.execute(
+                    "SELECT payload FROM task_events "
+                    "WHERE task_id = ? AND run_id = ? "
+                    "AND kind = 'changes_requested' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (task_id, int(changes_run["id"])),
+                ).fetchone()
             try:
                 changes_payload = (
                     json.loads(changes_event["payload"])
@@ -6153,7 +6162,7 @@ def request_review(
                 if isinstance(changes_payload, dict)
                 else None
             )
-            if changes_event is not None:
+            if changes_run is not None:
                 if not isinstance(prior_reviewer, str) or not prior_reviewer.strip():
                     return False
                 reviewer = prior_reviewer

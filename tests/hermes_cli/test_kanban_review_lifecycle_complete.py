@@ -149,10 +149,10 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed.block_recurrences == 0
 
 
-@pytest.mark.parametrize("bad_payload", ["{not-json", "{}"])
+@pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])
 def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     conn,
-    bad_payload: str,
+    bad_payload: str | None,
 ) -> None:
     task_id, review = _claimed_review(conn, "Malformed reviewer provenance")
     assert kb.request_changes(
@@ -162,13 +162,20 @@ def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
         expected_run_id=review.current_run_id,
     ) == (True, "builder")
     with kb.write_txn(conn):
-        conn.execute(
-            "UPDATE task_events SET payload = ? "
-            "WHERE id = (SELECT id FROM task_events "
-            "WHERE task_id = ? AND kind = 'changes_requested' "
-            "ORDER BY id DESC LIMIT 1)",
-            (bad_payload, task_id),
-        )
+        if bad_payload is None:
+            conn.execute(
+                "DELETE FROM task_events "
+                "WHERE task_id = ? AND kind = 'changes_requested'",
+                (task_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE task_events SET payload = ? "
+                "WHERE id = (SELECT id FROM task_events "
+                "WHERE task_id = ? AND kind = 'changes_requested' "
+                "ORDER BY id DESC LIMIT 1)",
+                (bad_payload, task_id),
+            )
 
     implementation = kb.claim_task(conn, task_id, claimer="builder:retry")
     assert implementation is not None

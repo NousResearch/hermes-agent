@@ -142,7 +142,7 @@ def test_free_response_channels_bare_int():
 
 def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
                    text="hello", mentioned=False, thread_reply=False,
-                   active_session=False, channel_type=None):
+                   active_session=False, channel_type=None, event=None):
     """Simulate the mention gating logic from _handle_slack_message.
 
     Returns True if the message would be processed, False if it would be
@@ -153,18 +153,22 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
     legacy ``is_dm`` flag as a 1:1 IM, preserving existing callers. Gating
     keys off ``is_one_to_one_dm`` (only a true 1:1 IM is exempt); MPIMs are
     shared surfaces and go through the same gating as channels.
+
+    ``event`` supplies a full Slack payload when the mention lives somewhere
+    other than the flat text (blocks / attachments); otherwise one is built
+    from ``text``. Either way the routing text and the mentioned flag come
+    from the production helper, so this simulation cannot drift from the gate.
     """
     if channel_type is None:
         channel_type = "im" if is_dm else ""
     is_one_to_one_dm = channel_type == "im"
 
     bot_uid = adapter._team_bot_user_ids.get("T1", adapter._bot_user_id)
-    if mentioned:
-        text = f"<@{bot_uid}> {text}"
-    is_mentioned = bool(
-        (bot_uid and f"<@{bot_uid}>" in text)
-        or adapter._slack_message_matches_mention_patterns(text)
-    )
+    if event is None:
+        if mentioned:
+            text = f"<@{bot_uid}> {text}"
+        event = {"text": text}
+    text, is_mentioned = adapter._slack_mention_gate_inputs(event, bot_uid)
 
     if not is_one_to_one_dm and bot_uid:
         # allowed_channels check (whitelist — must pass before other gating)
@@ -565,7 +569,10 @@ async def test_block_extraction_debug_log_does_not_include_message_preview(caplo
 # Tests: Block-Kit-only mention detection (#52387)
 # ---------------------------------------------------------------------------
 
-from plugins.platforms.slack.adapter import _slack_mention_detection_text  # noqa: E402
+from plugins.platforms.slack.adapter import (  # noqa: E402
+    _slack_mention_detection_text,
+    _slack_recovered_mentions,
+)
 
 
 def _blockkit_mention_event(bot_user_id=BOT_USER_ID, flat_text="Release notification"):
@@ -616,3 +623,230 @@ def test_mention_detection_text_ignores_quoted_blockkit_mention():
         ],
     }
     assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+
+
+# ---------------------------------------------------------------------------
+# Tests: mentions authored as raw mrkdwn tokens, not `user` elements (#52387)
+#
+# The WYSIWYG composer emits a structured `user` element, but an app building
+# blocks by hand writes the raw `<@UID>` token into a section/header/context
+# string, and legacy `attachments` are a third carrier. Those shapes have no
+# `user` node, so recovering them is a separate path from the one #52387 fixed.
+# ---------------------------------------------------------------------------
+
+
+def _mrkdwn_section(text):
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+
+
+@pytest.mark.parametrize(
+    "carrier,event",
+    [
+        (
+            "section text",
+            {"text": "", "blocks": [_mrkdwn_section(f"<@{BOT_USER_ID}> deploy failed")]},
+        ),
+        (
+            "section fields",
+            {"text": "", "blocks": [{
+                "type": "section",
+                "fields": [{"type": "mrkdwn", "text": f"owner: <@{BOT_USER_ID}>"}],
+            }]},
+        ),
+        (
+            "header text",
+            {"text": "", "blocks": [{
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"<@{BOT_USER_ID}> incident"},
+            }]},
+        ),
+        (
+            "context elements",
+            {"text": "", "blocks": [{
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"<@{BOT_USER_ID}> please ack"}],
+            }]},
+        ),
+        (
+            "attachment text",
+            {"text": "", "attachments": [{"text": f"<@{BOT_USER_ID}> disk 91%"}]},
+        ),
+        (
+            "attachment fields",
+            {"text": "", "attachments": [
+                {"fields": [{"title": "owner", "value": f"<@{BOT_USER_ID}>"}]}
+            ]},
+        ),
+        (
+            "attachment nested blocks",
+            {"text": "", "attachments": [
+                {"blocks": [_mrkdwn_section(f"<@{BOT_USER_ID}> nested")]}
+            ]},
+        ),
+    ],
+)
+def test_mention_detection_text_recovers_mrkdwn_token_carriers(carrier, event):
+    """Every carrier an app can author a mention in must reach the gates."""
+    assert f"<@{BOT_USER_ID}>" in _slack_mention_detection_text(event), carrier
+
+
+def test_mention_detection_text_normalizes_labelled_mention():
+    """``<@U123|alice>`` must normalize to the bare token the gates compare."""
+    event = {"text": "", "blocks": [_mrkdwn_section(f"<@{BOT_USER_ID}|hermes> ping")]}
+    assert f"<@{BOT_USER_ID}>" in _slack_mention_detection_text(event)
+
+
+def test_mention_detection_text_ignores_quoted_mrkdwn_token():
+    """The quote carve-out must cover raw tokens, not just `user` elements."""
+    event = {
+        "text": "see above",
+        "blocks": [{
+            "type": "rich_text",
+            "elements": [{
+                "type": "rich_text_quote",
+                "elements": [{"type": "text", "text": f"<@{BOT_USER_ID}> old ping"}],
+            }],
+        }],
+    }
+    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+
+
+def test_mention_detection_text_ignores_section_nested_in_quote():
+    """A section nested under a quote stays quoted, however deep."""
+    event = {
+        "text": "see above",
+        "blocks": [{
+            "type": "rich_text",
+            "elements": [{
+                "type": "rich_text_quote",
+                "elements": [_mrkdwn_section(f"<@{BOT_USER_ID}> quoted")],
+            }],
+        }],
+    }
+    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)
+
+
+def test_mention_detection_text_dedupes_repeated_carriers():
+    """One addressed user appends one token, however many carriers repeat it."""
+    event = {
+        "text": "",
+        "blocks": [_mrkdwn_section(f"<@{BOT_USER_ID}> rollout started")],
+        "attachments": [{"text": f"<@{BOT_USER_ID}> rollout started"}],
+    }
+    detected = _slack_mention_detection_text(event)
+    assert detected.count(f"<@{BOT_USER_ID}>") == 1
+
+
+def test_mention_detection_text_unchanged_without_recoverable_mention():
+    """A message with no recoverable mention is returned as the flat text."""
+    event = {"text": "nightly backup finished", "blocks": [_mrkdwn_section("all green")]}
+    assert _slack_mention_detection_text(event) == "nightly backup finished"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"text": "hi", "blocks": {"type": "section"}},
+        {"text": "hi", "blocks": ["not-a-dict"]},
+        {"text": "hi", "blocks": [None]},
+        {"text": "hi", "attachments": "not-a-list"},
+        {"text": "hi", "attachments": [None]},
+        {"text": "hi", "attachments": [{"fields": "not-a-list"}]},
+    ],
+)
+def test_mention_detection_text_never_raises_on_malformed_payload(event):
+    """Gating degrades to the flat text; a bad payload must never break it."""
+    assert _slack_mention_detection_text(event) == "hi"
+
+
+def test_attachment_mentions_survive_a_malformed_sibling():
+    """One bad attachment must not discard mentions already collected."""
+    event = {
+        "text": "",
+        "attachments": [{"text": f"<@{BOT_USER_ID}> disk 91%"}, {"fields": 3}],
+    }
+    assert f"<@{BOT_USER_ID}>" in _slack_recovered_mentions(event)
+
+
+@pytest.mark.parametrize("quote_key", ["is_msg_unfurl", "is_share"])
+def test_quoted_attachment_mention_does_not_wake_the_bot(quote_key):
+    """A pasted permalink / forwarded share carries someone else's mention."""
+    event = {
+        "text": "look at this",
+        "attachments": [{quote_key: True, "text": f"<@{BOT_USER_ID}> deploy prod"}],
+    }
+    assert _slack_recovered_mentions(event) == []
+
+
+def test_mrkdwn_blockquote_mention_does_not_wake_the_bot():
+    """`> ` quoting is a carrier the rich_text_quote node check cannot see."""
+    event = {
+        "text": "",
+        "blocks": [_mrkdwn_section(f"&gt; <@{BOT_USER_ID}> old ping\nstatus: green")],
+    }
+    assert _slack_recovered_mentions(event) == []
+
+
+def test_attachment_fallback_alone_does_not_wake_the_bot():
+    """`fallback` is never rendered, so a mention only there notifies nobody."""
+    event = {"text": "", "attachments": [{"fallback": f"<@{BOT_USER_ID}> ping"}]}
+    assert _slack_recovered_mentions(event) == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: the routing gate itself, not just the detection helper (#52387)
+#
+# The helper tests above prove a mention is *recoverable*; these prove the
+# gate acts on it and that recovering it does not corrupt the routing text
+# the wake-word patterns and the leading-mention check read.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "carrier,event",
+    [
+        ("attachment text", {"text": "", "attachments": [
+            {"text": f"<@{BOT_USER_ID}> disk 91%"}
+        ]}),
+        ("attachment fields", {"text": "", "attachments": [
+            {"fields": [{"title": "owner", "value": f"<@{BOT_USER_ID}>"}]}
+        ]}),
+        ("section text", {"text": "", "blocks": [
+            _mrkdwn_section(f"<@{BOT_USER_ID}> deploy failed")
+        ]}),
+    ],
+)
+def test_gate_processes_attachment_only_mention(carrier, event):
+    """An alert bot's mention must pass the require_mention gate."""
+    adapter = _make_adapter()  # default: require_mention=True
+    assert _would_process(adapter, event=event) is True, carrier
+
+
+def test_gate_leaves_routing_text_free_of_recovered_mentions():
+    """A recovered mention must not become the routing text's leading token.
+
+    An attachment-only alert naming a human would otherwise look like a message
+    opening with `<@other>` and be dropped by ignore_other_user_mentions.
+    """
+    adapter = _make_adapter()
+    event = {
+        "text": "",
+        "attachments": [{"fields": [{"title": "owner", "value": "<@U_ONCALL>"}]}],
+    }
+    routing_text, is_mentioned = adapter._slack_mention_gate_inputs(event, BOT_USER_ID)
+    assert routing_text == ""
+    assert is_mentioned is False
+    assert adapter._slack_message_addressed_to_other_user(
+        routing_text, {BOT_USER_ID}
+    ) is False
+
+
+def test_gate_wake_word_pattern_still_matches_with_an_attachment():
+    """An anchored wake word must not be broken by an appended mention tail."""
+    adapter = _make_adapter(mention_patterns=[r"^hey hermes$"])
+    event = {
+        "text": "hey hermes",
+        "attachments": [{"text": "<@U_ALICE> fyi"}],
+    }
+    _, is_mentioned = adapter._slack_mention_gate_inputs(event, BOT_USER_ID)
+    assert is_mentioned is True

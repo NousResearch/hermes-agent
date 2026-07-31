@@ -56,6 +56,91 @@ class SessionSchemaMixin:
         ).fetchone()
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
+
+    @staticmethod
+    def _fts_update_trigger_needs_narrowing(sql: Optional[str]) -> bool:
+        """True when trigger SQL is missing AFTER UPDATE OF (still broad)."""
+        if not sql:
+            return False
+        # Collapse whitespace so multi-line DDL still matches.
+        compact = " ".join(sql.split()).upper()
+        # Already narrowed.
+        if "AFTER UPDATE OF " in compact:
+            return False
+        # Broad UPDATE trigger that we still need to replace.
+        return "AFTER UPDATE ON " in compact
+
+    def _migrate_broad_fts_update_triggers(self, cursor: sqlite3.Cursor) -> int:
+        """Replace broad AFTER UPDATE FTS triggers with AFTER UPDATE OF variants.
+
+        ``CREATE TRIGGER IF NOT EXISTS`` will not replace an existing broad
+        trigger, so installs that already created ``AFTER UPDATE ON messages``
+        would keep firing on every messages row touch (status/compaction
+        writes included). Inspect ``sqlite_master``, drop any still-broad
+        UPDATE triggers, and re-apply the current DDL constants.
+
+        No FTS rebuild: content correctness was already gated by WHEN clauses
+        on modern installs; OF only skips unnecessary trigger evaluation.
+
+        Returns the number of triggers dropped (0 when already converged).
+        """
+        import re as _re
+
+        update_names = (
+            "messages_fts_update",
+            "messages_fts_trigram_update",
+            "messages_fts_cjk_update",
+        )
+        rows = cursor.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type = 'trigger' AND name IN (?, ?, ?)",
+            update_names,
+        ).fetchall()
+        to_drop = []
+        for row in rows:
+            name = row[0] if not isinstance(row, sqlite3.Row) else row["name"]
+            sql = row[1] if not isinstance(row, sqlite3.Row) else row["sql"]
+            if self._fts_update_trigger_needs_narrowing(sql):
+                to_drop.append(name)
+        if not to_drop:
+            return 0
+
+        for name in to_drop:
+            # Trigger names are from our fixed allowlist, not user input.
+            if not _re.fullmatch(r"[A-Za-z0-9_]+", name):
+                continue
+            cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+        # Re-apply current DDL so CREATE TRIGGER installs the OF variants.
+        # Choose legacy vs v23 the same way _init_schema does.
+        if self._db_has_legacy_inline_fts(cursor):
+            self._ensure_fts_schema(cursor, "messages_fts", LEGACY_FTS_SQL)
+            self._ensure_fts_schema(
+                cursor, "messages_fts_trigram", LEGACY_FTS_TRIGRAM_SQL
+            )
+        else:
+            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+            self._ensure_fts_schema(
+                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+            )
+            # CJK triggers live on the host SessionDB; only recreate if present.
+            if hasattr(self, "_ensure_fts_cjk_schema"):
+                try:
+                    self._ensure_fts_cjk_schema(cursor)
+                except Exception:
+                    logger.debug(
+                        "CJK FTS re-ensure after UPDATE OF migration skipped",
+                        exc_info=True,
+                    )
+
+        logger.info(
+            "Migrated %d broad FTS UPDATE trigger(s) to AFTER UPDATE OF "
+            "(no rebuild required)",
+            len(to_drop),
+        )
+        return len(to_drop)
+
+
     @staticmethod
     def _rebuild_fts_indexes(
         cursor: sqlite3.Cursor,
@@ -854,6 +939,11 @@ class SessionSchemaMixin:
                     # CJK-bigram index (cjk_unicode61). Strictly additive to
                     # the surfaces above and gated on the loadable tokenizer:
                     self._ensure_fts_cjk_schema(cursor)
+
+            # Replace any pre-existing broad AFTER UPDATE triggers with
+            # AFTER UPDATE OF variants. IF NOT EXISTS cannot rewrite them.
+            if getattr(self, "_fts_enabled", False):
+                self._migrate_broad_fts_update_triggers(cursor)
 
         self._conn.commit()
 

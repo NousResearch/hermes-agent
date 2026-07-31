@@ -6197,8 +6197,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             params.append(session_key)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({placeholders})")
-            params.extend(exclude_sources)
+            where_clauses.append(
+                f"LOWER(TRIM(COALESCE(s.source, ''))) NOT IN ({placeholders})"
+            )
+            params.extend(source.strip().lower() for source in exclude_sources)
         if cwd_prefix:
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
             where_clauses.append(clause)

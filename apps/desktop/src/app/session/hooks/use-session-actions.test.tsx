@@ -4,11 +4,13 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
-import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
+import { deleteSession, getSession, getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { clearAllPrompts, sessionApprovalRequest, setApprovalRequest } from '@/store/prompts'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
@@ -21,6 +23,7 @@ import {
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  $sessions,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentCwd,
@@ -76,7 +79,7 @@ function deferred<T>() {
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
+  'createBackendSessionForSend' | 'removeSession' | 'selectSidebarItem' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -99,33 +102,44 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 function Harness({
+  activeSessionId = null,
   navigate = vi.fn(),
   onReady,
-  requestGateway
+  requestGateway,
+  runtimeIdByStoredSessionId = new Map(),
+  selectedStoredSessionId = null,
+  updateSessionState = () => ({}) as ClientSessionState
 }: {
+  activeSessionId?: string | null
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionId?: Map<string, string>
+  selectedStoredSessionId?: string | null
+  updateSessionState?: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState
+  ) => ClientSessionState
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
   const actions = useSessionActions({
-    activeSessionId: null,
-    activeSessionIdRef: ref<string | null>(null),
+    activeSessionId,
+    activeSessionIdRef: ref(activeSessionId),
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
-    getRoutedStoredSessionId: () => null,
+    getRoutedStoredSessionId: () => selectedStoredSessionId,
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
-    selectedStoredSessionId: null,
-    selectedStoredSessionIdRef: ref<string | null>(null),
+    runtimeIdByStoredSessionIdRef: ref(runtimeIdByStoredSessionId),
+    selectedStoredSessionId,
+    selectedStoredSessionIdRef: ref(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
-    updateSessionState: () => ({}) as ClientSessionState
+    updateSessionState
   })
 
   useEffect(() => {
@@ -169,6 +183,133 @@ function StoredIdRotationHarness({
 
   return null
 }
+
+describe('removeSession', () => {
+  afterEach(() => {
+    cleanup()
+    clearAllPrompts()
+    clearClarifyRequest()
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    setSessions([])
+    vi.restoreAllMocks()
+  })
+
+  it('interrupts an active turn and clears its prompts before deleting the stored session', async () => {
+    const storedSessionId = 'stored-delete'
+    const runtimeSessionId = 'runtime-delete'
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      // Simulate an approval event already in flight when the interrupt starts.
+      // Clearing after the RPC settles must remove this late arrival too.
+      if (method === 'session.interrupt') {
+        setApprovalRequest({ command: 'rm other', description: 'Late approval', sessionId: runtimeSessionId })
+      }
+
+      return {} as never
+    })
+
+    const updateSessionState = vi.fn(
+      (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+        expect(sessionId).toBe(runtimeSessionId)
+        const next = updater({ interrupted: false, needsInput: true } as ClientSessionState)
+        expect(next).toMatchObject({ interrupted: true, needsInput: false })
+        calls.push('markInterrupted')
+
+        return next
+      }
+    )
+
+    vi.mocked(deleteSession).mockImplementation(async () => {
+      calls.push('deleteSession')
+
+      return { ok: true }
+    })
+
+    setSessions([storedSession({ id: storedSessionId, is_active: true })])
+    setActiveSessionId(runtimeSessionId)
+    setSelectedStoredSessionId(storedSessionId)
+    setApprovalRequest({ command: 'rm file', description: 'Remove file', sessionId: runtimeSessionId })
+    setClarifyRequest({ choices: ['Yes'], question: 'Continue?', requestId: 'clarify-1', sessionId: runtimeSessionId })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={runtimeSessionId}
+        onReady={next => (handle = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionId={new Map([[storedSessionId, runtimeSessionId]])}
+        selectedStoredSessionId={storedSessionId}
+        updateSessionState={updateSessionState}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.removeSession(storedSessionId)
+    })
+
+    expect(calls).toEqual(['markInterrupted', 'session.interrupt', 'session.close', 'deleteSession'])
+    expect(sessionApprovalRequest(runtimeSessionId).get()).toBeNull()
+    expect($clarifyRequests.get()[runtimeSessionId]).toBeUndefined()
+  })
+
+  it('rolls back the deletion when the active turn cannot be interrupted', async () => {
+    const storedSessionId = 'stored-interrupt-failure'
+    const runtimeSessionId = 'runtime-interrupt-failure'
+    const states: Array<Pick<ClientSessionState, 'interrupted' | 'needsInput'>> = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.interrupt') {
+        throw new Error('gateway unavailable')
+      }
+
+      return {} as never
+    })
+
+    const updateSessionState = vi.fn(
+      (_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+        const next = updater((states.at(-1) ?? { interrupted: false, needsInput: true }) as ClientSessionState)
+        states.push({ interrupted: next.interrupted, needsInput: next.needsInput })
+
+        return next
+      }
+    )
+
+    setSessions([storedSession({ id: storedSessionId, is_active: true })])
+    setActiveSessionId(runtimeSessionId)
+    setSelectedStoredSessionId(storedSessionId)
+    vi.mocked(deleteSession).mockClear()
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={runtimeSessionId}
+        onReady={next => (handle = next)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId={storedSessionId}
+        updateSessionState={updateSessionState}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.removeSession(storedSessionId)
+    })
+
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: runtimeSessionId })
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect(states).toEqual([
+      { interrupted: true, needsInput: false },
+      { interrupted: false, needsInput: true }
+    ])
+    expect($sessions.get().some(session => session.id === storedSessionId)).toBe(true)
+  })
+})
 
 describe('active stored-session id rotation routing', () => {
   afterEach(() => {

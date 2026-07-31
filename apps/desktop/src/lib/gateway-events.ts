@@ -39,6 +39,14 @@ const UNSCOPED_STREAM_EVENT_TYPES = new Set([
 ])
 
 const UNSCOPED_STREAM_END_EVENT_TYPES = new Set(['error', 'message.complete'])
+const BLOCKING_PROMPT_EVENT_TYPES = new Set(['approval.request', 'clarify.request', 'secret.request', 'sudo.request'])
+
+/** Blocking prompts emitted after a turn was interrupted are stale. The
+ * backend is already resolving their wait as denied/empty, so rendering them
+ * can only resurrect input UI (and native actions) for a stopped turn. */
+export function isBlockingPromptEvent(eventType: string | undefined): boolean {
+  return Boolean(eventType && BLOCKING_PROMPT_EVENT_TYPES.has(eventType))
+}
 
 /**
  * Whether an unscoped event (no `session_id`) must be dropped rather than

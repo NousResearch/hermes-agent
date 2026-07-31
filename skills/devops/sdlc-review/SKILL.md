@@ -1,141 +1,163 @@
 ---
 name: sdlc-review
-description: >-
-  Review Kanban tasks spawned from the review lane. Verify the implementer
-  handoff and choose approve, request changes, or escalate.
-tags:
-  - kanban
-  - review
-  - quality
-  - verification
+description: Review Kanban handoffs and route verified outcomes.
+version: 1.0.0
+author: Jakub Wolniewicz (@frizikk) + Hermes Agent
+license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [kanban, review, quality, verification]
+    category: devops
+    requires_toolsets: [kanban]
 environments:
   - kanban
 ---
 
-# Kanban Review Skill
+# SDLC Review Skill
 
-You have been spawned as a **reviewer** for a Kanban task that the implementer
-submitted for review. Your job is to independently verify the work and reach a
-verdict: **approve**, **request changes**, or **escalate**.
+Independently verify work handed from a Kanban implementation run to the review lane, then approve it, request changes, or escalate. This skill reviews the deliverable and its evidence; it does not take over the implementer's work.
 
-## How you got here
+## When to Use
 
-1. An implementer agent finished its work and called
-   ``kanban_request_review(summary=..., metadata=...)`` instead of
-   ``kanban_complete``.
-2. The task transitioned ``running → review``.
-3. The dispatcher claimed it and spawned you (with this skill loaded).
+Use this skill when all of the following are true:
 
-## Orientation
+- the dispatcher spawned you for a task claimed from the `review` lane;
+- an implementer submitted a `review_requested` handoff;
+- the task needs an independent verdict before it can be completed.
 
-1. **Call ``kanban_show()`` first.** The response includes:
-   - The task title and body (the original spec / acceptance criteria).
-   - The implementer's handoff ``summary`` and ``metadata`` from the
-     ``review_requested`` event — what they claim to have done.
-   - The comment thread (may contain design decisions, constraints).
-   - Prior runs (attempt history — useful if this is a re-review).
+Do not use it for a separate downstream review card. A downstream card is ordinary implementation work with a review-oriented specification and completes through its own lifecycle.
 
-2. **Understand what was asked vs what was done.** Read the acceptance criteria
-   in the task body. Read the implementer's summary. Note any gaps between the
-   two before you start verifying.
+## Prerequisites
 
-## Verification
+- A Kanban worker context with the current task and run identifiers.
+- Native Kanban tools: `kanban_show`, `kanban_comment`, `kanban_complete`, `kanban_request_changes`, and `kanban_block`.
+- Workspace access through `read_file`, `search_files`, and `terminal` when the deliverable is code.
+- The task's original specification, acceptance criteria, handoff summary, and prior run history must be available through `kanban_show`.
 
-### For code changes
+## How to Run
 
-1. **Review the diff.** If the implementer provided a ``diff_path`` in metadata,
-   read it. Otherwise, find the changed files (``metadata.changed_files``) and
-   read them in the workspace. Check:
-   - Does the code do what the acceptance criteria require?
-   - Are there obvious bugs, edge cases, or error paths not handled?
-   - Does the code follow existing conventions in the file/project?
-   - Are there unused imports, dead code, or leftover debug statements?
+This skill is loaded automatically by the review dispatcher. Start with `kanban_show` before inspecting files or choosing a verdict.
 
-2. **Run the tests / linter** if available:
-   - ``flutter analyze``, ``pytest``, ``ruff``, ``eslint``, etc.
-   - If tests were listed as passing in metadata, spot-check by running them.
-   - If no tests exist, verify the change manually by reading the logic.
+1. Read the task specification and the latest `review_requested` handoff.
+2. Inspect the actual deliverable and run relevant verification.
+3. Choose exactly one verdict: approve, request changes, or escalate.
+4. Record concrete evidence in the terminal Kanban transition.
 
-3. **Check for scope creep.** Did the implementer change files outside the
-   task's scope? Flag unrelated changes in your review comment.
+## Quick Reference
 
-### For non-code work
+| Verdict | When | Final action |
+|---|---|---|
+| Approve | Acceptance criteria and verification pass | `kanban_complete` |
+| Request changes | Correctable implementation defects remain | `kanban_comment`, then `kanban_request_changes` |
+| Escalate | A human decision or external prerequisite is required | `kanban_block` |
 
-1. Verify the deliverable matches what the task body asked for.
-2. Check data quality, formatting, completeness.
-3. Validate any URLs, references, or external links the work depends on.
+A requested-changes transition returns the task to its original implementer. When that implementer requests review again without naming a reviewer, the persisted reviewer provenance routes the re-review back to the same reviewer profile.
 
-## Verdict
+## Procedure
 
-Choose **one** of these three outcomes:
+### 1. Orient from the durable task record
 
-### ✅ Approve → task complete
+Call `kanban_show` and identify:
 
-The work meets all acceptance criteria. Call:
+- the original task body and acceptance criteria;
+- the latest implementation summary and structured metadata;
+- changed files, commit identifiers, and test evidence;
+- comments and decisions from earlier runs;
+- findings from prior review rounds.
 
-```
+Treat the handoff as a claim to verify, not as proof that the work is correct.
+
+### 2. Compare requested behavior with delivered behavior
+
+Map every acceptance criterion to concrete implementation or output evidence. Note omissions, changed semantics, and unrelated scope before deciding whether to run deeper checks.
+
+For code work:
+
+1. Use `read_file` and `search_files` to inspect the changed paths and their callers.
+2. Use `terminal` to inspect the diff and run the project's existing focused tests, lint, type checks, or build commands.
+3. Exercise the reported failure path and at least one ordinary control path when practical.
+4. Check error handling, edge cases, concurrency boundaries, data preservation, security boundaries, and cross-platform behavior relevant to the change.
+5. Confirm that tests assert behavior rather than merely snapshotting source text or constants.
+
+For non-code work:
+
+1. Inspect the complete deliverable rather than only its summary.
+2. Check correctness, completeness, formatting, and provenance.
+3. Validate referenced URLs or external facts with the appropriate native tools when they affect the verdict.
+
+### 3. Choose one verdict
+
+#### Approve
+
+Approve only when the acceptance criteria are satisfied and the evidence is sufficient. Call:
+
+```text
 kanban_complete(
-    summary="Reviewed and approved. <1-2 sentences on what was verified>",
+    summary="Reviewed and approved. <what was verified>",
     metadata={"review_outcome": "approved", "reviewer_checks": [...]}
 )
 ```
 
-This transitions ``review → done``. The task is complete.
+Include the exact checks that passed and any bounded caveat that does not block acceptance.
 
-### ❌ Request changes → back to implementer
+#### Request changes
 
-The work needs fixes before it can be approved. Write a detailed comment
-explaining exactly what needs to change, then call:
+Use this for specific, correctable defects. First record actionable findings:
 
-```
+```text
 kanban_comment(
     task_id="<current-task-id>",
-    body="Changes requested:\n1. <specific issue>\n2. <specific issue>",
+    body="Changes requested:\n1. <file or artifact + defect>\n2. <required correction>",
 )
-kanban_request_changes(reason="Changes requested: <one-line summary of issues>")
 ```
 
-This transitions ``running → ready``, reassigns the task back to the
-original implementer (looked up from the review event), and lets the
-dispatcher respawn them automatically. No human intervention needed —
-the loop closes itself. When the implementer re-submits for review,
-you'll be spawned again to re-review.
+Then return the same task to its implementer:
 
-**Be specific** in your change requests. Don't write "the code needs work" —
-write "the `_AlnavBookmarkTile` widget doesn't handle null `message.subject`,
-add a fallback like the NAVADMIN tile has at line 45."
-
-### ⚠️ Escalate → human needed
-
-The task has a fundamental problem that can't be fixed by the implementer
-alone (wrong approach, missing requirements, ambiguous spec). Block with:
-
+```text
+kanban_request_changes(
+    reason="<concise summary of the required corrections>"
+)
 ```
-kanban_block(reason="escalation: <what needs a human decision>")
+
+State where the defect is, how it reproduces, why it violates the task, and what minimum outcome would resolve it. The transition does not use blocker recurrence accounting.
+
+#### Escalate
+
+Use escalation only when the reviewer and implementer cannot resolve the problem without a human decision or external prerequisite:
+
+```text
+kanban_block(
+    reason="escalation: <decision or prerequisite required>"
+)
 ```
+
+Explain the blocked decision and the smallest information needed to continue.
+
+### 4. Preserve role separation
+
+Do not edit the implementation while acting as reviewer. Request changes and let the implementer produce the next candidate; then independently verify that candidate in the next review run.
 
 ## Pitfalls
 
-- **Don't rubber-stamp.** Actually read the code / deliverable. The whole
-  point of a review phase is independent verification, not a second pair of
-  eyes that glances and approves.
+- **Rubber-stamping:** A passing handoff summary is not independent evidence.
+- **Reviewer implementation:** Editing the deliverable hides ownership and weakens the re-review boundary.
+- **Vague findings:** “Needs work” does not give the implementer a reproducible correction target.
+- **Style-only blocking:** Do not request changes for preference-level nits when behavior and repository standards are satisfied.
+- **Skipping prior rounds:** Re-review must confirm both the requested corrections and preservation of previously passing behavior.
+- **Using blockers for ordinary rework:** Correctable defects belong in `kanban_request_changes`; reserve `kanban_block` for genuine external blockers or human decisions.
+- **Completing without evidence:** Every approval summary must name the checks or artifacts actually inspected.
 
-- **Don't fix the code yourself.** If you find bugs, request changes — don't
-  edit the files. Your job is verification, not implementation. The
-  implementer fixes; you verify the fix.
+## Verification
 
-- **Don't complete without checking acceptance criteria.** Read the task body.
-  If the spec says "3 things" and the summary says "done", verify all 3.
+Before submitting the verdict, confirm:
 
-- **Don't block for style nits.** If the code is correct and follows
-  conventions, approve. Save "request changes" for things that would break or
-  mislead — wrong logic, missing error handling, incomplete acceptance criteria.
-
-## What a good review looks like
-
-**Bad:** "Looks good, approved."
-
-**Good:** "Reviewed the diff — `_AlnavBookmarkTile` correctly mirrors the
-NAVADMIN pattern with Dismissible, proper `removeBookmark(id, 'alnav')` call,
-and navigation to `AlnavDetailScreen`. Empty state text updated. Ran
-`flutter analyze` — 0 issues. All 6 acceptance criteria verified."
+- [ ] `kanban_show` was read for the current task and run.
+- [ ] Every acceptance criterion was mapped to evidence.
+- [ ] The actual deliverable was inspected.
+- [ ] Relevant focused checks were run or an explicit reason was recorded when execution was impossible.
+- [ ] Prior requested changes were re-tested on re-review.
+- [ ] Unrelated regressions and scope changes were considered.
+- [ ] The verdict uses exactly one terminal action.
+- [ ] The summary contains concrete, non-secret evidence.
+- [ ] No implementation files were edited by the reviewer.

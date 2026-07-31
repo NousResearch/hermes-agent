@@ -235,6 +235,24 @@ class TestTruncateSnapshot:
         assert str(hermes_home) not in result
         assert '[ref=e499]' in stored_files[0].read_text(encoding="utf-8")
 
+    def test_truncation_keeps_local_cache_path(self, tmp_path, monkeypatch):
+        from tools.browser_tool import _truncate_snapshot
+
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        snapshot = "\n".join(
+            f'- item "Element {i}" [ref=e{i}]' for i in range(500)
+        )
+
+        result = _truncate_snapshot(snapshot, max_chars=2000)
+
+        stored_file = next(
+            (hermes_home / "cache" / "web").glob("browser-snapshot-*.txt")
+        )
+        assert str(stored_file) in result
+        assert "/root/.hermes/cache/web/" not in result
+
     def test_stored_snapshot_is_secret_redacted(self):
         """Page-rendered secrets must not land unmasked on disk."""
         from pathlib import Path

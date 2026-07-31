@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+import tools.credential_files as credential_files
 from tools.credential_files import (
     clear_credential_files,
     get_credential_file_mounts,
@@ -394,6 +395,19 @@ class TestCacheDirectoryMounts:
             map_cache_path_to_container(str(upload))
             == "/root/.hermes/images/upload_20260722_181019_1.png"
         )
+
+    def test_create_missing_prepares_all_mount_sources(self, tmp_path, monkeypatch):
+        """Container creation can establish mounts before cache producers run."""
+        hermes_home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_cache_directory_mounts(create_missing=True)
+
+        assert {mount["container_path"] for mount in mounts} == {
+            f"/root/.hermes/{subpath}"
+            for subpath, _old_name in credential_files._CACHE_DIRS
+        }
+        assert all(Path(mount["host_path"]).is_dir() for mount in mounts)
 
 
 class TestMapCachePathToContainer:

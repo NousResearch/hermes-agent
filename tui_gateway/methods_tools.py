@@ -796,11 +796,10 @@ def _(rid, params: dict) -> dict:
             return _ok(
                 rid,
                 {
-                    "type": "exec",
-                    "output": (
-                        f"▶ Goal resumed: {state.goal}\n"
-                        "Send any message to continue, or wait — I'll take the next step on the next turn."
-                    ),
+                    "type": "send",
+                    "notice": f"▶ Goal resumed: {state.goal}",
+                    "message": mgr.next_continuation_prompt() or state.goal,
+                    "display": "/goal resume",
                 },
             )
         if lower in {"clear", "stop", "done"}:

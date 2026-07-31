@@ -105,6 +105,43 @@ def test_goal_bare_shows_status_when_none_set(server, session):
     assert "No active goal" in r["result"]["output"]
 
 
+def test_goal_resume_after_budget_exhaustion_dispatches_next_turn(server, session):
+    """Desktop /goal resume must restart work without another user message."""
+    from hermes_cli import goals
+
+    sid, session_key, _ = session
+    mgr = goals.GoalManager(session_id=session_key, default_max_turns=1)
+    mgr.set("finish the release")
+
+    with patch.object(
+        goals,
+        "judge_goal",
+        return_value=("continue", "more work remains", False, None, False),
+    ):
+        decision = mgr.evaluate_after_turn("I still need to verify the release")
+
+    assert decision["status"] == "paused"
+    assert mgr.state is not None
+    assert mgr.state.turns_used == 1
+    assert mgr.state.paused_reason == "turn budget exhausted (1/1)"
+
+    response = _call(
+        server, "command.dispatch", name="goal", arg="resume", session_id=sid
+    )
+
+    assert response["result"]["type"] == "send"
+    assert "Goal resumed: finish the release" in response["result"]["notice"]
+    assert response["result"]["display"] == "/goal resume"
+    assert (
+        response["result"]["message"]
+        == goals.GoalManager(session_key).next_continuation_prompt()
+    )
+    resumed = goals.GoalManager(session_key).state
+    assert resumed is not None
+    assert resumed.status == "active"
+    assert resumed.turns_used == 0
+
+
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 

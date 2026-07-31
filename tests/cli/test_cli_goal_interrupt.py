@@ -80,8 +80,11 @@ class TestInterruptAutoPause:
             cli._maybe_continue_goal_after_turn()
         assert mgr.state.status == "paused"
 
-        mgr.resume()
+        cli._handle_goal_command("/goal resume")
+        assert mgr.state is not None
         assert mgr.state.status == "active"
+        assert mgr.state.turns_used == 0
+        assert cli._pending_input.get_nowait() == mgr.next_continuation_prompt()
 
 
 

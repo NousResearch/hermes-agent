@@ -392,17 +392,34 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
-    # Gemini's generateContent requires strict user/model alternation;
-    # consecutive same-role contents are rejected with HTTP 400 "Please ensure
-    # that multiturn requests alternate between user and model". The loop above
-    # emits one content per source message, so parallel tool calls (N tool
-    # results become N user functionResponse contents), back-to-back user turns,
-    # or merged assistant turns would each violate that. Merge adjacent
-    # same-role contents by concatenating their parts. For parallel calls this
-    # also produces the grouped multi-functionResponse turn Gemini expects.
+    # Compatibility contract for native Gemini generateContent:
+    # 1) Same-role adjacent contents still merge in general (strict user/model
+    #    alternation for ordinary text turns and parallel tool-result grouping).
+    # 2) Exception: do NOT merge a human user text turn into a preceding user
+    #    content that only carries functionResponse parts (or vice versa).
+    #    Gemini 3 accepts that fold with HTTP 200 but then returns an empty
+    #    model response; keeping the boundary emits two consecutive user
+    #    contents, which current Gemini APIs accept for this specific case.
+    # 3) Parallel tool results (functionResponse + functionResponse) still
+    #    merge into one user content — only mixed functionResponse/text is split.
     merged_contents: List[Dict[str, Any]] = []
     for content in contents:
-        if merged_contents and merged_contents[-1]["role"] == content["role"]:
+        same_role = bool(
+            merged_contents and merged_contents[-1]["role"] == content["role"]
+        )
+        if same_role and content["role"] == "user":
+            previous_has_function_response = any(
+                isinstance(part, dict) and "functionResponse" in part
+                for part in merged_contents[-1].get("parts", [])
+            )
+            current_has_function_response = any(
+                isinstance(part, dict) and "functionResponse" in part
+                for part in content.get("parts", [])
+            )
+            if previous_has_function_response != current_has_function_response:
+                same_role = False
+
+        if same_role:
             merged_contents[-1]["parts"].extend(content["parts"])
         else:
             merged_contents.append(content)

@@ -1,5 +1,4 @@
 import type * as React from 'react'
-import { useState } from 'react'
 
 import { ActionsContextMenu, ActionsMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -7,11 +6,11 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { openWorktreeDialog } from '@/store/coding-status'
 import { copyPath, revealPath } from '@/store/projects'
 
 import { SidebarRowLead } from '../chrome'
 
-import { WorktreeDialog } from './worktree-dialog'
 
 // Branch/worktree labels routinely share a long prefix (`bb/coding-context-…`),
 // so plain end-truncation (`truncate`) hides exactly the suffix that tells two
@@ -158,25 +157,23 @@ export function WorkspaceContextMenu({
 // inside it. Naming is explicit — no auto-generated `hermes/work-<ts>` trees.
 // The base branch defaults to the remote default (origin/HEAD); the user can
 // pick any local or remote-tracking branch via a filterable combobox.
-export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onStarted: (path: string) => void }) {
+export function StartWorkButton({ repoPath }: { repoPath: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
-  const [open, setOpen] = useState(false)
 
   return (
-    <>
-      <Tip label={p.startWork}>
-        <button
-          aria-label={p.startWork}
-          className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
-          onClick={() => setOpen(true)}
-          type="button"
-        >
-          <Codicon name="git-branch" size="0.75rem" />
-        </button>
-      </Tip>
-      <WorktreeDialog onOpenChange={setOpen} onStarted={onStarted} open={open} repoPath={repoPath} />
-    </>
+    <Tip label={p.startWork}>
+      <button
+        aria-label={p.startWork}
+        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
+        // Publish the intent. The one WorktreeDialog in the sidebar renders it.
+        // This button pins its own repo, so it targets this section.
+        onClick={() => void openWorktreeDialog({ repoPath })}
+        type="button"
+      >
+        <Codicon name="git-branch" size="0.75rem" />
+      </button>
+    </Tip>
   )
 }
 

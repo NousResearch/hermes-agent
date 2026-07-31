@@ -1598,6 +1598,9 @@ export interface Translations {
       baseBranchPlaceholder: string
       baseBranchNone: string
       startWorkFailed: string
+      worktreeProjectLabel: string
+      worktreeProjectPlaceholder: string
+      worktreeProjectNone: string
       convertBranch: string
       convertBranchTitle: string
       convertBranchDesc: string

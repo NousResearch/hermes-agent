@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -11,12 +12,22 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { SanitizedInput } from '@/components/ui/sanitized-input'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
 import { gitRef } from '@/lib/sanitize'
 import { notifyError } from '@/store/notifications'
-import { listRepoBranches, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
+import {
+  $projectTree,
+  $worktreeDialog,
+  closeWorktreeDialog,
+  listRepoBranches,
+  projectRootCwd,
+  requestStartWorkSession,
+  startWorkInRepo,
+  switchBranchInRepo
+} from '@/store/projects'
 
 import { BaseBranchPicker } from './base-branch-picker'
 
@@ -34,50 +45,77 @@ const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
   return branch.isDefault ? copy.branchSwitchHome : copy.branchCreateWorktree
 }
 
-export interface WorktreeDialogProps {
-  /** Repo root path for git operations. */
-  repoPath: string
-  /** Called with the new/converted worktree path on success. */
-  onStarted: (path: string) => void
-  /** Controlled open state. */
-  open: boolean
-  /** Called when the user requests the dialog to close (cancel, Esc, backdrop). */
-  onOpenChange: (open: boolean) => void
-  /** Pre-select a base branch when opening (from "branch off from X" menus). */
-  initialBase?: string
-}
-
 /**
- * Shared "new worktree" dialog — used by the sidebar's StartWorkButton and the
- * composer's ⌘⇧B shortcut. Features:
- * - Branch name input (sanitized as a git ref)
- * - Base branch picker (filterable combobox — the sidebar's BaseBranchPicker)
- * - Convert mode: check out an existing branch into a worktree
+ * The "new worktree" dialog. It is mounted exactly once, in the sidebar beside
+ * ProjectDialog, and the `$worktreeDialog` atom drives it. Every entry point
+ * (⌘⇧B, the kebab of the coding rail, the + button of the sidebar) publishes
+ * its intent to that atom. No entry point mounts its own copy. N composers on
+ * screen gave N stacked dialogs for one keypress.
  *
- * The caller owns the open state so both the sidebar button and the global
- * hotkey can trigger the same dialog instance.
+ * Features:
+ * - Project picker: change the repo before you name the branch
+ * - Branch name input, made safe as a git ref
+ * - Base branch picker: a combobox with a filter
+ * - Convert mode: check an existing branch out into a worktree
  */
-export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initialBase }: WorktreeDialogProps) {
+export function WorktreeDialog() {
   const { t } = useI18n()
   const p = t.sidebar.projects
+  const state = useStore($worktreeDialog)
+  const open = state !== null
+  const projectTree = useStore($projectTree)
+
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
   const [convertMode, setConvertMode] = useState(false)
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [selectedBase, setSelectedBase] = useState('')
+  // The repo that the dialog targets. It is seeded from the resolved intent.
+  // This component then owns it, so the project picker can change the target
+  // and the user does not reopen the dialog.
+  const [repoPath, setRepoPath] = useState('')
+  const [projectOpen, setProjectOpen] = useState(false)
 
-  // Reset to a fresh state each time the dialog opens, applying any pre-selected
-  // base branch from the caller (e.g. "branch off from main" in the coding row's
-  // dropdown menu). When `initialBase` changes while open (shouldn't happen in
-  // practice), the effect re-syncs.
+  // Every project with a working root is a valid target. The list is deduped by
+  // path, because an auto project and a user project can share one folder.
+  const projectOptions = useMemo(() => {
+    const seen = new Set<string>()
+
+    return projectTree.flatMap(node => {
+      const path = projectRootCwd(node)
+
+      if (!path || seen.has(path)) {
+        return []
+      }
+
+      seen.add(path)
+
+      return [{ label: node.label, path }]
+    })
+  }, [projectTree])
+
+  const activeProjectLabel =
+    projectOptions.find(option => option.path === repoPath)?.label ?? repoPath.split('/').pop() ?? repoPath
+
+  // Reset to a fresh state each time the dialog opens. Apply the resolved repo
+  // and the base branch that the caller selected, for example "branch off from
+  // main" in the dropdown menu of the coding row.
   useEffect(() => {
-    if (open) {
+    if (state) {
       setName('')
       setConvertMode(false)
-      setSelectedBase(initialBase ?? '')
+      setSelectedBase(state.base ?? '')
+      setRepoPath(state.repoPath)
+      setBranches([])
     }
-  }, [open, initialBase])
+  }, [state])
+
+  const onOpenChange = (next: boolean) => {
+    if (!next && !pending) {
+      closeWorktreeDialog()
+    }
+  }
 
   const loadBranches = useCallback(async () => {
     if (!repoPath) {
@@ -95,6 +133,12 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
     }
   }, [repoPath])
 
+  // Give the new worktree to a fresh session, then close the dialog.
+  const started = (path: string) => {
+    requestStartWorkSession(path)
+    closeWorktreeDialog()
+  }
+
   const submit = async () => {
     const branch = name.trim()
 
@@ -108,8 +152,7 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
       const result = await startWorkInRepo(repoPath, { base: selectedBase || undefined, branch, name: branch })
 
       if (result) {
-        onStarted(result.path)
-        onOpenChange(false)
+        started(result.path)
         setName('')
       }
     } catch (err) {
@@ -139,8 +182,7 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
       }
 
       if (result) {
-        onStarted(result.path)
-        onOpenChange(false)
+        started(result.path)
       }
     } catch (err) {
       notifyError(err, p.startWorkFailed)
@@ -155,12 +197,66 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
   }
 
   return (
-    <Dialog onOpenChange={next => !pending && onOpenChange(next)} open={open}>
+    <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{convertMode ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
           <DialogDescription>{convertMode ? p.convertBranchDesc : p.newWorktreeDesc}</DialogDescription>
         </DialogHeader>
+
+        {/* Project picker: change the repo that the worktree is cut from. Show
+            it only when there is another project to select. */}
+        {projectOptions.length > 1 && (
+          <Popover onOpenChange={setProjectOpen} open={projectOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                className="group w-full flex justify-start items-center min-w-0 gap-1.5 hover:no-underline hover:text-muted-foreground"
+                disabled={pending}
+                size="inline"
+                variant="text"
+              >
+                <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="folder" size="0.8rem" />
+                <span className="shrink-0">{p.worktreeProjectLabel}</span>
+                <span className="truncate text-primary underline-offset-4 decoration-current/20 group-hover:underline">
+                  {activeProjectLabel}
+                </span>
+                <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.75rem" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="z-(--z-modal-popover) min-w-(--radix-popover-trigger-width) p-0">
+              <Command
+                filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
+              >
+                <CommandInput autoFocus placeholder={p.worktreeProjectPlaceholder} />
+                <CommandList className="max-h-64">
+                  <CommandEmpty>{p.worktreeProjectNone}</CommandEmpty>
+                  <CommandGroup>
+                    {projectOptions.map(option => (
+                      <CommandItem
+                        key={option.path}
+                        onSelect={() => {
+                          setRepoPath(option.path)
+                          // The new repo has its own branches. Drop the old
+                          // list and the old base, so nothing stale stays.
+                          setBranches([])
+                          setSelectedBase('')
+                          setProjectOpen(false)
+                        }}
+                        value={`${option.label} ${option.path}`}
+                      >
+                        <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.8rem" />
+                        <span className="truncate">{option.label}</span>
+                        {option.path === repoPath && (
+                          <Codicon className="ml-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
+                        )}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        )}
 
         {convertMode ? (
           <Command
@@ -208,6 +304,9 @@ export function WorktreeDialog({ repoPath, onStarted, open, onOpenChange, initia
             />
             <BaseBranchPicker
               disabled={pending}
+              // Remount on a repo change, so the picker loads the branches of
+              // the new repo and does not show those of the previous project.
+              key={repoPath}
               onValueChange={setSelectedBase}
               repoPath={repoPath}
               value={selectedBase}

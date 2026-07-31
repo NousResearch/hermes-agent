@@ -265,3 +265,19 @@ def test_known_key_explicitly_set_in_user_env_is_kept(tmp_path, monkeypatch):
     load_hermes_dotenv(hermes_home=home)
 
     assert os.getenv("HERMES_ACP_AUTH_METHOD") == "claude_code_cli"
+
+
+def test_export_prefixed_known_key_in_user_env_is_kept(tmp_path, monkeypatch):
+    """A known Hermes key defined with the bash-compatible ``export KEY=value``
+    form in the profile .env must be recognized as defined and survive the
+    cleanup - mirrors the ``export `` stripping in config.py's load_env()
+    (#6659).
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text(
+        "export HERMES_ACP_AUTH_METHOD=claude_code_cli\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+    load_hermes_dotenv(hermes_home=home)
+    assert os.getenv("HERMES_ACP_AUTH_METHOD") == "claude_code_cli"

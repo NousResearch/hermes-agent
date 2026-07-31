@@ -84,6 +84,8 @@ def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.startswith("export "):
+            line = line[7:]
         key = line.split("=", 1)[0].strip()
         if key:
             keys.add(key)

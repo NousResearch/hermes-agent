@@ -194,6 +194,33 @@ Retrieve a previously stored response by ID.
 
 Delete a stored response.
 
+### GET /api/sessions/\{session_id\}/messages
+
+Returns persisted session messages in insertion order. By default only active messages are visible, preserving the legacy response while keeping context-compacted and rewound rows hidden.
+
+Query parameters:
+
+- `limit` — maximum messages to return (clamped to 500). Omit it for an unbounded response.
+- `offset` — zero-based offset from the start of the visible transcript.
+- `include_compacted` — when `true`, include compression-archived turns while still excluding rewound or undone rows.
+- `from_end` — when `true` and `limit` is present, ignore `offset` and select the newest page while preserving chronological order within the page.
+
+```json
+{
+  "object": "list",
+  "session_id": "session-id",
+  "data": [{"id": 42, "role": "assistant", "content": "..."}],
+  "pagination": {
+    "limit": 100,
+    "offset": 240,
+    "returned": 100,
+    "total": 340
+  }
+}
+```
+
+`pagination.total` counts messages under the requested visibility mode, so clients can page backward from a `from_end` response without accidentally exposing rewound history.
+
 ### GET /v1/models
 
 Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.

@@ -396,10 +396,36 @@ export const api = {
       ),
     );
   },
-  getSessionMessages: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionMessagesResponse>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
-    ),
+  getSessionMessages: (
+    id: string,
+    profileOrOptions: string | SessionMessageQuery = {},
+    profile = getManagementProfile(),
+  ) => {
+    const options =
+      typeof profileOrOptions === "string" ? {} : profileOrOptions;
+    const resolvedProfile =
+      typeof profileOrOptions === "string" ? profileOrOptions : profile;
+    const params = new URLSearchParams();
+    if (options.includeCompacted !== undefined) {
+      params.set("include_compacted", String(options.includeCompacted));
+    }
+    if (options.fromEnd !== undefined) {
+      params.set("from_end", String(options.fromEnd));
+    }
+    if (options.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    if (options.offset !== undefined) {
+      params.set("offset", String(options.offset));
+    }
+    const query = params.toString();
+    const path =
+      `/api/sessions/${encodeURIComponent(id)}/messages` +
+      (query ? `?${query}` : "");
+    return fetchJSON<SessionMessagesResponse>(
+      appendProfileParam(path, resolvedProfile),
+    );
+  },
   getSessionDetail: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionInfo>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
@@ -2011,9 +2037,22 @@ export interface SessionMessage {
   timestamp?: number;
 }
 
+export interface SessionMessageQuery {
+  includeCompacted?: boolean;
+  fromEnd?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+  pagination: {
+    limit: number | null;
+    offset: number;
+    returned: number;
+    total: number;
+  };
 }
 
 export interface LogsResponse {

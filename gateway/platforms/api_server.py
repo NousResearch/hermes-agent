@@ -3278,11 +3278,40 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = await self._ensure_session_db_async()
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        messages = await asyncio.to_thread(db.get_messages, resolved_id)
+        raw_limit = request.query.get("limit")
+        limit = (
+            self._parse_nonnegative_int(raw_limit, default=500, maximum=500)
+            if raw_limit is not None
+            else None
+        )
+        offset = self._parse_nonnegative_int(
+            request.query.get("offset"), default=0, maximum=1_000_000
+        )
+        include_compacted = _coerce_request_bool(
+            request.query.get("include_compacted"), default=False
+        )
+        from_end = _coerce_request_bool(request.query.get("from_end"), default=False)
+        total = await asyncio.to_thread(
+            db.get_message_count, resolved_id, include_compacted=include_compacted
+        )
+        effective_offset = max(total - limit, 0) if from_end and limit is not None else offset
+        messages = await asyncio.to_thread(
+            db.get_messages,
+            resolved_id,
+            limit=limit,
+            offset=effective_offset,
+            include_compacted=include_compacted,
+        )
         return web.json_response({
             "object": "list",
             "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],
+            "pagination": {
+                "limit": limit,
+                "offset": effective_offset,
+                "returned": len(messages),
+                "total": total,
+            },
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":

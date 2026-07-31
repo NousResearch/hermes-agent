@@ -2636,6 +2636,28 @@ class TestGetMessagesPagination:
         assert [m["content"] for m in page2] == ["msg-4", "msg-5", "msg-6", "msg-7"]
         assert [m["content"] for m in page3] == ["msg-8", "msg-9"]
 
+    def test_include_compacted_excludes_rewound_rows(self, db):
+        self._seed(db, n=6)
+        rows = db.get_messages("s1")
+        db._conn.execute("UPDATE messages SET active = 0 WHERE id = ?", (rows[0]["id"],))
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 1 WHERE id IN (?, ?)",
+            (rows[1]["id"], rows[2]["id"]),
+        )
+        db._conn.commit()
+
+        page = db.get_messages("s1", limit=3, include_compacted=True)
+
+        assert [m["content"] for m in page] == ["msg-1", "msg-2", "msg-3"]
+        assert db.get_message_count("s1", include_compacted=True) == 5
+
+    def test_offset_without_limit_is_honored(self, db):
+        self._seed(db, n=5)
+        assert [m["content"] for m in db.get_messages("s1", offset=3)] == [
+            "msg-3",
+            "msg-4",
+        ]
+
 
 
 

@@ -76,6 +76,38 @@ async def test_capabilities_advertises_session_control_surface(adapter):
 
 
 @pytest.mark.asyncio
+async def test_session_messages_pages_compacted_history_from_end(adapter, session_db):
+    session_db.create_session("long-chat", "api_server")
+    session_db.append_message("long-chat", "user", "old")
+    session_db.append_message("long-chat", "assistant", "old reply")
+    session_db.archive_and_compact(
+        "long-chat", [{"role": "system", "content": "summary"}]
+    )
+    session_db.append_message("long-chat", "user", "recent")
+    session_db.append_message("long-chat", "assistant", "recent reply")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get(
+            "/api/sessions/long-chat/messages"
+            "?include_compacted=true&from_end=true&limit=2"
+        )
+        assert response.status == 200
+        payload = await response.json()
+
+    assert [message["content"] for message in payload["data"]] == [
+        "recent",
+        "recent reply",
+    ]
+    assert payload["pagination"] == {
+        "limit": 2,
+        "offset": 3,
+        "returned": 2,
+        "total": 5,
+    }
+
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

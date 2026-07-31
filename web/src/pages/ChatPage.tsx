@@ -1058,8 +1058,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           : decoder.decode(new Uint8Array(ev.data as ArrayBuffer), {
               stream: true,
             });
-      term.write(resumeParam ? sanitizer.next(text) : text);
-      noteResumePtyChunk(text);
+      // Gate hydration on the payload actually written to xterm. The
+      // sanitizer can turn a nonempty erase-only / all-newline / partial-CSI
+      // resume frame into "" (pty-resume-sanitizer.ts); keying off raw `text`
+      // would hide the wait notice while the terminal is still blank.
+      const rendered = resumeParam ? sanitizer.next(text) : text;
+      term.write(rendered);
+      noteResumePtyChunk(rendered);
     };
 
     ws.onclose = (ev) => {

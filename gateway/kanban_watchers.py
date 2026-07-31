@@ -387,6 +387,12 @@ class GatewayKanbanWatchersMixin:
                             board_slug,
                         )
                         continue
+                    await self._sync_kanban_forum_tags_if_enabled(
+                        adapter=adapter,
+                        platform=platform_str,
+                        sub=sub,
+                        task=task,
+                    )
                     title = (task.title if task else sub["task_id"])[:120]
                     board_tag = f"[{board_slug}] " if board_slug else ""
                     # Per-subscription failure-counter key. Hoisted out of the
@@ -775,6 +781,73 @@ class GatewayKanbanWatchersMixin:
                 if not self._running:
                     return
                 await asyncio.sleep(1)
+
+    def _kanban_forum_tag_sync_settings(self) -> "tuple[bool, dict[str, str]]":
+        """Return Discord Kanban forum-tag sync settings from platform extra.
+
+        Read from ``PlatformConfig.extra["kanban_forum_tag_sync"]`` (alias:
+        ``kanban_forum_tags``). ``extra`` is passthrough config, so this needs
+        no schema change. Default-off: absent/disabled config means no sync.
+        """
+        from gateway.config import Platform as _Platform
+
+        default_status_tags = {
+            "triage": "triage",
+            "todo": "todo",
+            "scheduled": "scheduled",
+            "ready": "ready",
+            "running": "in-progress",
+            "blocked": "blocked",
+            "review": "review",
+            "done": "done",
+            "archived": "done",
+        }
+        cfg = getattr(self, "config", None)
+        platforms = getattr(cfg, "platforms", {}) or {}
+        platform_cfg = platforms.get(_Platform.DISCORD) or platforms.get("discord")
+        extra = getattr(platform_cfg, "extra", {}) if platform_cfg else {}
+        settings = (extra or {}).get("kanban_forum_tag_sync") or (extra or {}).get(
+            "kanban_forum_tags"
+        ) or {}
+        enabled = settings.get("enabled", False)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+        status_tags = (
+            settings.get("status_tags")
+            or settings.get("status_tag_map")
+            or default_status_tags
+        )
+        return bool(enabled), {str(k): str(v) for k, v in dict(status_tags).items()}
+
+    async def _sync_kanban_forum_tags_if_enabled(
+        self,
+        *,
+        adapter: Any,
+        platform: str,
+        sub: dict,
+        task: Any,
+    ) -> None:
+        """Best-effort Kanban status → Discord Forum/Media tag projection.
+
+        Fail-open by construction: any error here is swallowed so a tag-sync
+        problem can never suppress or delay the notification delivery that
+        follows it in ``_kanban_notifier_watcher``.
+        """
+        if platform != "discord" or not sub.get("thread_id") or not task:
+            return
+        sync = getattr(adapter, "sync_kanban_forum_status_tag", None)
+        if sync is None:
+            return
+        try:
+            enabled, status_tag_map = self._kanban_forum_tag_sync_settings()
+            if not enabled:
+                return
+            await sync(str(sub["thread_id"]), str(task.status), status_tag_map)
+        except Exception as exc:  # pragma: no cover - fail-open guard
+            logger.debug(
+                "kanban notifier: forum tag sync skipped for %s/%s: %s",
+                sub.get("task_id"), sub.get("thread_id"), exc,
+            )
 
     def _kanban_advance(
         self, sub: dict, cursor: int, board: Optional[str] = None,

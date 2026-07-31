@@ -134,6 +134,77 @@ class TestIsForumParent:
         assert adapter._is_forum_parent(ch) is True
 
 
+class ForumTag:
+    __slots__ = ("id", "name")
+
+    def __init__(self, tag_id, name):
+        self.id = tag_id
+        self.name = name
+
+
+class ForumThread:
+    def __init__(self, parent):
+        self.parent = parent
+        self.edit = AsyncMock()
+
+    @property
+    def applied_tags(self):
+        return [ForumTag(101, "todo"), ForumTag(201, "RFC")]
+
+
+@pytest.mark.asyncio
+async def test_sync_kanban_forum_status_tag_preserves_forumtag_objects():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    parent = SimpleNamespace(
+        type=SimpleNamespace(value=15),
+        available_tags=[
+            ForumTag(101, "todo"),
+            ForumTag(102, "in-progress"),
+            ForumTag(103, "done"),
+            ForumTag(201, "RFC"),
+        ],
+    )
+    thread = ForumThread(parent)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda cid: thread if int(cid) == 999 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.sync_kanban_forum_status_tag(
+        "999",
+        "running",
+        {"todo": "todo", "running": "in-progress", "done": "done"},
+    )
+
+    assert thread.edit.await_count == 1, result.raw_response
+    kwargs = thread.edit.await_args_list[0].kwargs
+    assert all(not isinstance(tag, int) for tag in kwargs["applied_tags"])
+    assert [str(tag.id) for tag in kwargs["applied_tags"]] == ["201", "102"]
+    assert result.raw_response["applied_tags"] == [201, 102]
+    assert result.raw_response.get("changed") is True
+    assert "skipped" not in result.raw_response
+
+
+@pytest.mark.asyncio
+async def test_sync_kanban_forum_status_tag_noops_for_ordinary_thread():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    thread = ForumThread(SimpleNamespace(type=SimpleNamespace(value=0)))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda cid: thread if int(cid) == 999 else None,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.sync_kanban_forum_status_tag(
+        "999",
+        "running",
+        {"todo": "todo", "running": "in-progress", "done": "done"},
+    )
+
+    assert result.success is True
+    assert result.raw_response["skipped"] == "not_forum_thread"
+    thread.edit.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Forum follow-up chunk failure reporting + media on forum paths
 # ---------------------------------------------------------------------------

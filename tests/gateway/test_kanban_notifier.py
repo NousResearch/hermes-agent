@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 
 
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -18,6 +18,26 @@ class RecordingAdapter:
 
     async def handle_message(self, event):
         self.handled.append(event)
+
+
+class RecordingDiscordAdapter(RecordingAdapter):
+    def __init__(self):
+        super().__init__()
+        self.synced = []
+
+    async def sync_kanban_forum_status_tag(self, thread_id, status, status_tag_map):
+        self.synced.append(
+            {
+                "thread_id": thread_id,
+                "status": status,
+                "status_tag_map": status_tag_map,
+            }
+        )
+
+
+class FailingForumTagSyncDiscordAdapter(RecordingDiscordAdapter):
+    async def sync_kanban_forum_status_tag(self, thread_id, status, status_tag_map):
+        raise RuntimeError("boom")
 
 
 class DisconnectedAdapters(dict):
@@ -48,6 +68,47 @@ def _make_runner(adapter):
     return runner
 
 
+def _make_discord_runner(adapter, *, extra=None):
+    if extra is None:
+        extra = {
+            "kanban_forum_tag_sync": {
+                "enabled": True,
+                "status_tags": {"blocked": "blocked", "done": "done"},
+            }
+        }
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._kanban_sub_fail_counts = {}
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                extra=extra,
+            )
+        }
+    )
+    return runner
+
+
+def _create_completed_discord_subscription():
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="discord forum tag", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="forum-parent-1",
+            thread_id="999",
+        )
+        kb.complete_task(conn, tid, summary="done")
+        return tid
+    finally:
+        conn.close()
+
+
 def _create_completed_subscription(summary="done once"):
     conn = kb.connect()
     try:
@@ -57,6 +118,50 @@ def _create_completed_subscription(summary="done once"):
         return tid
     finally:
         conn.close()
+
+
+def test_kanban_notifier_syncs_discord_forum_tags_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "discord-enabled.db"))
+    kb.init_db()
+    _create_completed_discord_subscription()
+
+    adapter = RecordingDiscordAdapter()
+    runner = _make_discord_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.synced == [
+        {
+            "thread_id": "999",
+            "status": "done",
+            "status_tag_map": {"blocked": "blocked", "done": "done"},
+        }
+    ]
+
+
+def test_kanban_notifier_skips_forum_tag_sync_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "discord-disabled.db"))
+    kb.init_db()
+    _create_completed_discord_subscription()
+
+    adapter = RecordingDiscordAdapter()
+    runner = _make_discord_runner(adapter, extra={})
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.synced == []
+
+
+def test_kanban_notifier_delivers_even_when_forum_tag_sync_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "discord-fail-open.db"))
+    kb.init_db()
+    _create_completed_discord_subscription()
+
+    adapter = FailingForumTagSyncDiscordAdapter()
+    runner = _make_discord_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
 
 
 def _unseen_terminal_events(tid):

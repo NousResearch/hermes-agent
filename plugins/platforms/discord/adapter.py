@@ -3091,6 +3091,84 @@ class DiscordAdapter(BasePlatformAdapter):
             raw_response=raw_response,
         )
 
+    async def sync_kanban_forum_status_tag(
+        self,
+        thread_id: str,
+        status: str,
+        status_tag_map: Dict[str, str],
+    ) -> SendResult:
+        """Project a Kanban status onto a Discord Forum/Media thread tag.
+
+        This is deliberately a best-effort, fail-open helper for Kanban
+        notification flows. It only touches tag IDs named by ``status_tag_map``:
+        unrelated user/forum tags are preserved, configured stale status tags are
+        removed, and the desired status tag is added when the parent Forum/Media
+        channel already defines it. Ordinary text-channel threads no-op.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        desired_name = (status_tag_map or {}).get(status)
+        if not desired_name:
+            return SendResult(success=True, raw_response={"skipped": "unmapped_status"})
+
+        try:
+            thread = self._client.get_channel(int(thread_id))
+            if not thread:
+                thread = await self._client.fetch_channel(int(thread_id))
+            if not thread:
+                return SendResult(success=False, error=f"Thread {thread_id} not found")
+
+            parent = getattr(thread, "parent", None)
+            if not self._is_forum_parent(parent):
+                return SendResult(success=True, raw_response={"skipped": "not_forum_thread"})
+
+            available = list(getattr(parent, "available_tags", None) or [])
+            # Keep the discord.py ForumTag OBJECTS: thread.edit(applied_tags=...)
+            # expects Snowflake-like tag objects, not raw integer ids. All
+            # membership / dedup / equality below goes through ``.id``.
+            tag_by_name: Dict[str, Any] = {}
+            for tag in available:
+                name = str(getattr(tag, "name", "")).casefold()
+                tag_id = getattr(tag, "id", None)
+                if name and tag_id is not None:
+                    tag_by_name[name] = tag
+
+            desired_tag = tag_by_name.get(str(desired_name).casefold())
+            if desired_tag is None:
+                return SendResult(success=True, raw_response={"skipped": "missing_tag"})
+
+            configured_status_ids = {
+                int(getattr(tag, "id"))
+                for name in (status_tag_map or {}).values()
+                for tag in [tag_by_name.get(str(name).casefold())]
+                if tag is not None
+            }
+            current = list(getattr(thread, "applied_tags", None) or [])
+            preserved: list = []
+            preserved_ids: set = set()
+            for tag in current:
+                tag_id = getattr(tag, "id", None)
+                if tag_id is None:
+                    continue
+                tag_id = int(tag_id)
+                if tag_id not in configured_status_ids and tag_id not in preserved_ids:
+                    preserved.append(tag)
+                    preserved_ids.add(tag_id)
+
+            new_tags = preserved + [desired_tag]
+            if len(new_tags) > 5:
+                return SendResult(success=True, raw_response={"skipped": "tag_limit"})
+            new_ids = [int(getattr(tag, "id")) for tag in new_tags]
+            if [int(getattr(tag, "id", -1)) for tag in current] == new_ids:
+                return SendResult(success=True, raw_response={"applied_tags": new_ids, "changed": False})
+
+            await thread.edit(applied_tags=new_tags)
+            return SendResult(success=True, raw_response={"applied_tags": new_ids, "changed": True})
+        except Exception as e:  # pragma: no cover - defensive fail-open surface
+            logger.debug("[%s] Kanban forum tag sync skipped for thread %s: %s", self.name, thread_id, e)
+            return SendResult(success=True, raw_response={"skipped": "error", "error": str(e)})
+
     async def _forum_post_file(
         self,
         forum_channel: Any,
@@ -7231,7 +7309,7 @@ class DiscordAdapter(BasePlatformAdapter):
         channel_type = getattr(channel, "type", None)
         if channel_type is not None:
             type_value = getattr(channel_type, "value", channel_type)
-            if type_value == 15:
+            if type_value in {15, 16}:
                 return True
         return False
 

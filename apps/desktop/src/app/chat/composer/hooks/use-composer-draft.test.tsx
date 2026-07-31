@@ -5,18 +5,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
 
 import type { QueueEditState } from '../composer-utils'
+import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerDraft } from './use-composer-draft'
 
-const mockComposerApi = { setText: vi.fn() }
+const mockComposerApi = { setText: vi.fn(), getState: () => ({ text: '' }) }
 
 vi.mock('@assistant-ui/react', () => ({
-  useAui: () => ({ composer: () => mockComposerApi }),
-  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) => selector({ composer: { text: '' } }),
-  useComposerRuntime: () => ({
-    getState: () => ({ text: '' }),
-    subscribe: () => () => undefined
-  })
+  useAui: () => ({ composer: () => mockComposerApi, subscribe: () => () => undefined }),
+  useAuiState: (selector: (state: { composer: { text: string } }) => unknown) => selector({ composer: { text: '' } })
 }))
 
 interface ProbeHarnessProps {
@@ -126,5 +124,50 @@ describe('useComposerDraft — rehydrate diagnostic log stays redacted', () => {
       attachmentKinds: ['url'],
       scope: 'session-secret'
     })
+  })
+})
+
+describe('useComposerDraft — a closing composer hands the focus-bus key back', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    markActiveComposer('main')
+  })
+
+  function renderScoped(target: ComposerTarget) {
+    const scope: ComposerScope = { ...MAIN_COMPOSER_SCOPE, target }
+
+    return render(
+      <ComposerScopeProvider value={scope}>
+        <ProbeHarness
+          activeQueueSessionKey="session-tile"
+          onLayoutSnapshot={() => undefined}
+          sessionId="session-tile"
+        />
+      </ComposerScopeProvider>
+    )
+  }
+
+  it('stops `active` resolving to a session tile once the tile unmounts', () => {
+    const { unmount } = renderScoped('tile:abc')
+
+    // Mounting claims the bus for this tile — the leak precondition.
+    expect(getActiveComposer()).toBe('tile:abc')
+
+    unmount()
+
+    expect(getActiveComposer()).toBe('main')
+  })
+
+  it('leaves the key alone when another composer claimed it before this one unmounted', () => {
+    const { unmount } = renderScoped('tile:abc')
+    expect(getActiveComposer()).toBe('tile:abc')
+
+    // The user clicks into a second tile, which claims the bus.
+    markActiveComposer('tile:other')
+
+    unmount()
+
+    expect(getActiveComposer()).toBe('tile:other')
   })
 })

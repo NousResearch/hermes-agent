@@ -238,3 +238,63 @@ describe('mergeInFlightMessages', () => {
     expect(result.caughtUp).toBe(false)
   })
 })
+
+describe('mid-turn redirect corrections', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // A redirect inserts its correction as a second user row directly before the
+  // live reply, so the turn opens with a RUN of user rows. Journaling only back
+  // to the nearest one lost the prompt that actually started the turn — the
+  // vanishing user bubble.
+  it('journals the whole user run, not just the correction', () => {
+    persistInFlightTurnState({
+      awaitingResponse: false,
+      busy: true,
+      messages: [
+        user('user-1', 'remove the session counts'),
+        user('user-2', 'hurry up'),
+        assistant('assistant-stream-1', 'Moving.', { pending: true })
+      ],
+      storedSessionId: 'stored-redirect',
+      streamId: 'assistant-stream-1',
+      turnStartedAt: Date.now()
+    })
+    vi.advanceTimersByTime(400)
+
+    const journaled = readInFlightTurnJournal('stored-redirect')?.messages ?? []
+
+    expect(journaled.map(message => message.parts.map(part => (part as { text: string }).text).join(''))).toEqual([
+      'remove the session counts',
+      'hurry up',
+      'Moving.'
+    ])
+  })
+
+  it('still stops at an assistant boundary so prior turns are not journaled', () => {
+    persistInFlightTurnState({
+      awaitingResponse: false,
+      busy: true,
+      messages: [
+        user('user-old', 'an earlier turn'),
+        assistant('assistant-old', 'an earlier answer'),
+        user('user-1', 'the live prompt'),
+        assistant('assistant-stream-1', 'Moving.', { pending: true })
+      ],
+      storedSessionId: 'stored-boundary',
+      streamId: 'assistant-stream-1',
+      turnStartedAt: Date.now()
+    })
+    vi.advanceTimersByTime(400)
+
+    const journaled = readInFlightTurnJournal('stored-boundary')?.messages ?? []
+
+    expect(journaled.map(message => message.id)).toEqual(['user-1', 'assistant-stream-1'])
+  })
+})

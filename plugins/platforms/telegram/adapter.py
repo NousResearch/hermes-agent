@@ -490,6 +490,7 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE,
+    compile_mention_patterns,
     convert_table_to_bullets as _wrap_markdown_tables,
 )
 
@@ -580,6 +581,13 @@ _POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
+# Telegram transcodes an uploaded video before it answers sendVideo, so the
+# wait for the response is unrelated to how fast the bytes went out and can
+# outlast the 20s read timeout the rest of the Bot API is tuned for. Only
+# media sends take this longer budget; ordinary calls keep the short one so a
+# dead request is still noticed quickly. Kept modest deliberately — this is
+# also how long a user waits to be told the attachment failed.
+_MEDIA_SEND_READ_TIMEOUT = 60.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
     "telegram_polling_generation", default=None
 )
@@ -753,6 +761,19 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_teardown_started: bool = False
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
+        # Live @username, refreshed whenever Telegram tells us what it is.
+        # PTB caches getMe() in Bot._bot_user at initialize() and only rewrites
+        # it inside get_me(), so a BotFather rename leaves self._bot.username
+        # pointing at the old handle until something calls getMe again. Every
+        # mention/routing comparison reads _current_bot_username() instead.
+        self._bot_username_observed: Optional[str] = None
+        # None = never checked. Must NOT be 0.0: these are compared against
+        # time.monotonic(), whose epoch is arbitrary and on a freshly-booted
+        # host starts near zero — so a 0.0 sentinel reads as "checked just
+        # now" and suppresses the first refresh for the first TTL seconds of
+        # uptime.
+        self._bot_identity_checked_at: Optional[float] = None
+        self._bot_identity_refresh_task: Optional[asyncio.Task] = None
         # Consecutive heartbeat probes that saw queued updates the running
         # poller is not consuming. get_me() can't see this — the send path is
         # healthy while the getUpdates consumer is wedged — so the heartbeat
@@ -2674,6 +2695,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not callable(getattr(bot, "get_me", None)):
                     return
                 await asyncio.wait_for(bot.get_me(), PROBE_TIMEOUT)
+                # get_me() refreshes PTB's cached bot user in place, so this is
+                # also where a BotFather rename gets picked up: adopt whatever
+                # handle Telegram just reported before anything routes on it.
+                self._bot_identity_checked_at = time.monotonic()
+                self._note_bot_username(getattr(bot, "username", None))
                 # get_me() succeeded — the general/send request path is healthy.
                 # That does NOT prove the getUpdates consumer is alive: PTB can
                 # report updater.running=True while the long-poll task is wedged,
@@ -3441,6 +3467,30 @@ class TelegramAdapter(BasePlatformAdapter):
                             self.name, topic_name, seed_err,
                         )
 
+    async def _bot_identity_refresh_loop(self) -> None:
+        """Keep the cached @username fresh when no heartbeat is running.
+
+        Polling mode re-reads identity via the heartbeat's ``get_me()`` probe.
+        Webhook mode has no such probe — nothing calls ``get_me()`` again after
+        ``initialize()`` — so without this loop a BotFather rename breaks
+        mention routing until the gateway restarts.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self._BOT_IDENTITY_TTL_SECONDS)
+                if getattr(self, "_polling_teardown_started", False):
+                    return
+                if self.has_fatal_error:
+                    return
+                await self._refresh_bot_identity(force=True)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.debug(
+                    "[%s] Telegram identity refresh loop iteration failed",
+                    self.name, exc_info=True,
+                )
+
     def _start_post_connect_housekeeping(self) -> None:
         """Kick off deferred post-connect housekeeping in the background.
 
@@ -3550,6 +3600,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
             TELEGRAM_WEBHOOK_URL    Public HTTPS URL (e.g. https://app.fly.dev/telegram)
             TELEGRAM_WEBHOOK_PORT   Local listen port (default 8443)
+            TELEGRAM_WEBHOOK_HOST   Bind host (default: unset → dual-stack,
+                                    all interfaces IPv4+IPv6)
             TELEGRAM_WEBHOOK_SECRET Secret token for update verification
         """
         # Explicit connect() is the only operation allowed to reopen polling
@@ -3619,6 +3671,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+                # Not a duplicate of write_timeout: PTB routes any request
+                # carrying files to media_write_timeout instead, so the line
+                # above never applied to an upload and every upload was pinned
+                # to PTB's own 20s default. httpx budgets this per socket
+                # write rather than across the upload, so it is stall
+                # tolerance, not a size or bandwidth allowance — a slow but
+                # steady uplink never accumulates against it. 60s rides out
+                # the buffer stalls a congested link produces; going higher
+                # only lengthens how long a dead socket takes to report
+                # itself.
+                "media_write_timeout": 60.0,
             }
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
@@ -3902,6 +3965,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 # start rather than silently run in fail-open mode.
                 # See GHSA-3vpc-7q5r-276h.
                 webhook_port = env_int("TELEGRAM_WEBHOOK_PORT", 8443)
+                # Bind host. Default "" → tornado bind_sockets opens one
+                # listening socket per address family (IPv4 + IPv6). The old
+                # hardcoded "0.0.0.0" bound IPv4 ONLY and was unreachable
+                # over IPv6-only private networks (e.g. Fly.io 6PN) — same
+                # bug as the LINE adapter (NS-603). Pin via
+                # TELEGRAM_WEBHOOK_HOST or platforms.telegram.extra.webhook_host.
+                webhook_host = (
+                    os.getenv("TELEGRAM_WEBHOOK_HOST", "").strip()
+                    or str((self.config.extra or {}).get("webhook_host") or "").strip()
+                )
                 webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
                 if not webhook_secret:
                     raise RuntimeError(
@@ -3920,7 +3993,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 
                 await self._app.updater.start_webhook(
-                    listen="0.0.0.0",
+                    listen=webhook_host,
                     port=webhook_port,
                     url_path=webhook_path,
                     webhook_url=webhook_url,
@@ -3936,8 +4009,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._polling_progress_accepting = False
                 self._send_path_degraded = False
                 logger.info(
-                    "[%s] Webhook server listening on 0.0.0.0:%d%s",
-                    self.name, webhook_port, webhook_path,
+                    "[%s] Webhook server listening on %s:%d%s",
+                    self.name,
+                    webhook_host or "* (all interfaces, IPv4+IPv6)",
+                    webhook_port,
+                    webhook_path,
                 )
             else:
                 # ── Polling mode (default) ───────────────────────────
@@ -4007,6 +4083,21 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._polling_heartbeat_task.cancel()
                 self._polling_heartbeat_task = asyncio.ensure_future(
                     self._polling_heartbeat_loop()
+                )
+
+            # Seed the live identity from whatever PTB cached during
+            # initialize(), then keep it fresh. Polling mode rides the
+            # heartbeat's get_me() probe; webhook mode has no probe at all, so
+            # it gets a dedicated low-frequency refresh loop — otherwise a
+            # BotFather rename breaks mention routing until restart.
+            self._note_bot_username(getattr(self._bot, "username", None))
+            self._bot_identity_checked_at = time.monotonic()
+            if self._webhook_mode:
+                identity_task = getattr(self, "_bot_identity_refresh_task", None)
+                if identity_task and not identity_task.done():
+                    identity_task.cancel()
+                self._bot_identity_refresh_task = asyncio.ensure_future(
+                    self._bot_identity_refresh_loop()
                 )
 
             # Command-menu registration, DM-topic setup, and the status
@@ -4171,6 +4262,17 @@ class TelegramAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
         self._polling_heartbeat_task = None
+
+        # Cancel the webhook-mode identity refresh loop on the same fence as
+        # the heartbeat so it cannot fire get_me() into a torn-down client.
+        identity_task = getattr(self, "_bot_identity_refresh_task", None)
+        if identity_task and not identity_task.done():
+            identity_task.cancel()
+            try:
+                await identity_task
+            except asyncio.CancelledError:
+                pass
+        self._bot_identity_refresh_task = None
 
         # Mark the bot "Offline" in its short description while the bot's HTTP
         # client is still alive (before app shutdown closes it). Opt-in via
@@ -5234,6 +5336,16 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, _redact_telegram_error_text(e))
             return SendResult(success=False, error=_redact_telegram_error_text(e))
 
+    # Template attrs for the shared _format_exec_approval core (HTML mode).
+    _EA_HEADER = "⚠️ <b>Command Approval Required</b>\n\n"
+    _EA_CODE_OPEN = "<pre>"
+    _EA_CODE_CLOSE = "</pre>\n\n"
+    _EA_SMART_DENY_LINE = "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+    _EA_CMD_BUDGET = 3800
+
+    def _ea_escape(self, text: str) -> str:
+        return _html.escape(text)
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -5251,14 +5363,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
-            )
-            if smart_denied:
-                text += "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+            text = self._format_exec_approval(command, description, smart_denied)
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
@@ -5283,7 +5388,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
                     )
             buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            keyboard = InlineKeyboardMarkup([buttons])
+            # Pair into rows (2x2 for the full set) so labels stay readable on
+            # mobile — a single 4-button row truncates to "Allo… / Ses… / …".
+            rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+            keyboard = InlineKeyboardMarkup(rows)
 
             kwargs: Dict[str, Any] = {
                 "chat_id": normalize_telegram_chat_id(chat_id),
@@ -5323,7 +5431,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            preview = self.format_message(message if len(message) <= 3800 else message[:3800] + "...")
+            preview = self.format_message(self._truncate_preview(message, 3800))
 
             keyboard = InlineKeyboardMarkup([
                 [
@@ -5687,14 +5795,11 @@ class TelegramAdapter(BasePlatformAdapter):
             for p in providers:
                 buttons.append(_provider_button(p))
 
-        page_size = self._PROVIDER_PAGE_SIZE
-        total = len(buttons)
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        page = max(0, min(page, total_pages - 1))
-
-        start = page * page_size
-        end = min(start + page_size, total)
-        page_buttons = buttons[start:end]
+        page_buttons, page_meta = self._format_choice_page(
+            buttons, page, self._PROVIDER_PAGE_SIZE
+        )
+        page = page_meta["page"]
+        total_pages = page_meta["total_pages"]
 
         rows = [page_buttons[i : i + 2] for i in range(0, len(page_buttons), 2)]
 
@@ -5709,19 +5814,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
 
-        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
-        return InlineKeyboardMarkup(rows), page_info
+        return InlineKeyboardMarkup(rows), page_meta["page_info"]
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
-        page_size = self._MODEL_PAGE_SIZE
-        total = len(models)
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        page = max(0, min(page, total_pages - 1))
-
-        start = page * page_size
-        end = min(start + page_size, total)
-        page_models = models[start:end]
+        page_models, page_meta = self._format_choice_page(
+            models, page, self._MODEL_PAGE_SIZE
+        )
+        page = page_meta["page"]
+        total_pages = page_meta["total_pages"]
+        start = page_meta["start"]
 
         buttons: list = []
         for i, model_id in enumerate(page_models):
@@ -5750,8 +5852,7 @@ class TelegramAdapter(BasePlatformAdapter):
             InlineKeyboardButton("✗ Cancel", callback_data="mx"),
         ])
 
-        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
-        return InlineKeyboardMarkup(rows), page_info
+        return InlineKeyboardMarkup(rows), page_meta["page_info"]
 
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
@@ -6671,6 +6772,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 _probe_voice_duration_seconds, audio_path
             )
 
+            # Render caption markdown (#32029): auto-TTS captions carry the
+            # agent's markdown reply, which showed literal *asterisks* and
+            # [links](...) without a parse_mode. Format to MarkdownV2 when it
+            # fits the 1024-char caption cap; fall back to the raw text
+            # (previous behaviour) when formatting would overflow or the
+            # Bot API rejects the entities.
+            _caption_variants: List[tuple] = []
+            if caption:
+                try:
+                    _formatted_caption = self.format_message(caption)
+                    if utf16_len(_formatted_caption) <= 1024:
+                        _caption_variants.append(
+                            (_formatted_caption, ParseMode.MARKDOWN_V2)
+                        )
+                except Exception:
+                    logger.debug(
+                        "[%s] voice caption MarkdownV2 formatting failed; "
+                        "sending plain caption", self.name, exc_info=True,
+                    )
+                _caption_variants.append((caption[:1024], None))
+            else:
+                _caption_variants.append((None, None))
+
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 # .ogg / .opus files -> send as voice (round playable bubble)
@@ -6684,22 +6808,50 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_dm_topic_reply_anchor_retry(
-                        self._bot.send_voice,
-                        {
-                            "chat_id": normalize_telegram_chat_id(chat_id),
-                            "voice": audio_file,
-                            "caption": caption[:1024] if caption else None,
-                            "reply_to_message_id": reply_to_id,
-                            "duration": _duration_secs,
-                            **voice_thread_kwargs,
-                            **self._notification_kwargs(metadata),
-                        },
-                        metadata,
-                        reply_to_id,
-                        "voice",
-                        reset_media=lambda: audio_file.seek(0),
-                    )
+                    msg = None
+                    _last_parse_error: Optional[Exception] = None
+                    for _cap_text, _cap_parse_mode in _caption_variants:
+                        try:
+                            msg = await self._send_with_dm_topic_reply_anchor_retry(
+                                self._bot.send_voice,
+                                {
+                                    "chat_id": normalize_telegram_chat_id(chat_id),
+                                    "voice": audio_file,
+                                    "caption": _cap_text,
+                                    "parse_mode": _cap_parse_mode,
+                                    "reply_to_message_id": reply_to_id,
+                                    "duration": _duration_secs,
+                                    "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
+                                    **voice_thread_kwargs,
+                                    **self._notification_kwargs(metadata),
+                                },
+                                metadata,
+                                reply_to_id,
+                                "voice",
+                                reset_media=lambda: audio_file.seek(0),
+                            )
+                            break
+                        except Exception as _cap_error:
+                            # Only retry the next (plain) variant on entity
+                            # parse failures; anything else is a real send
+                            # error for the outer handler.
+                            if (_cap_parse_mode is not None
+                                    and ("parse" in str(_cap_error).lower()
+                                         or "entit" in str(_cap_error).lower())):
+                                logger.warning(
+                                    "[%s] voice caption MarkdownV2 rejected, "
+                                    "retrying plain: %s",
+                                    self.name,
+                                    _redact_telegram_error_text(_cap_error),
+                                )
+                                _last_parse_error = _cap_error
+                                audio_file.seek(0)
+                                continue
+                            raise
+                    if msg is None:
+                        raise _last_parse_error or RuntimeError(
+                            "Telegram send_voice failed for all caption variants"
+                        )
                 elif ext in {".mp3", ".m4a"}:
                     # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
@@ -6719,6 +6871,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             "duration": _duration_secs,
+                            "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
@@ -6857,6 +7010,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "chat_id": normalize_telegram_chat_id(chat_id),
                         "media": media,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -6916,6 +7070,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "photo": image_file,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7013,6 +7168,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "filename": display_name,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7063,6 +7219,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "video": f,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7207,6 +7364,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "animation": animation_url,
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
+                    "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                     **animation_thread_kwargs,
                     **self._notification_kwargs(metadata),
                 },
@@ -7686,28 +7844,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 patterns = loaded
 
         if patterns is None:
-            return []
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        if not isinstance(patterns, list):
-            logger.warning(
-                "[%s] telegram mention_patterns must be a list or string; got %s",
-                self.name,
-                type(patterns).__name__,
-            )
+            # Parity with the historical inline implementation: return before
+            # evaluating ``self.name`` (tests construct bare adapters via
+            # object.__new__ that lack the attributes ``name`` reads).
             return []
 
-        compiled: List[re.Pattern] = []
-        for pattern in patterns:
-            if not isinstance(pattern, str) or not pattern.strip():
-                continue
-            try:
-                compiled.append(re.compile(pattern, re.IGNORECASE))
-            except re.error as exc:
-                logger.warning("[%s] Invalid Telegram mention pattern %r: %s", self.name, pattern, exc)
-        if compiled:
-            logger.info("[%s] Loaded %d Telegram mention pattern(s)", self.name, len(compiled))
-        return compiled
+        return compile_mention_patterns(
+            patterns,
+            log_prefix=self.name,
+            platform_label="telegram",
+            display_label="Telegram",
+            logger_=logger,
+        )
 
     def _is_group_chat(self, message: Message) -> bool:
         chat = getattr(message, "chat", None)
@@ -7743,22 +7891,140 @@ class TelegramAdapter(BasePlatformAdapter):
             return cls._GENERAL_TOPIC_THREAD_ID
         return None
 
+    # Telegram bot handles historically had to end in "bot", but collectible
+    # (Fragment) usernames can be assigned to bots and drop that suffix
+    # entirely (@jarvis, @pic, ...). This pattern is used ONLY to decide
+    # whether some FOREIGN @handle in a message is bot-shaped; our own handle
+    # is matched by identity, never by shape.
+    _FOREIGN_BOT_HANDLE_RE = re.compile(r"[a-z0-9_]{2,29}bot", re.IGNORECASE)
+    # How long an observed identity is trusted before the heartbeat re-checks.
+    _BOT_IDENTITY_TTL_SECONDS = 300.0
+
+    def _current_bot_username(self) -> str:
+        """Return this bot's live @username (lowercased, no leading ``@``).
+
+        Prefers the most recently observed handle over PTB's ``get_me()``
+        cache. ``Bot.username`` reads ``Bot._bot_user``, which is written only
+        by ``get_me()`` — after a BotFather rename it keeps returning the old
+        handle, so every mention comparison silently stops matching and the
+        exclusive-mention gate concludes the message is addressed to a
+        different bot. Observing the handle from inbound updates closes that
+        window without an extra Bot API round-trip.
+        """
+        observed = getattr(self, "_bot_username_observed", None)
+        if observed:
+            return observed
+        return (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+
+    def _note_bot_username(self, username: Optional[str]) -> None:
+        """Record the bot's current @username, logging real renames."""
+        handle = (username or "").lstrip("@").lower()
+        if not handle:
+            return
+        previous = getattr(self, "_bot_username_observed", None)
+        if previous == handle:
+            return
+        self._bot_username_observed = handle
+        self._bot_identity_checked_at = time.monotonic()
+        if previous:
+            logger.info(
+                "[%s] Telegram bot username changed: @%s -> @%s "
+                "(mention routing now follows the new handle)",
+                self.name, previous, handle,
+            )
+
+    def _observe_bot_identity_from_message(self, message: Message) -> None:
+        """Learn our own handle from a message Telegram says we authored.
+
+        Telegram stamps the *current* username on the bot's own outgoing
+        messages and on ``reply_to_message`` when a user replies to us, so a
+        rename is observable from the update stream itself — no getMe needed.
+        Only trusted when the user id matches this bot, so another account's
+        handle can never be adopted as our own.
+        """
+        bot_id = getattr(self._bot, "id", None)
+        if bot_id is None:
+            return
+        for candidate in (
+            getattr(message, "from_user", None),
+            getattr(getattr(message, "reply_to_message", None), "from_user", None),
+        ):
+            if candidate is None:
+                continue
+            if getattr(candidate, "id", None) != bot_id:
+                continue
+            self._note_bot_username(getattr(candidate, "username", None))
+
+    def _bot_identity_is_fresh(self) -> bool:
+        """True when identity was re-read within the TTL.
+
+        ``None`` means never checked, which is always stale. Do not fold the
+        sentinel into ``0.0``: monotonic clocks have an arbitrary epoch that
+        can legitimately be smaller than the TTL on a freshly-booted host,
+        which would make "never" look like "just now".
+        """
+        checked_at = getattr(self, "_bot_identity_checked_at", None)
+        if checked_at is None:
+            return False
+        return (time.monotonic() - checked_at) < self._BOT_IDENTITY_TTL_SECONDS
+
+    async def _refresh_bot_identity(self, *, force: bool = False) -> None:
+        """Re-read the bot's identity from Telegram when the cache may be stale.
+
+        ``get_me()`` rewrites PTB's ``Bot._bot_user`` in place, so this also
+        repairs every other consumer of ``self._bot.username``. Best-effort:
+        a failed probe leaves the last known handle in place.
+        """
+        bot = self._bot
+        if bot is None or not callable(getattr(bot, "get_me", None)):
+            return
+        if not force and self._bot_identity_is_fresh():
+            return
+        try:
+            me = await asyncio.wait_for(bot.get_me(), self._BOT_IDENTITY_PROBE_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "[%s] Telegram identity refresh failed (keeping @%s): %s",
+                self.name, self._current_bot_username() or "unknown", exc,
+            )
+            return
+        self._bot_identity_checked_at = time.monotonic()
+        self._note_bot_username(getattr(me, "username", None))
+
+    _BOT_IDENTITY_PROBE_TIMEOUT = 15.0
+
     def _is_reply_to_bot(self, message: Message) -> bool:
         if not self._bot or not getattr(message, "reply_to_message", None):
             return False
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
-    @staticmethod
-    def _extract_bot_mention_usernames(message: Message) -> set[str]:
+    @classmethod
+    def _extract_bot_mention_usernames(cls, message: Message, self_username: str = "") -> set[str]:
         """Extract explicit Telegram bot usernames mentioned in text/captions.
 
-        Telegram bot usernames are 5-32 characters and must end in "bot".
+        Foreign handles are only treated as bot mentions when they look
+        bot-shaped (``...bot``), which keeps human ``@handles`` from acting as
+        routing hints. ``self_username`` opts our OWN handle into the same set
+        regardless of shape: collectible (Fragment) usernames can be assigned
+        to bots and need not end in "bot" (@jarvis, @pic), and a bot addressed
+        by such a handle must still recognise itself.
+
         Entity mentions are authoritative. The raw-text fallback is intentionally narrow so
         entity-less mobile/client variants still work without treating email
         addresses or arbitrary substrings as bot mentions.
         """
         mentioned_bot_usernames: set[str] = set()
+        own = (self_username or "").lstrip("@").lower()
+
+        def _is_bot_handle(handle: str) -> bool:
+            if not handle:
+                return False
+            if own and handle == own:
+                return True
+            return bool(cls._FOREIGN_BOT_HANDLE_RE.fullmatch(handle))
 
         def _iter_sources():
             yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
@@ -7777,7 +8043,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 entity_text = source_text[offset:offset + length].strip()
                 if entity_type == "mention":
                     handle = entity_text.lstrip("@").lower()
-                    if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                    if _is_bot_handle(handle):
                         mentioned_bot_usernames.add(handle)
                     continue
 
@@ -7789,7 +8055,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if at_index < 0:
                     continue
                 command_target = entity_text[at_index + 1:].strip().lower()
-                if re.fullmatch(r"[a-z0-9_]{2,29}bot", command_target, re.IGNORECASE):
+                if _is_bot_handle(command_target):
                     mentioned_bot_usernames.add(command_target)
 
         # Entity-less fallback for older/client-specific updates. If Telegram
@@ -7798,8 +8064,10 @@ class TelegramAdapter(BasePlatformAdapter):
         for raw_text, entities in _iter_sources():
             if not raw_text or entities:
                 continue
-            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,29}bot)\b", raw_text):
-                mentioned_bot_usernames.add(match.group(1).lower())
+            for match in re.finditer(r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{2,31})\b", raw_text):
+                handle = match.group(1).lower()
+                if _is_bot_handle(handle):
+                    mentioned_bot_usernames.add(handle)
 
         return mentioned_bot_usernames
 
@@ -7807,7 +8075,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return False
 
-        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        bot_username = self._current_bot_username()
         bot_id = getattr(self._bot, "id", None)
         expected = f"@{bot_username}" if bot_username else None
 
@@ -7855,9 +8123,36 @@ class TelegramAdapter(BasePlatformAdapter):
                         continue
                     if command_text[at_index:].strip().lower() == expected:
                         return True
-        if bot_username and re.fullmatch(r"[a-z0-9_]{2,29}bot", bot_username, re.IGNORECASE):
-            return bot_username in self._extract_bot_mention_usernames(message)
+        if bot_username:
+            return bot_username in self._extract_bot_mention_usernames(message, bot_username)
         return False
+
+    def _schedule_bot_identity_recheck(self) -> None:
+        """Fire a TTL-guarded identity refresh in the background.
+
+        Called when routing is about to discard a message because the bot
+        handles it names don't include ours — the exact symptom of a stale
+        username after a BotFather rename. The TTL in
+        ``_refresh_bot_identity`` bounds this to one getMe per
+        ``_BOT_IDENTITY_TTL_SECONDS``, so a busy group that legitimately
+        addresses other bots cannot turn this into per-message API traffic.
+        Fire-and-forget: the current message still routes on what we know now.
+        """
+        existing = getattr(self, "_bot_identity_refresh_task", None)
+        if existing is not None and not existing.done():
+            return
+        if self._bot_identity_is_fresh():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._refresh_bot_identity())
+        self._bot_identity_refresh_task = task
+        tracked = getattr(self, "_background_tasks", None)
+        if isinstance(tracked, set):
+            tracked.add(task)
+            task.add_done_callback(tracked.discard)
 
     def _explicit_bot_mentions_exclude_self(self, message: Message) -> bool:
         """Return True when explicit bot handles target other bots, not this one.
@@ -7869,19 +8164,27 @@ class TelegramAdapter(BasePlatformAdapter):
         adapter's own bot username, this adapter should ignore the message.
 
         MessageEntity values are preferred, but some Telegram clients expose
-        selected bot handles as plain text in group messages. The raw-text
-        fallback is intentionally limited to usernames ending in "bot", which
-        Telegram requires for bot accounts.
+        selected bot handles as plain text in group messages. Foreign handles
+        are limited to the ``...bot`` shape so human @handles never suppress
+        this bot; our own handle is matched by identity, so a collectible
+        username without that suffix still counts as addressing us.
         """
         if not self._bot:
             return False
 
-        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        bot_username = self._current_bot_username()
         if not bot_username:
             return False
 
-        mentioned_bot_usernames = self._extract_bot_mention_usernames(message)
-        return bool(mentioned_bot_usernames) and bot_username not in mentioned_bot_usernames
+        mentioned_bot_usernames = self._extract_bot_mention_usernames(message, bot_username)
+        excludes_self = bool(mentioned_bot_usernames) and bot_username not in mentioned_bot_usernames
+        if excludes_self:
+            # Either the message really is for another bot, or our cached
+            # handle is stale after a rename and we are about to ignore a
+            # message addressed to us. Re-check identity out of band (TTL
+            # bounded) so the mistake self-corrects instead of persisting.
+            self._schedule_bot_identity_recheck()
+        return excludes_self
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
         if not self._mention_patterns:
@@ -7903,9 +8206,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._telegram_guest_mode() and self._message_mentions_bot(message)
 
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
-        if not text or not self._bot or not getattr(self._bot, "username", None):
+        bot_username = self._current_bot_username()
+        if not text or not bot_username:
             return text
-        username = re.escape(self._bot.username)
+        username = re.escape(bot_username)
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
@@ -7972,7 +8276,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return f"[{sender}|{user_id}]\n{event.text or ''}"
 
     def _telegram_group_observe_channel_prompt(self) -> str:
-        username = getattr(getattr(self, "_bot", None), "username", None) or "unknown"
+        username = self._current_bot_username() or "unknown"
         bot_id = getattr(getattr(self, "_bot", None), "id", None) or "unknown"
         return (
             "You are handling a Telegram group chat message.\n"
@@ -8083,6 +8387,8 @@ class TelegramAdapter(BasePlatformAdapter):
             event.message_type = MessageType.PHOTO
         elif cached.kind == "video":
             event.message_type = MessageType.VIDEO
+        elif cached.kind == "audio":
+            event.message_type = MessageType.AUDIO
         event.text = self._append_observed_note(event.text, cached.context_note())
         logger.info("[Telegram] Cached observed group %s at %s", cached.kind, cached.path)
 
@@ -8126,6 +8432,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.message_type = MessageType.PHOTO
             elif cached.kind == "video":
                 event.message_type = MessageType.VIDEO
+            elif cached.kind == "audio":
+                event.message_type = MessageType.AUDIO
         event.text = self._append_observed_note(
             event.text,
             f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
@@ -8274,6 +8582,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # environments like groups/supergroups where the bot can see its own
         # messages).  Without this, outbound messages are counted as incoming
         # unread in the Hermes inbox (#52363).
+        #
+        # Telegram stamps our CURRENT @username on those own-messages and on
+        # reply_to_message, so learn the live handle here — before any mention
+        # gate routes on it. Otherwise a BotFather rename leaves the stale
+        # handle in place and the exclusive-mention gate reads a message
+        # addressed to us as one addressed to some other bot.
+        self._observe_bot_identity_from_message(message)
         if self._is_own_message(message):
             return False
 
@@ -8423,6 +8738,18 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
+        # Telegram clients split messages above 4096 chars into multiple
+        # updates.  A long command paste (e.g. ``/queue <huge prompt>``)
+        # arrives as a COMMAND chunk near the limit followed by plain TEXT
+        # continuation chunk(s).  Dispatching the command immediately would
+        # orphan the continuation, which then lands as a separate message and
+        # interrupts the running agent.  Route near-limit command chunks
+        # through the same text-batching pipeline so continuations merge in
+        # before dispatch; short commands (/stop, /approve, ...) keep the
+        # immediate path and are never delayed.
+        if len(event.text or "") >= self._SPLIT_THRESHOLD:
+            self._enqueue_text_event(event)
+            return
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -8869,11 +9196,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
-                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext or '.bin'}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc.mime_type or "application/octet-stream"
-                event.media_urls = [cached_path]
-                event.media_types = [mime_type]
-                logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)
+                from gateway.platforms.base import cache_media_bytes
+
+                cached = cache_media_bytes(
+                    raw_bytes,
+                    filename=original_filename or f"document{ext or '.bin'}",
+                    mime_type=doc_mime,
+                )
+                if cached is None:
+                    event.text = (
+                        f"Document '{original_filename or doc_mime or ext or 'unknown'}' "
+                        "could not be cached."
+                    )
+                    await self.handle_message(event)
+                    return
+                event.media_urls = [cached.path]
+                event.media_types = [cached.media_type]
+                if cached.kind == "audio":
+                    event.message_type = MessageType.AUDIO
+                logger.info(
+                    "[Telegram] Cached user %s at %s (%s)",
+                    cached.kind,
+                    cached.path,
+                    cached.media_type,
+                )
 
                 # For text-readable files, inject content into event.text (capped
                 # at 100 KB). Gate on a text-like extension/MIME — NOT a blind
@@ -9028,14 +9374,10 @@ class TelegramAdapter(BasePlatformAdapter):
         recognized without a gateway restart.
         """
         try:
-            from hermes_constants import get_hermes_home
-            config_path = get_hermes_home() / "config.yaml"
-            if not config_path.exists():
-                return
-
-            import yaml as _yaml
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = _yaml.safe_load(f) or {}
+            # Canonical loader: behavioral read (dm_topics routing) now honors
+            # managed-scope overlay + ${VAR} expansion like every other read.
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
 
             dm_topics = (
                 config.get("platforms", {})

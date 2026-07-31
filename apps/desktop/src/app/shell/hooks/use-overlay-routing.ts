@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router'
 
 import { type CommandCenterSection } from '@/app/command-center'
 import {
@@ -32,6 +32,7 @@ export function useOverlayRouting() {
   // so closing them returns there instead of bouncing to /.
   const returnPathRef = useRef(NEW_CHAT_ROUTE)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!overlayOpen) {
       returnPathRef.current = `${location.pathname}${location.search}${location.hash}`

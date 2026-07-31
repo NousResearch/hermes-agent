@@ -2956,7 +2956,7 @@ class SessionStore:
             # Cap pending messages per session to avoid unbounded memory
             # growth when the DB is persistently broken. Drop the oldest.
             if len(pending) > self._MAX_PENDING_PER_SESSION:
-                dropped = pending.pop(0)
+                pending.pop(0)
                 logger.warning(
                     "Session DB transcript pending queue full for %s "
                     "(cap=%d); dropping oldest message to make room",

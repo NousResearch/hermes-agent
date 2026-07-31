@@ -127,8 +127,14 @@ export const ar = defineLocale({
 
   sessions: {
     title: "الجلسات",
+    filterChats: "الدردشات",
+    filterAutomation: "الأتمتة",
+    filterAll: "الكل",
+    sourceFilter: "مصدر الجلسة",
+    anySource: "أي مصدر",
+    noSessionsInFilter: "لا توجد جلسات في هذا الفلتر",
     searchPlaceholder: "بحث في محتوى الرسائل...",
-    noSessions: "لا توجد جلسات حتى الآن",
+        noSessions: "لا توجد جلسات حتى الآن",
     noMatch: "لا توجد جلسات تطابق بحثك",
     startConversation: "ابدأ محادثة لتظهر هنا",
     noMessages: "لا توجد رسائل",

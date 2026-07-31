@@ -1,23 +1,8 @@
 import { LONG_MSG } from '../config/limits.js'
-import { buildToolTrailLine, fmtK } from '../lib/text.js'
+import { buildToolTrailLine } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
-
-export const imageTokenMeta = (info?: ImageMeta | null) => {
-  const { width, height, token_estimate: t } = info ?? {}
-
-  return [width && height ? `${width}x${height}` : '', (t ?? 0) > 0 ? `~${fmtK(t!)} tok` : '']
-    .filter(Boolean)
-    .join(' · ')
-}
-
-export const attachedImageNotice = (info?: ({ name?: string } & ImageMeta) | null) => {
-  const meta = imageTokenMeta(info)
-  const label = info?.name ? `📎 Attached image: ${info.name}` : '📎 Attached image'
-
-  return `${label}${meta ? ` · ${meta}` : ''}`
-}
 
 export const userDisplay = (text: string) => {
   if (text.length <= LONG_MSG) {
@@ -69,6 +54,13 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
+    if (display_kind === 'auto_continue') {
+      out.push({ kind: 'event', role: 'system', text: 'resumed interrupted turn' })
+      pending = []
+
+      continue
+    }
+
     if (display_kind === 'async_delegation_complete') {
       const meta = (row as TranscriptRow).display_metadata
       const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
@@ -103,12 +95,6 @@ export const fmtDuration = (ms: number) => {
   const s = t % 60
 
   return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`
-}
-
-interface ImageMeta {
-  height?: number
-  token_estimate?: number
-  width?: number
 }
 
 interface TranscriptRow {

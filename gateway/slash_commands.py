@@ -56,6 +56,19 @@ logger = logging.getLogger("gateway.run")
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
 
+def _clean_str(value: Any) -> str:
+    """Strip and return a non-empty string value, or empty string."""
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def _int_value(value: Any) -> int:
+    """Safely coerce to int."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
 
@@ -210,9 +223,8 @@ class GatewaySlashCommandsMixin:
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
-                "on_session_finalize",
+            from hermes_cli.lifecycle import finalize_session
+            finalize_session(
                 session_id=_old_sid,
                 platform=source.platform.value if source.platform else "",
                 reason="new_session",
@@ -289,7 +301,7 @@ class GatewaySlashCommandsMixin:
 
         # Fire plugin on_session_reset hook (new session guaranteed to exist)
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _new_sid = new_entry.session_id if new_entry else None
             _invoke_hook(
                 "on_session_reset",
@@ -329,7 +341,7 @@ class GatewaySlashCommandsMixin:
         reports the active profile and default home, byte-identical to before.
         """
         from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.slash_exec import CommandContext, execute_command
 
         multiplexed = getattr(
             getattr(self, "config", None), "multiplex_profiles", False
@@ -337,11 +349,9 @@ class GatewaySlashCommandsMixin:
         source = getattr(event, "source", None)
 
         profile_name = ""
+        display = ""
         if multiplexed:
             profile_name = (getattr(source, "profile", "") or "").strip()
-        profile_name = profile_name or get_active_profile_name()
-
-        if multiplexed:
             try:
                 from gateway.run import _profile_runtime_scope
 
@@ -350,12 +360,20 @@ class GatewaySlashCommandsMixin:
                     display = display_hermes_home()
             except Exception:
                 display = display_hermes_home()
-        else:
-            display = display_hermes_home()
+
+        # Shared executor resolves process-level fallbacks; the multiplexed
+        # per-source overrides (when any) ride in via options.
+        reply = execute_command(
+            "profile",
+            CommandContext(
+                surface="gateway",
+                options={"profile_name": profile_name, "home_display": display},
+            ),
+        )
 
         lines = [
-            t("gateway.profile.header", profile=profile_name),
-            t("gateway.profile.home", home=display),
+            t("gateway.profile.header", profile=reply.data["profile"]),
+            t("gateway.profile.home", home=reply.data["home"]),
         ]
 
         return "\n".join(lines)
@@ -478,8 +496,16 @@ class GatewaySlashCommandsMixin:
                         platform.value if hasattr(platform, "value") else str(platform or "")
                     ).lower()
                     chat_id = str(getattr(source, "chat_id", "") or "")
+                    chat_type = str(getattr(source, "chat_type", "") or "") or None
                     thread_id = str(getattr(source, "thread_id", "") or "")
                     user_id = str(getattr(source, "user_id", "") or "") or None
+                    delivery_metadata = self._thread_metadata_for_source(
+                        source, self._reply_anchor_for_event(event)
+                    ) or None
+                    if isinstance(delivery_metadata, dict):
+                        chat_type = str(getattr(source, "chat_type", "") or "")
+                        if chat_type:
+                            delivery_metadata.setdefault("chat_type", chat_type)
                     if platform_str and chat_id:
                         def _sub():
                             from hermes_cli import kanban_db as _kb
@@ -488,9 +514,11 @@ class GatewaySlashCommandsMixin:
                                 _kb.add_notify_sub(
                                     conn, task_id=task_id,
                                     platform=platform_str, chat_id=chat_id,
+                                    chat_type=chat_type,
                                     thread_id=thread_id or None,
                                     user_id=user_id,
                                     notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                    delivery_metadata=delivery_metadata,
                                 )
                             finally:
                                 conn.close()
@@ -690,6 +718,196 @@ class GatewaySlashCommandsMixin:
         text = str(session_key or "")
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         return f"sha256:{digest}"
+
+    async def _handle_context_command(self, event: MessageEvent) -> str:
+        """Handle /context — the dedicated context-window view.
+
+        /status shows a one-line ``used / total`` summary; this command is the
+        deep view: a usage gauge, auto-compression threshold and headroom,
+        compression count and last savings, and cumulative throughput — the last
+        clearly labelled as throughput, NOT context size.
+
+        Resolves from the running agent (mid-turn), then the cached agent
+        (between turns), then the SessionStore/SessionDB metadata for a gauge
+        even when no agent is resident. Falls back to a transcript estimate only
+        as a last resort.
+
+        ``/context all`` appends the expanded per-skill / per-toolset cost
+        listings (requires a resident agent).
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
+        expanded = event.get_command_args().strip().lower() in {"all", "full", "details"}
+
+        # Try running agent first (mid-turn), then cached agent (between turns).
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+            cache = getattr(self, "_agent_cache", None)
+            if cache_lock is not None and cache is not None:
+                try:
+                    with cache_lock:
+                        cached = cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+                except Exception:
+                    agent = None
+        has_agent = bool(agent) and agent is not _AGENT_PENDING_SENTINEL
+
+        ctx = getattr(agent, "context_compressor", None) if has_agent else None
+
+        # Resolve current-context size + window with cascading fallbacks.
+        #   used  : compressor.last_prompt_tokens → SessionStore.last_prompt_tokens
+        #   model : agent.model → SessionDB row model
+        #   window: compressor.context_length → get_model_context_length(model)
+        used = 0
+        context_length = 0
+        if ctx is not None:
+            used = getattr(ctx, "last_prompt_tokens", 0) or 0
+            context_length = getattr(ctx, "context_length", 0) or 0
+
+        model_name = _clean_str(getattr(agent, "model", "")) if has_agent else ""
+
+        if not used:
+            used = _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+
+        if not model_name and self._session_db:
+            try:
+                row = await self._session_db.get_session(session_entry.session_id) or {}
+                if isinstance(row, dict):
+                    model_name = _clean_str(row.get("model", ""))
+            except Exception:
+                model_name = ""
+
+        if not context_length and model_name:
+            try:
+                from agent.model_metadata import get_model_context_length
+
+                context_length = _int_value(
+                    await asyncio.to_thread(get_model_context_length, model_name)
+                )
+            except Exception:
+                context_length = 0
+
+        # Gauge path: real current-context figure
+        if used > 0 and context_length > 0:
+            pct = min(100.0, used / context_length * 100)
+            headroom = max(0, context_length - used)
+            BAR_WIDTH = 24
+            filled = int(round(pct / 100 * BAR_WIDTH))
+            bar = "█" * max(0, filled) + "░" * max(0, BAR_WIDTH - filled)
+
+            lines = [
+                t("gateway.context.header"),
+                "",
+                t("gateway.context.model", model=model_name or "?"),
+                t("gateway.context.window", total=f"{context_length:,}"),
+                t(
+                    "gateway.context.in_use",
+                    used=f"{used:,}",
+                    total=f"{context_length:,}",
+                    pct=f"{pct:.0f}",
+                ),
+                t("gateway.context.bar", bar=bar),
+                t("gateway.context.headroom", headroom=f"{headroom:,}"),
+            ]
+
+            # Full view — compression / throughput need the live agent.
+            if ctx is not None:
+                threshold = getattr(ctx, "threshold_tokens", 0) or 0
+                threshold_pct = (getattr(ctx, "threshold_percent", 0) or 0) * 100
+                lines.append("")
+                if threshold > 0:
+                    if used >= threshold:
+                        lines.append(
+                            t(
+                                "gateway.context.over_threshold",
+                                threshold=f"{threshold:,}",
+                                threshold_pct=f"{threshold_pct:.0f}",
+                            )
+                        )
+                    else:
+                        lines.append(
+                            t(
+                                "gateway.context.threshold",
+                                threshold=f"{threshold:,}",
+                                threshold_pct=f"{threshold_pct:.0f}",
+                                to_go=f"{threshold - used:,}",
+                            )
+                        )
+                compressions = getattr(ctx, "compression_count", 0) or 0
+                lines.append(t("gateway.context.compressions", count=compressions))
+                if compressions:
+                    savings = getattr(ctx, "_last_compression_savings_pct", None)
+                    if savings is not None:
+                        lines.append(
+                            t("gateway.context.last_savings", savings=f"{savings:.0f}")
+                        )
+
+                api_calls = getattr(agent, "session_api_calls", 0) or 0
+                input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+                output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+                reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
+                total_tokens = getattr(agent, "session_total_tokens", 0) or 0
+                lines.append("")
+                lines.append(
+                    t("gateway.context.totals_header", calls=api_calls)
+                )
+                lines.append(
+                    t(
+                        "gateway.context.totals_line",
+                        input=f"{input_tokens:,}",
+                        output=f"{output_tokens:,}",
+                        reasoning=f"{reasoning_tokens:,}",
+                    )
+                )
+                lines.append(t("gateway.context.total_billed", total=f"{total_tokens:,}"))
+                lines.append(t("gateway.context.throughput_note"))
+            else:
+                lines.append("")
+                lines.append(t("gateway.context.detail_after_first"))
+
+            # Per-category estimated breakdown (+ optional expanded listings).
+            # Same chars/4 engine the desktop popover and /usage use; plain
+            # text (no glyph grid — monospace isn't guaranteed on messaging
+            # platforms). Fail-open: rendering errors never break /context.
+            if has_agent:
+                breakdown = await asyncio.to_thread(
+                    self._context_breakdown_block, agent, source, expanded
+                )
+                if breakdown:
+                    lines.append("")
+                    lines.extend(breakdown)
+
+            return "\n".join(lines)
+
+        # Last resort: rough estimate from transcript
+        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        if history:
+            from agent.model_metadata import estimate_messages_tokens_rough
+
+            msgs = [
+                m
+                for m in history
+                if m.get("role") in {"user", "assistant"} and m.get("content")
+            ]
+            approx = estimate_messages_tokens_rough(msgs)
+            return "\n".join(
+                [
+                    t("gateway.context.header"),
+                    "",
+                    t(
+                        "gateway.context.estimated",
+                        count=f"{approx:,}",
+                        messages=len(msgs),
+                    ),
+                    t("gateway.context.detail_after_first"),
+                ]
+            )
+        return t("gateway.context.no_data")
 
     def _gateway_session_origin_for_id(self, session_id: str) -> Optional[SessionSource]:
         """Best-effort origin lookup for gateway session IDs."""
@@ -1061,7 +1279,67 @@ class GatewaySlashCommandsMixin:
             ]
         )
 
-        if not agent_rows and not running_processes and not background_tasks:
+        # Background (async) delegations — delegate_task(background=true).
+        # Live per-child activity comes from the registry's progress sampler
+        # (#51690): api calls, current tool, seconds since last activity.
+        delegations: list[dict] = []
+        try:
+            from tools.async_delegation import list_async_delegations
+            delegations = [
+                d for d in list_async_delegations()
+                if d.get("status") in ("running", "stalling", "finalizing")
+            ]
+        except Exception:
+            delegations = []
+        if delegations:
+            lines.extend(
+                [
+                    "",
+                    t(
+                        "gateway.agents.background_delegations",
+                        count=len(delegations),
+                    ),
+                ]
+            )
+            for d in delegations[:12]:
+                goal = " ".join(str(d.get("goal") or "").split())
+                if len(goal) > 70:
+                    goal = goal[:67] + "..."
+                status = d.get("status", "?")
+                row = f"- `{d.get('delegation_id', '?')}` · {status}"
+                if status == "stalling":
+                    quiet = d.get("stalled_after_quiet_seconds")
+                    if quiet is not None:
+                        row += f" · no progress {quiet:.0f}s"
+                elif d.get("seconds_since_progress", 0) >= 60:
+                    row += f" · quiet {d['seconds_since_progress']:.0f}s"
+                if goal:
+                    row += f" · {goal}"
+                lines.append(row)
+                for i, child in enumerate(d.get("children_activity") or []):
+                    if not isinstance(child, dict):
+                        continue
+                    tool = child.get("current_tool")
+                    doing = f"`{tool}`" if tool else "between turns"
+                    part = (
+                        f"  - child {i + 1}: "
+                        f"{child.get('api_calls', '?')} api calls · {doing}"
+                    )
+                    idle = child.get("seconds_since_activity")
+                    if idle is not None:
+                        part += f" · active {idle:.0f}s ago"
+                    lines.append(part)
+            if len(delegations) > 12:
+                lines.append(
+                    t("gateway.agents.more", count=len(delegations) - 12)
+                )
+
+        if (
+            not agent_rows
+            and not running_processes
+            and not background_tasks
+            and not delegations
+        ):
             lines.append("")
             lines.append(t("gateway.agents.none"))
 
@@ -1338,10 +1616,13 @@ class GatewaySlashCommandsMixin:
         # Native supervisor markers cover direct systemd/launchd starts. The
         # explicit marker covers wrappers such as ``sudo env -i`` that strip
         # those markers before execing the foreground gateway.
-        from gateway.restart import is_gateway_supervisor_process
+        from gateway.restart import (
+            is_container_restart_context,
+            is_gateway_supervisor_process,
+        )
 
         _under_service = is_gateway_supervisor_process()
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        _in_container = is_container_restart_context()
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:
@@ -1352,89 +1633,38 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
-        from hermes_cli.banner import format_banner_version_label
+        from hermes_cli.slash_exec import CommandContext, execute_command
 
-        return format_banner_version_label()
+        return execute_command("version", CommandContext(surface="gateway")).text
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         from gateway.run import _telegramize_command_mentions
-        from hermes_cli.commands import gateway_help_lines
-        lines = [
-            t("gateway.help.header"),
-            *gateway_help_lines(),
-        ]
-        try:
-            from agent.skill_commands import get_skill_commands
-            skill_cmds = get_skill_commands()
-            if skill_cmds:
-                lines.append(t("gateway.help.skill_header", count=len(skill_cmds)))
-                # Show first 10, then point to /commands for the rest
-                sorted_cmds = sorted(skill_cmds)
-                for cmd in sorted_cmds[:10]:
-                    lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
-                if len(sorted_cmds) > 10:
-                    lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
-        except Exception:
-            pass
+        from hermes_cli.slash_exec import CommandContext, execute_command
+
+        reply = execute_command("help", CommandContext(surface="gateway"))
         return _telegramize_command_mentions(
-            "\n".join(lines),
+            reply.text,
             getattr(getattr(event, "source", None), "platform", None),
         )
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         from gateway.run import _telegramize_command_mentions
-        from hermes_cli.commands import gateway_help_lines
-
-        raw_args = event.get_command_args().strip()
-        if raw_args:
-            try:
-                requested_page = int(raw_args)
-            except ValueError:
-                return t("gateway.commands.usage")
-        else:
-            requested_page = 1
-
-        # Build combined entry list: built-in commands + skill commands
-        entries = list(gateway_help_lines())
-        try:
-            from agent.skill_commands import get_skill_commands
-            skill_cmds = get_skill_commands()
-            if skill_cmds:
-                entries.append("")
-                entries.append(t("gateway.commands.skill_header"))
-                for cmd in sorted(skill_cmds):
-                    desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
-                    entries.append(f"`{cmd}` — {desc}")
-        except Exception:
-            pass
-
-        if not entries:
-            return t("gateway.commands.none")
-
+        from hermes_cli.slash_exec import CommandContext, execute_command
         from gateway.config import Platform
-        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
-        total_pages = max(1, (len(entries) + page_size - 1) // page_size)
-        page = max(1, min(requested_page, total_pages))
-        start = (page - 1) * page_size
-        page_entries = entries[start:start + page_size]
 
-        lines = [
-            t("gateway.commands.header", total=len(entries), page=page, total_pages=total_pages),
-            "",
-            *page_entries,
-        ]
-        if total_pages > 1:
-            nav_parts = []
-            if page > 1:
-                nav_parts.append(t("gateway.commands.nav_prev", page=page - 1))
-            if page < total_pages:
-                nav_parts.append(t("gateway.commands.nav_next", page=page + 1))
-            lines.extend(["", " | ".join(nav_parts)])
-        if page != requested_page:
-            lines.append(t("gateway.commands.out_of_range", requested=requested_page, page=page))
+        # Page size is a surface parameter (Telegram messages are shorter).
+        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+        reply = execute_command(
+            "commands",
+            CommandContext(
+                surface="gateway",
+                args=event.get_command_args(),
+                options={"page_size": page_size},
+            ),
+        )
         return _telegramize_command_mentions(
-            "\n".join(lines),
+            reply.text,
             getattr(getattr(event, "source", None), "platform", None),
         )
 
@@ -1451,9 +1681,8 @@ class GatewaySlashCommandsMixin:
           /model --provider <provider>        — switch to provider, auto-detect model
         """
         from gateway.run import _hermes_home, _load_gateway_config
-        import yaml
         from hermes_cli.model_switch import (
-            switch_model as _switch_model, parse_model_flags_detailed,
+            switch_model as _switch_model, parse_model_switch_args,
             resolve_persist_behavior,
             list_authenticated_providers,
             list_picker_providers,
@@ -1469,17 +1698,17 @@ class GatewaySlashCommandsMixin:
             )(source)
 
         # Parse --provider, --global, --session, --once, and --refresh flags
-        parsed_flags = parse_model_flags_detailed(raw_args)
-        model_input = parsed_flags.model_input
-        explicit_provider = parsed_flags.explicit_provider
-        is_global_flag = parsed_flags.is_global
-        force_refresh = parsed_flags.force_refresh
-        is_session = parsed_flags.is_session
-        one_turn = parsed_flags.is_once
-        if is_global_flag and one_turn:
-            return "❌ /model --once cannot be combined with --global"
-        if one_turn and not model_input and not explicit_provider:
-            return "❌ /model --once requires a model or provider."
+        # via the shared single-owner parser (hermes_cli.model_switch).
+        request = parse_model_switch_args(raw_args)
+        model_input = request.target
+        explicit_provider = request.explicit_provider
+        is_global_flag = request.is_global
+        force_refresh = request.force_refresh
+        is_session = request.is_session
+        one_turn = request.is_once
+        if request.errors:
+            # Gateway decoration: "❌ " prefix over the canonical error copy.
+            return f"❌ {request.error_messages()[0]}"
         persist_global = resolve_persist_behavior(
             is_global_flag,
             is_session,
@@ -1721,11 +1950,10 @@ class GatewaySlashCommandsMixin:
                         # model survives across sessions like a typed one (#49066).
                         if persist_global:
                             try:
-                                if config_path.exists():
-                                    with open(config_path, encoding="utf-8") as f:
-                                        _persist_cfg = yaml.safe_load(f) or {}
-                                else:
-                                    _persist_cfg = {}
+                                # Write-back round-trip: raw read is correct
+                                # (merged defaults must not be persisted).
+                                from hermes_cli.config import read_user_config_raw
+                                _persist_cfg = read_user_config_raw(config_path)
                                 _raw_model = _persist_cfg.get("model")
                                 if isinstance(_raw_model, dict):
                                     _persist_model_cfg = _raw_model
@@ -1736,9 +1964,9 @@ class GatewaySlashCommandsMixin:
                                     _persist_model_cfg = {}
                                     _persist_cfg["model"] = _persist_model_cfg
                                 try:
-                                    from hermes_cli.route_identity import should_clear_context_pin
+                                    from hermes_cli.route_identity import should_clear_context_pin_async
 
-                                    if should_clear_context_pin(
+                                    if await should_clear_context_pin_async(
                                         _persist_model_cfg.get("default")
                                         or _persist_model_cfg.get("model"),
                                         result.new_model,
@@ -2043,11 +2271,10 @@ class GatewaySlashCommandsMixin:
             # Persist to config (default) unless --session opted out
             if persist_global:
                 try:
-                    if config_path.exists():
-                        with open(config_path, encoding="utf-8") as f:
-                            cfg = yaml.safe_load(f) or {}
-                    else:
-                        cfg = {}
+                    # Write-back round-trip: raw read is correct (merged
+                    # defaults must not be persisted back to the user's file).
+                    from hermes_cli.config import read_user_config_raw
+                    cfg = read_user_config_raw(config_path)
                     # Coerce scalar/None ``model:`` into a dict before mutation —
                     # otherwise ``cfg.setdefault("model", {})`` returns the existing
                     # scalar and the next assignment raises
@@ -2064,9 +2291,9 @@ class GatewaySlashCommandsMixin:
                         model_cfg = {}
                         cfg["model"] = model_cfg
                     try:
-                        from hermes_cli.route_identity import should_clear_context_pin
+                        from hermes_cli.route_identity import should_clear_context_pin_async
 
-                        if should_clear_context_pin(
+                        if await should_clear_context_pin_async(
                             model_cfg.get("default") or model_cfg.get("model"),
                             result.new_model,
                             model_cfg.get("base_url"),
@@ -2330,12 +2557,17 @@ class GatewaySlashCommandsMixin:
         session_entry = await self.async_session_store.get_or_create_session(source)
         history = await self.async_session_store.load_transcript(session_entry.session_id)
         
-        # Find the last user message
+        # Find the last *real* user message. Timeline bookkeeping rows carry
+        # role=user + display_kind (model_switch / async_delegation_complete /
+        # auto_continue / hidden); clients never count them as user turns.
+        # Without this filter /retry rewrote the transcript around a marker
+        # and re-sent opaque bookkeeping text (same class as the TUI ordinal).
         last_user_msg = None
         last_user_idx = None
         for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_msg = history[i].get("content", "")
+            msg = history[i]
+            if msg.get("role") == "user" and not msg.get("display_kind"):
+                last_user_msg = msg.get("content", "")
                 last_user_idx = i
                 break
         
@@ -2800,6 +3032,116 @@ class GatewaySlashCommandsMixin:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
+    async def _handle_diff_command(self, event: MessageEvent) -> str:
+        """Handle /diff — show git changes in the working directory.
+
+        ``/diff`` (default) shows unstaged + untracked changes, ``/diff
+        staged`` the staged ones, ``/diff all`` everything since HEAD, and
+        ``/diff session`` the cumulative checkpoint-baseline diff of what
+        Hermes itself changed. ``--stat`` limits output to the summary.
+
+        The diff body is truncated hard here (messaging surfaces are not a
+        pager); platform senders additionally split/clamp long messages to
+        per-platform limits, the same way tool-progress output is truncated
+        in three layers before delivery.
+        """
+        args = event.get_command_args().strip()
+
+        stat_only = False
+        mode = "working"
+        for arg in args.split():
+            low = arg.lower()
+            if low in ("--stat", "stat"):
+                stat_only = True
+            elif low in ("staged", "--staged", "cached", "--cached"):
+                mode = "staged"
+            elif low in ("all", "--all", "head"):
+                mode = "all"
+            elif low == "session":
+                mode = "session"
+
+        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
+
+        if mode == "session":
+            return await self._gateway_session_diff(cwd, stat_only)
+
+        from tools.working_diff import collect_working_diff
+
+        result = await asyncio.to_thread(collect_working_diff, cwd, mode)
+        if not result.get("success"):
+            return t("gateway.diff.failed",
+                     error=result.get("error", "Could not generate diff"))
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        untracked = result.get("untracked", [])
+        if result.get("empty") or (not stat and not diff and not untracked):
+            return t("gateway.diff.no_changes")
+
+        out: list[str] = []
+        if stat:
+            out.append(f"```\n{stat}\n```")
+        if untracked:
+            shown = "\n".join(f"+ {rel}" for rel in untracked[:15])
+            more = f"\n... and {len(untracked) - 15} more" if len(untracked) > 15 else ""
+            out.append(f"**Untracked:**\n```\n{shown}{more}\n```")
+        if not stat_only and diff:
+            out.append(self._fenced_truncated_diff(diff))
+        return "\n\n".join(out)
+
+    async def _gateway_session_diff(self, cwd: str, stat_only: bool) -> str:
+        """Cumulative checkpoint-baseline diff for /diff session (gateway)."""
+        from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
+        from tools.checkpoint_manager import CheckpointManager
+
+        cp_kwargs = _checkpoint_agent_kwargs(_load_gateway_config())
+        if not cp_kwargs["checkpoints_enabled"]:
+            return t("gateway.diff.not_enabled")
+
+        mgr = CheckpointManager(
+            enabled=True,
+            max_snapshots=cp_kwargs["checkpoint_max_snapshots"],
+            max_total_size_mb=cp_kwargs["checkpoint_max_total_size_mb"],
+            max_file_size_mb=cp_kwargs["checkpoint_max_file_size_mb"],
+        )
+
+        result = await asyncio.to_thread(mgr.session_diff, cwd)
+        if not result.get("success"):
+            return t("gateway.diff.failed",
+                     error=result.get("error", "Could not generate diff"))
+
+        stat = result.get("stat", "")
+        diff = result.get("diff", "")
+        if result.get("empty") or (not stat and not diff):
+            return t("gateway.diff.no_changes")
+
+        out: list[str] = []
+        if stat:
+            out.append(f"```\n{stat}\n```")
+        if not stat_only and diff:
+            out.append(self._fenced_truncated_diff(diff))
+        return "\n\n".join(out)
+
+    @staticmethod
+    def _fenced_truncated_diff(diff: str, max_lines: int = 60,
+                               max_chars: int = 3000) -> str:
+        """Fence a diff body, truncating to messaging-friendly size."""
+        diff_lines = diff.splitlines()
+        truncated = False
+        if len(diff_lines) > max_lines:
+            diff = "\n".join(diff_lines[:max_lines])
+            truncated = True
+        if len(diff) > max_chars:
+            diff = diff[:max_chars]
+            truncated = True
+        note = ""
+        if truncated:
+            note = (
+                f"\n... (truncated — {len(diff_lines)} lines total; "
+                "use /diff --stat for a summary)"
+            )
+        return f"```diff\n{diff}{note}\n```"
+
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
 
@@ -2840,14 +3182,13 @@ class GatewaySlashCommandsMixin:
     def _save_gateway_config_key(self, key_path: str, value) -> bool:
         """Save a dot-separated key to config.yaml (shared by /reasoning, /fast
         and their interactive pickers)."""
-        import yaml
         from gateway.run import _hermes_home
+        from hermes_cli.config import read_user_config_raw
         config_path = _hermes_home / "config.yaml"
         try:
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+            # Write-back round-trip: raw read is correct (merged defaults must
+            # not be persisted back to the user's file).
+            user_config = read_user_config_raw(config_path)
             keys = key_path.split(".")
             current = user_config
             for k in keys[:-1]:
@@ -3096,11 +3437,10 @@ class GatewaySlashCommandsMixin:
         config_path = _hermes_home / "config.yaml"
 
         def _set_approval(enabled: bool):
-            import yaml
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+            # Write-back round-trip: raw read is correct (merged defaults must
+            # not be persisted back to the user's file).
+            from hermes_cli.config import read_user_config_raw
+            user_config = read_user_config_raw(config_path)
             user_config.setdefault("memory", {})["write_approval"] = bool(enabled)
             atomic_config_write(config_path, user_config)
             # New setting must take effect next message → drop cached agent.
@@ -3152,11 +3492,10 @@ class GatewaySlashCommandsMixin:
                     "writes here with /skills pending.")
 
         def _set_approval(enabled: bool):
-            import yaml
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
+            # Write-back round-trip: raw read is correct (merged defaults must
+            # not be persisted back to the user's file).
+            from hermes_cli.config import read_user_config_raw
+            user_config = read_user_config_raw(config_path)
             user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
             atomic_config_write(config_path, user_config)
             # New setting must take effect next message → drop cached agent.
@@ -3265,6 +3604,23 @@ class GatewaySlashCommandsMixin:
             return t("gateway.fast.status", mode=status)
 
         return _apply_fast_selection(args, persist=persist_global)
+
+    async def _handle_approvals_command(self, event: MessageEvent) -> str:
+        """Show or persist the profile-wide dangerous-command approval mode."""
+        from gateway.slash_access import policy_for_source
+        from hermes_cli.approval_mode import run_approval_mode_command
+
+        requested = event.get_command_args().strip() or None
+        # This mutates profile-wide security policy. The central slash gate can
+        # allow selected commands to non-admin users, so enforce admin again at
+        # this side-effect boundary. Unconfigured policies remain unrestricted.
+        policy = policy_for_source(self.config, event.source)
+        if requested and not policy.is_admin(event.source.user_id):
+            return "Only gateway admins can change the persistent approval mode."
+        result = run_approval_mode_command(requested)
+        # Approval checks load config dynamically; do not evict the cached agent
+        # or alter its system prompt/tool schema (prompt-cache prefix is sacred).
+        return result.message
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
@@ -3510,7 +3866,11 @@ class GatewaySlashCommandsMixin:
             # unbound/default "cli" host source — see #50422. _platform_config_key
             # maps LOCAL->"cli" exactly like the live turn, avoiding a new
             # "local" vs "cli" mismatch.
-            from gateway.run import _platform_config_key
+            from gateway.run import (
+                _GATEWAY_HYGIENE_PLATFORM,
+                _platform_config_key,
+                _seed_hygiene_system_prompt,
+            )
             platform_key = (
                 _platform_config_key(source.platform) if source.platform else None
             )
@@ -3559,6 +3919,25 @@ class GatewaySlashCommandsMixin:
             if platform_key is not None:
                 runtime_kwargs["platform"] = platform_key
             runtime_kwargs["gateway_session_key"] = session_key
+
+            # The manual compression helper skips memory-provider initialization,
+            # but _compress_context may persist its cached system prompt. Restore
+            # the exact live-session prompt so provider blocks are retained.
+            session_row = None
+            get_session = getattr(self._session_db, "get_session", None)
+            if callable(get_session):
+                try:
+                    session_row = await get_session(session_entry.session_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Manual compression could not restore the system prompt "
+                        "for session %s: %s. Preserving an empty prompt so the "
+                        "live turn rebuilds it with its configured providers.",
+                        session_entry.session_id,
+                        exc,
+                        exc_info=True,
+                    )
+
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
@@ -3569,6 +3948,12 @@ class GatewaySlashCommandsMixin:
                 session_id=session_entry.session_id,
                 session_db=getattr(self._session_db, "_db", self._session_db),
             )
+            _seed_hygiene_system_prompt(tmp_agent, session_row)
+            # Keep the real source platform during construction so external
+            # context engines bind correctly. If compression has to rebuild the
+            # prompt, stamp that provider-less fallback as stale for the next
+            # real gateway turn.
+            tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
                 # Prevent close() from ending the newly rotated session —
@@ -4279,6 +4664,43 @@ class GatewaySlashCommandsMixin:
             lines.append("Top up and manage billing in the browser — your balance updates here after.")
         return "\n".join(lines)
 
+    def _context_breakdown_block(self, agent, source, expanded: bool) -> list[str]:
+        """Render the /context per-category block (plain text, no grid).
+
+        Estimated (chars/4) — same engine as the desktop popover and /usage.
+        ``expanded`` appends the per-skill / per-toolset listings from the
+        prompt-size attribution mechanism. Runs in a thread (sync store reads);
+        returns [] and never raises so /context stays robust.
+        """
+        try:
+            from agent.context_breakdown import (
+                compute_context_details,
+                compute_session_context_breakdown,
+                render_context_breakdown_lines,
+            )
+
+            history: list[dict] = []
+            try:
+                entry = self.session_store.get_or_create_session(source)
+                history = self.session_store.load_transcript(entry.session_id) or []
+            except Exception:
+                history = []
+
+            payload = compute_session_context_breakdown(agent, history)
+            if not (payload.get("categories") or []):
+                return []
+
+            details = None
+            if expanded:
+                try:
+                    details = compute_context_details(agent)
+                except Exception:
+                    details = {"skills": [], "toolsets": []}
+
+            return render_context_breakdown_lines(payload, details=details, grid=False)
+        except Exception:
+            return []
+
     def _context_breakdown_lines(self, agent, source) -> list[str]:
         """Render the per-category context breakdown for /usage.
 
@@ -4713,19 +5135,20 @@ class GatewaySlashCommandsMixin:
         message suitable for any gateway adapter; bundles are loaded by
         invoking the bundle's own ``/<slug>`` command, not by this one.
         """
-        try:
-            from agent.skill_bundles import list_bundles, _bundles_dir
-        except Exception as exc:
-            logger.warning("Bundles command unavailable: %s", exc)
-            return f"Bundles subsystem unavailable: {exc}"
+        from hermes_cli.slash_exec import CommandContext, execute_command
 
-        bundles = list_bundles()
+        reply = execute_command("bundles", CommandContext(surface="gateway"))
+        if "error" in reply.data:
+            logger.warning("Bundles command unavailable: %s", reply.data["error"])
+            return reply.text
+
+        bundles = reply.data["bundles"]
         if not bundles:
             return (
                 "No skill bundles installed.\n"
                 "Create one on the host with:\n"
                 "  `hermes bundles create <name> --skill <s1> --skill <s2>`\n"
-                f"Directory: `{_bundles_dir()}`"
+                f"Directory: `{reply.data['dir']}`"
             )
 
         lines = [f"**Skill Bundles** ({len(bundles)} installed):", ""]

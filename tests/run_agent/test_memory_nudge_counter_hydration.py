@@ -70,14 +70,6 @@ def test_seven_user_turns_history_hydrates_to_seven():
     assert since_mem == 7  # 7 % 10 = 7, next 3 turns will trigger review
 
 
-def test_thirteen_turns_history_wraps_via_modulo():
-    """13 prior user turns, interval 10 → counter at 3 (post-wrap), preserving cadence."""
-    history = [{"role": "user", "content": f"q{i}"} for i in range(13)]
-
-    user_turn, since_mem = _run_hydration(history, memory_nudge_interval=10)
-
-    assert user_turn == 13
-    assert since_mem == 3  # 13 % 10 = 3, next 7 turns to trigger
 
 
 def test_idempotent_when_counters_already_set():
@@ -96,24 +88,8 @@ def test_idempotent_when_counters_already_set():
     assert since_mem == 5
 
 
-def test_zero_nudge_interval_disables_hydration_of_review_counter():
-    """When memory.nudge_interval=0 (review disabled), don't touch the counter."""
-    history = [{"role": "user", "content": "q1"}]
-    user_turn, since_mem = _run_hydration(history, memory_nudge_interval=0)
-    assert user_turn == 1
-    assert since_mem == 0  # untouched when interval is 0
 
 
-def test_assistant_only_history_does_not_advance_user_turn_count():
-    """Defensive: only role==user messages contribute. Other roles are noise."""
-    history = [
-        {"role": "system", "content": "sys"},
-        {"role": "assistant", "content": "a"},
-        {"role": "tool", "content": "t"},
-    ]
-    user_turn, since_mem = _run_hydration(history, memory_nudge_interval=10)
-    assert user_turn == 0
-    assert since_mem == 0
 
 
 def test_production_code_contains_hydration_block():

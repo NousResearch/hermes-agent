@@ -359,7 +359,9 @@ def _scan_gateway_pids(
         looks_like_gateway_runtime_command_line,
     )
     current_home = str(get_hermes_home().resolve())
-    current_home_lc = current_home.lower()
+    # Forward slashes on both sides of the HERMES_HOME= match — see
+    # gateway.status._command_line_belongs_to_profile, which this mirrors.
+    current_home_lc = current_home.lower().replace("\\", "/")
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = (
         current_profile_arg.split()[-1] if current_profile_arg else ""
@@ -367,7 +369,7 @@ def _scan_gateway_pids(
     current_profile_name_lc = current_profile_name.lower()
 
     def _matches_current_profile(command: str) -> bool:
-        command_lc = command.lower()
+        command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
             return (
                 f"--profile {current_profile_name_lc}" in command_lc
@@ -408,7 +410,6 @@ def _scan_gateway_pids(
 
             _no_window = {"creationflags": windows_hide_flags()}
             wmic_path = shutil.which("wmic")
-            used_fallback = False
             result = None
             if wmic_path is not None:
                 try:
@@ -455,7 +456,6 @@ def _scan_gateway_pids(
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     return []
-                used_fallback = True
             if result.returncode != 0 or result.stdout is None:
                 return []
             current_cmd = ""
@@ -4683,8 +4683,11 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
             cfg_path = default_root / "config.yaml"
             if not cfg_path.exists():
                 return
-            with open(cfg_path, encoding="utf-8") as f:
-                cfg = _yaml.safe_load(f) or {}
+            # Raw read of the DEFAULT root's config (not the active profile
+            # home, so load_config() is the wrong owner here); whole probe is
+            # fail-open via the enclosing except.
+            from hermes_cli.config import read_user_config_raw
+            cfg = read_user_config_raw(cfg_path)
             multiplex = bool(
                 cfg.get("multiplex_profiles")
                 or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
@@ -5470,6 +5473,9 @@ def _set_platform_unauthorized_dm_behavior(platform_key: str, behavior: str) -> 
 
 def _setup_standard_platform(platform: dict):
     """Interactive setup for Telegram, Discord, or Slack."""
+    # Same hidden-knob list the dashboard/Desktop channel cards use.
+    from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
+
     emoji = platform["emoji"]
     label = platform["label"]
     token_var = platform["token_var"]
@@ -5522,7 +5528,22 @@ def _setup_standard_platform(platform: dict):
 
     allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
 
-    for var in platform["vars"]:
+    # Skip the knobs the setup forms hide (home channel, reply mode, proxy,
+    # mention behavior). They're self-configuring or already correct by
+    # default — /sethome sets the home channel on the first chat — so asking
+    # about each one turned a 2-question setup into a 5-question one. Same
+    # exclusion the dashboard/Desktop cards use, so the surfaces agree.
+    # Required credentials are never skipped.
+    required_names = {token_var}
+    setup_vars = [
+        v
+        for v in platform["vars"]
+        if v["name"] in required_names
+        or v.get("is_allowlist")
+        or not _is_setup_hidden_env(v["name"])
+    ]
+
+    for var in setup_vars:
         print()
         print_info(f"  {var['help']}")
         existing = get_env_value(var["name"])

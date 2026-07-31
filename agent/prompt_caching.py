@@ -119,6 +119,59 @@ def _apply_system_cache_markers(
     return 1
 
 
+def strip_anthropic_cache_control(
+    api_messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove ``cache_control`` markers and undo decoration-produced list shapes.
+
+    Used before re-applying decoration after a mid-turn provider failover so
+    the mutated, undecorated shape (image shrink / ASCII cleanup / etc.) is
+    preserved while markers match the *new* provider's cache policy (#72626).
+
+    Flattening back to a plain string is restricted to the exact shapes
+    :func:`apply_anthropic_cache_control` produces from string content —
+    a single ``{"type": "text"}`` part, or the two-part ``[static, volatile]``
+    system split — so the ``""``-join is provably byte-exact. Organic
+    multi-part text (merged user turns, imported transcripts) and parts
+    carrying extra keys (``citations`` etc.) keep their structure; only
+    per-part markers are removed. Marker removal is copy-on-write on the
+    part dicts: content parts may alias the persistent conversation history
+    (the per-call copy is shallow), and stripping must never rewrite the
+    stored transcript.
+
+    Mutates the top-level message dicts of ``api_messages`` in place and
+    returns the same list.
+    """
+    for msg in api_messages:
+        if not isinstance(msg, dict):
+            continue
+        msg.pop("cache_control", None)
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if any(isinstance(part, dict) and "cache_control" in part for part in content):
+            content = [
+                {k: v for k, v in part.items() if k != "cache_control"}
+                if isinstance(part, dict) and "cache_control" in part
+                else part
+                for part in content
+            ]
+            msg["content"] = content
+        decoration_shape = content and all(
+            isinstance(part, dict)
+            and part.get("type", "text") == "text"
+            and isinstance(part.get("text"), str)
+            and set(part.keys()) <= {"type", "text"}
+            for part in content
+        ) and (
+            len(content) == 1
+            or (msg.get("role") == "system" and len(content) == 2)
+        )
+        if decoration_shape:
+            msg["content"] = "".join(part["text"] for part in content)
+    return api_messages
+
+
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
@@ -134,17 +187,18 @@ def apply_anthropic_cache_control(
     is retained.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
+        Shallow copy of message list with selective deep copies of modified messages.
     """
-    messages = copy.deepcopy(api_messages)
-    if not messages:
-        return messages
+    if not api_messages:
+        return api_messages
 
+    messages = list(api_messages)
     marker = _build_marker(cache_ttl)
 
     breakpoints_used = 0
 
     if messages[0].get("role") == "system":
+        messages[0] = copy.deepcopy(messages[0])
         breakpoints_used = _apply_system_cache_markers(
             messages[0],
             marker,
@@ -160,6 +214,7 @@ def apply_anthropic_cache_control(
         and _can_carry_marker(messages[i], native_anthropic=native_anthropic)
     ]
     for idx in non_sys[-remaining:]:
+        messages[idx] = copy.deepcopy(messages[idx])
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
 
     return messages

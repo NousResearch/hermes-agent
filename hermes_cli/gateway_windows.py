@@ -744,8 +744,26 @@ def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     ``extra_pythonpath`` is always empty now; the tuple shape is kept so the
     call sites (argv builders, cmd/vbs renderers, restart-spec rewriter,
     gateway watcher) stay unchanged.
+
+    Legacy normalization: launchers and argv snapshots from pre-aa2ae36c3f
+    installs lead with ``pythonw.exe``. When the sibling console
+    ``python.exe`` exists, swap to it so respawns and regenerated launchers
+    get the hidden-console design instead of resurrecting the console-less
+    daemon (the #54220/#56747 flash class, plus the ``sys.stderr is None``
+    startup-crash class from #71671).
     """
     p = Path(python_exe)
+    if p.name.lower() in ("pythonw.exe", "pythonw"):
+        sibling = p.with_name("python.exe" if p.suffix else "python")
+        try:
+            if sibling.exists():
+                p = sibling
+                python_exe = str(sibling)
+        except OSError:
+            # Can't stat the sibling — keep the original interpreter. A
+            # console-less gateway is worse than a hidden-console one, but a
+            # failed respawn is worse still.
+            pass
     venv_dir = p.parent.parent
     return (python_exe, venv_dir, [])
 

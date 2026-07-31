@@ -18,6 +18,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
@@ -182,12 +183,34 @@ def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
 def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
     """Generate a deterministic call_id from tool call content.
 
-    Used as a fallback when the API doesn't provide a call_id.
+    Thin wrapper over the single policy owner
+    ``agent.message_sanitization.deterministic_call_id`` (audit F4) — kept
+    as a module-level name because run_agent and tests import it from here.
     Deterministic IDs prevent cache invalidation — random UUIDs would
     make every API call's prefix unique, breaking OpenAI's prompt cache.
     """
-    seed = f"{fn_name}:{arguments}:{index}"
-    digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return deterministic_call_id(fn_name, arguments, index)
+
+
+def _clamp_responses_call_id(call_id: str) -> str:
+    """Keep a ``call_id`` within the Responses API's 64-char limit (#73492).
+
+    The codex app-server namespaces MCP tool call ids as
+    ``codex_mcp__<server>__<tool>_<codex_call_id>``; with an ``exec-<uuid>``
+    component the built-in ``hermes-tools`` server already overflows 64 chars,
+    and the Responses API rejects the whole payload with a non-retryable HTTP
+    400 that then replays every turn — permanently bricking the session.
+
+    Sibling defect to #10788 (which clamped ``input[*].id``), applied here to
+    ``call_id``. The surrogate is a pure, deterministic function of the
+    original, so the ``function_call`` and its matching ``function_call_output``
+    — which carry the same original id — map to the same surrogate and stay
+    paired without correlating the two items. Short ids pass through unchanged,
+    preserving prompt-cache prefixes.
+    """
+    if len(call_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
+        return call_id
+    digest = hashlib.sha256(call_id.encode("utf-8", errors="replace")).hexdigest()[:32]
     return f"call_{digest}"
 
 
@@ -546,7 +569,7 @@ def _chat_messages_to_responses_input(
 
                         items.append({
                             "type": "function_call",
-                            "call_id": call_id,
+                            "call_id": _clamp_responses_call_id(call_id),
                             "name": fn_name,
                             "arguments": arguments,
                         })
@@ -589,7 +612,7 @@ def _chat_messages_to_responses_input(
 
             items.append({
                 "type": "function_call_output",
-                "call_id": call_id,
+                "call_id": _clamp_responses_call_id(call_id),
                 "output": output_value,
             })
 

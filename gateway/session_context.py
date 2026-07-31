@@ -73,6 +73,7 @@ def session_context_engaged() -> bool:
 _SESSION_PLATFORM: ContextVar = ContextVar("HERMES_SESSION_PLATFORM", default=_UNSET)
 _SESSION_SOURCE: ContextVar = ContextVar("HERMES_SESSION_SOURCE", default=_UNSET)
 _SESSION_CHAT_ID: ContextVar = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
+_SESSION_CHAT_TYPE: ContextVar = ContextVar("HERMES_SESSION_CHAT_TYPE", default=_UNSET)
 _SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
 _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
@@ -123,6 +124,7 @@ _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
+    "HERMES_SESSION_CHAT_TYPE": _SESSION_CHAT_TYPE,
     "HERMES_SESSION_CHAT_NAME": _SESSION_CHAT_NAME,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
@@ -157,6 +159,7 @@ def set_session_vars(
     platform: str = "",
     source: str = "",
     chat_id: str = "",
+    chat_type: str = "",
     chat_name: str = "",
     thread_id: str = "",
     user_id: str = "",
@@ -193,6 +196,7 @@ def set_session_vars(
         _SESSION_PLATFORM.set(platform),
         _SESSION_SOURCE.set(source),
         _SESSION_CHAT_ID.set(chat_id),
+        _SESSION_CHAT_TYPE.set(chat_type),
         _SESSION_CHAT_NAME.set(chat_name),
         _SESSION_THREAD_ID.set(thread_id),
         _SESSION_USER_ID.set(user_id),
@@ -228,6 +232,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_PLATFORM,
         _SESSION_SOURCE,
         _SESSION_CHAT_ID,
+        _SESSION_CHAT_TYPE,
         _SESSION_CHAT_NAME,
         _SESSION_THREAD_ID,
         _SESSION_USER_ID,
@@ -324,6 +329,58 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+# Surfaces that are not a human chat channel. The gateway binds a platform
+# value (``telegram``) to HERMES_SESSION_PLATFORM, while the CLI, TUI, and
+# desktop bind HERMES_SESSION_SOURCE (``cli``, ``tui``, ``desktop``) and leave
+# the platform empty — so both have to be consulted. ``local``, ``api_server``,
+# ``webhook``, and ``msgraph_webhook`` are real Platform values that reach
+# HERMES_SESSION_PLATFORM but have no attachment channel behind them.
+# Default-deny: an unrecognized identity counts as messaging so a newly added
+# chat platform is never treated as a private surface before this set is
+# updated. Mirrors LOCAL_SESSION_SOURCE_IDS in
+# apps/desktop/src/lib/session-source.ts; keep roughly in sync when adding a
+# local or programmatic surface.
+NON_MESSAGING_SESSION_SURFACES = frozenset(
+    {
+        "",
+        "api_server",
+        "cli",
+        "codex",
+        "desktop",
+        "gateway",
+        "kanban",
+        "local",
+        "msgraph_webhook",
+        "tool",
+        "tui",
+        "webhook",
+    }
+)
+
+
+def session_is_messaging_surface() -> bool:
+    """Whether this turn is delivered over a human messaging channel.
+
+    Callers use this to decide anything that differs between "the user is
+    reading a chat message" and "the user is at a machine they own": whether
+    to emit a delivery tag, whether a file has to land somewhere the gateway
+    is allowed to send from, whether narration would read as chat noise.
+
+    Resolves ``HERMES_PLATFORM``, then the session platform, then the session
+    source, and reports messaging when any of them names a surface outside
+    :data:`NON_MESSAGING_SESSION_SURFACES`.
+    """
+    import os
+
+    platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM", "")
+    source = get_session_env("HERMES_SESSION_SOURCE", "")
+    for identity in (platform, source):
+        identity = str(identity or "").strip().lower()
+        if identity and identity not in NON_MESSAGING_SESSION_SURFACES:
+            return True
+    return False
 
 
 def declare_stateless_channel() -> None:

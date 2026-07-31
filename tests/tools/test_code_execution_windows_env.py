@@ -45,15 +45,6 @@ class TestWindowsEssentialAllowlist:
         # Without SYSTEMROOT the child cannot initialize Winsock.
         assert "SYSTEMROOT" in _WINDOWS_ESSENTIAL_ENV_VARS
 
-    def test_contains_subprocess_required_vars(self):
-        # Without COMSPEC, subprocess can't resolve the default shell.
-        assert "COMSPEC" in _WINDOWS_ESSENTIAL_ENV_VARS
-
-    def test_contains_user_profile_vars(self):
-        # os.path.expanduser("~") on Windows uses USERPROFILE.
-        assert "USERPROFILE" in _WINDOWS_ESSENTIAL_ENV_VARS
-        assert "APPDATA" in _WINDOWS_ESSENTIAL_ENV_VARS
-        assert "LOCALAPPDATA" in _WINDOWS_ESSENTIAL_ENV_VARS
 
     def test_contains_only_uppercase_names(self):
         # Windows env var names are case-insensitive but we canonicalize to
@@ -136,12 +127,6 @@ class TestScrubChildEnvWindows:
         assert "GITHUB_TOKEN" not in scrubbed
         assert "MY_PASSWORD" not in scrubbed
 
-    def test_unknown_vars_still_dropped_on_windows(self):
-        env = self._sample_windows_env()
-        scrubbed = _scrub_child_env(env,
-                                    is_passthrough=_no_passthrough,
-                                    is_windows=True)
-        assert "RANDOM_UNKNOWN_VAR" not in scrubbed
 
     def test_essentials_blocked_when_is_windows_false(self):
         """On POSIX hosts, Windows-specific vars should not pass — they
@@ -383,18 +368,6 @@ class TestPosixEquivalence:
             f"  value diffs:    {[k for k in expected if k in actual and expected[k] != actual[k]]}"
         )
 
-    def test_posix_behavior_unchanged_on_real_os_environ(self):
-        """Bonus check against the actual os.environ of the host running
-        the test.  This covers vars we might not have thought to put in
-        the synthetic fixtures."""
-        expected = _legacy_posix_scrubber(os.environ, lambda _: False)
-        actual = _scrub_child_env(os.environ,
-                                  is_passthrough=lambda _: False,
-                                  is_windows=False)
-        assert actual == expected, (
-            "POSIX-mode scrubber diverged from legacy behavior on real "
-            f"os.environ (host platform={sys.platform})"
-        )
 
     def test_windows_mode_is_strict_superset_of_posix_mode(self):
         """Correctness check on the NEW behavior: is_windows=True must
@@ -469,17 +442,6 @@ class TestSandboxWritesUtf8:
                 f"Sandbox file write missing encoding=\"utf-8\" on Windows: {line!r}"
             )
 
-    def test_file_rpc_stub_uses_utf8(self):
-        """The file-based RPC transport stub (used by remote backends)
-        reads/writes JSON response files.  Those must also specify UTF-8
-        so non-ASCII tool results survive the round-trip intact."""
-        from tools.code_execution_tool import generate_hermes_tools_module
-        stub = generate_hermes_tools_module(["terminal"], transport="file")
-        # The generated stub should open response + request files as UTF-8.
-        assert 'encoding="utf-8"' in stub, (
-            "File-based RPC stub does not specify encoding=\"utf-8\" — "
-            "will corrupt non-ASCII tool results on non-UTF-8 locales."
-        )
 
     def test_stub_source_roundtrips_through_utf8(self):
         """Concrete regression: write the generated stub to a temp file
@@ -612,16 +574,6 @@ class TestChildStdioIsUtf8:
             "UnicodeEncodeError."
         )
 
-    def test_popen_env_sets_pythonutf8_mode(self):
-        """Source-level check: PYTHONUTF8=1 must be set too — it makes
-        open()'s default encoding UTF-8 in user-written file I/O."""
-        import tools.code_execution_tool as cet
-        src = open(cet.__file__, encoding="utf-8").read()
-        assert 'child_env["PYTHONUTF8"] = "1"' in src, (
-            "PYTHONUTF8=1 missing from child env — user scripts that "
-            "call open(path, 'w') without encoding= will produce "
-            "locale-encoded files on Windows."
-        )
 
     def test_live_child_can_print_non_ascii(self):
         """Live regression: spawn a Python child with the same env

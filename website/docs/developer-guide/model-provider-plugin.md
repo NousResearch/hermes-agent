@@ -136,11 +136,11 @@ class AcmeProfile(ProviderProfile):
         reasoning dict). Default: ({}, {})."""
         return {}, {}
 
-    def fetch_models(self, *, api_key=None, timeout=8.0) -> list[str] | None:
+    def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0) -> list[str] | None:
         """Live catalog fetch. Default hits {models_url or base_url}/models with
         Bearer auth. Override for: custom auth (Anthropic), no REST endpoint
         (Bedrock → None), or public/unauthenticated catalogs (OpenRouter)."""
-        return super().fetch_models(api_key=api_key, timeout=timeout)
+        return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
 ```
 
 ## Hook reference examples

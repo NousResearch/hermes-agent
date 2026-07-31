@@ -114,6 +114,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
             load_config,
         )
         from hermes_cli.models import fetch_api_models
+        from hermes_cli.providers import custom_provider_slug
     except ImportError:
         return []
 
@@ -145,8 +146,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         base_url = str(entry.get("base_url", "") or "").strip()
         if not name or not base_url:
             continue
-        slug_source = provider_key or name
-        slug = "custom:" + slug_source.strip().lower().replace(" ", "-")
+        slug = custom_provider_slug(name, provider_key)
 
         api_key = str(entry.get("api_key", "") or "").strip()
         if not api_key:
@@ -1761,7 +1761,16 @@ class HermesACPAgent(acp.Agent):
                     clear_session_vars,
                     set_session_vars,
                 )
-                session_tokens = set_session_vars(session_key=session_id)
+                # ``cwd`` pins the logical working directory for this context,
+                # which is what the system prompt's "Current working directory"
+                # line reports (agent/prompt_builder.py -> resolve_agent_cwd).
+                # Without it the prompt advertises the global Hermes workspace
+                # while the tools are rooted at the client's project, so the
+                # model emits absolute paths under ~/.hermes/workspace and the
+                # edit silently lands outside the editor's workspace.
+                session_tokens = set_session_vars(
+                    session_key=session_id, cwd=state.cwd,
+                )
             except Exception:
                 session_tokens = None
                 clear_session_vars = None  # type: ignore[assignment]
@@ -2048,8 +2057,26 @@ class HermesACPAgent(acp.Agent):
         if handler is None:
             return None  # not a known command — let the LLM handle it
 
-        try:
+        # Slash handlers run on the event-loop thread, OUTSIDE the per-turn
+        # contextvars.copy_context() that pins the session cwd for the agent
+        # call. ``/compress`` and ``/model`` reach code that REBUILDS the
+        # system prompt (agent._build_system_prompt -> resolve_agent_cwd), so
+        # an unpinned handler bakes the Hermes install tree into the session's
+        # cached prompt — persisted, and therefore poisoning every later turn
+        # even though the turn itself is pinned. Pin inside a fresh context so
+        # the write can't leak into other concurrent ACP sessions and needs no
+        # teardown.
+        def _dispatch() -> str | None:
+            try:
+                from agent.runtime_cwd import set_session_cwd
+
+                set_session_cwd(state.cwd)
+            except Exception:
+                logger.debug("Could not pin ACP session cwd for slash command", exc_info=True)
             return handler(args, state)
+
+        try:
+            return contextvars.copy_context().run(_dispatch)
         except Exception as e:
             logger.error("Slash command /%s error: %s", cmd, e, exc_info=True)
             return f"Error executing /{cmd}: {e}"

@@ -66,7 +66,7 @@ _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.6-flash",
     "groq": "openai/gpt-oss-120b",
     "openrouter": "qwen/qwen3.5-9b",
     "minimax": "MiniMax-M2.7",
@@ -131,10 +131,19 @@ def _check_local_runtime() -> tuple[bool, str | None]:
     error from NumPy before the daemon starts. Treat that as "unavailable"
     so Hermes can degrade gracefully instead of repeatedly trying to start
     a broken local memory backend.
+
+    The embedded daemon computes embeddings via ``sentence_transformers``
+    (transformers + huggingface-hub). Importing ``hindsight`` /
+    ``hindsight_embed`` alone succeeds even when that stack is broken, so
+    without importing it here the probe would falsely report the backend
+    healthy and ``hermes memory status`` would stay green while the daemon
+    aborts at startup on every retain/recall. Import it too so the probe (and
+    status) reports the real ImportError.
     """
     try:
         importlib.import_module("hindsight")
         importlib.import_module("hindsight_embed.daemon_embed_manager")
+        importlib.import_module("sentence_transformers")
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -824,21 +833,18 @@ class HindsightMemoryProvider(MemoryProvider):
             provider_config["llm_provider"] = llm_provider
 
         print("\n  Checking dependencies...")
-        uv_path = shutil.which("uv")
-        if not uv_path:
-            print("  ⚠ uv not found — install it: curl -LsSf https://astral.sh/uv/install.sh | sh")
-            print(f"  Then run manually: uv pip install --python {sys.executable} {' '.join(deps_to_install)}")
+        # Environment-aware install: sealed hosted venvs redirect to the durable
+        # data-volume target instead of writing to /opt/hermes (NS-605).
+        from tools.lazy_deps import install_specs
+
+        outcome = install_specs(deps_to_install, timeout=120)
+        if outcome.ok:
+            print("  ✓ Dependencies up to date")
+        elif outcome.blocked:
+            print(f"  ⚠ Cannot install dependencies: {outcome.reason}")
         else:
-            try:
-                subprocess.run(
-                    [uv_path, "pip", "install", "--python", sys.executable, "--quiet", "--upgrade"] + deps_to_install,
-                    check=True, timeout=120, capture_output=True,
-                    stdin=subprocess.DEVNULL,
-                )
-                print("  ✓ Dependencies up to date")
-            except Exception as e:
-                print(f"  ⚠ Install failed: {e}")
-                print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(deps_to_install)}")
+            print(f"  ⚠ Install failed:\n{(outcome.stderr or '').strip()}")
+            print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(deps_to_install)}")
 
         # Step 3: Mode-specific config
         if mode == "cloud":
@@ -1225,24 +1231,18 @@ class HindsightMemoryProvider(MemoryProvider):
             if Version(installed) < Version(_MIN_CLIENT_VERSION):
                 logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
                                installed, _MIN_CLIENT_VERSION)
-                import shutil
-                import subprocess
-                import sys
-                uv_path = shutil.which("uv")
-                if uv_path:
-                    try:
-                        subprocess.run(
-                            [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
-                            check=True, timeout=120, capture_output=True,
-                            stdin=subprocess.DEVNULL,
-                        )
-                        logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
-                    except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                       e, _MIN_CLIENT_VERSION)
+                # Environment-aware install: sealed hosted venvs redirect to the
+                # durable data-volume target instead of /opt/hermes (NS-605).
+                from tools.lazy_deps import install_specs
+                outcome = install_specs([f"hindsight-client>={_MIN_CLIENT_VERSION}"], timeout=120)
+                if outcome.ok:
+                    logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
+                elif outcome.blocked:
+                    logger.warning("Auto-upgrade unavailable: %s. Run: uv pip install 'hindsight-client>=%s'",
+                                   outcome.reason, _MIN_CLIENT_VERSION)
                 else:
-                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
+                    logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
+                                   (outcome.stderr or "").strip() or "install error", _MIN_CLIENT_VERSION)
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 

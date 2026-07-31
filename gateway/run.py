@@ -2484,6 +2484,29 @@ def _footer_account_usage_cache_key(
     )
 
 
+
+
+def _footer_reasoning_effort_from_agent(agent) -> str | None:
+    """Return the active reasoning effort label for footer display.
+
+    Prefer the live agent runtime config (includes /reasoning overrides and
+    per-model clamps already applied on the agent). Fall back to nothing when
+    the agent is missing or has no reasoning config — the footer field is then
+    silently omitted.
+    """
+    if agent is None:
+        return None
+    rc = getattr(agent, "reasoning_config", None)
+    if not isinstance(rc, dict):
+        return None
+    if rc.get("enabled") is False:
+        return "none"
+    effort = rc.get("effort")
+    if effort is None:
+        return None
+    label = str(effort).strip().lower()
+    return label or None
+
 def _fetch_footer_account_usage_cached(
     provider: str | None,
     *,
@@ -5805,6 +5828,7 @@ class TurnRunner:
                 "provider": getattr(agent, "provider", None) if agent else None,
                 "base_url": getattr(agent, "base_url", None) if agent else None,
                 "api_key": getattr(agent, "api_key", None) if agent else None,
+                "reasoning_effort": _footer_reasoning_effort_from_agent(agent),
                 "context_length": _context_length,
             }
 
@@ -5885,6 +5909,7 @@ class TurnRunner:
             "provider": getattr(agent, "provider", None) if agent else None,
             "base_url": getattr(agent, "base_url", None) if agent else None,
             "api_key": getattr(agent, "api_key", None) if agent else None,
+            "reasoning_effort": _footer_reasoning_effort_from_agent(agent),
             "context_length": _context_length,
             "session_id": effective_session_id,
             "response_previewed": result.get("response_previewed", False),
@@ -18338,6 +18363,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     provider=_footer_provider,
                     account_label=_footer_account_label,
                     account_usage=_footer_account_usage,
+                    reasoning_effort=agent_result.get("reasoning_effort"),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

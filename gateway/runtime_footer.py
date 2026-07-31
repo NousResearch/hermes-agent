@@ -10,6 +10,7 @@ Config (``~/.hermes/config.yaml``)::
       runtime_footer:
         enabled: true                         # off by default
         fields: [model, context_pct, cwd]     # order shown; drop any to hide
+        # also: provider, account, context, quota, reasoning
         underline: false                      # optional separator before footer
 
 Available fields:
@@ -64,6 +65,34 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+# Compact labels for agent.reasoning_effort / runtime reasoning_config.
+# Keep these short so the footer stays one line on mobile clients.
+_REASONING_ABBREV = {
+    "none": "off",
+    "minimal": "min",
+    "low": "low",
+    "medium": "med",
+    "high": "high",
+    "xhigh": "xhi",
+    "max": "max",
+    "ultra": "ult",
+}
+
+
+def _reasoning_short(effort: Optional[str]) -> str:
+    """Return a compact reasoning-effort label, or "" when unknown/empty."""
+    raw = str(effort or "").strip().lower()
+    if not raw:
+        return ""
+    if raw in {"false", "disabled", "off"}:
+        return _REASONING_ABBREV["none"]
+    if raw in _REASONING_ABBREV:
+        return _REASONING_ABBREV[raw]
+    # Unknown but non-empty values still surface compactly so a new level
+    # is visible before we teach the map about it.
+    return raw[:6]
 
 
 def resolve_footer_config(
@@ -264,6 +293,7 @@ def format_runtime_footer(
     provider: Optional[str] = None,
     account_label: Optional[str] = None,
     account_usage: Any = None,
+    reasoning_effort: Optional[str] = None,
     underline: bool = False,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -277,6 +307,10 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field in {"reasoning", "reasoning_effort", "effort"}:
+            label = _reasoning_short(reasoning_effort)
+            if label:
+                parts.append(label)
         elif field == "provider":
             if provider:
                 parts.append(str(provider))
@@ -322,6 +356,7 @@ def build_footer_line(
     provider: Optional[str] = None,
     account_label: Optional[str] = None,
     account_usage: Any = None,
+    reasoning_effort: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -346,5 +381,6 @@ def build_footer_line(
         provider=provider,
         account_label=account_label,
         account_usage=account_usage,
+        reasoning_effort=reasoning_effort,
         underline=bool(cfg.get("underline")),
     )

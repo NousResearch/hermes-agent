@@ -158,11 +158,12 @@ def test_format_footer_extended_fields_with_quota_and_underline():
         context_tokens=21_800,
         context_length=200_000,
         account_usage=snapshot,
+        reasoning_effort="ultra",
         cwd="",
-        fields=("provider", "account", "model", "context", "quota"),
+        fields=("provider", "account", "model", "reasoning", "context", "quota"),
         underline=True,
     )
-    assert out == "──────────────\nopenai-codex · team-main · gpt-5.5 · ctx 21.8K/200K · 5h 80% · 7d 70%"
+    assert out == "──────────────\nopenai-codex · team-main · gpt-5.5 · ult · ctx 21.8K/200K · 5h 80% · 7d 70%"
 
 
 def test_format_footer_compacts_reset_times_for_quota():
@@ -305,6 +306,61 @@ def test_resolve_ignores_malformed_config():
 
 
 # ---------------------------------------------------------------------------
+
+
+def test_format_footer_reasoning_abbreviations():
+    cases = {
+        "none": "off",
+        "minimal": "min",
+        "low": "low",
+        "medium": "med",
+        "high": "high",
+        "xhigh": "xhi",
+        "max": "max",
+        "ultra": "ult",
+        "false": "off",
+        "DISABLED": "off",
+    }
+    for effort, expected in cases.items():
+        out = format_runtime_footer(
+            model="m",
+            context_tokens=0,
+            context_length=100,
+            reasoning_effort=effort,
+            fields=("reasoning",),
+        )
+        assert out == expected, (effort, out)
+
+
+def test_format_footer_reasoning_omitted_when_missing():
+    out = format_runtime_footer(
+        model="openai/gpt-5.5",
+        context_tokens=10,
+        context_length=100,
+        fields=("model", "reasoning"),
+    )
+    assert out == "gpt-5.5"
+
+
+def test_build_footer_passes_reasoning_effort():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "reasoning"],
+                }
+            }
+        },
+        platform_key=None,
+        model="openai/gpt-5.5",
+        context_tokens=0,
+        context_length=None,
+        reasoning_effort="xhigh",
+    )
+    assert out == "gpt-5.5 · xhi"
+
+
 # build_footer_line — top-level entry point used by gateway/run.py
 # ---------------------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import sqlite3
 import time
@@ -457,6 +458,156 @@ def test_replay_reconstructs_create_and_replaced_subscription_destinations(workf
     }
 
 
+def test_create_subscription_metadata_is_canonical_and_idempotent(workflow_db):
+    acceptance = kb.create_task(
+        workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"
+    )
+    subscription = {
+        "platform": "telegram", "chat_id": "chat-canonical",
+        "notifier_profile": "default",
+        "delivery_metadata": {"scalar": "kept", "count": 1, "flag": True},
+        "target_states": ["PASS"],
+    }
+    created = kb.create_workflow(
+        workflow_db, workflow_id="wf_create_metadata", name="release",
+        tenant="tenant-a", designated_acceptance_task_id=acceptance,
+        actor=_actor(), mutation_id="create-metadata", subscription=subscription,
+    )
+    retried = kb.create_workflow(
+        workflow_db, workflow_id="wf_create_metadata", name="release",
+        tenant="tenant-a", designated_acceptance_task_id=acceptance,
+        actor=_actor(), mutation_id="create-metadata",
+        subscription={
+            **subscription,
+            "delivery_metadata": {"flag": True, "count": 1, "scalar": "kept"},
+        },
+    )
+
+    replay = kb.replay_workflow_events(
+        workflow_db, workflow_id="wf_create_metadata",
+        actor=_actor(capabilities=("workflow.read",)),
+    )
+    materialized = workflow_db.execute(
+        "SELECT delivery_metadata FROM kanban_workflow_subscriptions "
+        "WHERE workflow_id='wf_create_metadata'"
+    ).fetchone()
+
+    assert retried == created
+    assert replay["subscription"]["delivery_metadata"] == {
+        "count": 1, "flag": True, "scalar": "kept",
+    }
+    assert json.loads(materialized["delivery_metadata"]) == replay["subscription"]["delivery_metadata"]
+    assert kb.workflow_integrity_report(
+        workflow_db, workflow_id="wf_create_metadata"
+    )["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "delivery_metadata",
+    [
+        {"nested": {"x": 1}},
+        {"none": None},
+        {"items": [1, 2]},
+    ],
+)
+def test_create_rejects_unsupported_subscription_metadata_atomically(
+    workflow_db, delivery_metadata,
+):
+    acceptance = kb.create_task(
+        workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"
+    )
+
+    with pytest.raises(ValueError, match="delivery metadata"):
+        kb.create_workflow(
+            workflow_db, workflow_id="wf_invalid_create_metadata", name="release",
+            tenant="tenant-a", designated_acceptance_task_id=acceptance,
+            actor=_actor(), mutation_id="invalid-create-metadata",
+            subscription={
+                "platform": "telegram", "chat_id": "chat-invalid",
+                "notifier_profile": "default", "delivery_metadata": delivery_metadata,
+            },
+        )
+
+    assert workflow_db.execute(
+        "SELECT 1 FROM kanban_workflows WHERE id='wf_invalid_create_metadata'"
+    ).fetchone() is None
+    assert workflow_db.execute(
+        "SELECT 1 FROM kanban_workflow_events WHERE workflow_id='wf_invalid_create_metadata'"
+    ).fetchone() is None
+    assert workflow_db.execute(
+        "SELECT 1 FROM kanban_workflow_mutations WHERE workflow_id='wf_invalid_create_metadata'"
+    ).fetchone() is None
+
+
+@pytest.mark.parametrize(
+    "delivery_metadata",
+    [
+        {"nested": {"x": 1}},
+        {"none": None},
+        {"items": [1, 2]},
+    ],
+)
+def test_set_subscription_rejects_unsupported_metadata_without_mutation(
+    workflow_db, delivery_metadata,
+):
+    _new_workflow(workflow_db, workflow_id="wf_invalid_set_metadata")
+
+    with pytest.raises(ValueError, match="delivery metadata"):
+        kb.set_workflow_subscription(
+            workflow_db, workflow_id="wf_invalid_set_metadata", platform="discord",
+            chat_id="chat-invalid", notifier_profile="default",
+            delivery_metadata=delivery_metadata,
+            actor=_actor(capabilities=("workflow.admin",)),
+            mutation_id="invalid-set-metadata", expected_version=1,
+        )
+
+    replay = kb.replay_workflow_events(
+        workflow_db, workflow_id="wf_invalid_set_metadata",
+        actor=_actor(capabilities=("workflow.read",)),
+    )
+    assert replay["version"] == 1
+    assert replay["subscription"] is None
+    assert workflow_db.execute(
+        "SELECT 1 FROM kanban_workflow_mutations "
+        "WHERE workflow_id='wf_invalid_set_metadata' AND mutation_id='invalid-set-metadata'"
+    ).fetchone() is None
+    assert kb.workflow_integrity_report(
+        workflow_db, workflow_id="wf_invalid_set_metadata"
+    )["ok"] is True
+
+
+def test_set_subscription_metadata_is_canonical_and_idempotent(workflow_db):
+    _new_workflow(workflow_db, workflow_id="wf_set_metadata")
+    kwargs = {
+        "workflow_id": "wf_set_metadata", "platform": "discord",
+        "chat_id": "chat-canonical", "notifier_profile": "default",
+        "actor": _actor(capabilities=("workflow.admin",)),
+        "mutation_id": "set-metadata", "expected_version": 1,
+    }
+    changed = kb.set_workflow_subscription(
+        workflow_db, delivery_metadata={"scalar": "kept", "count": 1}, **kwargs,
+    )
+    retried = kb.set_workflow_subscription(
+        workflow_db, delivery_metadata={"count": 1, "scalar": "kept"}, **kwargs,
+    )
+
+    replay = kb.replay_workflow_events(
+        workflow_db, workflow_id="wf_set_metadata",
+        actor=_actor(capabilities=("workflow.read",)),
+    )
+    materialized = workflow_db.execute(
+        "SELECT delivery_metadata FROM kanban_workflow_subscriptions "
+        "WHERE workflow_id='wf_set_metadata'"
+    ).fetchone()
+
+    assert retried == changed
+    assert replay["subscription"]["delivery_metadata"] == {"count": 1, "scalar": "kept"}
+    assert json.loads(materialized["delivery_metadata"]) == replay["subscription"]["delivery_metadata"]
+    assert kb.workflow_integrity_report(
+        workflow_db, workflow_id="wf_set_metadata"
+    )["ok"] is True
+
+
 def test_integrity_detects_subscription_destination_divergence(workflow_db):
     acceptance = kb.create_task(
         workflow_db, title="accept", assignee="orchestrator", tenant="tenant-a"
@@ -543,6 +694,41 @@ def test_replay_rejects_corrupt_mutation_ledger_linkage(
         kb.replay_workflow_events(
             workflow_db, workflow_id="wf_test",
             actor=_actor(capabilities=("workflow.read",)),
+        )
+
+
+def test_replay_integrity_and_retry_reject_semantically_corrupt_ledger_response(workflow_db):
+    acceptance = _new_workflow(workflow_db)
+    kb.record_workflow_outcome(
+        workflow_db, workflow_id="wf_test", task_id=acceptance, outcome="PASS",
+        actor=_actor(capabilities=("workflow.outcome",)),
+        mutation_id="pass-semantic-response", expected_version=1,
+    )
+    ledger = workflow_db.execute(
+        "SELECT response_json FROM kanban_workflow_mutations "
+        "WHERE workflow_id='wf_test' AND mutation_id='pass-semantic-response'"
+    ).fetchone()
+    response = json.loads(ledger["response_json"])
+    response["workflow"]["name"] = "CORRUPTED_LEDGER_RESPONSE"
+    workflow_db.execute(
+        "UPDATE kanban_workflow_mutations SET response_json=? "
+        "WHERE workflow_id='wf_test' AND mutation_id='pass-semantic-response'",
+        (json.dumps(response),),
+    )
+
+    with pytest.raises(kb.WorkflowIntegrityError, match="response projection"):
+        kb.replay_workflow_events(
+            workflow_db, workflow_id="wf_test",
+            actor=_actor(capabilities=("workflow.read",)),
+        )
+    report = kb.workflow_integrity_report(workflow_db, workflow_id="wf_test")
+    assert report["ok"] is False
+    assert any("response projection" in error for error in report["errors"])
+    with pytest.raises(kb.WorkflowIntegrityError, match="response projection"):
+        kb.record_workflow_outcome(
+            workflow_db, workflow_id="wf_test", task_id=acceptance, outcome="PASS",
+            actor=_actor(capabilities=("workflow.outcome",)),
+            mutation_id="pass-semantic-response", expected_version=1,
         )
 
 

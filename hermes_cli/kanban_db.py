@@ -9693,6 +9693,10 @@ _WORKFLOW_OUTCOMES = frozenset(
 _WORKFLOW_ROLES = frozenset(
     {"implementation", "qa", "review", "acceptance", "remediation", "reverification", "decision", "other"}
 )
+_WORKFLOW_RESPONSE_PROJECTION_FIELDS = (
+    "id", "root_task_id", "name", "tenant", "board_identity",
+    "state", "active_generation", "version", "created_by_principal", "last_event_id",
+)
 
 
 def _workflow_json(value: Any) -> str:
@@ -9701,6 +9705,83 @@ def _workflow_json(value: Any) -> str:
 
 def _workflow_digest(value: Any) -> str:
     return hashlib.sha256(_workflow_json(value).encode("utf-8")).hexdigest()
+
+
+def _canonical_workflow_delivery_metadata(
+    metadata: Optional[Mapping[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Return the one event/storage representation accepted for workflow routing."""
+    if metadata is None:
+        return None
+    if not isinstance(metadata, Mapping):
+        raise ValueError("workflow delivery metadata must be an object")
+    canonical: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if (not isinstance(key, str) or not key
+                or value is None
+                or not isinstance(value, (str, int, float, bool))):
+            raise ValueError(
+                "workflow delivery metadata requires non-empty string keys and scalar values"
+            )
+        canonical[key] = value
+    return canonical or None
+
+
+def _validate_workflow_response_projection(
+    conn: sqlite3.Connection, *, workflow_id: str, mutation_id: str,
+    response: Any,
+    batch: Optional[list[tuple[sqlite3.Row, dict[str, Any]]]] = None,
+) -> None:
+    """Validate the canonical response projection derived only from immutable events."""
+    create_row = conn.execute(
+        "SELECT * FROM kanban_workflow_events WHERE workflow_id=? "
+        "AND kind='workflow_created' AND event_role='canonical' ORDER BY id LIMIT 1",
+        (workflow_id,),
+    ).fetchone()
+    if batch is None:
+        batch_rows = conn.execute(
+            "SELECT * FROM kanban_workflow_events WHERE workflow_id=? AND mutation_id=? "
+            "ORDER BY batch_seq,id",
+            (workflow_id, mutation_id),
+        ).fetchall()
+        try:
+            batch = [(row, json.loads(row["payload"])) for row in batch_rows]
+        except Exception as exc:
+            raise WorkflowIntegrityError(
+                f"workflow mutation response events are invalid for {mutation_id}"
+            ) from exc
+    try:
+        create_payload = json.loads(create_row["payload"])
+        create_mutation = create_payload["mutation"]
+        create_actor = create_payload["actor"]
+        canonical = [(row, payload) for row, payload in batch
+                     if row["event_role"] == "canonical"]
+        if len(canonical) != 1:
+            raise ValueError("mutation batch must have one canonical event")
+        _, payload = canonical[0]
+        expected = {
+            "id": workflow_id,
+            "root_task_id": create_mutation.get("root_task_id"),
+            "name": create_mutation["name"],
+            "tenant": create_payload["tenant"],
+            "board_identity": create_payload["board_identity"],
+            "state": payload["resulting_state"],
+            "active_generation": int(payload["generation"]),
+            "version": int(payload["resulting_version"]),
+            "created_by_principal": create_actor["principal_id"],
+            "last_event_id": max(int(row["id"]) for row, _ in batch),
+        }
+        response_workflow = response["workflow"]
+        actual = {field: response_workflow[field]
+                  for field in _WORKFLOW_RESPONSE_PROJECTION_FIELDS}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise WorkflowIntegrityError(
+            f"workflow mutation ledger response projection is invalid for {mutation_id}"
+        ) from exc
+    if _workflow_digest(actual) != _workflow_digest(expected):
+        raise WorkflowIntegrityError(
+            f"workflow mutation ledger response projection differs for {mutation_id}"
+        )
 
 
 def _require_workflow_actor(
@@ -9744,6 +9825,9 @@ def _workflow_existing_response(
         raise WorkflowIntegrityError("stored workflow mutation response is invalid") from exc
     if not isinstance(response, dict):
         raise WorkflowIntegrityError("stored workflow mutation response is not an object")
+    _validate_workflow_response_projection(
+        conn, workflow_id=workflow_id, mutation_id=mutation_id, response=response,
+    )
     return response
 
 
@@ -9892,11 +9976,19 @@ def create_workflow(
     if not workflow_id or not mutation_id or not name.strip() or not tenant:
         raise ValueError("workflow_id, mutation_id, name, and non-null tenant are required")
     actor = _require_workflow_actor(actor, "workflow.manage", tenant=tenant)
+    canonical_subscription = None
+    if subscription is not None:
+        if not isinstance(subscription, Mapping):
+            raise ValueError("workflow subscription must be an object")
+        canonical_subscription = dict(subscription)
+        canonical_subscription["delivery_metadata"] = (
+            _canonical_workflow_delivery_metadata(subscription.get("delivery_metadata"))
+        )
     request = {
         "op": "create", "workflow_id": workflow_id, "name": name.strip(),
         "tenant": tenant, "root_task_id": root_task_id,
         "designated_acceptance_task_id": designated_acceptance_task_id,
-        "subscription": dict(subscription) if subscription is not None else None,
+        "subscription": canonical_subscription,
         "actor_principal": actor.principal_id, "board_identity": actor.board_identity,
     }
     digest = _workflow_digest(request)
@@ -9955,7 +10047,7 @@ def create_workflow(
                        "board_identity": actor.board_identity,
                        "task_session_id": task["session_id"]},
             "designated_acceptance_task_id": designated_acceptance_task_id,
-            "subscription": dict(subscription) if subscription is not None else None,
+            "subscription": canonical_subscription,
         }
         payload = _workflow_event_payload(
             workflow_id=workflow_id, generation=1, prior_version=0,
@@ -9977,10 +10069,10 @@ def create_workflow(
             "WHERE workflow_id=? AND task_id=? AND generation=1",
             (event_id, workflow_id, designated_acceptance_task_id),
         )
-        if subscription is not None:
-            platform = str(subscription.get("platform") or "").strip()
-            chat_id = str(subscription.get("chat_id") or "").strip()
-            notifier_profile = str(subscription.get("notifier_profile") or "").strip()
+        if canonical_subscription is not None:
+            platform = str(canonical_subscription.get("platform") or "").strip()
+            chat_id = str(canonical_subscription.get("chat_id") or "").strip()
+            notifier_profile = str(canonical_subscription.get("notifier_profile") or "").strip()
             if not platform or not chat_id or not notifier_profile:
                 raise ValueError("workflow subscription requires platform, chat_id, and notifier_profile")
             conn.execute(
@@ -9988,10 +10080,12 @@ def create_workflow(
                 "(workflow_id,role,platform,chat_id,chat_type,thread_id,user_id,"
                 "notifier_profile,delivery_metadata,target_states,tenant,created_at,last_event_id) "
                 "VALUES (?,'origin',?,?,?,?,?,?,?,?,?,?,?)",
-                (workflow_id, platform, chat_id, subscription.get("chat_type"),
-                 str(subscription.get("thread_id") or ""), subscription.get("user_id"),
-                 notifier_profile, _encode_notify_delivery_metadata(subscription.get("delivery_metadata")),
-                 _workflow_json(subscription.get("target_states") or sorted(_WORKFLOW_STATES - {"ACTIVE"})),
+                (workflow_id, platform, chat_id, canonical_subscription.get("chat_type"),
+                 str(canonical_subscription.get("thread_id") or ""),
+                 canonical_subscription.get("user_id"), notifier_profile,
+                 _encode_notify_delivery_metadata(canonical_subscription.get("delivery_metadata")),
+                 _workflow_json(canonical_subscription.get("target_states")
+                                or sorted(_WORKFLOW_STATES - {"ACTIVE"})),
                  tenant, now, event_id),
             )
         conn.execute(
@@ -10382,6 +10476,7 @@ def set_workflow_subscription(
     chat_id = (chat_id or "").strip()
     notifier_profile = (notifier_profile or "").strip()
     mutation_id = (mutation_id or "").strip()
+    canonical_metadata = _canonical_workflow_delivery_metadata(delivery_metadata)
     targets = sorted({str(v).upper() for v in (target_states or (_WORKFLOW_STATES - {"ACTIVE"}))})
     if (not platform or not chat_id or not notifier_profile or not mutation_id
             or not set(targets) <= _WORKFLOW_STATES):
@@ -10390,7 +10485,7 @@ def set_workflow_subscription(
         "op": "set_subscription", "workflow_id": workflow_id, "platform": platform,
         "chat_id": chat_id, "chat_type": chat_type, "thread_id": thread_id or "",
         "user_id": user_id, "notifier_profile": notifier_profile,
-        "delivery_metadata": dict(delivery_metadata or {}), "target_states": targets,
+        "delivery_metadata": canonical_metadata, "target_states": targets,
         "expected_version": int(expected_version),
     }
     digest = _workflow_digest(request)
@@ -10433,7 +10528,7 @@ def set_workflow_subscription(
             "retry_count=0,next_attempt_at=NULL,dead_lettered_at=NULL,last_error_class=NULL,"
             "disabled_at=NULL",
             (workflow_id, platform, chat_id, chat_type, thread_id or "", user_id,
-             notifier_profile, _encode_notify_delivery_metadata(delivery_metadata),
+             notifier_profile, _encode_notify_delivery_metadata(canonical_metadata),
              _workflow_json(targets), workflow["tenant"], now, cursor),
         )
         mutation = {key: value for key, value in request.items() if key != "expected_version"}
@@ -11014,19 +11109,18 @@ def _validate_workflow_mutation_ledger(
             )
         try:
             response = json.loads(ledger_row["response_json"])
-            response_workflow = response["workflow"]
         except Exception as exc:
             raise WorkflowIntegrityError(
                 f"workflow mutation ledger response is invalid for {mutation_id}"
             ) from exc
-        if (not isinstance(response, dict) or not isinstance(response_workflow, dict)
-                or response_workflow.get("id") != workflow_id
-                or int(response_workflow.get("version", -1)) != int(payload["resulting_version"])
-                or response_workflow.get("state") != payload["resulting_state"]
-                or int(response_workflow.get("last_event_id", -1)) != max(event_ids)):
+        if not isinstance(response, dict):
             raise WorkflowIntegrityError(
-                f"workflow mutation ledger response linkage differs for {mutation_id}"
+                f"workflow mutation ledger response is invalid for {mutation_id}"
             )
+        _validate_workflow_response_projection(
+            conn, workflow_id=workflow_id, mutation_id=mutation_id,
+            response=response, batch=batch,
+        )
 
 
 def replay_workflow_events(

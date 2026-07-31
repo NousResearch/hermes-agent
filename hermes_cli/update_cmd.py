@@ -28,7 +28,8 @@ from hermes_cli.update_abort_recovery import (  # noqa: F401
 from hermes_cli.update_cmd_windows import (  # noqa: F401
     _HOLDER_VALUE_FLAGS_FALLBACK, _clear_windows_venv_holders_or_exit,
     _cold_start_windows_gateway_after_update, _desktop_owns_gateway_lifecycle,
-    _detect_venv_python_processes, _format_venv_python_holders_message,
+    _detect_active_update_ancestor, _detect_venv_python_processes, _format_active_update_ancestor_message,
+    _format_venv_python_holders_message,
     _handoff_reapable_backend_pids, _hermes_holder_subcommand, _holder_value_flags,
     _holder_value_flags_cache, _ledger_manual_serve_holders, _ledger_reapable_backend_pids,
     _leftover_pausable_gateway_pids, _looks_like_desktop_control_plane,
@@ -1257,6 +1258,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print()
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
+
+    # Keep receipt/plan initialization above this refusal so the command boundary can
+    # persist refused runs. Neither backs up nor changes the checkout.
+    if _m()._is_windows() and not getattr(args, "force", False):
+        active_ancestor = _detect_active_update_ancestor()
+        if active_ancestor is not None:
+            print(_format_active_update_ancestor_message(active_ancestor))
+            sys.exit(2)
 
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
     # the post-update cron-jobs safety net.

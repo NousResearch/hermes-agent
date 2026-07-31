@@ -27,6 +27,53 @@ from hermes_cli import main as cli_main
 from hermes_cli import update_cmd
 
 
+def _fake_ancestor(pid: int, cmdline: list[str], name: str = "python.exe"):
+    proc = MagicMock()
+    proc.pid = pid
+    proc.cmdline.return_value = cmdline
+    proc.name.return_value = name
+    return proc
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize("force", [False, True])
+def test_active_update_ancestor_refusal_preserves_receipt_before_backup(force, capsys, monkeypatch):
+    from hermes_cli import update_receipt
+    from hermes_cli.update_inventory import UpdatePlan
+
+    args = _update_args(force=force)
+    me = MagicMock()
+    me.parents.return_value = [
+        _fake_ancestor(555, ["python.exe", "-m", "tui_gateway.slash_worker"]),
+    ]
+    fake_psutil = types.SimpleNamespace(Process=lambda: me)
+    # Stop the allowed path at its first mutation, never run a real update.
+    backup = MagicMock(side_effect=SystemExit(0))
+    monkeypatch.setattr(update_receipt, "_current", None)
+    with patch.dict(sys.modules, {"psutil": fake_psutil}), patch.object(
+        cli_main, "_update_preflight_handled", return_value=False
+    ), patch.object(cli_main, "_install_hangup_protection"), patch.object(
+        cli_main, "_finalize_update_output"
+    ), patch.object(cli_main, "_venv_scripts_dir", return_value=None), patch.object(
+        cli_main, "_run_pre_update_backup", backup
+    ), patch("hermes_cli.update_inventory.collect_runtime_inventory", return_value=UpdatePlan()):
+        with pytest.raises(SystemExit) as exc:
+            cli_main.cmd_update(args)
+
+    assert exc.value.code == (0 if force else 2)
+    receipt = update_receipt.read_latest_receipt()
+    assert receipt["exit_code"] == exc.value.code
+    if force:
+        backup.assert_called_once_with(args)
+    else:
+        backup.assert_not_called()
+        assert receipt["outcome"] == "refused"
+        output = capsys.readouterr().out
+        assert "active Desktop session or worker" in output
+        assert "hermes update --force" in output
+        assert "stopped or interrupted" in output
+
+
 # ---------------------------------------------------------------------------
 # _venv_core_imports_healthy
 # ---------------------------------------------------------------------------
@@ -182,6 +229,8 @@ def _run_update_until_guard(args):
             raise _PastGuard
 
     with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
+        update_cmd, "_detect_active_update_ancestor", return_value=None
+    ), patch.object(
         cli_main, "_venv_scripts_dir", return_value=None
     ), patch.object(cli_main, "_run_pre_update_backup"), patch.object(
         cli_main, "_pause_windows_gateways_for_update", return_value=None

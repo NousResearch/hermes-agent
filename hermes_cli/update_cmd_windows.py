@@ -225,24 +225,29 @@ def _holder_value_flags() -> frozenset:
     return _holder_value_flags_cache
 
 
-def _hermes_holder_subcommand(cmdline: str) -> str | None:
+def _hermes_holder_subcommand(cmdline: str | list[str]) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
     Token-based, never substring (``kanban --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
     ``hermes(.exe)`` entry token, return the first following token that isn't a flag or a flag's value.
 
-    Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
-    #90778.
+    Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. A token list
+    preserves Windows paths containing spaces; string callers retain quote-aware parsing. See #90778.
     """
-    try:
-        tokens = shlex.split(cmdline, posix=False)
-    except Exception:
-        tokens = cmdline.split()
+    if isinstance(cmdline, str):
+        try:
+            tokens = shlex.split(cmdline, posix=False)
+        except Exception:
+            tokens = cmdline.split()
+    else:
+        tokens = list(cmdline)
 
     def _is_entry(i: int, token: str) -> bool:
-        low = token.lower().strip('"')
-        return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
-            low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe"))
+        low = token.lower().strip('"').replace("\\", "/")
+        entry_path = low.rsplit("/", 1)[-1]
+        is_module = low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m"
+        is_script = low.endswith("/hermes_cli/main.py")
+        return is_module or is_script or entry_path in ("hermes", "hermes.exe")
 
     entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
     if entry_idx is None:
@@ -258,6 +263,66 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
         else:
             return token.lower()
     return None
+
+
+def _detect_active_update_ancestor() -> tuple[int, str, str] | None:
+    """Return a Desktop ``serve`` or slash-worker ancestor, or ``None`` when absent/unreadable.
+
+    This is an ancestry check, not a fleet-wide process scan: an update launched from a Desktop worker is
+    a child of that active process. Identity is parsed from argv tokens through ``_hermes_holder_subcommand``;
+    values containing ``serve`` and unrelated command lines cannot trigger the refusal.
+    """
+    psutil = _psutil()
+    if psutil is None:
+        return None
+    try:
+        ancestors = psutil.Process().parents()
+    except Exception:
+        return None
+
+    for ancestor in ancestors:
+        try:
+            raw_argv = [str(part) for part in (ancestor.cmdline() or [])]
+        except Exception:
+            continue
+        argv = [part.lower().replace("\\", "/") for part in raw_argv]
+        is_slash_worker = any(
+            argv[index : index + 2] == ["-m", "tui_gateway.slash_worker"]
+            for index in range(len(argv) - 1)
+        ) or any(part.endswith("/tui_gateway/slash_worker.py") for part in argv)
+        is_desktop_backend = _hermes_holder_subcommand(raw_argv) == "serve"
+        if not (is_slash_worker or is_desktop_backend):
+            continue
+        try:
+            pid = int(ancestor.pid)
+        except Exception:
+            continue
+        try:
+            name = str(ancestor.name() or "python")
+        except Exception:
+            name = "python"
+        kind = "Desktop slash worker" if is_slash_worker else "Desktop backend"
+        return pid, name, kind
+    return None
+
+
+def _format_active_update_ancestor_message(match: tuple[int, str, str]) -> str:
+    """Explain why an update launched inside active Desktop work is refused."""
+    pid, name, kind = match
+    return "\n".join(
+        [
+            "✗ Refusing to update from inside an active Desktop session or worker.",
+            f"  {kind}: PID {pid} ({name})",
+            "",
+            "  Updating here can mutate the running checkout and cause active",
+            "  sessions or workers to be stopped or interrupted.",
+            "  Wait for the work to finish, then run `hermes update` from a",
+            "  separate terminal outside Hermes Desktop.",
+            "",
+            "  To interrupt the active work deliberately, run:",
+            "    hermes update --force",
+        ]
+    )
 
 
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:

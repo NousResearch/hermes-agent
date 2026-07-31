@@ -70,6 +70,49 @@ def _kill(*procs: subprocess.Popen) -> None:
             pass
 
 
+@pytest.mark.windows_only
+@pytest.mark.parametrize(
+    ("cmdline", "expected_kind"),
+    [
+        (["python.exe", "-m", "tui_gateway.slash_worker"], "Desktop slash worker"),
+        (["python.exe", "C:/Hermes/tui_gateway/slash_worker.py"], "Desktop slash worker"),
+        (["pythonw.exe", "-m", "hermes_cli.main", "serve"], "Desktop backend"),
+        (["pythonw.exe", "-m", "hermes_cli.main", "--profile", "worker", "serve"], "Desktop backend"),
+        (["hermes.exe", "--profile", "worker", "serve"], "Desktop backend"),
+        (["pythonw.exe", "C:/Program Files/Hermes/hermes_cli/main.py", "serve"], "Desktop backend"),
+        (["python.exe", "script.py", "--note", "hermes_cli.main serve"], None),
+        (["hermes.exe", "--profile", "serve", "dashboard", "--no-open"], None),
+        (["hermes.exe", "chat", "-q", "serve"], None),
+    ],
+)
+def test_detect_active_update_ancestor(cmdline, expected_kind):
+    """#75442: walk real Windows launcher/worker ancestry, not only the direct parent."""
+    import json
+
+    child = (
+        "import json; "
+        "from hermes_cli.update_cmd_windows import _detect_active_update_ancestor; "
+        "print(json.dumps(_detect_active_update_ancestor()))"
+    )
+    # As in _spawn(), argv tails are inert labels; no real backend/update is started.
+    parent = (
+        "import json, os, subprocess, sys; "
+        f"child = subprocess.run([sys.executable, '-c', {child!r}], "
+        "capture_output=True, text=True, check=True, timeout=30); "
+        "print(json.dumps({'parent': os.getpid(), 'match': json.loads(child.stdout)}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", parent, *cmdline], cwd=PROJECT_ROOT,
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    payload = json.loads(result.stdout)
+    if expected_kind:
+        assert payload["match"][0] == payload["parent"]
+        assert payload["match"][2] == expected_kind
+    else:
+        assert payload["match"] is None
+
+
 class TestDetection:
     def test_detects_hermes_argv_process(self):
         """Baseline: a live process running `-m hermes_cli.main serve` with

@@ -1124,18 +1124,45 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
     try:
         raw = json.loads(auth_file.read_text(encoding="utf-8"))
+    except OSError:
+        # The file exists (checked above) but could not be READ: EMFILE under
+        # fd exhaustion, EACCES, EIO, a stalled network mount. None of those
+        # mean the contents are bad, and this module does read-modify-write in
+        # ~15 places, so degrading to an empty store here is one
+        # _save_auth_store() away from erasing every stored credential.
+        # Fail loudly instead and leave the file on disk untouched.
+        logger.warning(
+            "auth: could not read %s, leaving the store on disk untouched "
+            "rather than degrading to an empty one",
+            auth_file, exc_info=True,
+        )
+        raise
     except Exception as exc:
+        # Genuine corruption: unparseable JSON, or bytes that are not UTF-8.
         corrupt_path = auth_file.with_suffix(".json.corrupt")
+        preserved = False
         try:
             import shutil
             shutil.copy2(auth_file, corrupt_path)
+            preserved = True
         except Exception:
-            pass
-        logger.warning(
-            "auth: failed to parse %s (%s) — starting with empty store. "
-            "Corrupt file preserved at %s",
-            auth_file, exc, corrupt_path,
-        )
+            logger.debug(
+                "auth: could not preserve a copy of the corrupt store at %s",
+                corrupt_path, exc_info=True,
+            )
+        if preserved:
+            logger.warning(
+                "auth: failed to parse %s (%s), starting with empty store. "
+                "Corrupt file preserved at %s",
+                auth_file, exc, corrupt_path,
+            )
+        else:
+            # Do not advertise a backup that was never written.
+            logger.warning(
+                "auth: failed to parse %s (%s), starting with empty store. "
+                "A copy could NOT be preserved at %s",
+                auth_file, exc, corrupt_path,
+            )
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     if isinstance(raw, dict) and (

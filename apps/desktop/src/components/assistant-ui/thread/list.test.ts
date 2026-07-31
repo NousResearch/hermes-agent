@@ -6,7 +6,9 @@ import {
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
   liveTailStart,
-  type MessageGroup
+  type MessageGroup,
+  messageRenderWeight,
+  RENDER_WEIGHT_CHARS
 } from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
@@ -85,6 +87,50 @@ describe('firstVisibleGroupIndex', () => {
 
   it('returns groups.length for an empty list', () => {
     expect(firstVisibleGroupIndex([], 60)).toBe(0)
+  })
+})
+
+describe('messageRenderWeight', () => {
+  it('charges large text and tool results by character cost, not only part count', () => {
+    const text = [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 3) }]
+
+    const tool = [
+      {
+        type: 'tool-call',
+        toolName: 'skill_view',
+        args: { name: 'hermes-agent' },
+        result: { content: 'x'.repeat(RENDER_WEIGHT_CHARS * 100) }
+      }
+    ]
+
+    expect(messageRenderWeight(text)).toBe(4)
+    expect(messageRenderWeight(tool)).toBeGreaterThanOrEqual(101)
+  })
+
+  it('makes repeated 51KB tool outputs exceed the normal transcript page', () => {
+    const toolOutput = () => [
+      {
+        type: 'tool-call',
+        toolName: 'skill_view',
+        result: { content: 'x'.repeat(51_236) }
+      }
+    ]
+
+    const groups = Array.from({ length: 5 }, (_, index) => ({
+      id: `tool-${index}`,
+      index,
+      kind: 'standalone' as const,
+      weight: messageRenderWeight(toolOutput())
+    }))
+
+    expect(firstVisibleGroupIndex(groups, 300)).toBeGreaterThan(0)
+  })
+
+  it('handles circular tool payloads without recursing forever', () => {
+    const result: { content: string; self?: unknown } = { content: 'ok' }
+    result.self = result
+
+    expect(messageRenderWeight([{ type: 'tool-call', result }])).toBe(2)
   })
 })
 

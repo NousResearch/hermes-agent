@@ -2802,14 +2802,35 @@ def write_txn(conn: sqlite3.Connection):
     """Context manager for an IMMEDIATE write transaction.
 
     Use for any multi-statement write (creating a task + link, claiming a
-    task + recording an event, etc.).  A claim CAS inside this context is
+    task + recording an event, etc.). A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
+
+    Nested callers use SQLite savepoints rather than opening a second
+    ``BEGIN IMMEDIATE``. This lets graph builders compose the existing atomic
+    task operations under one outer commit, so the dispatcher can never
+    observe a partially constructed multi-card graph.
 
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
     """
     _assert_not_delegated_child_mutation()
+    if getattr(conn, "in_transaction", False):
+        savepoint = f"hermes_nested_{secrets.token_hex(8)}"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            yield conn
+        except Exception:
+            try:
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                conn.execute(f"RELEASE {savepoint}")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        else:
+            conn.execute(f"RELEASE {savepoint}")
+        return
+
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
         yield conn
@@ -6248,18 +6269,47 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             note="invariant recovery on review reopen",
         )
         new_status = _landing_status_after_parents(conn, task_id)
+        review_event = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'review_requested' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        try:
+            handoff = (
+                json.loads(review_event["payload"])
+                if review_event and review_event["payload"]
+                else {}
+            )
+        except (json.JSONDecodeError, TypeError):
+            handoff = {}
+        implementer = handoff.get("implementer")
+        if not isinstance(implementer, str) or not implementer.strip():
+            implementer = None
+        assignee_sql = ", assignee = ?" if implementer else ""
+        params: tuple[Any, ...] = (
+            (new_status, implementer, task_id)
+            if implementer
+            else (new_status, task_id)
+        )
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status = 'review'",
-            (new_status, task_id),
+            + assignee_sql
+            + " WHERE id = ? AND status = 'review'",
+            params,
         )
         if cur.rowcount != 1:
             return False
+        payload: dict[str, Any] = {"status": new_status}
+        if implementer:
+            payload["implementer"] = implementer
         _append_event(
-            conn, task_id, "review_reopened",
-            {"status": new_status} if new_status != "ready" else None,
+            conn,
+            task_id,
+            "review_reopened",
+            payload if payload != {"status": "ready"} else None,
         )
         return True
 
@@ -9072,7 +9122,9 @@ def _dispatch_once_locked(
         # kanban lifecycle is already injected into every worker's system
         # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
         # review agent needs.
-        claimed.skills = ["sdlc-review"]
+        claimed.skills = list(
+            dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
+        )
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect

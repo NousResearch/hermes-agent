@@ -286,7 +286,7 @@ def test_review_requested_event_is_claimable_for_wake(kanban_home: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher gate: no phantom reviewer without an autonomous reviewer agent
+# Dispatcher gate: operators may opt out of autonomous review dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -294,8 +294,8 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With ``kanban.review_dispatch=false`` the dispatcher must NOT claim a
-    task parked in ``review`` (no autonomous reviewer in this deployment —
-    it waits for a human). Flipping the knob back on proves the gate, not
+    task parked in ``review`` (this deployment explicitly waits for a human).
+    Flipping the knob back on proves the gate, not
     something else, is what suppressed the claim."""
     import hermes_cli.config as cfgmod
     import hermes_cli.profiles as profmod
@@ -322,14 +322,53 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
         assert tid not in [s[0] for s in res_off.spawned]
         assert kb.get_task(conn, tid).status == "review"
 
-        # Gate ON (opt-in; requires an installed sdlc-review agent) -> the
-        # review task is picked up by the dispatcher.
+        # Gate ON (the default; sdlc-review is bundled) -> the review task is
+        # picked up by the dispatcher.
         monkeypatch.setattr(
             cfgmod, "load_config",
             lambda *a, **k: {"kanban": {"review_dispatch": True}},
         )
         res_on = kb.dispatch_once(conn, dry_run=True)
         assert tid in [s[0] for s in res_on.spawned]
+
+
+def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    captured: list[list[str]] = []
+
+    def spawn(task, workspace):
+        captured.append(list(task.skills or []))
+        return None
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="domain review",
+            assignee="reviewer",
+            skills=["domain-specific-review"],
+        )
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="ready",
+            expected_run_id=implementation.current_run_id,
+        )
+        result = kb.dispatch_once(conn, spawn_fn=spawn)
+
+    assert task_id in [task[0] for task in result.spawned]
+    assert captured == [["domain-specific-review", "sdlc-review"]]
 
 
 # ---------------------------------------------------------------------------
@@ -345,15 +384,21 @@ def test_reopen_review_task_returns_to_ready(kanban_home: Path) -> None:
         tid = kb.create_task(conn, title="reopen me", assignee="worker")
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="v1",
+            conn, tid, summary="v1", reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
-        assert kb.get_task(conn, tid).status == "review"
+        reviewing = kb.get_task(conn, tid)
+        assert reviewing is not None
+        assert reviewing.status == "review"
+        assert reviewing.assignee == "reviewer"
 
         ok = kb.reopen_review_task(conn, tid)
         assert ok is True
         row = _row(conn, tid)
         assert row["status"] == "ready"
+        reopened = kb.get_task(conn, tid)
+        assert reopened is not None
+        assert reopened.assignee == "worker"
         assert row["current_run_id"] is None
         assert (row["block_recurrences"] or 0) == 0
         assert _events(conn, tid, kind="review_reopened")

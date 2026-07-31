@@ -1,3 +1,4 @@
+import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_swarm import (
@@ -40,6 +41,48 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
         assert all(created.root_id in (task.body or "") for task in workers)
     finally:
         conn.close()
+
+
+def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    db_path = tmp_path / "kanban.db"
+    writer = kb.connect(db_path)
+    reader = kb.connect(db_path)
+    original_create = kb.create_task
+    calls = 0
+
+    def observed_create(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        task_id = original_create(*args, **kwargs)
+        if calls == 1:
+            # Releasing the nested create_task savepoint must not expose the
+            # root before the whole graph's outer transaction commits.
+            visible = reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            assert visible == 0
+        if calls == 3:
+            raise RuntimeError("synthetic graph-construction failure")
+        return task_id
+
+    monkeypatch.setattr(kb, "create_task", observed_create)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic graph-construction failure"):
+            create_swarm(
+                writer,
+                goal="Build atomically",
+                workers=[
+                    SwarmWorkerSpec(profile="worker-a", title="A", body="A"),
+                    SwarmWorkerSpec(profile="worker-b", title="B", body="B"),
+                ],
+                verifier_assignee="reviewer",
+                synthesizer_assignee="writer",
+            )
+        assert writer.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        assert reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        reader.close()
+        writer.close()
 
 
 def test_swarm_blackboard_merges_structured_updates(tmp_path):

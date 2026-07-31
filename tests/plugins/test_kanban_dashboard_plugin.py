@@ -244,6 +244,7 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
         assert run is not None
         assert run.outcome == "review_requested"
         assert run.metadata == {"tests_run": 4}
+        assert kb.assign_task(conn, task["id"], "reviewer")
 
     response = client.patch(
         f"/api/plugins/kanban/tasks/{task['id']}",
@@ -251,6 +252,7 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     )
     assert response.status_code == 200, response.text
     assert response.json()["task"]["status"] == "ready"
+    assert response.json()["task"]["assignee"] == "builder"
     with kb.connect() as conn:
         assert any(
             event.kind == "review_reopened"

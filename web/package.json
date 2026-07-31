@@ -40,19 +40,14 @@
     "unicode-animations": "1.0.3"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.5",
     "@types/node": "22.20.1",
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
-    "eslint": "10.8.0",
-    "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-react-refresh": "0.5.3",
-    "globals": "17.7.0",
     "three": "0.180.0",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.64.0",
     "vite": "8.1.5",
     "vitest": "4.1.10"
   }

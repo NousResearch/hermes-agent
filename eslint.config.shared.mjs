@@ -12,8 +12,7 @@
  */
 
 import js from '@eslint/js'
-import typescriptEslint from '@typescript-eslint/eslint-plugin'
-import typescriptParser from '@typescript-eslint/parser'
+import tseslint from 'typescript-eslint';
 import perfectionist from 'eslint-plugin-perfectionist'
 import hooksPlugin from 'eslint-plugin-react-hooks'
 import unusedImports from 'eslint-plugin-unused-imports'
@@ -30,7 +29,7 @@ export default [
       globals: {
         ...globals.node
       },
-      parser: typescriptParser,
+      parser: tseslint.parser,
       parserOptions: {
         ecmaFeatures: { jsx: true },
         ecmaVersion: 'latest',
@@ -38,7 +37,7 @@ export default [
       }
     },
     plugins: {
-      '@typescript-eslint': typescriptEslint,
+      '@typescript-eslint': tseslint.plugin,
       perfectionist,
       'react-hooks': hooksPlugin,
       'unused-imports': unusedImports

@@ -35,8 +35,16 @@
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "dependencies": {
-    "@streamdown/math": "^1.0.2",
-    "agent-browser": "^0.26.0"
+    "@streamdown/math": "1.0.2",
+    "agent-browser": "0.26.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "typescript-eslint": "8.64.0",
+    "eslint-plugin-perfectionist": "5.10.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-unused-imports": "4.4.1",
+    "globals": "17.7.0"
   },
   "overrides": {
     "lodash": "4.18.1",

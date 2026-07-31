@@ -290,6 +290,10 @@ export function refChipLabel(type: string, id: string): string {
     return id || 'terminal'
   }
 
+  if (type === 'quote') {
+    return id || 'quote'
+  }
+
   if (type === 'session') {
     return sessionRefFallbackLabel(id)
   }

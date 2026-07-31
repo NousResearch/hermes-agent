@@ -2,12 +2,13 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $clarifyRequests } from '@/store/clarify'
-import type { ComposerAttachment } from '@/store/composer'
+import { $composerQuotes, clearComposerQuotes, type ComposerAttachment, setComposerQuote } from '@/store/composer'
 import { $gateway } from '@/store/gateway'
 
 import { useComposerSubmit } from './use-composer-submit'
 
 interface SubmitHarnessOptions {
+  accepted?: boolean
   attachments?: ComposerAttachment[]
   busy?: boolean
   compacting?: boolean
@@ -15,6 +16,7 @@ interface SubmitHarnessOptions {
 }
 
 function renderSubmitHook({
+  accepted = true,
   attachments = [],
   busy = false,
   compacting = false,
@@ -27,8 +29,10 @@ function renderSubmitHook({
   const editorRef = { current: editor }
   const onCancel = vi.fn()
   const onSteer = vi.fn(async () => true)
-  const onSubmit = vi.fn(async () => true)
+  const onSubmit = vi.fn(async () => accepted)
   const queueCurrentDraft = vi.fn(() => true)
+  const loadIntoComposer = vi.fn()
+  const stashAt = vi.fn()
 
   const clearDraft = vi.fn(() => {
     draftRef.current = ''
@@ -50,7 +54,7 @@ function renderSubmitHook({
       exitQueuedEdit: vi.fn(() => false),
       focusInput: vi.fn(),
       inputDisabled: false,
-      loadIntoComposer: vi.fn(),
+      loadIntoComposer,
       onCancel,
       onSteer,
       onSubmit,
@@ -59,12 +63,14 @@ function renderSubmitHook({
       queuedPrompts: [],
       sessionId: 'runtime-session',
       setComposerText: vi.fn(),
-      stashAt: vi.fn()
+      stashAt
     })
   )
 
-  return { clearDraft, hook, onCancel, onSteer, onSubmit, queueCurrentDraft }
+  return { clearDraft, hook, loadIntoComposer, onCancel, onSteer, onSubmit, queueCurrentDraft, stashAt }
 }
+
+afterEach(() => clearComposerQuotes?.())
 
 describe('useComposerSubmit busy-turn routing', () => {
   afterEach(() => {
@@ -172,6 +178,61 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSteer).not.toHaveBeenCalled()
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('expands a quote chip before the prompt leaves the composer', async () => {
+    expect(setComposerQuote).toBeTypeOf('function')
+
+    if (typeof setComposerQuote !== 'function') {
+      return
+    }
+
+    setComposerQuote('earlier reply', '> First line\n> Second line')
+    const { hook, onSubmit } = renderSubmitHook({ text: '@quote:`earlier reply`My response' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('> First line\n> Second line\n\nMy response', {
+        attachments: [],
+        composerScope: 'stored-session'
+      })
+    )
+    await waitFor(() => expect($composerQuotes.get()).toEqual({}))
+  })
+
+  it('restores the compact chip and keeps its body when submit is rejected', async () => {
+    setComposerQuote('earlier reply', '> Earlier reply')
+    const rawDraft = '@quote:`earlier reply`Correction'
+    const { hook, loadIntoComposer, onSubmit, stashAt } = renderSubmitHook({ accepted: false, text: rawDraft })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('> Earlier reply\n\nCorrection', expect.anything()))
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith(rawDraft, []))
+    expect(stashAt).toHaveBeenCalledWith('stored-session', rawDraft, [])
+    expect($composerQuotes.get()).toHaveProperty('earlier reply', '> Earlier reply')
+  })
+
+  it('expands a quote chip before steering a busy turn', async () => {
+    expect(setComposerQuote).toBeTypeOf('function')
+
+    if (typeof setComposerQuote !== 'function') {
+      return
+    }
+
+    setComposerQuote('earlier reply', '> Earlier answer')
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: '@quote:`earlier reply`Correction' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('> Earlier answer\n\nCorrection'))
   })
 
   it('threads the loaded composer scope through onSubmit for the #59305 submit-time guard', async () => {

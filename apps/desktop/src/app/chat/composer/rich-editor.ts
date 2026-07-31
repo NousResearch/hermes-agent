@@ -15,7 +15,7 @@ import {
   type SlashChipKind,
   slashIconElement
 } from '@/components/assistant-ui/directive-text'
-import { referenceKind, referenceRe } from '@/components/assistant-ui/reference-kinds'
+import { composerReferenceRe, referenceKind } from '@/components/assistant-ui/reference-kinds'
 
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
@@ -45,7 +45,7 @@ export function markEditorEmptiness(editor: HTMLElement) {
 
 /** @see referenceRe — the shared pattern every surface recognises a reference
  *  with. Module-level `/g` regexes carry `lastIndex`, so call sites reset it. */
-export const REF_RE = referenceRe()
+export const REF_RE = composerReferenceRe()
 
 const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }
 

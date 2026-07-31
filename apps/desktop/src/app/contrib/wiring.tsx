@@ -70,6 +70,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
+import { insertMessageReply } from '../chat/composer/message-reply'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -175,7 +176,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onComposerAppendSelection?.(text => {
-      requestComposerInsert(text, { mode: 'block', target: 'main' })
+      insertMessageReply(text)
     })
 
     return () => unsubscribe?.()

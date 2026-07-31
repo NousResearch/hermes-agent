@@ -277,6 +277,7 @@ def _web_feature(web_cfg: dict[str, object], tool_enabled: bool, managed: bool, 
         "tavily": (_any_env("TAVILY_API_KEY") or "tavily" in {backend, search_backend, extract_backend}) and not web_gw,
         "perplexity": _any_env("PERPLEXITY_API_KEY") and not web_gw,
         "searxng": _any_env("SEARXNG_URL"),
+        "brave-free": _any_env("BRAVE_SEARCH_API_KEY") and not web_gw,
     }
     web_managed = managed and (
         (backend == "firecrawl" and not direct_firecrawl) or "nous" in {search_backend, extract_backend})

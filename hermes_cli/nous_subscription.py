@@ -460,6 +460,7 @@ def get_nous_subscription_features(
         direct_exa = False
         direct_parallel = False
         direct_tavily = False
+        direct_searxng = False
         direct_brave = False
     if image_use_gateway:
         direct_fal = False

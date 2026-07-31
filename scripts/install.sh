@@ -2885,7 +2885,7 @@ install_desktop_voice_deps() {
         return 0
     fi
     log_info "Installing voice + wake-word dependencies (onnxruntime, faster-whisper — 1-3min)..."
-    if (cd "$INSTALL_DIR" && $UV_CMD pip install -e ".[wake,voice]") ; then
+    if (cd "$INSTALL_DIR" && "$UV_CMD" pip install -e ".[wake,voice]") ; then
         log_success "Voice + wake-word dependencies installed"
     else
         log_warn "Voice/wake dependency install failed — they will lazy-install at first use"

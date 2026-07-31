@@ -2867,7 +2867,7 @@ install_browser_use_cli() {
         log_success "Browser Use CLI installed"
     else
         log_warn "Browser Use CLI install failed — browser automation falls back to built-in tools."
-        log_info "Install later with: $UV_CMD tool install browser-use  (or via 'hermes tools')"
+        log_info "Install later with: \"$UV_CMD\" tool install browser-use  (or via 'hermes tools')"
     fi
 }
 
@@ -3474,7 +3474,7 @@ install_desktop_voice_deps() {
         return 0
     fi
     log_info "Installing voice + wake-word dependencies (onnxruntime, faster-whisper — 1-3min)..."
-    if (cd "$INSTALL_DIR" && $UV_CMD pip install -e ".[wake,voice]") ; then
+    if (cd "$INSTALL_DIR" && "$UV_CMD" pip install -e ".[wake,voice]") ; then
         log_success "Voice + wake-word dependencies installed"
     else
         log_warn "Voice/wake dependency install failed — they will lazy-install at first use"

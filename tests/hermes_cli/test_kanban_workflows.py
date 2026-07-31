@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import doctor
 from hermes_cli import kanban_db as kb
 
 
@@ -697,39 +698,60 @@ def test_replay_rejects_corrupt_mutation_ledger_linkage(
         )
 
 
-def test_replay_integrity_and_retry_reject_semantically_corrupt_ledger_response(workflow_db):
+@pytest.mark.parametrize(
+    ("section", "field", "corrupt_value"),
+    [
+        ("members", "stage_key", "CORRUPTED_STAGE"),
+        ("generation", "designated_acceptance_task_id", "CORRUPTED_TASK"),
+        ("subscription", "notifier_profile", "CORRUPTED_PROFILE"),
+        ("outcomes", "outcome", "CORRUPTED_OUTCOME"),
+        ("events", "kind", "CORRUPTED_EVENT"),
+    ],
+)
+def test_replay_integrity_doctor_and_retry_reject_corrupt_ledger_response_sections(
+    workflow_db, section, field, corrupt_value,
+):
     acceptance = _new_workflow(workflow_db)
     kb.record_workflow_outcome(
         workflow_db, workflow_id="wf_test", task_id=acceptance, outcome="PASS",
         actor=_actor(capabilities=("workflow.outcome",)),
         mutation_id="pass-semantic-response", expected_version=1,
     )
+    subscription_kwargs = {
+        "workflow_id": "wf_test", "platform": "discord", "chat_id": "chat-integrity",
+        "notifier_profile": "default", "delivery_metadata": {"channel": "release"},
+        "target_states": ["PASS"],
+        "actor": _actor(capabilities=("workflow.admin",)),
+        "mutation_id": "subscription-semantic-response", "expected_version": 2,
+    }
+    kb.set_workflow_subscription(workflow_db, **subscription_kwargs)
     ledger = workflow_db.execute(
         "SELECT response_json FROM kanban_workflow_mutations "
-        "WHERE workflow_id='wf_test' AND mutation_id='pass-semantic-response'"
+        "WHERE workflow_id='wf_test' AND mutation_id='subscription-semantic-response'"
     ).fetchone()
     response = json.loads(ledger["response_json"])
-    response["workflow"]["name"] = "CORRUPTED_LEDGER_RESPONSE"
+    target = response[section][0] if isinstance(response[section], list) else response[section]
+    target[field] = corrupt_value
     workflow_db.execute(
         "UPDATE kanban_workflow_mutations SET response_json=? "
-        "WHERE workflow_id='wf_test' AND mutation_id='pass-semantic-response'",
+        "WHERE workflow_id='wf_test' AND mutation_id='subscription-semantic-response'",
         (json.dumps(response),),
     )
 
-    with pytest.raises(kb.WorkflowIntegrityError, match="response projection"):
+    with pytest.raises(kb.WorkflowIntegrityError, match="ledger response"):
         kb.replay_workflow_events(
             workflow_db, workflow_id="wf_test",
             actor=_actor(capabilities=("workflow.read",)),
         )
     report = kb.workflow_integrity_report(workflow_db, workflow_id="wf_test")
     assert report["ok"] is False
-    assert any("response projection" in error for error in report["errors"])
-    with pytest.raises(kb.WorkflowIntegrityError, match="response projection"):
-        kb.record_workflow_outcome(
-            workflow_db, workflow_id="wf_test", task_id=acceptance, outcome="PASS",
-            actor=_actor(capabilities=("workflow.outcome",)),
-            mutation_id="pass-semantic-response", expected_version=1,
-        )
+    assert any("ledger response" in error for error in report["errors"])
+    diagnostics = doctor._check_kanban_workflow_health(
+        workflow_db.execute("PRAGMA database_list").fetchone()["file"]
+    )
+    assert any("integrity mismatch" in diagnostic for diagnostic in diagnostics)
+    with pytest.raises(kb.WorkflowIntegrityError, match="ledger response"):
+        kb.set_workflow_subscription(workflow_db, **subscription_kwargs)
 
 
 def test_qa_outcome_requires_active_dispatch_run_and_claim_binding(workflow_db):

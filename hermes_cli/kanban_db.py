@@ -9707,6 +9707,29 @@ def _workflow_digest(value: Any) -> str:
     return hashlib.sha256(_workflow_json(value).encode("utf-8")).hexdigest()
 
 
+def _commit_workflow_response(
+    conn: sqlite3.Connection, *, canonical_event_id: int, response: Mapping[str, Any],
+) -> str:
+    """Pin the complete mutation response in its immutable canonical event."""
+    response_json = _workflow_json(response)
+    row = conn.execute(
+        "SELECT payload FROM kanban_workflow_events WHERE id=? AND event_role='canonical'",
+        (int(canonical_event_id),),
+    ).fetchone()
+    try:
+        payload = json.loads(row["payload"])
+        if not isinstance(payload, dict):
+            raise TypeError("canonical event payload is not an object")
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise WorkflowIntegrityError("canonical workflow mutation event is invalid") from exc
+    payload["response_digest"] = _workflow_digest(response)
+    conn.execute(
+        "UPDATE kanban_workflow_events SET payload=? WHERE id=?",
+        (_workflow_json(payload), int(canonical_event_id)),
+    )
+    return response_json
+
+
 def _canonical_workflow_delivery_metadata(
     metadata: Optional[Mapping[str, Any]],
 ) -> Optional[dict[str, Any]]:
@@ -9781,6 +9804,12 @@ def _validate_workflow_response_projection(
     if _workflow_digest(actual) != _workflow_digest(expected):
         raise WorkflowIntegrityError(
             f"workflow mutation ledger response projection differs for {mutation_id}"
+        )
+    response_digest = payload.get("response_digest")
+    if (not isinstance(response_digest, str)
+            or response_digest != _workflow_digest(response)):
+        raise WorkflowIntegrityError(
+            f"workflow mutation ledger response commitment differs for {mutation_id}"
         )
 
 
@@ -10093,7 +10122,9 @@ def create_workflow(
             "WHERE id=? AND version=0", (event_id, now, workflow_id),
         )
         response = _workflow_response(conn, workflow_id)
-        response_json = _workflow_json(response)
+        response_json = _commit_workflow_response(
+            conn, canonical_event_id=event_id, response=response,
+        )
         conn.execute(
             "INSERT INTO kanban_workflow_mutations "
             "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
@@ -10256,8 +10287,9 @@ def add_workflow_member(
         )
         if cur.rowcount != 1:
             raise WorkflowConflictError("workflow version changed during member mutation")
-        response_json = _workflow_json(
-            _workflow_response(conn, workflow_id, include_events=True)
+        response_json = _commit_workflow_response(
+            conn, canonical_event_id=event_id,
+            response=_workflow_response(conn, workflow_id, include_events=True),
         )
         conn.execute(
             "INSERT INTO kanban_workflow_mutations "
@@ -10373,7 +10405,10 @@ def remove_workflow_member(
             "WHERE workflow_id=? AND generation=?",
             (new_state, workflow_id, generation),
         )
-        response_json = _workflow_json(_workflow_response(conn, workflow_id))
+        response_json = _commit_workflow_response(
+            conn, canonical_event_id=event_id,
+            response=_workflow_response(conn, workflow_id),
+        )
         conn.execute(
             "INSERT INTO kanban_workflow_mutations "
             "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
@@ -10452,7 +10487,10 @@ def cancel_workflow(
             "terminal_event_id=?,terminal_at=? WHERE workflow_id=? AND generation=?",
             (last_event_id, now, workflow_id, generation),
         )
-        response_json = _workflow_json(_workflow_response(conn, workflow_id))
+        response_json = _commit_workflow_response(
+            conn, canonical_event_id=canonical_id,
+            response=_workflow_response(conn, workflow_id),
+        )
         conn.execute(
             "INSERT INTO kanban_workflow_mutations "
             "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
@@ -10550,8 +10588,9 @@ def set_workflow_subscription(
             "WHERE id=? AND version=?",
             (next_version, event_id, now, workflow_id, int(expected_version)),
         )
-        response_json = _workflow_json(
-            _workflow_response(conn, workflow_id, include_events=True)
+        response_json = _commit_workflow_response(
+            conn, canonical_event_id=event_id,
+            response=_workflow_response(conn, workflow_id, include_events=True),
         )
         conn.execute(
             "INSERT INTO kanban_workflow_mutations "
@@ -10804,7 +10843,10 @@ def record_workflow_outcome(
         )
         if cur.rowcount != 1:
             raise WorkflowConflictError("workflow version changed during outcome mutation")
-        response_json = _workflow_json(_workflow_response(conn, workflow_id))
+        response_json = _commit_workflow_response(
+            conn, canonical_event_id=canonical_id,
+            response=_workflow_response(conn, workflow_id),
+        )
         conn.execute(
             "INSERT INTO kanban_workflow_mutations "
             "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
@@ -10951,7 +10993,10 @@ def reopen_workflow(
         )
         if cur.rowcount != 1:
             raise WorkflowConflictError("workflow version changed during reopen")
-        response_json = _workflow_json(_workflow_response(conn, workflow_id))
+        response_json = _commit_workflow_response(
+            conn, canonical_event_id=canonical_id,
+            response=_workflow_response(conn, workflow_id),
+        )
         conn.execute(
             "INSERT INTO kanban_workflow_mutations "
             "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"
@@ -11755,7 +11800,9 @@ def skip_workflow_subscription_event(
             "SELECT * FROM kanban_workflow_subscriptions WHERE workflow_id=? AND role=?",
             (workflow_id, role),
         ).fetchone())
-        response_json = _workflow_json(response)
+        response_json = _commit_workflow_response(
+            conn, canonical_event_id=audit_event_id, response=response,
+        )
         conn.execute(
             "INSERT INTO kanban_workflow_mutations "
             "(workflow_id,mutation_id,request_digest,canonical_event_id,first_event_id,"

@@ -33,7 +33,7 @@ async def test_preprocess_uses_qq_platform_group_override():
         chat_id="qq-group",
         chat_type="group",
         user_id="member-1",
-        user_name="QQ sender id=abc12345 | 群昵称=Alice Group | QQ昵称=alice_qq",
+        user_name="QQ sender id=abc12345 | 群昵称=Alice Group",
     )
     event = MessageEvent(text="hello", source=source)
 
@@ -44,7 +44,7 @@ async def test_preprocess_uses_qq_platform_group_override():
     )
 
     assert result == (
-        "[QQ sender id=abc12345 | 群昵称=Alice Group | QQ昵称=alice_qq] hello"
+        "[QQ sender id=abc12345 | 群昵称=Alice Group] hello"
     )
 
 

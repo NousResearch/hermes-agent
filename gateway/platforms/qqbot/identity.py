@@ -35,22 +35,12 @@ class QQSenderIdentity:
     member_openid: str
     stable_id: str
     group_display_name: str = ""
-    qq_nickname: str = ""
-    qq_nickname_source: str = ""
 
     @property
     def label(self) -> str:
         parts = [f"QQ sender id={self.stable_id}"]
-        if self.group_display_name and self.qq_nickname:
-            if self.group_display_name == self.qq_nickname:
-                parts.append(f"昵称={self.group_display_name}")
-            else:
-                parts.append(f"群昵称={self.group_display_name}")
-                parts.append(f"QQ昵称={self.qq_nickname}")
-        elif self.group_display_name:
+        if self.group_display_name:
             parts.append(f"群昵称={self.group_display_name}")
-        elif self.qq_nickname:
-            parts.append(f"QQ昵称={self.qq_nickname}")
         return " | ".join(parts)
 
 
@@ -90,31 +80,6 @@ class QQIdentityStore:
         os.replace(temp_path, self.path)
         os.chmod(self.path, 0o600)
 
-    def set_verified_qq_nickname(
-        self,
-        group_openid: str,
-        member_openid: str,
-        nickname: str,
-        *,
-        source: str = "owner_verified",
-    ) -> None:
-        """Attach an explicitly verified QQ nickname to a stable member identity."""
-        clean_nickname = _clean_name(nickname)
-        if not clean_nickname:
-            raise ValueError("QQ nickname must not be empty")
-        clean_source = _clean_name(source) or "owner_verified"
-        key = self.member_key(group_openid, member_openid)
-        with self._lock:
-            members = self._data.setdefault("members", {})
-            profile = members.setdefault(key, {})
-            profile["stable_id"] = _stable_sender_id(group_openid, member_openid)
-            profile["qq_nickname"] = {
-                "value": clean_nickname,
-                "source": clean_source,
-                "verified_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self._write()
-
     def resolve(self, group_openid: str, author: dict[str, Any]) -> QQSenderIdentity:
         """Resolve the current sender and record its latest group display name."""
         member_openid = str(author.get("member_openid") or author.get("id") or "").strip()
@@ -138,14 +103,6 @@ class QQIdentityStore:
                 }
                 changed = True
 
-            qq_nickname_record = profile.get("qq_nickname")
-            if isinstance(qq_nickname_record, dict):
-                qq_nickname = _clean_name(qq_nickname_record.get("value"))
-                qq_nickname_source = _clean_name(qq_nickname_record.get("source"))
-            else:
-                qq_nickname = ""
-                qq_nickname_source = ""
-
             if changed:
                 self._write()
 
@@ -154,6 +111,4 @@ class QQIdentityStore:
             member_openid=member_openid,
             stable_id=stable_id,
             group_display_name=group_display_name,
-            qq_nickname=qq_nickname,
-            qq_nickname_source=qq_nickname_source,
         )

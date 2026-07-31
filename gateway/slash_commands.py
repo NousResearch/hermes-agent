@@ -39,6 +39,7 @@ from gateway.session import (
     SessionSource,
     build_session_key,
     is_shared_multi_user_session,
+    resolve_session_isolation,
 )
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
@@ -991,10 +992,13 @@ class GatewaySlashCommandsMixin:
         # Non-DM: scope by participant whenever the session key for this source
         # is per-user. is_shared_multi_user_session mirrors build_session_key's
         # isolation rules exactly, so the guard stays in lock-step with the key.
+        group_per_user, thread_per_user = resolve_session_isolation(
+            self.config, current
+        )
         shared = is_shared_multi_user_session(
             current,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
         )
         if shared:
             return True
@@ -1146,10 +1150,13 @@ class GatewaySlashCommandsMixin:
             # do NOT also require user-id equality (otherwise a co-member is
             # wrongly blocked from their own shared session). A per-user session
             # still requires the same owner.
+            group_per_user, thread_per_user = resolve_session_isolation(
+                self.config, source
+            )
             shared = is_shared_multi_user_session(
                 source,
-                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+                group_sessions_per_user=group_per_user,
+                thread_sessions_per_user=thread_per_user,
             )
             if shared:
                 return True

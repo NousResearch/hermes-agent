@@ -1,3 +1,5 @@
+import json
+
 from gateway.platforms.qqbot.identity import QQIdentityStore
 
 
@@ -16,6 +18,7 @@ def test_sender_identity_uses_group_and_member_openids(tmp_path):
     assert before.stable_id == after.stable_id
     assert before.member_openid == after.member_openid == "member-1"
     assert after.group_display_name == "New name"
+    assert after.label == f"QQ sender id={after.stable_id} | 群昵称=New name"
 
 
 def test_same_name_does_not_merge_different_members(tmp_path):
@@ -33,42 +36,29 @@ def test_same_name_does_not_merge_different_members(tmp_path):
     assert alice.stable_id != bob.stable_id
 
 
-def test_verified_qq_nickname_is_shown_with_group_name(tmp_path):
-    store = QQIdentityStore(tmp_path / "identities.json")
-    store.set_verified_qq_nickname(
-        "group-1",
-        "member-1",
-        "alice_qq",
-        source="owner_verified",
-    )
+def test_group_display_observation_is_persisted_with_provenance(tmp_path):
+    path = tmp_path / "identities.json"
+    store = QQIdentityStore(path)
 
     identity = store.resolve(
         "group-1",
         {"member_openid": "member-1", "username": "Alice Group"},
     )
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    profile = persisted["members"]["group-1:member-1"]
 
-    assert identity.qq_nickname == "alice_qq"
-    assert identity.qq_nickname_source == "owner_verified"
-    assert identity.label == (
-        f"QQ sender id={identity.stable_id} | 群昵称=Alice Group | QQ昵称=alice_qq"
-    )
+    assert profile["stable_id"] == identity.stable_id
+    assert profile["group_display_name"]["value"] == "Alice Group"
+    assert profile["group_display_name"]["source"] == "event.author.username"
+    assert profile["group_display_name"]["observed_at"]
 
 
-def test_duplicate_names_are_deduplicated(tmp_path):
+def test_missing_name_falls_back_to_stable_sender_id(tmp_path):
     store = QQIdentityStore(tmp_path / "identities.json")
-    store.set_verified_qq_nickname(
-        "group-1",
-        "member-1",
-        "Alice",
-        source="owner_verified",
-    )
 
-    identity = store.resolve(
-        "group-1",
-        {"member_openid": "member-1", "username": "Alice"},
-    )
+    identity = store.resolve("group-1", {"member_openid": "member-1"})
 
-    assert identity.label == f"QQ sender id={identity.stable_id} | 昵称=Alice"
+    assert identity.label == f"QQ sender id={identity.stable_id}"
 
 
 def test_names_are_single_line_and_length_limited(tmp_path):
@@ -80,23 +70,3 @@ def test_names_are_single_line_and_length_limited(tmp_path):
 
     assert "\n" not in identity.group_display_name
     assert len(identity.group_display_name) <= 80
-
-
-def test_verified_profile_survives_reload(tmp_path):
-    path = tmp_path / "identities.json"
-    store = QQIdentityStore(path)
-    store.set_verified_qq_nickname(
-        "group-1",
-        "member-1",
-        "alice_qq",
-        source="owner_verified",
-    )
-
-    reloaded = QQIdentityStore(path)
-    identity = reloaded.resolve(
-        "group-1",
-        {"member_openid": "member-1", "username": "Alice Group"},
-    )
-
-    assert identity.qq_nickname == "alice_qq"
-    assert identity.qq_nickname_source == "owner_verified"

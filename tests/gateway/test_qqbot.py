@@ -132,14 +132,8 @@ class TestQQGroupSenderAttribution:
         assert "群昵称=" not in event.source.user_name
 
     @pytest.mark.asyncio
-    async def test_group_message_includes_verified_qq_nickname(self, tmp_path):
+    async def test_group_message_includes_event_group_nickname(self, tmp_path):
         adapter = self._make(tmp_path / "identities.json")
-        adapter._identity_store.set_verified_qq_nickname(
-            "group-1",
-            "member-1",
-            "alice_qq",
-        )
-
         await adapter._handle_group_message(
             {"group_openid": "group-1"},
             "msg-1",
@@ -150,7 +144,6 @@ class TestQQGroupSenderAttribution:
 
         event = adapter.handle_message.await_args.args[0]
         assert "群昵称=Alice Group" in event.source.user_name
-        assert "QQ昵称=alice_qq" in event.source.user_name
 
 
 # ---------------------------------------------------------------------------

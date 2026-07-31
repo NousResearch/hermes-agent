@@ -36,10 +36,10 @@ import {
   activateTreePane,
   closeAllTreeTabs,
   closeOtherTreeTabs,
-  closeTabPane,
   closeTreePane,
   closeTreeTabsToRight,
   collapseTreePane,
+  dismissTreePane,
   isCollapsePane,
   isSessionStripPane,
   noteActiveTreeGroup,
@@ -101,7 +101,7 @@ function ZoneMenu({
           renderActionItem(kit, {
             icon: 'close',
             label: t.common.close,
-            onSelect: () => closeTabPane(paneId)
+            onSelect: () => closeTreePane(paneId)
           })}
         {renderActionItem(kit, {
           disabled: !targets.others,
@@ -287,11 +287,10 @@ export function TreeGroup({
   // MAIN strands the whole app behind a strip.
   const minimizable = !shown.some(id => paneChrome(paneFor(id)).uncloseable)
 
-  // Tab ✕: a tool panel (terminal/logs) is removed from the layout AND its
-  // owning store is synced (closeTabPane → closeCollapsePane), so the toggle
-  // stays truthful and can bring it back; everything else routes through its
-  // Close (a session tile closes the session, a store-bound pane collapses).
-  const closeTab = (paneId: string) => closeTabPane(paneId)
+  // Tab ✕: a tool panel (terminal/logs) is REMOVED from the layout (comes back
+  // via its toggle); everything else routes through its Close (a session tile
+  // closes the session, a store-bound pane collapses).
+  const closeTab = (paneId: string) => (isCollapsePane(paneId) ? dismissTreePane(paneId) : closeTreePane(paneId))
 
   // A pane whose store owns Close keeps the gesture even when the pane itself
   // is uncloseable — the workspace tab empties to a fresh draft rather than

@@ -928,9 +928,18 @@ class ProcessRegistry:
             self._prune_if_needed()
             if not session.exited:
                 self._running[session.id] = session
+            else:
+                # A launch failure still gets a durable record: without this,
+                # the session vanishes the moment this call returns and is
+                # invisible to a later process(action='list'/'poll'), even
+                # though the caller was handed this session's id (#75675 —
+                # "TUI: background terminal processes silently fail to
+                # start"). Registering it as already-finished lets any
+                # caller confirm the failure and read the captured output
+                # after the fact, not just the immediate return value.
+                self._finished[session.id] = session
 
-        if not session.exited:
-            self._write_checkpoint()
+        self._write_checkpoint()
 
         return session
 

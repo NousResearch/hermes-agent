@@ -2566,6 +2566,33 @@ def terminal_tool(
                         session_key=session_key,
                     )
 
+                # Non-local backends (spawn_via_env) can fail to launch the
+                # command (no PID captured, e.g. sandbox exec error) without
+                # raising -- they return a session with exited=True instead
+                # of a live one, and that session is never registered in the
+                # process registry's tracking tables. Reporting the generic
+                # "Background process started" success here would tell the
+                # agent (and the user) a process is running when nothing
+                # ever started, with no way to discover the failure via
+                # process(action='list'/'poll') afterward (#75675: "TUI:
+                # background terminal processes silently fail to start").
+                # Surface the real failure immediately instead.
+                if proc_session.exited:
+                    failure_detail = (
+                        proc_session.output_buffer.strip()
+                        or f"process exited immediately (reason: {proc_session.completion_reason})"
+                    )
+                    return json.dumps({
+                        "output": "",
+                        "session_id": proc_session.id,
+                        "exit_code": (
+                            proc_session.exit_code
+                            if proc_session.exit_code is not None else -1
+                        ),
+                        "error": f"Failed to start background process: {failure_detail}",
+                        "status": "failed_start",
+                    }, ensure_ascii=False)
+
                 result_data = {
                     "output": "Background process started",
                     "session_id": proc_session.id,

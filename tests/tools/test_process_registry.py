@@ -526,8 +526,30 @@ class TestSpawnEnvSanitization:
         assert session.pid is None
         assert session.output_buffer == "syntax error"
         fake_thread.start.assert_not_called()
-        # A failed launch must not be exposed as a running/tracked session.
+        # A failed launch must not be exposed as a running/tracked session...
         assert session.id not in registry._running
+        # ...but it must still be discoverable as a finished/failed record
+        # (#75675): otherwise the session id handed back to the caller is a
+        # dead end for any later process(action='list'/'poll') lookup, and
+        # the only failure signal is whatever the immediate caller does with
+        # the return value in-process.
+        assert registry._finished.get(session.id) is session
+
+    def test_spawn_via_env_exception_registers_finished_session(self, registry):
+        class RaisingEnv:
+            def execute(self, command, **kwargs):
+                raise RuntimeError("sandbox unreachable")
+
+        fake_thread = MagicMock()
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(RaisingEnv(), "echo hello")
+
+        assert session.exited is True
+        assert session.completion_reason == "failed_start"
+        assert "sandbox unreachable" in session.output_buffer
+        assert session.id not in registry._running
+        assert registry._finished.get(session.id) is session
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")

@@ -4978,16 +4978,21 @@ class TurnRunner:
         # Register the release hook on the adapter so base.py's finally
         # block can fire it after delivering the main response.
         if ctx._status_adapter and ctx.session_key:
+            adapter_session_key = self._runner._adapter_session_key_for_source(
+                ctx._status_adapter,
+                ctx.source,
+                ctx.session_key,
+            )
             if getattr(type(ctx._status_adapter), "register_post_delivery_callback", None) is not None:
                 ctx._status_adapter.register_post_delivery_callback(
-                    ctx.session_key,
+                    adapter_session_key,
                     _release_bg_review_messages,
                     generation=ctx.run_generation,
                 )
             else:
                 _pdc = getattr(ctx._status_adapter, "_post_delivery_callbacks", None)
                 if _pdc is not None:
-                    _pdc[ctx.session_key] = _release_bg_review_messages
+                    _pdc[adapter_session_key] = _release_bg_review_messages
         # Memory update notifications in chat.  Config: display.memory_notifications
         #   off     — no chat notification (still logged to stdout)
         #   on      — generic "💾 Memory updated" (default)
@@ -6728,6 +6733,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
             profile=_profile,
         )
+
+    @staticmethod
+    def _adapter_session_key_for_source(
+        adapter: Any,
+        source: Optional[SessionSource],
+        fallback: Optional[str],
+    ) -> Optional[str]:
+        """Return the transport-local key used by adapter-owned state.
+
+        Durable runner state may be profile-qualified while multiplexed adapters
+        are already isolated per profile and therefore key their active turn,
+        pending slot, interrupts, and post-delivery callbacks without that
+        namespace. Always derive adapter-owned keys at this boundary.
+        """
+        key = fallback
+        resolver = getattr(adapter, "session_key_for_source", None)
+        if source is not None and callable(resolver):
+            try:
+                resolved = resolver(source)
+                if isinstance(resolved, str) and resolved:
+                    key = resolved
+            except Exception:
+                logger.debug("Adapter session-key resolution failed", exc_info=True)
+        return key
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
@@ -17997,9 +18026,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
-        self._bind_adapter_run_generation(
-            self._adapter_for_source(source),
+        _run_adapter = self._adapter_for_source(source)
+        _run_adapter_key = self._adapter_session_key_for_source(
+            _run_adapter,
+            source,
             session_key,
+        )
+        self._bind_adapter_run_generation(
+            _run_adapter,
+            _run_adapter_key,
             run_generation,
         )
 
@@ -18067,13 +18102,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_generation,
                 )
                 _stale_adapter = self._adapter_for_source(source)
+                _stale_adapter_key = self._adapter_session_key_for_source(
+                    _stale_adapter,
+                    source,
+                    _quick_key,
+                )
                 if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
                     _stale_adapter.pop_post_delivery_callback(
-                        _quick_key,
+                        _stale_adapter_key,
                         generation=run_generation,
                     )
                 elif _stale_adapter and hasattr(_stale_adapter, "_post_delivery_callbacks"):
-                    _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
+                    _stale_adapter._post_delivery_callbacks.pop(_stale_adapter_key, None)
                 return None
 
             response = agent_result.get("final_response") or ""
@@ -19338,18 +19378,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
 
         try:
-            session_key = self._session_key_for_source(source)
+            state_key = self._session_key_for_source(source)
         except Exception:
-            session_key = None
+            state_key = None
+        adapter_session_key = self._adapter_session_key_for_source(
+            adapter,
+            source,
+            state_key,
+        )
 
-        if session_key and hasattr(adapter, "register_post_delivery_callback"):
+        if adapter_session_key and hasattr(adapter, "register_post_delivery_callback"):
             try:
                 generation = None
-                active = getattr(adapter, "_active_sessions", {}).get(session_key)
+                active = getattr(adapter, "_active_sessions", {}).get(adapter_session_key)
                 if active is not None:
                     generation = getattr(active, "_hermes_run_generation", None)
                 adapter.register_post_delivery_callback(
-                    session_key,
+                    adapter_session_key,
                     _deliver,
                     generation=generation,
                 )
@@ -23539,14 +23584,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _bind_adapter_run_generation(
         self,
         adapter: Any,
-        session_key: str,
+        adapter_session_key: Optional[str],
         generation: int | None,
     ) -> None:
         """Bind a gateway run generation to the adapter's active-session event."""
-        if not adapter or not session_key or generation is None:
+        if not adapter or not adapter_session_key or generation is None:
             return
         try:
-            interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
+            interrupt_event = getattr(adapter, "_active_sessions", {}).get(
+                adapter_session_key
+            )
             if interrupt_event is not None:
                 setattr(interrupt_event, "_hermes_run_generation", int(generation))
         except Exception:
@@ -25599,11 +25646,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _adapter = self._adapter_for_source(source)
                     if not _adapter:
                         continue
+                    _adapter_session_key = self._adapter_session_key_for_source(
+                        _adapter,
+                        source,
+                        session_key,
+                    )
+                    has_pending_interrupt = getattr(
+                        _adapter, "has_pending_interrupt", None
+                    )
+                    pending_messages = getattr(_adapter, "_pending_messages", {})
                     # Check if adapter has a pending interrupt for this session.
-                    # Must use session_key (build_session_key output) — NOT
-                    # source.chat_id — because the adapter stores interrupt events
-                    # under the full session key.
-                    if hasattr(_adapter, 'has_pending_interrupt') and _adapter.has_pending_interrupt(session_key):
+                    if (
+                        _adapter_session_key
+                        and callable(has_pending_interrupt)
+                        and has_pending_interrupt(_adapter_session_key)
+                    ):
                         agent = agent_holder[0]
                         if agent:
                             # Peek at the pending message text WITHOUT consuming it.
@@ -25614,7 +25671,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # before checking _interrupt_requested, and the message
                             # is lost — neither the interrupt path nor the dequeue
                             # path finds it.
-                            _peek_event = _adapter._pending_messages.get(session_key)
+                            _peek_event = pending_messages.get(_adapter_session_key)
                             pending_text = None
                             if _peek_event is not None:
                                 pending_text = _peek_event.text or ""
@@ -25900,10 +25957,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not _interrupt_detected.is_set() and session_key:
                         _backup_adapter = self._adapter_for_source(source)
                         _backup_agent = agent_holder[0]
-                        if (_backup_adapter and _backup_agent
-                                and hasattr(_backup_adapter, 'has_pending_interrupt')
-                                and _backup_adapter.has_pending_interrupt(session_key)):
-                            _bp_event = _backup_adapter._pending_messages.get(session_key)
+                        _backup_adapter_key = self._adapter_session_key_for_source(
+                            _backup_adapter,
+                            source,
+                            session_key,
+                        )
+                        _backup_has_pending_interrupt = getattr(
+                            _backup_adapter,
+                            "has_pending_interrupt",
+                            None,
+                        )
+                        _backup_pending_messages = getattr(
+                            _backup_adapter,
+                            "_pending_messages",
+                            {},
+                        )
+                        if (
+                            _backup_adapter
+                            and _backup_agent
+                            and _backup_adapter_key
+                            and callable(_backup_has_pending_interrupt)
+                            and _backup_has_pending_interrupt(_backup_adapter_key)
+                        ):
+                            _bp_event = _backup_pending_messages.get(
+                                _backup_adapter_key
+                            )
                             _bp_text = _bp_event.text if _bp_event else None
                             if _bp_event is not None:
                                 _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
@@ -26002,10 +26080,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not _interrupt_detected.is_set() and session_key:
                         _backup_adapter = self._adapter_for_source(source)
                         _backup_agent = agent_holder[0]
-                        if (_backup_adapter and _backup_agent
-                                and hasattr(_backup_adapter, 'has_pending_interrupt')
-                                and _backup_adapter.has_pending_interrupt(session_key)):
-                            _bp_event = _backup_adapter._pending_messages.get(session_key)
+                        _backup_adapter_key = self._adapter_session_key_for_source(
+                            _backup_adapter,
+                            source,
+                            session_key,
+                        )
+                        _backup_has_pending_interrupt = getattr(
+                            _backup_adapter,
+                            "has_pending_interrupt",
+                            None,
+                        )
+                        _backup_pending_messages = getattr(
+                            _backup_adapter,
+                            "_pending_messages",
+                            {},
+                        )
+                        if (
+                            _backup_adapter
+                            and _backup_agent
+                            and _backup_adapter_key
+                            and callable(_backup_has_pending_interrupt)
+                            and _backup_has_pending_interrupt(_backup_adapter_key)
+                        ):
+                            _bp_event = _backup_pending_messages.get(
+                                _backup_adapter_key
+                            )
                             _bp_text = _bp_event.text if _bp_event else None
                             if _bp_event is not None:
                                 _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
@@ -26360,12 +26459,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?",
                         )
                     # Release deferred bg-review notifications now that the
-                    # first response has been delivered.  Pop from the
-                    # adapter's callback dict (prevents double-fire in
-                    # base.py's finally block) and call it.
-                    if getattr(type(adapter), "pop_post_delivery_callback", None) is not None:
-                        _bg_cb = adapter.pop_post_delivery_callback(
-                            session_key,
+                    # first response has been delivered. Pop from the adapter's
+                    # callback dict (prevents double-fire in base.py's finally
+                    # block) and call it. Callback ownership belongs to the
+                    # completed source, not the queued follow-up source.
+                    _callback_adapter = self._adapter_for_source(source) or adapter
+                    _callback_adapter_key = self._adapter_session_key_for_source(
+                        _callback_adapter,
+                        source,
+                        session_key,
+                    )
+                    _callback_pop = None
+                    if (
+                        getattr(
+                            type(_callback_adapter),
+                            "pop_post_delivery_callback",
+                            None,
+                        )
+                        is not None
+                    ):
+                        _callback_pop = getattr(
+                            _callback_adapter,
+                            "pop_post_delivery_callback",
+                            None,
+                        )
+                    if callable(_callback_pop):
+                        _bg_cb = _callback_pop(
+                            _callback_adapter_key,
                             generation=run_generation,
                         )
                         if callable(_bg_cb):
@@ -26375,8 +26495,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     await _bg_result
                             except Exception:
                                 pass
-                    elif adapter and hasattr(adapter, "_post_delivery_callbacks"):
-                        _bg_cb = adapter._post_delivery_callbacks.pop(session_key, None)
+                    else:
+                        _callback_entries = getattr(
+                            _callback_adapter,
+                            "_post_delivery_callbacks",
+                            None,
+                        )
+                        _bg_cb = (
+                            _callback_entries.pop(_callback_adapter_key, None)
+                            if isinstance(_callback_entries, dict)
+                            else None
+                        )
                         if callable(_bg_cb):
                             try:
                                 _bg_result = _bg_cb()
@@ -26743,8 +26872,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
             try:
-                _cleanup_adapter.register_post_delivery_callback(
+                _cleanup_adapter_key = self._adapter_session_key_for_source(
+                    _cleanup_adapter,
+                    source,
                     session_key,
+                )
+                _cleanup_adapter.register_post_delivery_callback(
+                    _cleanup_adapter_key,
                     _cleanup_temp_bubbles,
                     generation=run_generation,
                 )

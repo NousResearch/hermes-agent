@@ -12,6 +12,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 
 
@@ -75,5 +76,35 @@ class TestInterruptKeyConsistency:
 
         # Using chat_id → NOT found (this was the bug)
         assert adapter.has_pending_interrupt(source.chat_id) is False
+
+    def test_secondary_profile_interrupt_uses_adapter_local_session_key(self):
+        adapter = StubAdapter()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123456",
+            chat_type="dm",
+            profile="named",
+        )
+        state_key = build_session_key(source, profile="named")
+        adapter_key = adapter.session_key_for_source(source)
+        assert state_key != adapter_key
+
+        interrupt_event = asyncio.Event()
+        adapter._active_sessions[adapter_key] = interrupt_event
+        interrupt_event.set()
+
+        resolved = GatewayRunner._adapter_session_key_for_source(
+            adapter,
+            source,
+            state_key,
+        )
+        assert isinstance(resolved, str)
+        assert resolved == adapter_key
+        assert adapter.has_pending_interrupt(resolved) is True
+        assert adapter.has_pending_interrupt(state_key) is False
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._bind_adapter_run_generation(adapter, resolved, 9)
+        assert getattr(interrupt_event, "_hermes_run_generation", None) == 9
 
 

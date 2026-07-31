@@ -263,6 +263,8 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
 
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
     session_key = "agent:main:telegram:group:-1001"
+    adapter_key = adapter.session_key_for_source(source)
+    assert session_key != adapter_key
 
     pre_existing_fired = []
 
@@ -271,7 +273,7 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
 
     # Pre-register a callback with the same generation the run will use
     # (run_generation=None in this test path — matches the default slot).
-    adapter.register_post_delivery_callback(session_key, _preexisting_callback)
+    adapter.register_post_delivery_callback(adapter_key, _preexisting_callback)
 
     result = await runner._run_agent(
         message="hello",
@@ -283,7 +285,7 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     )
 
     assert result["final_response"] == "done"
-    cb = adapter.pop_post_delivery_callback(session_key)
+    cb = adapter.pop_post_delivery_callback(adapter_key)
     assert callable(cb)
     await _fire_post_delivery_cb(cb)
     for _ in range(20):
@@ -295,3 +297,43 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+async def test_secondary_profile_callbacks_share_adapter_session_key(monkeypatch, tmp_path):
+    """Background release and cleanup must chain under the adapter-local key."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    runner.adapters = {}
+    runner._profile_adapters = {"named": {Platform.TELEGRAM: adapter}}
+    runner.config.multiplex_profiles = True
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        profile="named",
+    )
+    state_key = runner._session_key_for_source(source)
+    adapter_key = adapter.session_key_for_source(source)
+    assert state_key != adapter_key
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-named",
+        session_key=state_key,
+        run_generation=3,
+    )
+
+    assert result["final_response"] == "done"
+    assert set(adapter._post_delivery_callbacks) == {adapter_key}
+    assert state_key not in adapter._post_delivery_callbacks
+
+    callback = adapter.pop_post_delivery_callback(adapter_key, generation=3)
+    assert callable(callback)
+    await _fire_post_delivery_cb(callback)
+    assert adapter._post_delivery_callbacks == {}

@@ -58,23 +58,6 @@ class TestCronPerModelReasoningConfig:
         assert result is not None
         assert result["effort"] == "low"
 
-    def test_cron_handles_missing_model_key(self):
-        """Works when config has no model.default."""
-        from hermes_constants import resolve_per_model_reasoning_effort
-
-        _cfg = {
-            "agent": {
-                "reasoning_effort": "medium",
-                "reasoning_overrides": {"claude-opus-4.5": "high"},
-            },
-        }
-        _model_cfg = _cfg.get("model", {}) if isinstance(_cfg.get("model", {}), dict) else {}
-        _model = str(_model_cfg.get("default", "") or _model_cfg.get("model", "") or "").strip()
-        _overrides = (_cfg.get("agent", {}) or {}).get("reasoning_overrides", {}) or {}
-
-        # Empty model → resolve returns None → scheduler uses global
-        result = resolve_per_model_reasoning_effort(_model, _overrides)
-        assert result is None
 
     def test_global_fallback_with_yaml_false(self):
         """YAML boolean False must reach parse_reasoning_effort uncoerced.

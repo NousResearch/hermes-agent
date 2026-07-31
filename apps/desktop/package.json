@@ -101,7 +101,9 @@
     "d3-force": "^3.0.0",
     "dnd-core": "^14.0.1",
     "dompurify": "^3.4.11",
+    "emojibase-data": "^16.0.3",
     "fflate": "^0.8.3",
+    "frimousse": "^0.3.0",
     "hast-util-from-html-isomorphic": "^2.0.0",
     "hast-util-to-text": "^4.0.2",
     "ignore": "^7.0.5",
@@ -220,6 +222,7 @@
         "CFBundleExecutable": "Hermes",
         "CFBundleName": "Hermes",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
+        "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
         "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
       },
       "gatekeeperAssess": false,

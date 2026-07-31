@@ -64,7 +64,9 @@ function SidebarSectionHeader({
     <div className="group/section flex shrink-0 items-center justify-between gap-1 pb-1 pt-1.5">
       {collapsible ? (
         <button
-          className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
+          // min-w-0 lets the label truncate at narrow sidebar widths instead of
+          // pushing the header's trailing action icons out of view.
+          className="group/section-label flex w-fit min-w-0 items-center gap-1 bg-transparent text-left leading-none"
           onClick={onToggle}
           type="button"
         >
@@ -75,7 +77,7 @@ function SidebarSectionHeader({
           />
         </button>
       ) : (
-        <div className="flex w-fit items-center gap-1 leading-none">{labelBody}</div>
+        <div className="flex w-fit min-w-0 items-center gap-1 leading-none">{labelBody}</div>
       )}
       {action}
     </div>

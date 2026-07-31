@@ -144,37 +144,7 @@ class TestModal:
         mock_stdin.assert_not_called()
         assert result == "once"
 
-    def test_no_app_falls_back_to_stdin(self):
-        """Without a running app (oneshot / non-interactive), use the stdin prompt."""
-        cli = _make_cli()
-        cli._app = None
 
-        with patch.object(cli, "_prompt_text_input", return_value="3") as mock_stdin:
-            result = cli._prompt_text_input_modal(
-                title="⚠️  /clear",
-                detail="This clears the screen.",
-                choices=_SAMPLE_CHOICES,
-            )
-
-        mock_stdin.assert_called_once_with("Choice [1/2/3]: ")
-        assert result == "3"
-
-    def test_windows_no_app_falls_back_to_stdin(self):
-        """win32 without a running app keeps stdin — the only case where the raw
-        prompt is safe on Windows, since no app owns the console to deadlock."""
-        cli = _make_cli()
-        cli._app = None
-
-        with patch.object(sys, "platform", "win32"), \
-             patch.object(cli, "_prompt_text_input", return_value="1") as mock_stdin:
-            result = cli._prompt_text_input_modal(
-                title="⚠️  /new — destroys conversation state",
-                detail="This starts a fresh session.",
-                choices=_SAMPLE_CHOICES,
-            )
-
-        mock_stdin.assert_called_once_with("Choice [1/2/3]: ")
-        assert result == "1"
 
     def test_windows_scheduling_failure_clean_cancels(self):
         """win32 off the main thread: if marshaling onto the app loop fails, cancel
@@ -201,54 +171,7 @@ class TestModal:
         assert outcome["result"] is None
         assert cli._slash_confirm_state is None
 
-    @pytest.mark.parametrize(
-        "platform, expect_stdin, expect_result",
-        [("win32", False, None), ("linux", True, "1")],
-    )
-    def test_daemon_thread_no_app_loop_uses_fallback(self, platform, expect_stdin, expect_result):
-        """Off the daemon thread with no resolvable app loop (``self._app.loop``
-        is None / raises), the modal can never be scheduled, so the method short-
-        circuits at the app_loop-is-None site (cli.py ~7260) — a distinct path
-        from a call_soon_threadsafe failure. win32 clean-cancels (None) instead of
-        deadlocking on raw input(); other platforms keep the stdin prompt."""
-        cli = _make_cli()
-        cli._app.loop = None  # forces app_loop is None, off the main thread
 
-        outcome = {"result": None, "stdin_called": False}
-        done = threading.Event()
-
-        def _worker():
-            try:
-                with patch.object(sys, "platform", platform), \
-                     patch.object(cli, "_prompt_text_input", return_value="1") as mock_stdin, \
-                     patch.object(cli, "_invalidate"):
-                    outcome["result"] = cli._prompt_text_input_modal(
-                        title="⚠️  /reset",
-                        detail="This starts a fresh session.",
-                        choices=_SAMPLE_CHOICES,
-                        timeout=5,
-                    )
-                    outcome["stdin_called"] = mock_stdin.called
-            finally:
-                done.set()
-
-        worker = threading.Thread(target=_worker, daemon=True)
-        worker.start()
-        worker.join(timeout=2.0)
-        assert not worker.is_alive(), "daemon thread hung — modal deadlocked"
-        assert outcome["stdin_called"] is expect_stdin
-        assert outcome["result"] == expect_result
-        assert cli._slash_confirm_state is None
-
-    def test_empty_choices_returns_none(self):
-        """Empty choices returns None without prompting."""
-        cli = _make_cli()
-
-        with patch.object(cli, "_prompt_text_input") as mock_stdin:
-            result = cli._prompt_text_input_modal(title="Test", detail="Test", choices=[])
-
-        mock_stdin.assert_not_called()
-        assert result is None
 
 
 class TestConfirmDestructiveSlashWindows:

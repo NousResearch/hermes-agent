@@ -1,9 +1,15 @@
-"""Single resolver for every vision_analyze image source -> bytes + mime.
+"""Single resolver for every media source -> bytes + mime.
 
 All source handling (data:/http(s)/file/local/container) funnels through
 :func:`resolve_image_source` so size and magic-byte checks are enforced exactly
 once.  Returns raw bytes (not a path): the downstream step is base64 -> data URL
 (RFC 2397) and provider base64 content blocks.
+
+Images are the default and the historical purpose. Callers whose argument
+takes video opt in via ``permitted=("video",)`` — the same confinement and
+credential-guard pipeline applies, and only the type check at the end differs
+(extension-table typing plus an mp4 magic sniff, rather than image magic
+bytes). Every existing call site keeps the image-only default unchanged.
 
 Security (terminal-backend confinement, GHSA-gpxw-6wxv-w3qq): under a non-local
 terminal backend the file tools are confined to the sandbox (SECURITY.md 2.2),
@@ -86,18 +92,23 @@ class ResolvedImage:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
-async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
+async def resolve_image_source(
+    src: str,
+    ctx: ResolveContext,
+    *,
+    permitted: tuple = ("image",),
+) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
     if s.startswith("data:"):
         data, mime = _resolve_data_url(s)
-        return _finalize(data, mime, "data", s)
+        return _finalize(data, mime, "data", s, permitted)
     if s.startswith(("http://", "https://")):
         reason = _http_block_reason(s)
         if reason:
             raise SourceUnsafe(reason, src=s)
-        return _finalize(await _download_to_bytes(s), "", "http", s)
+        return _finalize(await _download_to_bytes(s), "", "http", s, permitted)
 
     if _SCHEME_RE.match(s) and not s.lower().startswith("file://"):
         raise UnsupportedScheme(
@@ -134,15 +145,15 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
             except ValueError as exc:
                 raise SourceUnsafe(str(exc), src=s, origin="file")
         data = await asyncio.to_thread(host_target.read_bytes)
-        return _finalize(data, "", "file", s)
+        return _finalize(data, "", "file", s, permitted)
     if _is_local_terminal_backend():
         # Local backend: any path was host-readable, so a miss simply means
         # the file doesn't exist — no sandbox to fall back to.
-        raise SourceNotFound(f"image file not found: '{p}'", src=s, origin="file")
+        raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     # Not a permitted host read (or the host file is absent) -> read the
     # bytes inside the sandbox. Under a sandbox this reads the container's
     # filesystem, never the host's.
-    return await _resolve_container_fallback(p, ctx, s)
+    return await _resolve_container_fallback(p, ctx, s, permitted)
 
 
 def _resolve_data_url(s: str) -> tuple[bytes, str]:
@@ -270,7 +281,9 @@ def _get_active_env(task_id: Optional[str]):
         return None
 
 
-async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) -> ResolvedImage:
+async def _resolve_container_fallback(
+    p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)
+) -> ResolvedImage:
     """Read the image bytes inside the sandbox (fail-closed when none exists).
 
     Reached when a host read is not permitted or the host file is absent. The
@@ -312,27 +325,66 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     except Exception as exc:
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:
-        raise SourceTooLarge("image exceeds size limit", src=src, origin="container")
-    return _finalize(data, "", "container", src)
+        raise SourceTooLarge("media exceeds size limit", src=src, origin="container")
+    return _finalize(data, "", "container", src, permitted)
 
 
-def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> ResolvedImage:
-    """Intrinsic-correctness chokepoint: ingest byte cap + magic-byte sniff.
+def _finalize(
+    data: bytes, declared_mime: str, origin: str, src: str, permitted: tuple = ("image",)
+) -> ResolvedImage:
+    """Intrinsic-correctness chokepoint: ingest byte cap + type check.
 
     The cap here is the generous 50MB *ingest* budget, not the 20MB provider
     payload cap — a 20-50MB image must survive this step so the call site can
     resize it under the payload cap. See ``_MAX_INGEST_BYTES``.
+
+    Images are typed by magic bytes. Video (opt-in via ``permitted``) is typed
+    by the extension table plus an mp4 container sniff: extension typing is
+    sufficient because every downstream consumer re-validates — the upload
+    gateway signs the content type into its presigned URL and the vendor
+    rejects undecodable input — so a wrong guess is a clean rejection there
+    rather than a hole here.
     """
     from tools.vision_tools import _detect_image_mime_type_from_bytes
 
     if len(data) > _MAX_INGEST_BYTES:
-        raise SourceTooLarge("image exceeds size limit", src=src, origin=origin)
+        raise SourceTooLarge("media exceeds size limit", src=src, origin=origin)
+
     sniffed = _detect_image_mime_type_from_bytes(data)
-    if sniffed is None:
-        if b"<svg" in data[:4096].lower():
-            # Pass SVG through — the vision call sites rasterize it to PNG
-            # via _normalize_to_supported_image before embedding (providers
-            # only ingest raster images).
-            return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
-        raise NotAnImage("source is not a recognized image", src=src, origin=origin)
-    return ResolvedImage(data=data, mime=sniffed, origin=origin)
+    if sniffed is not None:
+        if "image" not in permitted:
+            raise NotAnImage("source is an image, but this argument takes a video", src=src, origin=origin)
+        return ResolvedImage(data=data, mime=sniffed, origin=origin)
+
+    if "image" in permitted and b"<svg" in data[:4096].lower():
+        # Pass SVG through — the vision call sites rasterize it to PNG
+        # via _normalize_to_supported_image before embedding (providers
+        # only ingest raster images).
+        return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
+
+    if "video" in permitted:
+        video_mime = _detect_video_mime(data, src)
+        if video_mime is not None:
+            return ResolvedImage(data=data, mime=video_mime, origin=origin)
+        raise NotAnImage("source is not a recognized video (mp4 expected)", src=src, origin=origin)
+
+    raise NotAnImage("source is not a recognized image", src=src, origin=origin)
+
+
+def _detect_video_mime(data: bytes, src: str) -> Optional[str]:
+    """Video MIME from the extension table, else the mp4/mov container magic.
+
+    The magic fallback covers extensionless sources (data: URLs, URLs with
+    query strings): ISO base-media files carry ``ftyp`` at offset 4.
+    """
+    from urllib.parse import urlsplit
+
+    from tools.vision_tools import _detect_video_mime_type
+
+    path_part = urlsplit(src).path if _SCHEME_RE.match(src) else src
+    by_extension = _detect_video_mime_type(Path(path_part))
+    if by_extension is not None:
+        return by_extension
+    if len(data) > 12 and data[4:8] == b"ftyp":
+        return "video/mp4"
+    return None

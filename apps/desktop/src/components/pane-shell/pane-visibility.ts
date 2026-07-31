@@ -28,6 +28,20 @@ export const PaneVisibleContext = createContext(true)
 
 export const usePaneVisible = (): boolean => useContext(PaneVisibleContext)
 
+/** Fallback group key for a surface rendered outside the layout tree (secondary
+ *  windows, plain routes) — one bucket, since there are no sibling zones there
+ *  to tell apart. */
+export const NO_PANE_GROUP = 'window'
+
+/** The layout-tree GROUP (zone) a pane is rendered in — the identity of "this
+ *  set of tabs". Panes stacked as tabs share one group; each split zone is its
+ *  own. State that should be per-zone rather than per-window or per-tab keys off
+ *  this (see the composer pop-out). Follows a pane dragged between zones,
+ *  because the provider is the zone that renders it. */
+export const PaneGroupContext = createContext(NO_PANE_GROUP)
+
+export const usePaneGroup = (): string => useContext(PaneGroupContext)
+
 /** `querySelectorAll` minus anything inside an inactive tab. */
 export const queryAllVisible = <T extends HTMLElement>(selector: string, root: ParentNode = document): T[] =>
   [...root.querySelectorAll<T>(selector)].filter(el => !el.closest(HIDDEN_PANE))

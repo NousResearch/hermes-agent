@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.config import cfg_get
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -539,12 +540,8 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 timeout=60,
-                # Run in a stable directory. The gateway process may have been
-                # launched from a temp dir (e.g. macOS /var/folders/.../T) that
-                # gets purged, leaving an unreadable CWD. git clone with no cwd
-                # inherits that dead CWD and fails with
-                # "Unable to read current working directory". plugins_dir
-                # (~/.hermes/plugins) always exists.
+stdin=subprocess.DEVNULL,
+                env=noninteractive_git_env(),
                 cwd=str(plugins_dir),
             )
         except FileNotFoundError as e:
@@ -2110,6 +2107,8 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
             text=True, encoding='utf-8', errors='replace',
             timeout=60,
             cwd=str(target),
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."

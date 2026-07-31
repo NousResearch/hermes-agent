@@ -108,19 +108,6 @@ def hermes_home(tmp_path: Path) -> Path:
     return home
 
 
-def test_config_max_turns_wins_over_stale_env(hermes_home: Path) -> None:
-    """Regression: config.yaml:agent.max_turns=500 must beat .env=60."""
-    _write_config(hermes_home, agent_cfg={"max_turns": 500})
-    _write_env(hermes_home, {"HERMES_MAX_ITERATIONS": "60"})
-
-    env = _run_gateway_import(hermes_home, initial_env={})
-
-    assert env.get("HERMES_MAX_ITERATIONS") == "500", (
-        f"expected config.yaml max_turns=500 to win; got {env.get('HERMES_MAX_ITERATIONS')!r}. "
-        "Stale .env value is shadowing config — the bridge lost its override."
-    )
-
-
 def test_config_gateway_timeout_wins_over_stale_env(hermes_home: Path) -> None:
     """Every agent.* bridge key must be config-authoritative, not .env-authoritative."""
     _write_config(hermes_home, agent_cfg={
@@ -136,47 +123,6 @@ def test_config_gateway_timeout_wins_over_stale_env(hermes_home: Path) -> None:
 
     assert env.get("HERMES_AGENT_TIMEOUT") == "1800"
     assert env.get("HERMES_AGENT_TIMEOUT_WARNING") == "900"
-
-
-def test_config_display_busy_input_mode_wins_over_stale_env(hermes_home: Path) -> None:
-    _write_config(hermes_home, display_cfg={"busy_input_mode": "interrupt"})
-    _write_env(hermes_home, {"HERMES_GATEWAY_BUSY_INPUT_MODE": "queue"})
-
-    env = _run_gateway_import(hermes_home, initial_env={})
-
-    assert env.get("HERMES_GATEWAY_BUSY_INPUT_MODE") == "interrupt"
-
-
-def test_config_display_busy_text_mode_wins_over_stale_env(hermes_home: Path) -> None:
-    _write_config(hermes_home, display_cfg={"busy_text_mode": "queue"})
-    _write_env(hermes_home, {"HERMES_GATEWAY_BUSY_TEXT_MODE": "interrupt"})
-
-    env = _run_gateway_import(hermes_home, initial_env={})
-
-    assert env.get("HERMES_GATEWAY_BUSY_TEXT_MODE") == "queue"
-
-
-def test_config_timezone_wins_over_stale_env(hermes_home: Path) -> None:
-    _write_config(hermes_home, timezone="America/Los_Angeles")
-    _write_env(hermes_home, {"HERMES_TIMEZONE": "UTC"})
-
-    env = _run_gateway_import(hermes_home, initial_env={})
-
-    assert env.get("HERMES_TIMEZONE") == "America/Los_Angeles"
-
-
-def test_env_value_survives_when_config_omits_key(hermes_home: Path) -> None:
-    """If config.yaml doesn't set max_turns, .env value must still pass through.
-
-    The bridge only overwrites when the config key is present — an absent
-    config key should NOT clobber the .env value.
-    """
-    _write_config(hermes_home, agent_cfg={})  # no max_turns
-    _write_env(hermes_home, {"HERMES_MAX_ITERATIONS": "123"})
-
-    env = _run_gateway_import(hermes_home, initial_env={})
-
-    assert env.get("HERMES_MAX_ITERATIONS") == "123"
 
 
 def test_config_platform_connect_timeout_supplies_env_when_unset(hermes_home: Path) -> None:

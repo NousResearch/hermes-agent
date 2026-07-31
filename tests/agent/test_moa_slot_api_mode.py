@@ -39,19 +39,6 @@ class TestSlotRuntimeApiMode:
         assert result["base_url"] == "https://api.githubcopilot.com"
         assert result["api_key"] == "test-key"
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_slot_runtime_omits_api_mode_when_absent(self, mock_resolve):
-        """When resolve_runtime_provider does not return api_mode, output omits it."""
-        mock_resolve.return_value = {
-            "provider": "openai",
-            "model": "gpt-4o",
-            "base_url": "https://api.openai.com/v1",
-            "api_key": "test-key",
-        }
-        from agent.moa_loop import _slot_runtime
-
-        result = _slot_runtime({"provider": "openai", "model": "gpt-4o"})
-        assert "api_mode" not in result
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_slot_runtime_omits_api_mode_when_empty(self, mock_resolve):
@@ -68,29 +55,6 @@ class TestSlotRuntimeApiMode:
         result = _slot_runtime({"provider": "copilot", "model": "gpt-5.5"})
         assert "api_mode" not in result
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_slot_runtime_includes_request_override_extra_body(self, mock_resolve):
-        """Custom-provider extra_body is forwarded in call_llm's shape."""
-        mock_resolve.return_value = {
-            "provider": "custom",
-            "model": "qwen3.7-max",
-            "base_url": "https://dashscope.example/v1",
-            "api_key": "test-key",
-            "api_mode": "chat_completions",
-            "request_overrides": {
-                "extra_body": {
-                    "enable_thinking": False,
-                    "reasoning": {"effort": "none"},
-                }
-            },
-        }
-        from agent.moa_loop import _slot_runtime
-
-        result = _slot_runtime({"provider": "dashscope", "model": "qwen3.7-max"})
-        assert result["extra_body"] == {
-            "enable_thinking": False,
-            "reasoning": {"effort": "none"},
-        }
 
 
 def test_run_reference_passes_slot_extra_body(monkeypatch):

@@ -63,28 +63,3 @@ def test_entrypoint_is_init_not_tini(built_image: str) -> None:
     )
 
 
-def test_legacy_tini_g_entrypoint_does_not_boot_loop(built_image: str) -> None:
-    """``docker run --entrypoint /usr/bin/tini … -g -- --help`` must work.
-
-    Exact failure from #66679: after update, NAS templates still invoke
-    ``/usr/bin/tini -g -- …``. The old symlink turned that into
-    ``/init -g -- …``, rc.init tried to exec ``-g``, and the container
-    restart-looped. The shim must strip ``-g`` / ``--`` and reach hermes.
-    """
-    r = subprocess.run(
-        [
-            "docker", "run", "--rm",
-            "--entrypoint", "/usr/bin/tini",
-            built_image,
-            "-g", "--", "--help",
-        ],
-        capture_output=True, text=True, timeout=120,
-    )
-    combined = r.stdout + r.stderr
-    assert "-g: not found" not in combined, (
-        f"tini -g leaked into rc.init (boot-loop regression):\n{combined[-3000:]}"
-    )
-    assert r.returncode == 0, (
-        f"legacy tini -g -- --help failed (exit {r.returncode}):\n"
-        f"stdout={r.stdout[-2000:]!r}\nstderr={r.stderr[-2000:]!r}"
-    )

@@ -1,0 +1,117 @@
+"""Tests for the post-update *import* guard in ``hermes update``.
+
+``_validate_critical_files_syntax`` only parses files, so it cannot detect a
+partially-updated tree: when one package is refreshed and a sibling is not,
+every file still parses but importing them together raises ``ImportError``.
+
+Reference incident: a Windows user reported
+``ImportError: cannot import name 'TODO_INJECTION_HEADER' from
+'tools.todo_tool'`` on every startup after an update. ``agent/`` carried the
+new ``context_compressor.py`` (which imports that name at module level) while
+``tools/`` still held the pre-update ``todo_tool.py``. The ZIP-update path
+replaces top-level entries one at a time in ``os.listdir`` order, so an
+interruption between ``agent/`` and ``tools/`` produces exactly that skew --
+and the syntax guard reported the update as successful.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from hermes_cli import main as hermes_main
+from hermes_cli import update_cmd
+from hermes_constants import partial_update_hint
+
+
+def _write_skewed_tree(root: Path, *, skewed: bool) -> None:
+    """Build a tiny two-package tree that mimics the real failure.
+
+    ``consumer`` imports a name from ``provider`` at module level. When
+    ``skewed`` is True the name is absent -- both files still parse.
+    """
+    (root / "provider").mkdir(parents=True, exist_ok=True)
+    (root / "provider" / "__init__.py").write_text("")
+    (root / "provider" / "thing.py").write_text(
+        "OTHER = 1\n" if skewed else "SHARED_NAME = 'x'\nOTHER = 1\n"
+    )
+    (root / "consumer.py").write_text("from provider.thing import SHARED_NAME\n")
+
+
+def test_syntax_guard_passes_but_import_guard_catches_skew(monkeypatch, tmp_path):
+    """The regression: a skewed tree parses cleanly but cannot be imported."""
+    _write_skewed_tree(tmp_path, skewed=True)
+
+    # Both files are valid Python -- the syntax guard sees nothing wrong.
+    monkeypatch.setattr(
+        hermes_main, "_UPDATE_CRITICAL_FILES", ("consumer.py", "provider/thing.py")
+    )
+    syntax_ok, _, _ = hermes_main._validate_critical_files_syntax(tmp_path)
+    assert syntax_ok, "sanity: the skewed tree must parse cleanly"
+
+    # The import guard catches it.
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+    ok, module, error = hermes_main._validate_critical_modules_import(tmp_path)
+    assert ok is False
+    assert module == "consumer"
+    assert error is not None and "SHARED_NAME" in error
+
+
+def test_import_guard_passes_on_consistent_tree(monkeypatch, tmp_path):
+    _write_skewed_tree(tmp_path, skewed=False)
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    assert hermes_main._validate_critical_modules_import(tmp_path) == (True, None, None)
+
+
+def test_import_guard_ignores_non_import_errors(monkeypatch, tmp_path):
+    """A module that raises at import time for config/env reasons is not
+    update breakage -- the guard must not roll back a good update."""
+    (tmp_path / "consumer.py").write_text(
+        "raise RuntimeError('no API key configured')\n"
+    )
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, _, _ = hermes_main._validate_critical_modules_import(tmp_path)
+    assert ok is True
+
+
+def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, tmp_path):
+    """If we can't spawn the probe, don't block the user's update."""
+
+    def boom(*_a, **_kw):
+        raise OSError("cannot spawn")
+
+    monkeypatch.setattr(update_cmd.subprocess, "run", boom)
+    assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
+
+
+# ---------------------------------------------------------------------------
+# partial_update_hint
+# ---------------------------------------------------------------------------
+
+def test_hint_fires_for_first_party_import_error():
+    exc = ImportError("cannot import name 'TODO_INJECTION_HEADER'")
+    exc.name = "tools.todo_tool"
+
+    hint = partial_update_hint(exc)
+
+    assert hint, "expected recovery guidance for a first-party ImportError"
+    assert any("hermes update" in line for line in hint)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ModuleNotFoundError("No module named 'numpy'", name="numpy"),
+        ValueError("unrelated"),
+        ImportError("third-party broke"),
+    ],
+)
+def test_hint_stays_silent_for_unrelated_failures(exc):
+    """Missing third-party deps and non-import errors have different
+    remediation -- claiming a partial update would misdirect the user."""
+    if isinstance(exc, ImportError) and not isinstance(exc, ModuleNotFoundError):
+        exc.name = "requests"
+    assert partial_update_hint(exc) == []

@@ -1248,3 +1248,41 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
+
+
+# ─── Partial-update diagnostics ──────────────────────────────────────────────
+
+def partial_update_hint(exc: BaseException) -> list[str]:
+    """Return recovery guidance lines when *exc* looks like a half-updated tree.
+
+    An interrupted or partially-applied update can leave the checkout with new
+    files in one package and stale files in another. Every file still parses,
+    so nothing is corrupt in the usual sense — but a module that imports a name
+    added in the same release from a sibling that wasn't refreshed dies with
+    ``ImportError: cannot import name 'X' from 'y'`` on every startup.
+
+    Users hit this as an opaque crash with no indication that the *install*,
+    rather than their config, is the problem — and `hermes update` is exactly
+    the command they need but are least likely to trust after a failed update.
+    Return the guidance so callers can print it alongside the raw error.
+
+    Returns an empty list for unrelated exceptions, so callers can splat it
+    unconditionally.
+    """
+    if not isinstance(exc, ImportError):
+        return []
+    # A missing third-party dependency is a different problem (bad venv, missing
+    # extra) with different remediation, so don't claim a partial update.
+    if isinstance(exc, ModuleNotFoundError):
+        return []
+    name = getattr(exc, "name", None)
+    if not name or not str(name).startswith(("tools", "agent", "hermes", "gateway")):
+        return []
+    return [
+        "",
+        "This looks like a partially-updated install: one module was refreshed "
+        "and a related one was not.",
+        "Re-run the update to bring the whole tree to the same version:",
+        "    hermes update",
+        "If that also fails, reinstall: https://hermes-agent.nousresearch.com",
+    ]

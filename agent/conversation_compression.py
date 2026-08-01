@@ -667,6 +667,46 @@ _compress_timeout_executor_lock = threading.Lock()
 # ceilings so overrun reporting stays observable at test timescales.
 _COMMIT_OVERRUN_WAIT_SLICE_SECONDS = 30.0
 
+# Bounded admission for the shared compress-timeout pool (#76354 review F6).
+# The stdlib executor queue is unbounded: with all four workers wedged in hung
+# summaries, a fifth compression would queue silently, wait out its whole
+# timeout without ever starting, and remain eligible to run as a stale job
+# whenever a worker recovered. Admission is therefore capped at the worker
+# count — when every worker slot is occupied (running OR admitted-not-started)
+# submission FAILS FAST and the caller continues without compression.
+#
+# Recovery contract when all workers are wedged: new compressions fail fast
+# (no queue growth, conversation continues uncompressed, a warning is logged
+# each attempt); wedged workers are fence-cancelled so they cannot publish
+# anything when they eventually return, and each recovery frees its admission
+# slot via the future done-callback, restoring normal service. If a worker
+# NEVER returns, its slot is lost for the process lifetime — bounded,
+# observable degradation instead of an unbounded stale-job queue.
+_COMPRESS_EXECUTOR_MAX_WORKERS = 4
+_compress_admission_lock = threading.Lock()
+_compress_admitted_count = 0
+
+
+class CompressionExecutorSaturatedError(RuntimeError):
+    """All compression pool slots are occupied; submission was refused."""
+
+
+def _try_admit_compression_job() -> bool:
+    """Reserve one bounded compression-pool admission slot (F6)."""
+    global _compress_admitted_count
+    with _compress_admission_lock:
+        if _compress_admitted_count >= _COMPRESS_EXECUTOR_MAX_WORKERS:
+            return False
+        _compress_admitted_count += 1
+        return True
+
+
+def _release_compression_admission(_future=None) -> None:
+    """Free an admission slot (future done-callback or failed submit)."""
+    global _compress_admitted_count
+    with _compress_admission_lock:
+        if _compress_admitted_count > 0:
+            _compress_admitted_count -= 1
 
 
 def _get_compress_timeout_executor():
@@ -683,7 +723,7 @@ def _get_compress_timeout_executor():
             # overlapping calls (live compress + fence-cancelled workers
             # still winding down), not asyncio's min(32, cpu+4) fan-out.
             _compress_timeout_executor = DaemonThreadPoolExecutor(
-                max_workers=4,
+                max_workers=_COMPRESS_EXECUTOR_MAX_WORKERS,
                 thread_name_prefix="compress-ctx-timeout",
             )
         return _compress_timeout_executor
@@ -794,9 +834,43 @@ def run_compress_context_with_progress_timeout(
     from tools.thread_context import propagate_context_to_thread
 
     executor = _get_compress_timeout_executor()
+    # Bounded admission (#76354 F6): refuse rather than queue when every pool
+    # slot is occupied. A queued job would silently wait out its whole budget
+    # without starting and stay eligible to run as a stale cancelled job when
+    # a worker recovers. Fail fast: continue without compression this cycle.
+    if not _try_admit_compression_job():
+        logger.warning(
+            "Context compression pool saturated (%d workers busy) — "
+            "refusing new compression this cycle and continuing without "
+            "compression. Wedged workers are fence-cancelled and free their "
+            "slot when they return; if this persists, check the summary "
+            "provider health.",
+            _COMPRESS_EXECUTOR_MAX_WORKERS,
+        )
+        return messages, _resolve_fallback_prompt()
+
+    def _fence_gated_worker(worker_fence: CompressionCommitFence):
+        # F6: an admitted job can still start after the host stopped waiting
+        # (worker slot freed late). Check the fence BEFORE any expensive
+        # summary work so a stale job never burns an LLM call; its return
+        # value is discarded by the already-departed host.
+        if worker_fence.is_cancelled:
+            logger.info(
+                "Skipping stale compression job: fence cancelled before start"
+            )
+            return messages, ""
+        return worker(worker_fence)
+
     # Bare pool workers start with an empty ContextVar map; propagate the
     # parent conversation/approval context into the worker.
-    future = executor.submit(propagate_context_to_thread(worker), fence)
+    try:
+        future = executor.submit(
+            propagate_context_to_thread(_fence_gated_worker), fence
+        )
+    except BaseException:
+        _release_compression_admission()
+        raise
+    future.add_done_callback(_release_compression_admission)
     wait_started = time.monotonic()
     # F2: EVERY host unwind (KeyboardInterrupt, task cancellation, unexpected
     # exception while waiting) must revoke future commit admission before the
@@ -831,6 +905,9 @@ def run_compress_context_with_progress_timeout(
                     continue
                 break
 
+        # F6: a not-yet-started future must not linger as a stale queued job.
+        # cancel() is a no-op for a running worker (fence handles that path).
+        future.cancel()
 
         cancelled: Optional[bool] = None
         while cancelled is None:
@@ -2678,8 +2755,18 @@ def compress_context(
             except Exception:
                 pass
         try:
-            with aux_progress_hook(_progress_hook):
-                compressed = compress_fn(messages, **compress_kwargs)
+            # F6: never start expensive summary work for an already-cancelled
+            # fence (a stale queued job admitted after host departure).
+            if commit_fence is not None and commit_fence.is_cancelled:
+                logger.info(
+                    "Compression cancelled before summary dispatch "
+                    "(session=%s) — skipping summary work.",
+                    agent.session_id or "none",
+                )
+                compressed = messages
+            else:
+                with aux_progress_hook(_progress_hook):
+                    compressed = compress_fn(messages, **compress_kwargs)
         finally:
             if commit_fence is not None:
                 try:

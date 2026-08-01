@@ -224,6 +224,51 @@ class TestSessionOps:
         assert state.agent.disabled_toolsets == ["browser"]
 
     @pytest.mark.asyncio
+    async def test_set_session_model_preserves_explicit_empty_toolsets(self, monkeypatch):
+        """Regression sibling to the /model empty-toolset case: session/set_model
+        must also keep a deliberately toolless session (enabled_toolsets == [])
+        toolless across the switch, instead of collapsing [] into None and
+        letting _make_agent restore its config.yaml-derived default toolset."""
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://api.openai.com/v1",
+                enabled_toolsets=[],
+                disabled_toolsets=None,
+            )
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd="/tmp")
+
+        captured = {}
+
+        def fake_make_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("requested_provider") or "openai-codex",
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=kwargs.get("disabled_toolsets"),
+            )
+
+        monkeypatch.setattr(manager, "_make_agent", fake_make_agent)
+        monkeypatch.setattr(
+            "acp_adapter.server.HermesACPAgent._resolve_model_selection",
+            staticmethod(lambda raw, current: (current, raw.strip())),
+        )
+
+        result = await acp_agent.set_session_model(
+            model_id="anthropic:claude-sonnet-4-6",
+            session_id=state.session_id,
+        )
+
+        assert isinstance(result, SetSessionModelResponse)
+        assert captured["enabled_toolsets"] == []
+        assert captured["enabled_toolsets"] is not None
+        assert state.agent.enabled_toolsets == []
+
+    @pytest.mark.asyncio
     async def test_new_session_returns_authenticated_cross_provider_model_state(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(
@@ -609,7 +654,38 @@ class TestSlashCommands:
         assert captured["enabled_toolsets"] is None
         assert captured["disabled_toolsets"] is None
 
+    def test_cmd_model_preserves_explicit_empty_toolsets_across_switch(self, agent, mock_manager, monkeypatch):
+        """Regression: a deliberately toolless session (enabled_toolsets == [])
+        must stay toolless across a /model switch. `current_enabled_toolsets or
+        None` previously collapsed an explicit [] into None, which made
+        _make_agent fall back to its config.yaml-derived default toolset —
+        silently re-enabling tools for a session that had them turned off."""
+        state = self._make_state(mock_manager)
+        state.agent.enabled_toolsets = []
+        state.agent.disabled_toolsets = None
 
+        captured = {}
+
+        def fake_make_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("requested_provider") or "openrouter",
+                enabled_toolsets=kwargs.get("enabled_toolsets"),
+                disabled_toolsets=kwargs.get("disabled_toolsets"),
+            )
+
+        monkeypatch.setattr(mock_manager, "_make_agent", fake_make_agent)
+        monkeypatch.setattr(
+            "acp_adapter.server.HermesACPAgent._resolve_model_selection",
+            staticmethod(lambda raw, current: (current, raw.strip())),
+        )
+
+        agent._handle_slash_command("/model anthropic:claude-sonnet-4-6", state)
+
+        assert captured["enabled_toolsets"] == []
+        assert captured["enabled_toolsets"] is not None
+        assert state.agent.enabled_toolsets == []
 
 
 

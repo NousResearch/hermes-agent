@@ -66,7 +66,7 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
     )
 
 
-def test_resolved_opaque_plugin_target_uses_directory_id():
+def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
     from gateway.platform_registry import PlatformEntry, platform_registry
 
     platform_name = "opaque-resolved-test"
@@ -121,7 +121,7 @@ def test_resolved_opaque_plugin_target_uses_directory_id():
     )
 
 
-def test_unresolved_opaque_plugin_target_passes_through_verbatim():
+def test_unresolved_opaque_plugin_target_passes_through_verbatim() -> None:
     from gateway.platform_registry import PlatformEntry, platform_registry
 
     platform_name = "opaque-verbatim-test"
@@ -185,7 +185,7 @@ def test_unresolved_opaque_plugin_target_passes_through_verbatim():
     )
 
 
-def test_unresolved_builtin_target_keeps_directory_error():
+def test_unresolved_builtin_target_keeps_directory_error() -> None:
     telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
     config = SimpleNamespace(
         platforms={Platform.TELEGRAM: telegram_cfg},

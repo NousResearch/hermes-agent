@@ -8923,8 +8923,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         lines.append(('class:approval-border', '╰' + ('─' * box_width) + '╯\n'))
         return lines
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
-        """Open prompt_toolkit-native /model picker modal."""
+    def _open_model_picker(
+        self,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        user_provs=None,
+        custom_provs=None,
+        *,
+        target: str = "main",
+    ) -> None:
+        """Open the shared provider/model picker for main or subagent target."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
         self._model_picker_state = {
@@ -8935,10 +8944,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "target": target,
         }
         self._invalidate(min_interval=0.0)
 
-    def _confirm_expensive_model_switch(self, result) -> bool:
+    def _confirm_expensive_model_switch(self, result, *, target: str = "main") -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
         if not getattr(result, "success", False):
             return True
@@ -8957,10 +8967,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if warning is None:
             return True
 
-        choices = [
-            ("once", "Switch anyway", "Use this model for the current Hermes session."),
-            ("cancel", "Cancel", "Keep the current model."),
-        ]
+        if target == "subagent":
+            choices = [
+                ("once", "Select anyway", "Use this model for newly spawned subagents."),
+                ("cancel", "Cancel", "Keep the current subagent model override."),
+            ]
+        else:
+            choices = [
+                ("once", "Switch anyway", "Use this model for the current Hermes session."),
+                ("cancel", "Cancel", "Keep the current model."),
+            ]
         raw = self._prompt_text_input_modal(
             title="!!! Expensive Model Warning !!!",
             detail=warning.message,
@@ -8982,6 +8998,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
         except Exception as exc:
             _cprint(f"  ✗ Model selection failed: {exc}")
+
+    def _confirm_and_apply_subagent_model_result(self, result) -> None:
+        try:
+            if not result.success:
+                _cprint(f"  ✗ {result.error_message}")
+                return
+            if not self._confirm_expensive_model_switch(result, target="subagent"):
+                _cprint("  Subagent model selection cancelled.")
+                return
+            from hermes_cli.subagent_model import persist_subagent_switch_result
+
+            status = persist_subagent_switch_result(result)
+            _cprint(f"  ✓ Subagent model: {status.model}")
+            if status.provider:
+                _cprint(f"    Provider: {status.provider}")
+            _cprint("    Saved to config.yaml (delegation.model/provider)")
+        except Exception as exc:
+            _cprint(f"  ✗ Subagent model selection failed: {exc}")
 
     def _close_model_picker(self) -> None:
         self._model_picker_state = None
@@ -9270,7 +9304,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             state["stage"] = "model"
             state["provider_data"] = provider_data
             state["model_list"] = model_list
-            state["selected"] = 0
+            if (
+                state.get("target") == "subagent"
+                and provider_data.get("slug") == state.get("current_provider")
+            ):
+                state["selected"] = next(
+                    (
+                        i
+                        for i, model_id in enumerate(model_list)
+                        if model_id == state.get("current_model")
+                    ),
+                    0,
+                )
+            else:
+                state["selected"] = 0
             self._invalidate(min_interval=0.0)
             return
         if stage == "model":
@@ -9289,13 +9336,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if selected < len(model_list):
                 from hermes_cli.model_switch import switch_model
                 chosen_model = model_list[selected]
+                _picker_target = state.get("target", "main")
+                if _picker_target == "subagent":
+                    current_provider = state.get("current_provider") or self.provider or ""
+                    current_model = state.get("current_model") or self.model or ""
+                else:
+                    # Preserve the pre-existing primary-picker contract. The
+                    # state value may be a display label (for example,
+                    # "OpenRouter"), while switch_model expects the runtime
+                    # provider slug stored on the CLI instance.
+                    current_provider = self.provider or ""
+                    current_model = self.model or ""
                 result = switch_model(
                     raw_input=chosen_model,
-                    current_provider=self.provider or "",
-                    current_model=self.model or "",
+                    current_provider=current_provider,
+                    current_model=current_model,
                     current_base_url=self.base_url or "",
                     current_api_key=self.api_key or "",
-                    is_global=persist_global,
+                    is_global=persist_global if _picker_target == "main" else False,
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
@@ -9303,6 +9361,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Capture before close — picker state is cleared on close.
                 _picker_custom_provs = state.get("custom_provs")
                 self._close_model_picker()
+                if _picker_target == "subagent":
+                    if getattr(self, "_app", None):
+                        threading.Thread(
+                            target=self._confirm_and_apply_subagent_model_result,
+                            args=(result,),
+                            daemon=True,
+                        ).start()
+                    else:
+                        self._confirm_and_apply_subagent_model_result(result)
+                    return
                 if getattr(self, "_app", None):
                     threading.Thread(
                         target=self._confirm_and_apply_model_switch_result,
@@ -9315,6 +9383,126 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     )
                 return
             self._close_model_picker()
+
+    def _handle_subagent_command(self, cmd_original: str) -> None:
+        """Handle Classic CLI ``/subagent`` model and reasoning controls."""
+        from hermes_cli.model_switch import parse_model_flags_detailed
+        from hermes_cli.subagent_model import (
+            get_subagent_model_status,
+            get_subagent_reasoning_status,
+            list_subagent_picker_providers,
+            reset_subagent_model,
+            reset_subagent_reasoning_effort,
+            set_subagent_model,
+            set_subagent_reasoning_effort,
+        )
+
+        parts = cmd_original.split(None, 1)
+        raw = parts[1].strip() if len(parts) > 1 else ""
+        if not raw:
+            status = get_subagent_model_status()
+            if status.inherits_parent:
+                model_label = "inherits parent"
+            elif status.model:
+                model_label = f"{status.model} ({status.provider or 'auto'})"
+            else:
+                model_label = f"provider default ({status.provider})"
+            reasoning = get_subagent_reasoning_status()
+            reasoning_label = (
+                "inherits parent" if reasoning.inherits_parent else reasoning.effort
+            )
+            _cprint(f"  Subagent model: {model_label}")
+            _cprint(f"  Subagent reasoning: {reasoning_label}")
+            _cprint(
+                "  Usage: /subagent <model [model|reset] [--provider name] "
+                "| reasoning [effort|reset]>"
+            )
+            return
+
+        verb, _, command_args = raw.partition(" ")
+        if verb.lower() == "reasoning":
+            reasoning_arg = command_args.strip()
+            if not reasoning_arg:
+                status = get_subagent_reasoning_status()
+                label = "inherits parent" if status.inherits_parent else status.effort
+                _cprint(f"  Subagent reasoning: {label}")
+                return
+            if reasoning_arg.lower() in {"reset", "clear", "default", "inherit"}:
+                reset_subagent_reasoning_effort()
+                _cprint("  ✓ Subagent reasoning reset: inherits parent")
+                return
+            try:
+                status = set_subagent_reasoning_effort(reasoning_arg)
+            except ValueError as exc:
+                _cprint(f"  ✗ {exc}")
+                return
+            _cprint(f"  ✓ Subagent reasoning: {status.effort}")
+            _cprint("    Saved to config.yaml (delegation.reasoning_effort)")
+            _cprint("    Applies to newly spawned subagents")
+            return
+
+        if verb.lower() != "model":
+            _cprint(
+                "  Usage: /subagent <model [model|reset] [--provider name] "
+                "| reasoning [effort|reset]>"
+            )
+            return
+
+        model_args = command_args.strip()
+        if model_args.lower() in {"reset", "clear", "default", "inherit"}:
+            reset_subagent_model()
+            _cprint("  ✓ Subagent model reset: inherits parent")
+            return
+
+        parsed = parse_model_flags_detailed(model_args)
+        if not parsed.model_input:
+            status = get_subagent_model_status()
+            from hermes_cli.inventory import load_picker_context
+
+            context = load_picker_context()
+            current_provider = (
+                parsed.explicit_provider
+                or status.provider
+                or context.current_provider
+                or "unknown"
+            )
+            current_model = (
+                status.model or context.current_model or "unknown"
+                if not parsed.explicit_provider
+                else (
+                    (status.model or "unknown")
+                    if status.provider == parsed.explicit_provider
+                    else "unknown"
+                )
+            )
+            providers = list_subagent_picker_providers(refresh=parsed.force_refresh)
+            if not providers:
+                _cprint("  No authenticated providers found.")
+                return
+            for row in providers:
+                row["is_current"] = str(row.get("slug") or "") == current_provider
+            self._open_model_picker(
+                providers,
+                current_model,
+                current_provider,
+                user_provs=context.user_providers,
+                custom_provs=context.custom_providers,
+                target="subagent",
+            )
+            return
+
+        try:
+            status = set_subagent_model(
+                parsed.model_input,
+                provider=parsed.explicit_provider or None,
+            )
+        except ValueError as exc:
+            _cprint(f"  ✗ {exc}")
+            return
+        _cprint(f"  ✓ Subagent model: {status.model}")
+        if status.provider:
+            _cprint(f"    Provider: {status.provider}")
+        _cprint("    Saved to config.yaml (delegation.model/provider)")
 
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model.
@@ -10048,6 +10236,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_sessions_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
+        elif canonical == "subagent":
+            self._handle_subagent_command(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
 
@@ -17034,8 +17224,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if not state:
                 return []
             stage = state.get("stage", "provider")
+            target_label = "Subagent Model" if state.get("target") == "subagent" else "Model"
             if stage == "provider":
-                title = "⚙ Model Picker — Select Provider"
+                title = f"⚙ {target_label} Picker — Select Provider"
                 choices = []
                 _providers = state.get("providers")
                 for p in _providers if isinstance(_providers, list) else []:
@@ -17049,7 +17240,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
-                title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
+                title = f"⚙ {target_label} Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
                 choices = list(model_list) + ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"

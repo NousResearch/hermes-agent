@@ -259,6 +259,8 @@ def _(rid, params: dict) -> dict:
                 ),
             }
             for c in completer.get_completions(doc, None)
+            if c.text.strip().lstrip("/").split(" ", 1)[0].lower()
+            not in _TUI_EXEC_BLOCKED
         ]
 
         # Rank and bound the list (see _rank_slash_completions) while a

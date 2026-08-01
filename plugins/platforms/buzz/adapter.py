@@ -494,6 +494,38 @@ def _parse_json_list(stdout: str) -> List[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _event_reply_parent_id(event: dict) -> Optional[str]:
+    """Resolve a chat event's direct parent event id (NIP-10 ``e`` tags).
+
+    Prefer a ``reply``-marked tag, then a ``root``-marked tag, else the last
+    positional ``e`` tag. Buzz Desktop thread replies typically carry both
+    root and reply markers; the reply marker is the direct parent.
+    """
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return None
+    reply_id: Optional[str] = None
+    root_id: Optional[str] = None
+    last_e: Optional[str] = None
+    for tag in tags:
+        if not isinstance(tag, (list, tuple)) or len(tag) < 2 or tag[0] != "e":
+            continue
+        target = str(tag[1] or "").strip()
+        if not target:
+            continue
+        marker = str(tag[3] or "") if len(tag) > 3 else ""
+        last_e = target
+        if marker == "reply":
+            reply_id = target
+        elif marker == "root":
+            root_id = target
+    return reply_id or root_id or last_e
+
+
+# Cap stored parent content snippets (gateway reply injection also clips).
+_EVENT_META_CONTENT_CAP = 500
+
+
 # ---------------------------------------------------------------------------
 # Buzz Adapter
 # ---------------------------------------------------------------------------
@@ -607,7 +639,13 @@ class BuzzAdapter(BasePlatformAdapter):
         self._ws_active = False  # True while the WS loop owns inbound delivery
         self._membership_since = 0
         self._lock_key: Optional[str] = None
-        # channel_id -> {"chat_type", "last_ts", "seen": OrderedDict[event_id, None]}
+        # channel_id -> {
+        #   "chat_type", "last_ts",
+        #   "seen": OrderedDict[event_id, None],
+        #   "event_meta": OrderedDict[event_id, (author_pubkey, content_snippet)],
+        # }
+        # event_meta backs NIP-10 reply-parent resolution for require_mention
+        # (thread replies to our own messages count as addressed — #75826).
         self._channel_state: Dict[str, dict] = {}
         self._channel_names: Dict[str, str] = {}
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel
@@ -838,7 +876,12 @@ class BuzzAdapter(BasePlatformAdapter):
         if event_id:
             # Belt-and-braces echo suppression: the poll loop already skips
             # our own pubkey, but marking the id seen makes de-dupe explicit.
+            # Also record event_meta so a thread reply to this send matches
+            # even if the WS/poll echo never arrives (#75826).
             self._mark_seen(str(chat_id), str(event_id))
+            self._remember_event_meta(
+                str(chat_id), str(event_id), self._self_pubkey, content
+            )
         return SendResult(
             success=bool(data.get("accepted", True)),
             message_id=str(event_id) if event_id else None,
@@ -982,6 +1025,12 @@ class BuzzAdapter(BasePlatformAdapter):
             event_id = data.get("event_id")
             if event_id:
                 self._mark_seen(str(chat_id), str(event_id))
+                self._remember_event_meta(
+                    str(chat_id),
+                    str(event_id),
+                    self._self_pubkey,
+                    caption or "",
+                )
             return SendResult(
                 success=bool(data.get("accepted", True)),
                 message_id=str(event_id) if event_id else None,
@@ -1222,9 +1271,17 @@ class BuzzAdapter(BasePlatformAdapter):
         except asyncio.CancelledError:
             raise
 
+    def _new_channel_state(self, chat_type: str) -> dict:
+        return {
+            "chat_type": chat_type,
+            "last_ts": 0,
+            "seen": OrderedDict(),
+            "event_meta": OrderedDict(),
+        }
+
     async def _seed_channel(self, channel_id: str, chat_type: str) -> None:
         """Initialize a channel's high-water mark from its newest events."""
-        state = {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict()}
+        state = self._new_channel_state(chat_type)
         self._channel_state[channel_id] = state
         code, out, err = await self._run_cli(
             ["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)]
@@ -1243,6 +1300,10 @@ class BuzzAdapter(BasePlatformAdapter):
             if event_id:
                 state["seen"][str(event_id)] = None
             state["last_ts"] = max(state["last_ts"], created_at)
+            # History is never dispatched, but it still classifies and feeds
+            # the event_meta cache so post-restart thread replies to messages
+            # we sent before the gateway came up still match (#75826).
+            self._remember_event(state, event)
             # History is never dispatched, but it still classifies: a DM that
             # leaked in via ``channels list`` latches to chat_type="dm" here,
             # so it bypasses the mention gate from the very first poll.
@@ -1271,7 +1332,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 if seed:
                     await self._seed_channel(dm_id, chat_type="dm")
                 else:
-                    self._channel_state[dm_id] = {"chat_type": "dm", "last_ts": 0, "seen": OrderedDict()}
+                    self._channel_state[dm_id] = self._new_channel_state("dm")
                 self._channel_names.setdefault(dm_id, "DM")
 
         code, out, _err = await self._run_cli(["channels", "list"])
@@ -1288,7 +1349,7 @@ class BuzzAdapter(BasePlatformAdapter):
             if seed:
                 await self._seed_channel(ch_id, chat_type="group")
             else:
-                self._channel_state[ch_id] = {"chat_type": "group", "last_ts": 0, "seen": OrderedDict()}
+                self._channel_state[ch_id] = self._new_channel_state("group")
 
     async def _poll_channel(self, channel_id: str) -> None:
         state = self._channel_state.get(channel_id)
@@ -1325,6 +1386,10 @@ class BuzzAdapter(BasePlatformAdapter):
         if not pubkey or not isinstance(content, str) or not content.strip():
             return
 
+        # Feed the per-channel event cache before any early return so self-echo
+        # and concurrent-author traffic can still be reply parents (#75826).
+        self._remember_event(state, event)
+
         # Suppress self-echo: never dispatch our own messages back to the agent.
         if pubkey == self._self_pubkey:
             return
@@ -1334,10 +1399,19 @@ class BuzzAdapter(BasePlatformAdapter):
         self._maybe_latch_dm(channel_id, state, event)
 
         is_dm = state["chat_type"] == "dm"
+        reply_parent_id = _event_reply_parent_id(event)
+        reply_meta = self._lookup_event_meta(state, reply_parent_id) if reply_parent_id else None
+        reply_to_is_own = bool(
+            reply_meta is not None and reply_meta[0] == self._self_pubkey
+        )
         # In shared channels, respond only when addressed — unless
         # require_mention is disabled, in which case respond to every message.
-        # DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_mentioned(content):
+        # A NIP-10 thread reply whose direct parent is one of our messages is
+        # treated as addressed (parity with Signal/WhatsApp; fixes #75826 —
+        # e.g. Desktop "/approve session" replies that never type @name).
+        # DMs always dispatch. p-tag semantics stay untouched (#68871).
+        mentioned = self._is_mentioned(content)
+        if not is_dm and self.require_mention and not mentioned and not reply_to_is_own:
             return
 
         # Adapter-level allow-list (the gateway applies BUZZ_ALLOWED_USERS /
@@ -1369,6 +1443,10 @@ class BuzzAdapter(BasePlatformAdapter):
             message_id=event_id,
             created_at=created_at,
             thread_id=thread_id,
+            reply_to_message_id=reply_parent_id,
+            reply_to_text=reply_meta[1] if reply_meta else None,
+            reply_to_author_id=reply_meta[0] if reply_meta else None,
+            reply_to_is_own_message=reply_to_is_own,
         )
 
     # ── DM classification (issue #68871) ──────────────────────────────────
@@ -1516,6 +1594,10 @@ class BuzzAdapter(BasePlatformAdapter):
         seen = state["seen"]
         while len(seen) > _SEEN_CAP:
             seen.popitem(last=False)
+        meta = state.get("event_meta")
+        if isinstance(meta, OrderedDict):
+            while len(meta) > _SEEN_CAP:
+                meta.popitem(last=False)
 
     def _mark_seen(self, channel_id: str, event_id: str) -> None:
         state = self._channel_state.get(channel_id)
@@ -1592,6 +1674,54 @@ class BuzzAdapter(BasePlatformAdapter):
             return anchor
         roots = getattr(self, "_thread_roots", None) or {}
         return roots.get(str(anchor)) or anchor
+    def _remember_event(self, state: dict, event: dict) -> None:
+        """Record author + content snippet for later NIP-10 parent lookup."""
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            return
+        pubkey = str(event.get("pubkey") or "").lower()
+        content = event.get("content")
+        snippet = content[:_EVENT_META_CONTENT_CAP] if isinstance(content, str) else ""
+        self._store_event_meta(state, event_id, pubkey, snippet)
+
+    def _remember_event_meta(
+        self,
+        channel_id: str,
+        event_id: str,
+        pubkey: str,
+        content: str,
+    ) -> None:
+        state = self._channel_state.get(channel_id)
+        if state is None or not event_id:
+            return
+        snippet = (content or "")[:_EVENT_META_CONTENT_CAP]
+        self._store_event_meta(state, event_id, (pubkey or "").lower(), snippet)
+
+    @staticmethod
+    def _store_event_meta(
+        state: dict,
+        event_id: str,
+        pubkey: str,
+        snippet: str,
+    ) -> None:
+        cache = state.setdefault("event_meta", OrderedDict())
+        if not isinstance(cache, OrderedDict):
+            cache = OrderedDict(cache)
+            state["event_meta"] = cache
+        cache[event_id] = (pubkey, snippet)
+        cache.move_to_end(event_id)
+        while len(cache) > _SEEN_CAP:
+            cache.popitem(last=False)
+
+    @staticmethod
+    def _lookup_event_meta(state: dict, event_id: Optional[str]) -> Optional[Tuple[str, str]]:
+        if not event_id:
+            return None
+        cache = state.get("event_meta") or {}
+        entry = cache.get(event_id)
+        if not entry or not isinstance(entry, tuple) or len(entry) < 2:
+            return None
+        return str(entry[0] or ""), str(entry[1] or "")
 
     async def _dispatch_message(
         self,
@@ -1603,6 +1733,10 @@ class BuzzAdapter(BasePlatformAdapter):
         message_id: str,
         created_at: int,
         thread_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
+        reply_to_text: Optional[str] = None,
+        reply_to_author_id: Optional[str] = None,
+        reply_to_is_own_message: bool = False,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
         if not self._message_handler:
@@ -1623,10 +1757,14 @@ class BuzzAdapter(BasePlatformAdapter):
             source=source,
             message_id=message_id,
             timestamp=datetime.fromtimestamp(created_at) if created_at else datetime.now(),
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_is_own_message=reply_to_is_own_message,
         )
 
         await self.handle_message(event)
-        
+
         # Add a "seen" reaction after dispatching — signals to the user that
         # their message was received and is being processed.
         try:

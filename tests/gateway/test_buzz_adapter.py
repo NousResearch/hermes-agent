@@ -20,6 +20,7 @@ _normalize_user_ref = _buzz_mod._normalize_user_ref
 _cli_error_message = _buzz_mod._cli_error_message
 _resolve_private_key = _buzz_mod._resolve_private_key
 _resolve_auth_tag = _buzz_mod._resolve_auth_tag
+_event_reply_parent_id = _buzz_mod._event_reply_parent_id
 check_requirements = _buzz_mod.check_requirements
 validate_config = _buzz_mod.validate_config
 register = _buzz_mod.register
@@ -698,19 +699,20 @@ class TestMentionGating:
         assert adapter._dispatched == []
 
 
-# ── DM classification via p-tags (issue #68871) ──────────────────────────
+# ── NIP-10 thread replies as addressed (issue #75826) ────────────────────
 #
-# `buzz dms list` returns [] on some hosted relays, so DM conversations leak
-# in via `channels list` and get seeded chat_type="group".  The adapter must
-# reclassify them from the Nostr tags of real traffic: DM messages are
-# p-tagged to our own pubkey WITHOUT the text mentioning us, while channel
-# messages only ever p-tag us when the text visibly @mentions us.
+# With require_mention (default), channel replies whose direct parent is the
+# agent's own message must dispatch even when the text has no @name — Buzz
+# Desktop's natural reply affordance for /approve never types a mention.
 
 
 def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
-                  created_at=1000, kind=9, p=None, reply_to=None):
+                  created_at=1000, kind=9, p=None, reply_to=None, root=None):
     """Event with the tag shapes observed on a live relay (h/p/e tags)."""
     tags = [["h", channel]]
+    # NIP-10 order as Desktop emits: root first, then reply (when both set).
+    if root:
+        tags.append(["e", root, "", "root"])
     if reply_to:
         tags.append(["e", reply_to, "", "reply"])
     if p:
@@ -723,6 +725,245 @@ def _tagged_event(event_id, channel, *, content, pubkey=OTHER_PUBKEY,
         "kind": kind,
         "tags": tags,
     }
+
+
+class TestNip10ThreadReplyMentionGate:
+    """require_mention + NIP-10 reply-to-own-message (#75826)."""
+
+    @pytest.fixture
+    def adapter(self):
+        a = _make_adapter()
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._message_handler = AsyncMock()
+        a._channel_state[CHANNEL] = a._new_channel_state("group")
+        return a
+
+    async def _poll_with(self, adapter, *events):
+        cli = _ScriptedCli()
+        cli.script("messages", "get", list(events))
+        adapter._run_cli = cli
+        await adapter._poll_channel(CHANNEL)
+
+    def test_event_reply_parent_prefers_reply_marker(self):
+        ev = _tagged_event(
+            "child", CHANNEL, content="ok", root="root-id", reply_to="parent-id"
+        )
+        assert _event_reply_parent_id(ev) == "parent-id"
+        assert _event_reply_parent_id(
+            _tagged_event("c2", CHANNEL, content="ok", root="only-root")
+        ) == "only-root"
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_to_own_message_dispatches_without_mention(self, adapter):
+        # Live agent prompt lands first (self-echo is cached, not dispatched).
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "agent-prompt",
+                CHANNEL,
+                content="⚠️ Dangerous command requires approval",
+                pubkey=SELF_PUBKEY,
+                created_at=10,
+            ),
+            _tagged_event(
+                "user-reply",
+                CHANNEL,
+                content="sure go ahead",
+                root="agent-prompt",
+                reply_to="agent-prompt",
+                created_at=11,
+            ),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["user-reply"]
+        assert adapter._dispatched[0]["text"] == "sure go ahead"
+        assert adapter._dispatched[0]["reply_to_message_id"] == "agent-prompt"
+        assert adapter._dispatched[0]["reply_to_is_own_message"] is True
+        assert "approval" in (adapter._dispatched[0]["reply_to_text"] or "")
+
+    @pytest.mark.asyncio
+    async def test_approve_thread_reply_dispatches(self, adapter):
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "agent-approve-prompt",
+                CHANNEL,
+                content="⚠️ Dangerous command requires approval",
+                pubkey=SELF_PUBKEY,
+                created_at=20,
+            ),
+            _tagged_event(
+                "approve-msg",
+                CHANNEL,
+                content="/approve session",
+                root="agent-approve-prompt",
+                reply_to="agent-approve-prompt",
+                created_at=21,
+            ),
+        )
+        assert [d["message_id"] for d in adapter._dispatched] == ["approve-msg"]
+        assert adapter._dispatched[0]["text"] == "/approve session"
+        assert adapter._dispatched[0]["reply_to_is_own_message"] is True
+
+    @pytest.mark.asyncio
+    async def test_reply_to_other_user_stays_gated(self, adapter):
+        third = "c" * 64
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "other-msg",
+                CHANNEL,
+                content="anyone around?",
+                pubkey=third,
+                created_at=30,
+            ),
+            _tagged_event(
+                "reply-other",
+                CHANNEL,
+                content="yeah I'm here",
+                root="other-msg",
+                reply_to="other-msg",
+                created_at=31,
+            ),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_reply_to_unknown_parent_stays_gated(self, adapter):
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "orphan-reply",
+                CHANNEL,
+                content="/approve session",
+                root="never-seen",
+                reply_to="never-seen",
+                created_at=40,
+            ),
+        )
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_seeded_own_history_matches_thread_reply(self, adapter):
+        """Replies to agent messages sent before a gateway restart still match."""
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "get",
+            [
+                _tagged_event(
+                    "pre-restart-agent",
+                    CHANNEL,
+                    content="⚠️ Dangerous command requires approval",
+                    pubkey=SELF_PUBKEY,
+                    created_at=50,
+                ),
+            ],
+        )
+        adapter._run_cli = cli
+        await adapter._seed_channel(CHANNEL, chat_type="group")
+        assert "pre-restart-agent" in adapter._channel_state[CHANNEL]["event_meta"]
+        assert adapter._dispatched == []
+
+        cli.responses.clear()
+        cli.script(
+            "messages",
+            "get",
+            [
+                _tagged_event(
+                    "post-restart-approve",
+                    CHANNEL,
+                    content="/approve always",
+                    root="pre-restart-agent",
+                    reply_to="pre-restart-agent",
+                    created_at=51,
+                ),
+            ],
+        )
+        await adapter._poll_channel(CHANNEL)
+        assert [d["message_id"] for d in adapter._dispatched] == ["post-restart-approve"]
+        assert adapter._dispatched[0]["reply_to_is_own_message"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_recorded_id_matches_thread_reply(self, adapter):
+        """send()'s returned event_id is cached even without a WS/poll echo."""
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "sent-prompt", "message": ""},
+        )
+        adapter._run_cli = cli
+        result = await adapter.send(
+            CHANNEL, "⚠️ Dangerous command requires approval"
+        )
+        assert result.success is True
+        assert "sent-prompt" in adapter._channel_state[CHANNEL]["event_meta"]
+        meta = adapter._channel_state[CHANNEL]["event_meta"]["sent-prompt"]
+        assert meta[0] == SELF_PUBKEY
+
+        cli.responses.clear()
+        cli.script(
+            "messages",
+            "get",
+            [
+                _tagged_event(
+                    "reply-to-send",
+                    CHANNEL,
+                    content="/approve session",
+                    root="sent-prompt",
+                    reply_to="sent-prompt",
+                    created_at=61,
+                ),
+            ],
+        )
+        await adapter._poll_channel(CHANNEL)
+        assert [d["message_id"] for d in adapter._dispatched] == ["reply-to-send"]
+        assert adapter._dispatched[0]["reply_to_is_own_message"] is True
+        assert adapter._dispatched[0]["reply_to_message_id"] == "sent-prompt"
+
+    @pytest.mark.asyncio
+    async def test_mention_path_still_populates_reply_context(self, adapter):
+        """Visible @mention + thread reply still fills reply_to_* on dispatch."""
+        await self._poll_with(
+            adapter,
+            _tagged_event(
+                "agent-prior",
+                CHANNEL,
+                content="previous answer",
+                pubkey=SELF_PUBKEY,
+                created_at=70,
+            ),
+            _tagged_event(
+                "mentioned-reply",
+                CHANNEL,
+                content="@Chip follow up please",
+                root="agent-prior",
+                reply_to="agent-prior",
+                created_at=71,
+            ),
+        )
+        assert len(adapter._dispatched) == 1
+        d = adapter._dispatched[0]
+        assert d["message_id"] == "mentioned-reply"
+        assert d["text"] == "follow up please"  # leading @Chip stripped
+        assert d["reply_to_message_id"] == "agent-prior"
+        assert d["reply_to_author_id"] == SELF_PUBKEY
+        assert d["reply_to_is_own_message"] is True
+        assert d["reply_to_text"] == "previous answer"
+
+
+# ── DM classification via p-tags (issue #68871) ──────────────────────────
+#
+# `buzz dms list` returns [] on some hosted relays, so DM conversations leak
+# in via `channels list` and get seeded chat_type="group".  The adapter must
+# reclassify them from the Nostr tags of real traffic: DM messages are
+# p-tagged to our own pubkey WITHOUT the text mentioning us, while channel
+# messages only ever p-tag us when the text visibly @mentions us.
 
 
 class TestDmClassification:

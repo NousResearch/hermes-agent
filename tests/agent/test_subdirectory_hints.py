@@ -124,6 +124,23 @@ class TestSubdirectoryHintTracker:
 
         assert result is None
 
+    def test_allows_hints_when_developing_inside_install_tree(self, tmp_path, monkeypatch):
+        """An explicit Hermes checkout remains a valid workspace."""
+        from agent import runtime_cwd
+
+        install_tree = tmp_path / "hermes-agent"
+        subdir = install_tree / "agent"
+        subdir.mkdir(parents=True)
+        (subdir / "AGENTS.md").write_text("Nested Hermes development guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+
+        tracker = SubdirectoryHintTracker(working_dir=str(install_tree))
+        result = tracker.check_tool_call(
+            "terminal", {"command": f"pwd {subdir}"}
+        )
+
+        assert result is not None
+        assert "Nested Hermes development guide" in result
 
     def test_empty_args(self, project):
         """Empty args should not crash."""

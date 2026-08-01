@@ -222,7 +222,7 @@ class SubdirectoryHintTracker:
             return False
         if path in self._loaded_dirs:
             return False
-        if _is_install_tree(path):
+        if _is_install_tree(path) and not _is_install_tree(self.working_dir):
             return False
         # Reject paths outside the working directory tree.
         # path.resolve() may differ from working_dir.resolve() due to symlinks,
@@ -261,6 +261,9 @@ class SubdirectoryHintTracker:
         Only loads hints from directories within the working directory tree.
         """
         self._loaded_dirs.add(directory)
+
+        if _is_install_tree(directory) and not _is_install_tree(self.working_dir):
+            return None
 
         # Reject paths outside the working directory tree.
         try:

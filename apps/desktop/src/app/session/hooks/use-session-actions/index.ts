@@ -1346,7 +1346,13 @@ export function useSessionActions({
           // not perform the interrupt path that releases approval / clarify /
           // sudo / secret waits. Without this, the blocked run can outlive its
           // sidebar row and surface a prompt for a conversation that is gone.
-          updateSessionState(closingRuntimeId, state => ({ ...state, interrupted: true, needsInput: false }))
+          let previousInterruptState: Pick<ClientSessionState, 'interrupted' | 'needsInput'> | null = null
+
+          updateSessionState(closingRuntimeId, state => {
+            previousInterruptState = { interrupted: state.interrupted, needsInput: state.needsInput }
+
+            return { ...state, interrupted: true, needsInput: false }
+          })
 
           try {
             await requestGateway('session.interrupt', { session_id: closingRuntimeId })
@@ -1355,7 +1361,9 @@ export function useSessionActions({
             // deletion cannot safely continue: restore the live state and let the
             // outer rollback put the conversation back in the sidebar.
             if (!isSessionGoneError(error)) {
-              updateSessionState(closingRuntimeId, state => ({ ...state, interrupted: false, needsInput: true }))
+              updateSessionState(closingRuntimeId, state =>
+                previousInterruptState ? { ...state, ...previousInterruptState } : state
+              )
               throw error
             }
           }

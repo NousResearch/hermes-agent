@@ -257,58 +257,61 @@ describe('removeSession', () => {
     expect($clarifyRequests.get()[runtimeSessionId]).toBeUndefined()
   })
 
-  it('rolls back the deletion when the active turn cannot be interrupted', async () => {
-    const storedSessionId = 'stored-interrupt-failure'
-    const runtimeSessionId = 'runtime-interrupt-failure'
-    const states: Array<Pick<ClientSessionState, 'interrupted' | 'needsInput'>> = []
+  it.each([false, true])(
+    'rolls back the deletion with the original needsInput=%s when the active turn cannot be interrupted',
+    async initialNeedsInput => {
+      const storedSessionId = 'stored-interrupt-failure'
+      const runtimeSessionId = 'runtime-interrupt-failure'
+      const states: Array<Pick<ClientSessionState, 'interrupted' | 'needsInput'>> = []
 
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.interrupt') {
-        throw new Error('gateway unavailable')
-      }
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'session.interrupt') {
+          throw new Error('gateway unavailable')
+        }
 
-      return {} as never
-    })
+        return {} as never
+      })
 
-    const updateSessionState = vi.fn(
-      (_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
-        const next = updater((states.at(-1) ?? { interrupted: false, needsInput: true }) as ClientSessionState)
-        states.push({ interrupted: next.interrupted, needsInput: next.needsInput })
+      const updateSessionState = vi.fn(
+        (_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+          const next = updater((states.at(-1) ?? { interrupted: false, needsInput: initialNeedsInput }) as ClientSessionState)
+          states.push({ interrupted: next.interrupted, needsInput: next.needsInput })
 
-        return next
-      }
-    )
+          return next
+        }
+      )
 
-    setSessions([storedSession({ id: storedSessionId, is_active: true })])
-    setActiveSessionId(runtimeSessionId)
-    setSelectedStoredSessionId(storedSessionId)
-    vi.mocked(deleteSession).mockClear()
+      setSessions([storedSession({ id: storedSessionId, is_active: true })])
+      setActiveSessionId(runtimeSessionId)
+      setSelectedStoredSessionId(storedSessionId)
+      vi.mocked(deleteSession).mockClear()
 
-    let handle: HarnessHandle | null = null
-    render(
-      <Harness
-        activeSessionId={runtimeSessionId}
-        onReady={next => (handle = next)}
-        requestGateway={requestGateway}
-        selectedStoredSessionId={storedSessionId}
-        updateSessionState={updateSessionState}
-      />
-    )
-    await waitFor(() => expect(handle).not.toBeNull())
+      let handle: HarnessHandle | null = null
+      render(
+        <Harness
+          activeSessionId={runtimeSessionId}
+          onReady={next => (handle = next)}
+          requestGateway={requestGateway}
+          selectedStoredSessionId={storedSessionId}
+          updateSessionState={updateSessionState}
+        />
+      )
+      await waitFor(() => expect(handle).not.toBeNull())
 
-    await act(async () => {
-      await handle!.removeSession(storedSessionId)
-    })
+      await act(async () => {
+        await handle!.removeSession(storedSessionId)
+      })
 
-    expect(requestGateway).toHaveBeenCalledTimes(1)
-    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: runtimeSessionId })
-    expect(deleteSession).not.toHaveBeenCalled()
-    expect(states).toEqual([
-      { interrupted: true, needsInput: false },
-      { interrupted: false, needsInput: true }
-    ])
-    expect($sessions.get().some(session => session.id === storedSessionId)).toBe(true)
-  })
+      expect(requestGateway).toHaveBeenCalledTimes(1)
+      expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: runtimeSessionId })
+      expect(deleteSession).not.toHaveBeenCalled()
+      expect(states).toEqual([
+        { interrupted: true, needsInput: false },
+        { interrupted: false, needsInput: initialNeedsInput }
+      ])
+      expect($sessions.get().some(session => session.id === storedSessionId)).toBe(true)
+    }
+  )
 })
 
 describe('active stored-session id rotation routing', () => {

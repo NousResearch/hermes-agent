@@ -2,8 +2,8 @@
  * Split node renderer — a flex row/column whose 1px seams double as resize
  * sashes (the seam IS the boundary — junction-owned, never doubled). Sizing
  * is the TRACK MODEL (track-model.ts): fixed tracks keep their declared size,
- * flex tracks share the leftover by weight, and an all-fixed run lets its
- * last track absorb the slack (VS Code style).
+ * flex tracks share the leftover by weight, and an all-fixed run lets an
+ * UNCAPPED last track absorb the slack (capped sidebars stay put).
  */
 
 import { useStore } from '@nanostores/react'
@@ -30,6 +30,7 @@ import {
 } from '../store'
 
 import {
+  allFixedAbsorberIndex,
   COLLAPSED_ZONE_PX,
   computedPx,
   cssMax,
@@ -469,8 +470,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
   // A run of ONLY fixed tracks can't fill the container (grow-0 all around
   // leaves dead space — e.g. terminal + logs split into two 38vh zones with
-  // the rail above them collapsed). The LAST visible track absorbs the
-  // leftover, VS Code style.
+  // the rail above them collapsed). An UNCAPPED last track absorbs the
+  // leftover; capped sidebars (review/files) keep their max and stay put.
   const isMinimized = (child: LayoutNode) => child.type === 'group' && Boolean(child.minimized)
 
   // SEMANTIC side collapse (titlebar toggles / ⌘B / ⌘J): at the ROOT row,
@@ -508,7 +509,13 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
   const growable = tracks.map((_, i) => i).filter(i => !tracks[i].collapsed && !tracks[i].minimized)
   const allFixed = growable.length > 0 && growable.every(i => tracks[i].track !== null)
-  const absorberIndex = allFixed ? growable[growable.length - 1] : -1
+  // Only an uncapped fixed track may absorb leftover. A maxWidth/maxHeight
+  // sidebar (review, files, sessions) must keep that clamp — otherwise ⌘G
+  // balloons the rail and sash-remembered sizes become a flex-basis that
+  // grow still expands past.
+  const absorberIndex = allFixed
+    ? allFixedAbsorberIndex(growable, i => (horizontal ? tracks[i].sizing?.maxWidth : tracks[i].sizing?.maxHeight))
+    : -1
 
   // Weights are RATIOS, but CSS flex-grow is absolute: a run whose grows sum
   // below 1 fills only that fraction of the leftover (normalize's flatten
@@ -550,6 +557,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
     >
       {tracks.map(({ child, collapsed, minimized, narrowCollapsed, sizing, track }, i) => {
         const partner = collapsed ? -1 : seamPartner(i)
+        const absorbs = i === absorberIndex
 
         return (
           <div
@@ -565,16 +573,17 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
                       // grow-0 shrink-1 from its preferred basis (it yields
                       // gracefully on tight windows, floored by min-width);
                       // everything else splits the leftover by weight. In an
-                      // all-fixed run the last track grows into the leftover.
-                      flex: track ? `${i === absorberIndex ? 1 : 0} 1 ${track}` : `${grow(i)} ${grow(i)} 0px`,
+                      // all-fixed run an UNCAPPED last track grows into the
+                      // leftover; capped sidebars stay at their declared size.
+                      flex: track ? `${absorbs ? 1 : 0} 1 ${track}` : `${grow(i)} ${grow(i)} 0px`,
                       // Pane-declared clamps apply along THIS split's axis only
                       // (a rail's width clamp shouldn't constrain its height).
-                      // The absorber drops its max clamp — it exists to fill
-                      // the leftover, and clamping would recreate the gap.
+                      // The absorber is uncapped by selection, so dropping its
+                      // max is a no-op; capped tracks always keep theirs.
                       minWidth: (horizontal && sizing?.minWidth) || 0,
-                      maxWidth: horizontal && i !== absorberIndex ? sizing?.maxWidth : undefined,
+                      maxWidth: horizontal && !absorbs ? sizing?.maxWidth : undefined,
                       minHeight: (!horizontal && sizing?.minHeight) || 0,
-                      maxHeight: horizontal || i === absorberIndex ? undefined : sizing?.maxHeight
+                      maxHeight: horizontal || absorbs ? undefined : sizing?.maxHeight
                     }
             }
           >

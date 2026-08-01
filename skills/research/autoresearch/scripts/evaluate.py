@@ -1,83 +1,281 @@
 #!/usr/bin/env python3
-"""Autoresearch experiment evaluation - scoring rubric and decision logic.
+"""Score autoresearch experiments and append decision records."""
 
-Usage:
-    python evaluate.py score <evidence> <accuracy> <depth> <relevance> <net_improvement>
-    python evaluate.py log-result <run_dir> <exp_id> <description> <type> <target> <decision> <reason> [--scores E,A,D,R,N]
-    python evaluate.py log-result-ml <run_dir> <exp_id> <description> <metric_name> <metric_value> <prev_best> <decision> <reason>
-    python evaluate.py read-results <run_dir> [--last N]
-    python evaluate.py stats <run_dir>
-"""
-import json, os, sys
-from _util import now_iso
+from __future__ import annotations
 
-def score_knowledge(evidence, accuracy, depth, relevance, net_improvement):
-    total = evidence + accuracy + depth + relevance + net_improvement
-    scores = {"evidence": evidence, "accuracy": accuracy, "depth": depth,
-              "relevance": relevance, "net_improvement": net_improvement, "total": total, "max": 25}
-    if evidence == 1: return {"scores": scores, "decision": "REVERT", "reason": "Evidence=1: no unsourced claims"}
-    if net_improvement == 1: return {"scores": scores, "decision": "REVERT", "reason": "NetImprovement=1: made doc worse"}
-    if total >= 18: return {"scores": scores, "decision": "MERGE", "reason": f"Strong (total={total}/25)"}
-    elif total >= 13:
-        if evidence >= 3 and relevance >= 3:
-            return {"scores": scores, "decision": "MERGE", "reason": f"Acceptable (total={total}/25)"}
-        return {"scores": scores, "decision": "REVERT", "reason": "Borderline weak evidence/relevance"}
-    return {"scores": scores, "decision": "REVERT", "reason": f"Below threshold (total={total}/25)"}
+import argparse
+import json
+from pathlib import Path
+from typing import Any
 
-def score_ml(metric_value, prev_best, lower_is_better=True):
+from _util import exclusive_lock, now_iso
+
+DECISIONS = ("MERGE", "REVERT")
+
+
+class EvaluationError(ValueError):
+    """Raised when an evaluation command violates its contract."""
+
+
+def clean_log_field(value: str) -> str:
+    """Keep user/research text inside one unambiguous log field."""
+    return " ".join(value.replace("---", "—").splitlines()).strip()
+
+
+def rubric_score(value: str) -> int:
+    parsed = int(value)
+    if not 1 <= parsed <= 5:
+        raise argparse.ArgumentTypeError("must be an integer from 1 to 5")
+    return parsed
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def score_knowledge(
+    evidence: int,
+    accuracy: int,
+    depth: int,
+    relevance: int,
+    net_improvement: int,
+) -> dict[str, Any]:
+    values = (evidence, accuracy, depth, relevance, net_improvement)
+    if any(value < 1 or value > 5 for value in values):
+        raise EvaluationError("knowledge scores must be integers from 1 to 5")
+    total = sum(values)
+    scores = {
+        "evidence": evidence,
+        "accuracy": accuracy,
+        "depth": depth,
+        "relevance": relevance,
+        "net_improvement": net_improvement,
+        "total": total,
+        "max": 25,
+    }
+    gates = {
+        "evidence": evidence,
+        "relevance": relevance,
+        "net_improvement": net_improvement,
+    }
+    failed = [name for name, value in gates.items() if value < 3]
+    if failed:
+        return {
+            "scores": scores,
+            "decision": "REVERT",
+            "reason": f"Failed gates: {', '.join(failed)}",
+        }
+    if total >= 13:
+        return {
+            "scores": scores,
+            "decision": "MERGE",
+            "reason": f"Accepted (total={total}/25)",
+        }
+    return {
+        "scores": scores,
+        "decision": "REVERT",
+        "reason": f"Below threshold (total={total}/25)",
+    }
+
+
+def score_ml(
+    metric_value: float, prev_best: float, lower_is_better: bool
+) -> dict[str, Any]:
     improved = metric_value < prev_best if lower_is_better else metric_value > prev_best
-    delta = (prev_best - metric_value) if lower_is_better else (metric_value - prev_best)
+    delta = prev_best - metric_value if lower_is_better else metric_value - prev_best
     decision = "MERGE" if improved else "REVERT"
-    return {"decision": decision, "metric_value": metric_value, "prev_best": prev_best,
-            "delta": delta, "reason": f"Metric {'improved' if improved else 'not improved'} by {delta:.6f}"}
+    return {
+        "decision": decision,
+        "metric_value": metric_value,
+        "prev_best": prev_best,
+        "delta": delta,
+        "reason": f"Metric {'improved' if improved else 'not improved'} by {delta:.6f}",
+    }
 
-def log_result(run_dir, exp_id, description, exp_type, target, decision, reason, scores=None):
-    entry = f"\n## Experiment {exp_id}: {description}\nTime: {now_iso()}\nType: {exp_type}\nTarget: {target}\n"
-    if scores: entry += f"Scores: {scores}\n"
-    entry += f"Decision: {decision}\nReason: {reason}\n---\n"
-    with open(os.path.join(run_dir, "results.log"), "a") as f: f.write(entry)
-    print(json.dumps({"status": "logged", "experiment_id": exp_id, "decision": decision}))
 
-def log_result_ml(run_dir, exp_id, description, metric_name, metric_value, prev_best, decision, reason):
-    entry = f"\n## Experiment {exp_id}: {description}\nTime: {now_iso()}\nMetric: {metric_name}={metric_value} (previous best: {prev_best})\nDecision: {decision}\nReason: {reason}\n---\n"
-    with open(os.path.join(run_dir, "results.log"), "a") as f: f.write(entry)
-    print(json.dumps({"status": "logged", "experiment_id": exp_id, "decision": decision}))
+def results_path(run_dir: str) -> Path:
+    path = Path(run_dir) / "results.log"
+    if not path.is_file():
+        raise EvaluationError(f"run is not initialized; missing {path}")
+    return path
 
-def read_results(run_dir, last_n=None):
+
+def append_entry(run_dir: str, lines: list[str]) -> None:
+    with exclusive_lock(Path(run_dir) / ".autoresearch.lock"):
+        path = results_path(run_dir)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("\n" + "\n".join(lines) + "\n---\n")
+
+
+def log_result(
+    run_dir: str,
+    experiment_id: int,
+    description: str,
+    experiment_type: str,
+    target: str,
+    decision: str,
+    reason: str,
+    scores: str | None = None,
+) -> dict[str, Any]:
+    lines = [
+        f"## Experiment {experiment_id}: {clean_log_field(description)}",
+        f"Time: {now_iso()}",
+        f"Type: {clean_log_field(experiment_type)}",
+        f"Target: {clean_log_field(target)}",
+    ]
+    if scores:
+        lines.append(f"Scores: {clean_log_field(scores)}")
+    lines.extend([f"Decision: {decision}", f"Reason: {clean_log_field(reason)}"])
+    append_entry(run_dir, lines)
+    return {"status": "logged", "experiment_id": experiment_id, "decision": decision}
+
+
+def log_result_ml(
+    run_dir: str,
+    experiment_id: int,
+    description: str,
+    metric_name: str,
+    metric_value: float,
+    prev_best: float,
+    decision: str,
+    reason: str,
+) -> dict[str, Any]:
+    append_entry(
+        run_dir,
+        [
+            f"## Experiment {experiment_id}: {clean_log_field(description)}",
+            f"Time: {now_iso()}",
+            f"Metric: {clean_log_field(metric_name)}={metric_value} (previous best: {prev_best})",
+            f"Decision: {decision}",
+            f"Reason: {clean_log_field(reason)}",
+        ],
+    )
+    return {"status": "logged", "experiment_id": experiment_id, "decision": decision}
+
+
+def result_entries(run_dir: str) -> list[str]:
+    content = results_path(run_dir).read_text(encoding="utf-8")
+    return [entry.strip() for entry in content.split("---\n") if entry.strip()]
+
+
+def read_results(run_dir: str, last_n: int | None = None) -> str:
+    entries = result_entries(run_dir)
+    selected = entries[-last_n:] if last_n else entries
+    return "\n---\n".join(selected)
+
+
+def stats(run_dir: str) -> dict[str, Any]:
+    entries = result_entries(run_dir)
+    merged = sum("Decision: MERGE" in entry.splitlines() for entry in entries)
+    reverted = sum("Decision: REVERT" in entry.splitlines() for entry in entries)
+    by_type: dict[str, int] = {}
+    for entry in entries:
+        for line in entry.splitlines():
+            if line.startswith("Type: "):
+                experiment_type = line.removeprefix("Type: ").strip()
+                by_type[experiment_type] = by_type.get(experiment_type, 0) + 1
+    return {
+        "total": len(entries),
+        "merged": merged,
+        "reverted": reverted,
+        "merge_rate": f"{merged / len(entries) * 100:.0f}%" if entries else "0%",
+        "by_type": by_type,
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    score_parser = commands.add_parser("score")
+    for name in ("evidence", "accuracy", "depth", "relevance", "net_improvement"):
+        score_parser.add_argument(name, type=rubric_score)
+
+    ml_parser = commands.add_parser("score-ml")
+    ml_parser.add_argument("metric_value", type=float)
+    ml_parser.add_argument("prev_best", type=float)
+    direction = ml_parser.add_mutually_exclusive_group(required=True)
+    direction.add_argument("--lower-is-better", action="store_true")
+    direction.add_argument("--higher-is-better", action="store_true")
+
+    log_parser = commands.add_parser("log-result")
+    log_parser.add_argument("run_dir")
+    log_parser.add_argument("experiment_id", type=positive_int)
+    log_parser.add_argument("description")
+    log_parser.add_argument("experiment_type")
+    log_parser.add_argument("target")
+    log_parser.add_argument("decision", choices=DECISIONS)
+    log_parser.add_argument("reason")
+    log_parser.add_argument("--scores")
+
+    log_ml_parser = commands.add_parser("log-result-ml")
+    log_ml_parser.add_argument("run_dir")
+    log_ml_parser.add_argument("experiment_id", type=positive_int)
+    log_ml_parser.add_argument("description")
+    log_ml_parser.add_argument("metric_name")
+    log_ml_parser.add_argument("metric_value", type=float)
+    log_ml_parser.add_argument("prev_best", type=float)
+    log_ml_parser.add_argument("decision", choices=DECISIONS)
+    log_ml_parser.add_argument("reason")
+
+    read_parser = commands.add_parser("read-results")
+    read_parser.add_argument("run_dir")
+    read_parser.add_argument("--last", type=positive_int)
+
+    stats_parser = commands.add_parser("stats")
+    stats_parser.add_argument("run_dir")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
     try:
-        with open(os.path.join(run_dir, "results.log")) as f: content = f.read()
-    except FileNotFoundError: print("No results yet."); return
-    if last_n:
-        entries = [e.strip() for e in content.split("---\n") if e.strip()]
-        print("\n---\n".join(entries[-last_n:]))
-    else: print(content)
+        if args.command == "score":
+            result: Any = score_knowledge(
+                args.evidence,
+                args.accuracy,
+                args.depth,
+                args.relevance,
+                args.net_improvement,
+            )
+        elif args.command == "score-ml":
+            result = score_ml(args.metric_value, args.prev_best, args.lower_is_better)
+        elif args.command == "log-result":
+            result = log_result(
+                args.run_dir,
+                args.experiment_id,
+                args.description,
+                args.experiment_type,
+                args.target,
+                args.decision,
+                args.reason,
+                args.scores,
+            )
+        elif args.command == "log-result-ml":
+            result = log_result_ml(
+                args.run_dir,
+                args.experiment_id,
+                args.description,
+                args.metric_name,
+                args.metric_value,
+                args.prev_best,
+                args.decision,
+                args.reason,
+            )
+        elif args.command == "read-results":
+            print(read_results(args.run_dir, args.last))
+            return 0
+        else:
+            result = stats(args.run_dir)
+        print(json.dumps(result, indent=2))
+    except EvaluationError as exc:
+        parser.error(str(exc))
+    return 0
 
-def stats(run_dir):
-    try:
-        with open(os.path.join(run_dir, "results.log")) as f: content = f.read()
-    except FileNotFoundError: print(json.dumps({"total": 0})); return
-    entries = [e.strip() for e in content.split("---\n") if e.strip()]
-    merged = sum(1 for e in entries if "Decision: MERGE" in e)
-    reverted = sum(1 for e in entries if "Decision: REVERT" in e)
-    types = {}
-    for e in entries:
-        for line in e.split("\n"):
-            if line.startswith("Type: "): t = line[6:].strip(); types[t] = types.get(t, 0) + 1
-    print(json.dumps({"total": len(entries), "merged": merged, "reverted": reverted,
-                       "merge_rate": f"{merged/len(entries)*100:.0f}%" if entries else "0%", "by_type": types}, indent=2))
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-    if not args: print(__doc__); sys.exit(1)
-    cmd = args[0]
-    if cmd == "score": print(json.dumps(score_knowledge(int(args[1]),int(args[2]),int(args[3]),int(args[4]),int(args[5])), indent=2))
-    elif cmd == "log-result":
-        scores_str = None
-        if "--scores" in args: idx = args.index("--scores"); scores_str = args[idx+1]; args = args[:idx]+args[idx+2:]
-        log_result(args[1], int(args[2]), args[3], args[4], args[5], args[6], args[7], scores_str)
-    elif cmd == "log-result-ml": log_result_ml(args[1], int(args[2]), args[3], args[4], float(args[5]), float(args[6]), args[7], args[8])
-    elif cmd == "read-results":
-        last_n = int(args[args.index("--last")+1]) if "--last" in args else None
-        read_results(args[1], last_n)
-    elif cmd == "stats": stats(args[1])
-    else: print(f"Unknown: {cmd}"); sys.exit(1)
+    raise SystemExit(main())

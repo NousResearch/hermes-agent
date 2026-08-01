@@ -6,13 +6,23 @@ Usage:
     python report.py summary <run_dir>
 """
 import json, os, sys
+from functools import wraps
 from pathlib import Path
-from _util import read_json
+from _util import exclusive_lock, read_json
+
+
+def locked_run(function):
+    @wraps(function)
+    def wrapper(run_dir, *args, **kwargs):
+        with exclusive_lock(Path(run_dir) / ".autoresearch.lock"):
+            return function(run_dir, *args, **kwargs)
+
+    return wrapper
 
 
 def _read_text(path):
     try:
-        return Path(path).read_text()
+        return Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return ""
 
@@ -24,6 +34,11 @@ def _results_entries(run_dir):
     return [e.strip() for e in content.split("---\n") if e.strip()]
 
 
+def _has_decision(entry, decision):
+    return f"Decision: {decision}" in entry.splitlines()
+
+
+@locked_run
 def generate_report(run_dir):
     config = read_json(os.path.join(run_dir, "config.json"))
     status = read_json(os.path.join(run_dir, "status.json"))
@@ -31,15 +46,16 @@ def generate_report(run_dir):
     usage = read_json(os.path.join(run_dir, "usage.json"))
     entries = _results_entries(run_dir)
 
-    merged = [e for e in entries if "Decision: MERGE" in e]
-    reverted = [e for e in entries if "Decision: REVERT" in e]
+    merged = [e for e in entries if _has_decision(e, "MERGE")]
+    reverted = [e for e in entries if _has_decision(e, "REVERT")]
 
     lines = []
     lines.append(f"# Research Report: {config.get('goal', 'Unknown')}")
     lines.append("")
     lines.append(f"- **Domain**: {config.get('domain', 'N/A')}")
     lines.append(f"- **Scope**: {config.get('scope', 'N/A')}")
-    lines.append(f"- **Depth**: {config.get('depth', 'N/A')}")
+    lines.append(f"- **Maximum experiments**: {config.get('max_experiments', 'N/A')}")
+    lines.append(f"- **Maximum duration**: {config.get('max_duration_minutes', 'N/A')} minutes")
     lines.append(
         f"- **Experiments**: {status.get('experiments_done', 0)}"
         f" ({status.get('experiments_merged', 0)} merged,"
@@ -89,9 +105,13 @@ def generate_report(run_dir):
                 elif line.startswith("Reason:"):
                     lines.append(f"  {line}")
 
+    final_artifact = Path(run_dir) / "workspace" / "research.md"
+    if final_artifact.is_file():
+        lines.extend(["", "## Final Artifact", "", final_artifact.read_text(encoding="utf-8")])
+
     report = "\n".join(lines)
     report_path = os.path.join(run_dir, "report.md")
-    Path(report_path).write_text(report)
+    Path(report_path).write_text(report, encoding="utf-8")
     print(json.dumps({"status": "generated", "path": report_path}))
 
 
@@ -100,8 +120,8 @@ def summary(run_dir):
     status = read_json(os.path.join(run_dir, "status.json"))
     entries = _results_entries(run_dir)
 
-    merged = sum(1 for e in entries if "Decision: MERGE" in e)
-    reverted = sum(1 for e in entries if "Decision: REVERT" in e)
+    merged = sum(1 for e in entries if _has_decision(e, "MERGE"))
+    reverted = sum(1 for e in entries if _has_decision(e, "REVERT"))
 
     lines = [
         f"Research: {config.get('goal', 'Unknown')}",
@@ -114,7 +134,7 @@ def summary(run_dir):
         top_merges = [
             e.split("\n")[0]
             for e in entries
-            if "Decision: MERGE" in e
+            if _has_decision(e, "MERGE")
         ][:3]
         for tm in top_merges:
             lines.append(f"  + {tm}")

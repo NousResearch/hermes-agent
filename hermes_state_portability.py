@@ -332,6 +332,15 @@ class SessionPortabilityMixin:
         fail foreign-key validation. Gateway routing, handoff, rewind, and other
         live runtime state are intentionally reset: this restores conversation
         history, not ownership of a live channel or process.
+
+        Activity contract (#76354 review S4): export INCLUDES the live
+        activity fields (``last_activity_at`` / ``last_activity_description``
+        / ``last_activity_provenance``) because they are part of the durable
+        row, but import deliberately RESETS them to NULL. Resurrecting a
+        stale "working ..." label on a machine where no agent is running
+        would fabricate activity the watchdog and session listings act on.
+        This asymmetry is intentional and covered by regression
+        (tests/gateway/test_watchdog_review_76354.py::test_s4_export_includes_activity_import_resets_it).
         """
         if not isinstance(sessions, list):
             raise ValueError("sessions must be a list")

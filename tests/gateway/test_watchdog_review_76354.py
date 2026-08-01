@@ -225,3 +225,35 @@ async def test_s2_still_stale_after_revalidation_delivers():
     sent = await runner._check_session_stalls(60)
     assert sent == 1
     assert adapter.sent and "/new" in adapter.sent[0]["content"]
+
+
+# ── S4: export includes activity fields; import resets them ─────────────────
+
+
+def test_s4_export_includes_activity_import_resets_it(tmp_path):
+    src = SessionDB(db_path=tmp_path / "src.db")
+    sid = "S4_PORTABILITY"
+    src.create_session(sid, source="cli")
+    src.append_message(sid, "user", "hello")
+    src.touch_session_activity(
+        sid,
+        time.time(),
+        description="working on something",
+        provenance=ActivityProvenance.AGENT_COMPRESSION,
+    )
+
+    exported = src.export_session(sid)
+    # Export INCLUDES the live activity fields (part of the durable row).
+    assert exported["last_activity_at"] is not None
+    assert exported["last_activity_description"] == "working on something"
+
+    dst = SessionDB(db_path=tmp_path / "dst.db")
+    result = dst.import_sessions([exported])
+    assert sid in result.get("imported_ids", result.get("imported", [sid]))
+
+    row = dst.get_session(sid)
+    # Import RESETS activity: no resurrected "working" label on a machine
+    # where no agent is running (explicit contract, #76354 S4).
+    assert row.get("last_activity_at") is None
+    assert not row.get("last_activity_description")
+    assert not row.get("last_activity_provenance")

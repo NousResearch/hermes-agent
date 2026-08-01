@@ -178,10 +178,15 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
-        # Session stall watchdog (seconds): when a gateway session has a
-        # pending inbound message AND the running agent has not updated its
-        # activity clock for this long, log a WARNING and notify the user to
-        # try /new. Distinct from gateway_timeout (which kills the turn) and
+        # Session stall watchdog (seconds). Scope (#76354): this is a
+        # RECOVERY notifier for an in-process AIAgent that has an
+        # adapter-queued follow-up (pending inbound / queued event) while its
+        # activity clock is stale — NOT a general gateway/session stall
+        # detector. It does not observe startup restoration, build sentinels,
+        # turn leases, debounce state, or work owned by another process; the
+        # scan cadence is per AIAgent instance, not globally coordinated per
+        # durable session. Notify-only: warns the user to try /new. Distinct
+        # from gateway_timeout (which kills the turn) and
         # gateway_notify_interval ("still working" heartbeats). 0 = disable.
         "session_stall_timeout": 300,
         # Freshness window for the gateway auto-continue note (seconds).

@@ -1857,6 +1857,27 @@ def _direct_native_anthropic_tool_cache_capability(
     )
 
 
+def prompt_caching_disabled_from_config() -> bool:
+    """Return True when ``prompt_caching.cache_ttl`` is configured as off.
+
+    Mirrors the disable detection in ``agent_init`` so stub-based policy
+    paths (MoA slot decoration, auxiliary fallback replan) honor the same
+    config contract without holding a live ``AIAgent`` (#76085 / #33555).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        pc_cfg = load_config_readonly().get("prompt_caching", {}) or {}
+        ttl = pc_cfg.get("cache_ttl", "5m")
+    except Exception:
+        return False
+    if ttl in {"5m", "1h"}:
+        return False
+    if ttl is False or ttl is None:
+        return True
+    return str(ttl).lower() in ("off", "false", "disabled", "no", "none")
+
+
 def plan_cache_sections_for_destination(
     messages: list,
     tools: Optional[list],
@@ -1865,6 +1886,7 @@ def plan_cache_sections_for_destination(
     base_url: str,
     api_mode: str,
     model: str,
+    cache_disabled: Optional[bool] = None,
 ) -> Tuple[list, list]:
     """Plan request-local cache sections for one resolved destination.
 
@@ -1877,6 +1899,11 @@ def plan_cache_sections_for_destination(
 
     Never mutates ``messages`` or ``tools`` — both return values are
     request-local copies.
+
+    ``cache_disabled`` threads the operator's ``prompt_caching.cache_ttl``
+    disable into the blank policy stub. When omitted, the live config is
+    consulted so MoA/auxiliary paths cannot re-enable markers after the
+    user turned caching off (#76085).
     """
     from types import SimpleNamespace
 
@@ -1886,7 +1913,15 @@ def plan_cache_sections_for_destination(
         strip_anthropic_tool_cache_control,
     )
 
-    stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+    if cache_disabled is None:
+        cache_disabled = prompt_caching_disabled_from_config()
+    stub = SimpleNamespace(
+        provider="",
+        base_url="",
+        api_mode="",
+        model="",
+        _cache_disabled=bool(cache_disabled),
+    )
     should_cache, native_layout = anthropic_prompt_cache_policy(
         stub,
         provider=provider,
@@ -3895,6 +3930,8 @@ __all__ = [
     "restore_primary_runtime",
     "extract_reasoning",
     "dump_api_request_debug",
+    "prompt_caching_disabled_from_config",
+    "plan_cache_sections_for_destination",
     "anthropic_prompt_cache_policy",
     "create_openai_client",
     "switch_model",

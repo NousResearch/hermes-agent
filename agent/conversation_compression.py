@@ -521,6 +521,13 @@ DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS = 600.0
 _compress_timeout_executor = None
 _compress_timeout_executor_lock = threading.Lock()
 
+# Commit-phase overrun wait slice: once an in-flight SessionDB commit runs
+# past the total ceiling, keep waiting in bounded increments of this size so
+# every overrun window produces a fresh (escalating) log line instead of one
+# silent unbounded future.result(). Clamped down to the ceiling for tiny test
+# ceilings so overrun reporting stays observable at test timescales.
+_COMMIT_OVERRUN_WAIT_SLICE_SECONDS = 30.0
+
 
 def _get_compress_timeout_executor():
     """Return the process-wide compress-timeout DaemonThreadPoolExecutor."""
@@ -593,6 +600,7 @@ def run_compress_context_with_progress_timeout(
     idle_timeout_seconds: float,
     total_ceiling_seconds: float,
     on_timeout: Optional[Callable[[float, float, float], None]] = None,
+    on_commit_overrun: Optional[Callable[[float, float], None]] = None,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware timeout.
 
@@ -610,10 +618,15 @@ def run_compress_context_with_progress_timeout(
     the **pre-commit** wait only — the summary / stream phase before
     :meth:`CompressionCommitFence.begin_commit`. Once the worker holds the
     commit fence, SessionDB mutation is already in flight and cannot be safely
-    abandoned without risking transcript divergence; the caller therefore waits
-    for ``future.result()`` with no additional host ceiling (same contract as
-    gateway session-hygiene after a lost cancel race). A hung commit can still
-    stall the turn; that is a SessionDB / I/O failure mode outside this wrapper.
+    abandoned without risking transcript divergence; the commit is therefore
+    always allowed to complete. The commit-phase wait is still *bounded in
+    increments* against the remaining total ceiling: if the commit runs past
+    ``total_ceiling_seconds``, the overrun is logged loudly (escalating from
+    WARNING to ERROR on repeat) and surfaced once via ``on_commit_overrun``,
+    while the host keeps waiting in bounded slices until the commit finishes.
+    The documented guarantee is: **summary phase bounded by the ceiling;
+    commit phase logged + surfaced if it exceeds it** (never silently hung,
+    never abandoned mid-commit).
 
     ``system_prompt_fallback`` may be a string or a zero-arg callable resolved
     only on the timeout path, so successful compression never pays for (or
@@ -676,16 +689,53 @@ def run_compress_context_with_progress_timeout(
     if not cancelled:
         # Pre-commit ceiling already elapsed, but begin_commit() won the race.
         # Waiting is intentional: SessionDB mutation cannot be fence-cancelled.
-        waited = time.monotonic() - wait_started
-        if waited >= ceiling:
-            logger.warning(
-                "Context compression crossed the commit boundary after the "
-                "pre-commit ceiling (waited %.1fs, ceiling %.1fs); waiting for "
-                "SessionDB commit to finish before continuing",
-                waited,
-                ceiling,
-            )
-        return future.result()
+        # The wait is bounded in increments against the remaining ceiling: a
+        # commit that overruns total_ceiling_seconds is logged loudly and
+        # surfaced once (on_commit_overrun), then waited on in bounded slices
+        # with escalating log level until it completes. Guarantee: summary
+        # phase bounded by ceiling; commit phase logged + surfaced if it
+        # exceeds it — never silently hung, never abandoned mid-commit.
+        overrun_surfaced = False
+        overrun_reports = 0
+        while True:
+            waited = time.monotonic() - wait_started
+            remaining = ceiling - waited
+            if remaining <= 0:
+                # Ceiling breached while the commit is in flight. Wait in
+                # bounded increments so each overrun window is visible in
+                # logs rather than one silent unbounded block.
+                remaining = min(
+                    _COMMIT_OVERRUN_WAIT_SLICE_SECONDS,
+                    max(ceiling, 0.05),
+                )
+                overrun_reports += 1
+                log = logger.warning if overrun_reports <= 2 else logger.error
+                log(
+                    "Context compression SessionDB commit still running "
+                    "%.1fs past the total ceiling (waited %.1fs, ceiling "
+                    "%.1fs); commit cannot be abandoned mid-flight — "
+                    "continuing to wait (check SessionDB health if this "
+                    "persists)",
+                    waited - ceiling,
+                    waited,
+                    ceiling,
+                )
+                if not overrun_surfaced and on_commit_overrun is not None:
+                    overrun_surfaced = True
+                    try:
+                        on_commit_overrun(waited, ceiling)
+                    except Exception:
+                        logger.debug(
+                            "compress_context commit-overrun callback failed",
+                            exc_info=True,
+                        )
+            try:
+                return future.result(timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                # Fence progress (commit-phase touch_progress) is informative
+                # only — the commit must complete regardless; loop and
+                # re-report with the updated overrun window.
+                continue
 
     waited = time.monotonic() - wait_started
     since_progress = fence.seconds_since_progress()

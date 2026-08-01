@@ -149,13 +149,19 @@ class TestRunCompressContextWithProgressTimeout:
         assert result_prompt == "committed"
 
     def test_never_finishing_commit_waits_past_pre_commit_ceiling(self):
-        """Once begin_commit() wins, the host waits without a ceiling.
+        """Once begin_commit() wins, the commit is waited on to completion —
+        but NOT silently.
 
-        context_total_ceiling_seconds only bounds the pre-commit (summary)
-        phase. A hung SessionDB commit cannot be fence-cancelled; returning
-        early would diverge live messages from durable session state. This
-        pins that contract so docs and the wrapper stay aligned.
+        context_total_ceiling_seconds bounds the pre-commit (summary) phase.
+        A hung SessionDB commit cannot be fence-cancelled; returning early
+        would diverge live messages from durable session state. The guarantee
+        is: summary phase bounded by ceiling; commit phase logged + surfaced
+        (on_commit_overrun + escalating log) if it exceeds it. This pins both
+        halves: the waiter blocks past the ceiling AND the overrun is loudly
+        reported, never silent.
         """
+        import logging
+
         original = [{"role": "user", "content": "a"}]
         compressed = [{"role": "assistant", "content": "late-commit"}]
         entered = threading.Event()
@@ -165,7 +171,7 @@ class TestRunCompressContextWithProgressTimeout:
             assert fence.begin_commit()
             entered.set()
             try:
-                assert release.wait(timeout=2)
+                assert release.wait(timeout=5)
                 return (compressed, "committed-late")
             finally:
                 fence.finish_commit()
@@ -173,6 +179,7 @@ class TestRunCompressContextWithProgressTimeout:
         ceiling = 0.05
         started = time.monotonic()
         done = {}
+        overruns = []
 
         def run():
             done["result"] = run_compress_context_with_progress_timeout(
@@ -181,21 +188,93 @@ class TestRunCompressContextWithProgressTimeout:
                 system_prompt_fallback="fallback",
                 idle_timeout_seconds=ceiling,
                 total_ceiling_seconds=ceiling,
+                on_commit_overrun=lambda waited, ceil: overruns.append(
+                    (waited, ceil)
+                ),
             )
 
-        t = threading.Thread(target=run, name="commit-hang-waiter")
-        t.start()
-        assert entered.wait(timeout=1)
-        # Still blocked past the pre-commit ceiling while commit holds the fence.
-        time.sleep(ceiling + 0.15)
-        assert t.is_alive(), "waiter must block on an in-flight commit past ceiling"
-        release.set()
-        t.join(timeout=2)
-        assert not t.is_alive()
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        comp_logger = logging.getLogger("agent.conversation_compression")
+        handler = _Capture(level=logging.WARNING)
+        comp_logger.addHandler(handler)
+        try:
+            t = threading.Thread(target=run, name="commit-hang-waiter")
+            t.start()
+            assert entered.wait(timeout=1)
+            # Still blocked past the pre-commit ceiling while commit holds
+            # the fence.
+            time.sleep(ceiling + 0.25)
+            assert t.is_alive(), (
+                "waiter must block on an in-flight commit past ceiling"
+            )
+            release.set()
+            t.join(timeout=5)
+            assert not t.is_alive()
+        finally:
+            comp_logger.removeHandler(handler)
+
         waited = time.monotonic() - started
         assert waited >= ceiling + 0.1
         assert done["result"][0] == compressed
         assert done["result"][1] == "committed-late"
+        # The over-ceiling commit wait must NOT be silent: the overrun
+        # callback fires exactly once and a WARNING+ log line reports the
+        # in-flight commit running past the ceiling.
+        assert len(overruns) == 1, overruns
+        assert overruns[0][1] == pytest.approx(ceiling)
+        assert overruns[0][0] >= ceiling
+        overrun_logs = [
+            r
+            for r in records
+            if r.levelno >= logging.WARNING
+            and "past the total ceiling" in r.getMessage()
+        ]
+        assert overrun_logs, (
+            "expected a WARNING+ log surfacing the commit-phase ceiling "
+            f"overrun; got: {[r.getMessage() for r in records]}"
+        )
+
+    def test_commit_overrun_callback_failure_does_not_break_wait(self):
+        """A raising on_commit_overrun callback must not abort the commit wait."""
+        original = [{"role": "user", "content": "a"}]
+        compressed = [{"role": "assistant", "content": "ok"}]
+        release = threading.Event()
+
+        def worker(fence: CompressionCommitFence):
+            assert fence.begin_commit()
+            try:
+                assert release.wait(timeout=5)
+                return (compressed, "done")
+            finally:
+                fence.finish_commit()
+
+        def boom(waited, ceiling):
+            raise RuntimeError("callback exploded")
+
+        done = {}
+
+        def run():
+            done["result"] = run_compress_context_with_progress_timeout(
+                worker=worker,
+                messages=original,
+                system_prompt_fallback="fallback",
+                idle_timeout_seconds=0.05,
+                total_ceiling_seconds=0.05,
+                on_commit_overrun=boom,
+            )
+
+        t = threading.Thread(target=run)
+        t.start()
+        time.sleep(0.3)
+        release.set()
+        t.join(timeout=5)
+        assert not t.is_alive()
+        assert done["result"] == (compressed, "done")
 
     def test_rejects_non_positive_idle(self):
         with pytest.raises(ValueError):

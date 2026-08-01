@@ -651,8 +651,16 @@ DEFAULT_CONFIG = {
                                       # in-agent compress_context wait (summary /
                                       # stream phase) even while tokens are still
                                       # moving. Clamped to >= context_timeout_seconds
-                                      # when the idle budget is > 0. Does NOT bound
-                                      # an already-started SessionDB commit fence.
+                                      # when the idle budget is > 0. Guarantee:
+                                      # the summary phase is bounded by this
+                                      # ceiling; an already-started SessionDB
+                                      # commit is never abandoned mid-flight —
+                                      # if the commit itself runs past the
+                                      # ceiling it is logged (WARNING, then
+                                      # ERROR) and surfaced to the user via the
+                                      # warning channel while the host keeps
+                                      # waiting in bounded increments for the
+                                      # commit to finish.
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to

@@ -212,3 +212,65 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
     assert data["pausable_gateways"] == 0
+
+def test_main_missing_psutil_emits_fail_closed_probe_failure(monkeypatch, capsys):
+    """When psutil is unavailable, main() must exit code 1 with ok: False (fail-closed contract)."""
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    assert excinfo.value.code == 1
+    out, err = capsys.readouterr()
+    data = json.loads(out)
+    assert data["ok"] is False
+    assert data["blocked"] is False
+
+
+def test_main_aborted_scan_emits_fail_closed_probe_failure(monkeypatch, capsys):
+    """When the detector scan aborts with an exception, main() must exit code 1 with ok: False (fail-closed contract)."""
+    for name, mod in _psutil_fake().items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    import hermes_cli.main as cli_main
+
+    def _failing_scan():
+        raise RuntimeError("scan crashed")
+
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", _failing_scan)
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+    assert excinfo.value.code == 1
+    out, err = capsys.readouterr()
+    data = json.loads(out)
+    assert data["ok"] is False
+
+
+def test_detect_venv_python_processes_skips_unreadable_proc_and_detects_valid_holder(monkeypatch):
+    """When an individual process in psutil.process_iter() raises an exception during info/cwd access,
+    _detect_venv_python_processes() must skip it locally and still detect later valid venv holders."""
+    import psutil
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: True)
+
+    class BrokenProc:
+        @property
+        def info(self):
+            raise psutil.AccessDenied(pid=101)
+
+    class ValidProc:
+        @property
+        def info(self):
+            venv_exe = str(update_cmd._m().PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
+            return {
+                "pid": 202,
+                "exe": venv_exe,
+                "name": "python.exe",
+                "cmdline": [venv_exe, "-m", "hermes_cli.main", "serve"],
+                "cwd": str(update_cmd._m().PROJECT_ROOT),
+            }
+
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: [BrokenProc(), ValidProc()])
+
+    matches = update_cmd._detect_venv_python_processes(exclude_pids=set())
+    assert len(matches) == 1
+    assert matches[0][0] == 202
+    assert matches[0][1] == "python.exe"

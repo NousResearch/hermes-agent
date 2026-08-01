@@ -28,14 +28,17 @@ _SENSITIVE_LONG_FLAGS: list[str] = [
 ]
 
 
-def _probe_fail_json() -> str:
-    """Return the standard probe-failure JSON document."""
-    return json.dumps({"ok": False, "blocked": False, "processes": []})
+def _probe_fail_json(error_msg: str = "") -> str:
+    """Return standard probe-failure JSON document (fail-closed contract)."""
+    res = {"ok": False, "blocked": False, "processes": []}
+    if error_msg:
+        res["error"] = error_msg
+    return json.dumps(res)
 
 
 def _emit_probe_fail(diagnostic: str) -> NoReturn:
-    """Print one JSON to stdout, diagnostic to stderr, exit non-zero."""
-    print(_probe_fail_json())
+    """Print structured failure JSON to stdout, diagnostic to stderr, exit 1."""
+    print(_probe_fail_json(diagnostic))
     print(diagnostic, file=sys.stderr)
     sys.exit(1)
 
@@ -76,54 +79,35 @@ def _redact_sensitive_cmdline(cmdline: str) -> str:
     # and everything after it with ``<redacted>``.  Short flags (-t, -k, -p)
     # are intentionally not redacted — they are ambiguous and may be useful
     # diagnostics (toolset, port, profile).
-    earliest = len(cmdline)
-    for flag in _SENSITIVE_LONG_FLAGS:
-        # --flag=value  →  preserve "--flag="
-        idx = _find_flag(cmdline, flag + "=")
-        if idx != -1 and idx + len(flag) + 1 < earliest:
-            earliest = idx + len(flag) + 1
-        # --flag value  →  preserve "--flag "
-        idx = _find_flag(cmdline, flag + " ")
-        if idx != -1 and idx + len(flag) + 1 < earliest:
-            earliest = idx + len(flag) + 1
+    try:
+        earliest = len(cmdline)
+        for flag in _SENSITIVE_LONG_FLAGS:
+            # --flag=value  →  preserve "--flag="
+            idx = _find_flag(cmdline, flag + "=")
+            if idx != -1 and idx + len(flag) + 1 < earliest:
+                earliest = idx + len(flag) + 1
+            # --flag value  →  preserve "--flag "
+            idx = _find_flag(cmdline, flag + " ")
+            if idx != -1 and idx + len(flag) + 1 < earliest:
+                earliest = idx + len(flag) + 1
 
-    if earliest < len(cmdline):
-        return cmdline[:earliest] + "<redacted>"
+        if earliest < len(cmdline):
+            return cmdline[:earliest] + "<redacted>"
+    except Exception:
+        return "<redacted>"
     return cmdline
 
 
 def _is_pausable_gateway(cmdline: str) -> bool:
-    """Return True when *cmdline* is a gateway process the updater can pause.
-
-    A running gateway shows up in the venv-holder scan as one or both halves
-    of its launcher/worker chain (``venv\\Scripts\\python.exe -m
-    hermes_cli.main gateway run`` and the uv-side interpreter re-running the
-    same argv). Reporting those as blockers dead-ends the Desktop update:
-    the preflight aborts with ``venv-blocked`` *before* spawning
-    ``hermes-setup``, so the CLI updater's own
-    ``_pause_windows_gateways_for_update()`` — which exists precisely to
-    stop these processes (and is always active: ``hermes-setup`` invokes
-    ``hermes update --yes --gateway``) — never gets the chance to run.
-
-    Only gateway invocations are exempted. Anything else running from the
-    venv (an operator's REPL, a stray script, a ``serve`` backend that
-    survived the desktop's own teardown) has no pause machinery downstream
-    and must keep blocking the handoff.
-
-    Delegates to ``gateway.status.looks_like_gateway_command_line`` — the
-    canonical ``gateway run`` matcher (profile-selector aware, shlex
-    tokenization, ``run``-only) — so this exemption, the pause discovery,
-    and the updater's guard fallback all share one parser. A hand-rolled
-    token scan here regressed ``--profile gateway gateway run``: the profile
-    *value* shadowed the subcommand token. An import failure counts as
-    not-pausable — the scan then reports the process as a blocker, which is
-    exactly the pre-exemption behavior.
-    """
+    """Return True when *cmdline* is a gateway process the updater can pause."""
     try:
         from gateway.status import looks_like_gateway_command_line  # noqa: PLC0415
     except Exception:
         return False
-    return looks_like_gateway_command_line(cmdline)
+    try:
+        return looks_like_gateway_command_line(cmdline)
+    except Exception:
+        return False
 
 
 def main() -> None:
@@ -140,22 +124,29 @@ def main() -> None:
     except Exception as exc:
         _emit_probe_fail(f"scan aborted: {exc}")
 
-    processes = [
-        {
-            "pid": pid,
-            "name": name,
-            "cmdline": _redact_sensitive_cmdline(cmdline),
-        }
-        for pid, name, cmdline in matches
-        if not _is_pausable_gateway(cmdline)
-    ]
-    exempted = sum(1 for _pid, _name, cmdline in matches if _is_pausable_gateway(cmdline))
+    processes = []
+    exempted = 0
+
+    for item in matches:
+        try:
+            pid, name, cmdline = item
+            redacted_cmd = _redact_sensitive_cmdline(cmdline)
+            if _is_pausable_gateway(cmdline):
+                exempted += 1
+            else:
+                processes.append({
+                    "pid": pid,
+                    "name": name,
+                    "cmdline": redacted_cmd,
+                })
+        except Exception as proc_exc:
+            print(f"ignoring process entry due to error: {proc_exc}", file=sys.stderr)
+            continue
+
     data = {
         "ok": True,
         "blocked": bool(processes),
         "processes": processes,
-        # Diagnostic only: gateway processes present but not counted as
-        # blockers because the downstream updater pauses them itself.
         "pausable_gateways": exempted,
     }
     print(json.dumps(data))

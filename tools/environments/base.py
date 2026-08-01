@@ -531,6 +531,10 @@ class BaseEnvironment(ABC):
     # Session snapshot (init_session)
     # ------------------------------------------------------------------
 
+    def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:
+        """Return backend-specific names that must not persist in snapshots."""
+        return ()
+
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
         """Return profile-scoped names that must not persist in the snapshot.
 
@@ -545,9 +549,13 @@ class BaseEnvironment(ABC):
             from agent.secret_scope import is_multiplex_active
             if is_multiplex_active():
                 from tools.env_passthrough import get_all_passthrough
+                names = (
+                    *get_all_passthrough(),
+                    *self._additional_profile_scoped_passthrough_names(),
+                )
                 self._snapshot_passthrough_names.update(
                     name
-                    for name in get_all_passthrough()
+                    for name in names
                     if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name)
                 )
         except Exception:

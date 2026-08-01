@@ -846,6 +846,10 @@ class DockerEnvironment(BaseEnvironment):
 
     _profile_scoped_passthrough = True
 
+    def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
+        """Keep explicit docker_forward_env values out of shared snapshots."""
+        return tuple(self._forward_env)
+
     def __init__(
         self,
         image: str,

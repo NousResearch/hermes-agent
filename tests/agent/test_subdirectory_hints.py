@@ -142,6 +142,24 @@ class TestSubdirectoryHintTracker:
         assert tracker._load_hints_for_directory(subdir) is None
 
 
+    def test_allows_fallback_install_tree_hints_when_opted_in(self, tmp_path, monkeypatch):
+        """CLI/TUI-style callers can deliberately opt into an in-tree cwd."""
+        from agent import runtime_cwd
+
+        install_tree = tmp_path / "hermes-agent"
+        subdir = install_tree / "agent"
+        subdir.mkdir(parents=True)
+        (subdir / "AGENTS.md").write_text("CLI contributor guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+        monkeypatch.chdir(install_tree)
+
+        tracker = SubdirectoryHintTracker(allow_install_tree=True)
+        result = tracker.check_tool_call("read_file", {"path": str(subdir / "loop.py")})
+
+        assert result is not None
+        assert "CLI contributor guide" in result
+
+
     def test_allows_hints_when_developing_inside_install_tree(self, tmp_path, monkeypatch):
         """An explicit Hermes checkout remains a valid workspace."""
         from agent import runtime_cwd

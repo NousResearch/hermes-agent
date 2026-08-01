@@ -3014,13 +3014,18 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if reply_to and self._reply_to_mode != "off":
                 try:
-                    ref_msg = await channel.fetch_message(int(reply_to))
-                    if hasattr(ref_msg, "to_reference"):
-                        reference = ref_msg.to_reference(fail_if_not_exists=False)
-                    else:
-                        reference = ref_msg
-                except Exception as e:
-                    logger.debug("Could not fetch reply-to message: %s", e)
+                    # Build the reference from ids — no fetch_message round
+                    # trip. Discord resolves message_reference from the ids
+                    # alone, and fail_if_not_exists=False keeps sends to
+                    # deleted targets working exactly as the fetched form did.
+                    reference = discord.MessageReference(
+                        message_id=int(reply_to),
+                        channel_id=getattr(channel, "id", None),
+                        guild_id=getattr(getattr(channel, "guild", None), "id", None),
+                        fail_if_not_exists=False,
+                    )
+                except (ValueError, TypeError) as e:
+                    logger.debug("Could not build reply-to reference: %s", e)
 
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
@@ -3261,7 +3266,7 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
+            msg = channel.get_partial_message(int(message_id))
             formatted = self.format_message(content)
 
             _preview_key = (str(chat_id), str(message_id))
@@ -3401,6 +3406,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     reference = prev_msg.to_reference(fail_if_not_exists=False)
                 except Exception:
                     reference = None
+            elif getattr(prev_msg, "id", None):
+                # PartialMessage has no to_reference — build it from ids so
+                # overflow continuations stay threaded (edit_message uses
+                # get_partial_message, no fetch round trip).
+                reference = discord.MessageReference(
+                    message_id=prev_msg.id,
+                    channel_id=getattr(channel, "id", None),
+                    guild_id=getattr(getattr(channel, "guild", None), "id", None),
+                    fail_if_not_exists=False,
+                )
             try:
                 sent = await channel.send(content=chunk, reference=reference)
             except Exception as send_err:
@@ -3699,13 +3714,16 @@ class DiscordAdapter(BasePlatformAdapter):
             reference = None
             if reply_to and self._reply_to_mode != "off":
                 try:
-                    ref_msg = await channel.fetch_message(int(reply_to))
-                    if hasattr(ref_msg, "to_reference"):
-                        reference = ref_msg.to_reference(fail_if_not_exists=False)
-                    else:
-                        reference = ref_msg
-                except Exception as e:
-                    logger.debug("Could not fetch voice reply-to message: %s", e)
+                    # ids-only reference — same no-fetch rationale as the
+                    # text reply path.
+                    reference = discord.MessageReference(
+                        message_id=int(reply_to),
+                        channel_id=getattr(channel, "id", None),
+                        guild_id=getattr(getattr(channel, "guild", None), "id", None),
+                        fail_if_not_exists=False,
+                    )
+                except (ValueError, TypeError) as e:
+                    logger.debug("Could not build voice reply-to reference: %s", e)
 
             with open(audio_path, "rb") as f:
                 file_data = f.read()

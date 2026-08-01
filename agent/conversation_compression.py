@@ -432,6 +432,15 @@ class CompressionCommitFence:
         self._lock = threading.Lock()
         self._cancelled = False
         self._commit_started = False
+        # Lock-free commit-phase marker (#76354 review F1). ``begin_commit``
+        # RETAINS ``self._lock`` until ``finish_commit``, so any host-side
+        # observation that needs the lock (``try_cancel_before_commit``)
+        # blocks/space-outs for the whole commit. This Event is set inside
+        # ``begin_commit`` while the lock is held but is READABLE WITHOUT the
+        # lock, so a host can observe "a commit was admitted and may be in
+        # flight" even while the commit itself is hung — which is exactly when
+        # the overrun warning must be able to fire.
+        self._commit_phase = threading.Event()
         # Forward-progress telemetry: the compression worker touches this
         # whenever the streamed summary call produces a token (see
         # ContextCompressor._call_summary_llm). Waiters use it to distinguish
@@ -495,11 +504,27 @@ class CompressionCommitFence:
             self._lock.release()
             return False
         self._commit_started = True
+        # Set while the fence lock is held so observers can never see
+        # commit_in_flight=True for a commit that lost to cancellation.
+        self._commit_phase.set()
         return True
 
     def finish_commit(self) -> None:
         """Leave a commit boundary entered by :meth:`begin_commit`."""
+        self._commit_phase.clear()
         self._lock.release()
+
+    @property
+    def commit_in_flight(self) -> bool:
+        """Lock-free read: an admitted commit has begun and not yet finished.
+
+        Safe to call from the host while the worker holds the fence lock for
+        the whole commit (a hung SessionDB write). Hosts use this to reach
+        their overrun-warning loop WHILE the commit is blocked instead of
+        spinning on ``try_cancel_before_commit`` (which needs the lock the
+        worker retains until ``finish_commit``).
+        """
+        return self._commit_phase.is_set()
 
     @property
     def is_cancelled(self) -> bool:
@@ -683,6 +708,14 @@ def run_compress_context_with_progress_timeout(
 
     cancelled: Optional[bool] = None
     while cancelled is None:
+        # F1: ``begin_commit`` retains the fence lock until ``finish_commit``,
+        # so a hung commit makes ``try_cancel_before_commit`` return None
+        # forever. The lock-free phase marker breaks the spin so the
+        # overrun-warning loop below is reachable WHILE the commit is still
+        # blocked.
+        if fence.commit_in_flight:
+            cancelled = False
+            break
         cancelled = fence.try_cancel_before_commit()
         if cancelled is None:
             time.sleep(0.001)

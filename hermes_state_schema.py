@@ -16,6 +16,7 @@ from typing import Dict, Optional
 from hermes_constants import get_hermes_home
 from hermes_state_common import (
     DEFERRED_INDEX_SQL,
+    FTS_CJK_STALE_KEY,
     FTS_SQL,
     FTS_STORAGE_VERSION,
     FTS_TRIGRAM_SQL,
@@ -86,14 +87,20 @@ class SessionSchemaMixin:
         """
         import re as _re
 
+        # CJK is a v23-only surface.  Decide the layout before selecting
+        # destructive candidates so the legacy branch never drops a trigger
+        # it does not recreate.
+        legacy_layout = self._db_has_legacy_inline_fts(cursor)
         update_names = (
             "messages_fts_update",
             "messages_fts_trigram_update",
-            "messages_fts_cjk_update",
         )
+        if not legacy_layout and hasattr(self, "_ensure_fts_cjk_schema"):
+            update_names += ("messages_fts_cjk_update",)
+        placeholders = ", ".join("?" for _ in update_names)
         rows = cursor.execute(
             "SELECT name, sql FROM sqlite_master "
-            "WHERE type = 'trigger' AND name IN (?, ?, ?)",
+            f"WHERE type = 'trigger' AND name IN ({placeholders})",
             update_names,
         ).fetchall()
         to_drop = []
@@ -113,7 +120,7 @@ class SessionSchemaMixin:
 
         # Re-apply current DDL so CREATE TRIGGER installs the OF variants.
         # Choose legacy vs v23 the same way _init_schema does.
-        if self._db_has_legacy_inline_fts(cursor):
+        if legacy_layout:
             self._ensure_fts_schema(cursor, "messages_fts", LEGACY_FTS_SQL)
             self._ensure_fts_schema(
                 cursor, "messages_fts_trigram", LEGACY_FTS_TRIGRAM_SQL
@@ -123,15 +130,27 @@ class SessionSchemaMixin:
             self._ensure_fts_schema(
                 cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
             )
-            # CJK triggers live on the host SessionDB; only recreate if present.
-            if hasattr(self, "_ensure_fts_cjk_schema"):
+            # CJK triggers live on the host SessionDB; only recreate one that
+            # this migration actually dropped.  Unexpected ensure failures
+            # must not leave the host advertising a now-triggerless index.
+            if (
+                "messages_fts_cjk_update" in to_drop
+            ):
                 try:
                     self._ensure_fts_cjk_schema(cursor)
                 except Exception:
-                    logger.debug(
-                        "CJK FTS re-ensure after UPDATE OF migration skipped",
-                        exc_info=True,
+                    self._fts_cjk_available = False
+                    try:
+                        self.set_meta(FTS_CJK_STALE_KEY, "1", cursor=cursor)
+                    except Exception:
+                        logger.debug(
+                            "Could not persist CJK FTS stale breadcrumb",
+                            exc_info=True,
+                        )
+                    logger.exception(
+                        "CJK FTS re-ensure after UPDATE OF migration failed"
                     )
+                    raise
 
         logger.info(
             "Migrated %d broad FTS UPDATE trigger(s) to AFTER UPDATE OF "

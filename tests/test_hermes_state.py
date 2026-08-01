@@ -2698,6 +2698,48 @@ class TestGetMessagesPagination:
         messages = db.get_messages("s1")
         assert [m["content"] for m in messages] == [f"msg-{i}" for i in range(10)]
 
+
+    def test_window_query_bounded_work(self, db):
+        """Perf contract: get_messages_around must seek by index, not scan
+        the session's whole message history. Measured behaviorally via
+        SQLite progress-handler steps (behavior contracts over snapshots,
+        AGENTS.md — no EXPLAIN text). Calibrated on this seed (3000
+        messages): indexed = ~12 handler calls, unindexed full-session
+        scan = ~855. Threshold 300: >25x headroom above the indexed path,
+        ~3x below the scan. Same pattern as the loader call-count pins in
+        tests/tools/test_approval_config_readonly.py."""
+        self._seed(db, n=3000)
+        mid = db.get_messages("s1", limit=1, offset=1500)[0]["id"]
+        steps = [0]
+
+        def progress():
+            steps[0] += 1
+            return 0
+
+        db._conn.set_progress_handler(progress, 100)
+        try:
+            db.get_messages_around("s1", mid, window=20)
+        finally:
+            db._conn.set_progress_handler(None, 0)
+        assert steps[0] < 300, (
+            f"get_messages_around executed {steps[0]}x100 VM steps — the "
+            "session-history scan is back (idx_messages_session_id missing "
+            "or unused)")
+
+
+    def test_window_results_identical_with_and_without_index(self, db):
+        """The index must not change results: identical windows at probe
+        points across the session, with and without it."""
+        self._seed(db, n=500)
+        ids = [m["id"] for m in db.get_messages("s1")]
+        probes = (ids[0], ids[len(ids) // 2], ids[-1])
+        with_index = [db.get_messages_around("s1", mid, window=5)
+                      for mid in probes]
+        db._conn.execute("DROP INDEX idx_messages_session_id")
+        without_index = [db.get_messages_around("s1", mid, window=5)
+                         for mid in probes]
+        assert with_index == without_index
+
     def test_limit_pages_in_insertion_order(self, db):
         self._seed(db)
         page1 = db.get_messages("s1", limit=4, offset=0)

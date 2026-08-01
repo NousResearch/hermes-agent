@@ -885,7 +885,14 @@ def run_compress_context_with_progress_timeout(
             remaining_ceiling = ceiling - waited
             if remaining_ceiling <= 0:
                 break
-            wait_slice = min(idle, remaining_ceiling)
+            # #76354 S3 analogue for this wait: charge the idle budget from
+            # the LAST PROGRESS event, not from the start of this wait slice.
+            # Waiting a full ``idle`` after progress that landed early in the
+            # previous slice would allow silence to approach 2x the budget.
+            since_progress = fence.seconds_since_progress()
+            wait_slice = min(
+                max(idle - since_progress, 0.005), remaining_ceiling
+            )
             try:
                 result = future.result(timeout=wait_slice)
                 handled_exit = True

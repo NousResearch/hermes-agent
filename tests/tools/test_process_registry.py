@@ -2413,3 +2413,95 @@ class TestGetByPrefix:
         result = registry.poll("4dae56ca")
         assert result["session_id"] == "proc_4dae56ca81f6"
         assert result["status"] == "running"
+
+
+class TestConsumedMarkers:
+    """Durable cross-process completion-consumed markers.
+
+    A completion consumed via ``wait``/``read_log`` must stay consumed for
+    the OTHER Hermes processes sharing the profile home (webui server,
+    gateway, delegate_task subprocesses) and across restarts. The durable
+    marker file under CONSUMED_MARKER_DIR provides that; the in-memory set
+    is only a same-process fast path.
+    """
+
+    def test_mark_writes_durable_marker(self, registry, tmp_path, monkeypatch):
+        import tools.process_registry as pr
+        monkeypatch.setattr(pr, "CONSUMED_MARKER_DIR", tmp_path)
+        registry._mark_completion_consumed("proc_aaaabbbbcccc")
+        assert "proc_aaaabbbbcccc" in registry._completion_consumed
+        assert (tmp_path / "proc_aaaabbbbcccc.consumed").exists()
+
+    def test_is_consumed_survives_fresh_registry(self, registry, tmp_path, monkeypatch):
+        """A fresh registry (post-restart) still reports the completion consumed."""
+        import tools.process_registry as pr
+        monkeypatch.setattr(pr, "CONSUMED_MARKER_DIR", tmp_path)
+        registry._mark_completion_consumed("proc_111122223333")
+        fresh = pr.ProcessRegistry()
+        try:
+            assert "proc_111122223333" not in fresh._completion_consumed
+            assert fresh.is_completion_consumed("proc_111122223333")
+        finally:
+            fresh.kill_all()
+
+    def test_is_consumed_false_without_marker(self, registry, tmp_path, monkeypatch):
+        import tools.process_registry as pr
+        monkeypatch.setattr(pr, "CONSUMED_MARKER_DIR", tmp_path)
+        assert not registry.is_completion_consumed("proc_000000000000")
+
+    def test_prefix_wait_marks_canonical_session_id(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """Prefix lookup must persist the full ID used by queued notifications."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "CONSUMED_MARKER_DIR", tmp_path)
+        session = _make_session(
+            sid="proc_aaaabbbbcccc", exited=True, exit_code=0, output="done"
+        )
+        registry._finished[session.id] = session
+
+        result = registry.wait("aaaabbbb", timeout=1)
+
+        assert result["status"] == "exited"
+        assert (tmp_path / "proc_aaaabbbbcccc.consumed").exists()
+        assert not (tmp_path / "aaaabbbb.consumed").exists()
+        assert registry.is_completion_consumed(session.id)
+
+    def test_unsafe_session_id_skips_file_ops(self, registry, tmp_path, monkeypatch):
+        import tools.process_registry as pr
+        monkeypatch.setattr(pr, "CONSUMED_MARKER_DIR", tmp_path)
+        registry._mark_completion_consumed("../escape")
+        assert list(tmp_path.glob("*.consumed")) == []
+        # In-memory fast path still records it for this process.
+        assert registry.is_completion_consumed("../escape")
+
+    def test_ttl_sweep_removes_only_stale_markers(self, tmp_path, monkeypatch):
+        import tools.process_registry as pr
+        monkeypatch.setattr(pr, "CONSUMED_MARKER_DIR", tmp_path)
+        stale = tmp_path / "proc_stale00000.consumed"
+        fresh = tmp_path / "proc_fresh00000.consumed"
+        stale.write_text("{}", encoding="utf-8")
+        fresh.write_text("{}", encoding="utf-8")
+        old = time.time() - (pr.CONSUMED_MARKER_TTL_SECONDS + 60)
+        os.utime(stale, (old, old))
+        pr._sweep_consumed_markers()
+        assert not stale.exists()
+        assert fresh.exists()
+
+    def test_wait_marks_completion_durably(self, registry, tmp_path, monkeypatch):
+        """End-to-end: a waited process leaves a durable consumed marker."""
+        import tools.process_registry as pr
+        monkeypatch.setattr(pr, "CONSUMED_MARKER_DIR", tmp_path)
+        session = registry.spawn_local("echo done")
+        deadline = time.time() + 15
+        while not session.exited and time.time() < deadline:
+            time.sleep(0.05)
+        result = registry.wait(session.id, timeout=5)
+        assert result["status"] == "exited"
+        assert (tmp_path / (session.id + ".consumed")).exists()
+        fresh = pr.ProcessRegistry()
+        try:
+            assert fresh.is_completion_consumed(session.id)
+        finally:
+            fresh.kill_all()

@@ -374,13 +374,7 @@ export interface DesktopUninstallResult {
 }
 
 export type DesktopManagedUpdateStage =
-  | 'available'
-  | 'checking'
-  | 'disabled'
-  | 'downloaded'
-  | 'downloading'
-  | 'error'
-  | 'idle'
+  'available' | 'checking' | 'disabled' | 'downloaded' | 'downloading' | 'error' | 'idle'
 
 export interface DesktopManagedUpdateSnapshot {
   checkedAt?: number

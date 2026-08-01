@@ -1,7 +1,7 @@
 ---
 sidebar_position: 3
-title: 'Desktop App'
-description: 'The native Hermes desktop app — a polished experience for chatting with Hermes, with streaming tool output, side-by-side previews, a file browser, voice, cron, profiles, skills, and settings. macOS, Windows, and Linux.'
+title: "Desktop App"
+description: "The native Hermes desktop app — a polished experience for chatting with Hermes, with streaming tool output, side-by-side previews, a file browser, voice, cron, profiles, skills, and settings. macOS, Windows, and Linux."
 ---
 
 # Desktop App
@@ -219,7 +219,7 @@ By default the app starts and manages its own **local** backend. You can instead
 Connection modes are configured **per profile** — a per-profile override can point one profile at a remote or cloud backend while others stay local (**Use default gateway** removes an override).
 
 :::info The remote backend is a running `hermes serve` process
-"Remote backend" means a **`hermes serve`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a _separate_ long-running process you start independently — see the note after the setup steps.
+"Remote backend" means a **`hermes serve`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see the note after the setup steps.
 :::
 
 The connection has two halves: on the backend you protect it with an **auth provider**, and in the app you enter the backend's URL and sign in. Binding the backend to a non-loopback address automatically engages its auth gate, and the provider you configure is what lets the desktop app through.
@@ -269,7 +269,7 @@ The backend reads and writes your `.env` (API keys, secrets) and can run agent c
 **Settings → Gateway → Remote gateway:**
 
 1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
-2. **Sign in** — the app detects which provider the backend advertises and adapts the button. For a username/password backend it shows a **Sign in** button that opens a credential form (enter the credentials from step 1). For an OAuth backend it shows **Sign in with `<provider>`** (e.g. _Sign in with Nous Research_), which runs the provider's browser sign-in. Either way the app ends up with an authenticated session against the backend.
+2. **Sign in** — the app detects which provider the backend advertises and adapts the button. For a username/password backend it shows a **Sign in** button that opens a credential form (enter the credentials from step 1). For an OAuth backend it shows **Sign in with `<provider>`** (e.g. *Sign in with Nous Research*), which runs the provider's browser sign-in. Either way the app ends up with an authenticated session against the backend.
 3. **Save and reconnect** — switches the desktop shell onto the remote backend. The session refreshes automatically; you stay signed in across restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set.
 
 You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateway settings panel.
@@ -368,7 +368,7 @@ npm run pack         # unpacked app under release/ (no installer)
 
 Packaged Windows builds update through GitHub Releases. Desktop checks in the background, downloads and verifies the update, displays progress beside the lower-left profile controls, and installs it silently when you close the app normally. The previous installer remains available until the new renderer passes startup health; failed candidates automatically roll back and the rejected version is not downloaded again.
 
-Maintainers publish Windows updater assets through the manual **Desktop Windows release** GitHub Actions workflow. The package version and release tag must match, Windows signing secrets must be present, and the workflow verifies Authenticode on both executables, requires a certificate-derived runtime publisher identity in packaged `app-update.yml`, and validates the installer, blockmap, and `latest.yml` as one synchronized set before creating provenance. Setting `publish=true` uploads those verified assets to an already-existing release; it never creates a tag or silently replaces an asset.
+Maintainers publish Windows updater assets through the manual **Desktop Windows release** GitHub Actions workflow. The package version and release tag must match, Windows signing secrets must be present, and the workflow verifies Authenticode on both executables, requires a certificate-derived runtime publisher identity in packaged `app-update.yml`, and validates the installer, blockmap, and `latest.yml` as one synchronized set before creating provenance. Setting `publish=true` is the explicit public-release approval: it uploads those verified assets to an already-existing draft release, re-verifies the remote asset set, then promotes that draft. It never creates a tag or silently replaces an asset.
 
 macOS signing and notarization use `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*`; Windows uses `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`.
 

@@ -167,6 +167,20 @@ jobs:
           "blockmap=$($verification.blockmap)" >> $env:GITHUB_OUTPUT
           "latest=$($verification.latest)" >> $env:GITHUB_OUTPUT
 
+      - name: Exercise signed NSIS installer retention
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+          INSTALLER_NAME: ${{ steps.verify.outputs.installer }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installerPath = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/release/$env:INSTALLER_NAME"
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'hermes-retention-install'
+          node apps/desktop/scripts/verify-installer-retention.mjs `
+            --installer $installerPath `
+            --version $env:EXPECTED_VERSION `
+            --install-dir $installDirectory
+
       - name: Attest release artifact provenance
         id: provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
@@ -252,6 +266,11 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           VERSION: ${{ inputs.version }}
         run: |
+          $releaseVisibility = if ($env:PUBLISH -eq 'true') {
+            'public (verified and promoted)'
+          } else {
+            'not inspected or changed'
+          }
           $summary = @"
           ## Hermes Desktop Windows release
 
@@ -261,5 +280,6 @@ jobs:
           - Installer/update metadata: synchronized
           - Provenance: attested
           - Uploaded to GitHub Release: `$env:PUBLISH`
+          - Release visibility after workflow: $releaseVisibility
           "@
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

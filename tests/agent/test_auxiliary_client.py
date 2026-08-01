@@ -4213,3 +4213,66 @@ class TestSynchronousFallbackCachePlans:
             for part in (message.get("content") if isinstance(message.get("content"), list) else [])
         )
 
+
+
+class TestAsynchronousFallbackCachePlans:
+    @pytest.mark.asyncio
+    async def test_async_fallback_replans_cache_sections_like_sync(self, monkeypatch):
+        """Async mirror parity: per-destination cache replan, not verbatim pass-through."""
+        from agent.auxiliary_client import (
+            _call_fallback_candidate_async,
+            _try_configured_fallback_chain,
+        )
+
+        entry = {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        }
+        client = MagicMock()
+        client.base_url = entry["base_url"]
+
+        async def _create(**kwargs):
+            return _DummyResponse()
+
+        client.chat.completions.create = MagicMock(side_effect=_create)
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client",
+            lambda provider, model=None, **kwargs: (client, model),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": [entry]},
+        )
+        fallback_client, fallback_model, label = _try_configured_fallback_chain(
+            task="moa_aggregator",
+            failed_provider="primary",
+        )
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        await _call_fallback_candidate_async(
+            fallback_client,
+            fallback_model,
+            label,
+            task="moa_aggregator",
+            messages=[
+                {"role": "system", "content": "stable prefix"},
+                {"role": "user", "content": "lookup"},
+            ],
+            temperature=None,
+            max_tokens=None,
+            tools=tools,
+            effective_timeout=30.0,
+            effective_extra_body={},
+            reasoning_config=None,
+        )
+
+        wire_tools = client.chat.completions.create.call_args.kwargs["tools"]
+        assert "cache_control" in wire_tools[-1]
+        assert "cache_control" not in tools[-1]

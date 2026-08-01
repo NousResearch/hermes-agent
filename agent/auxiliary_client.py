@@ -4468,43 +4468,71 @@ async def _call_fallback_candidate_async(
             task or "call", fb_label, fb_timeout, effective_timeout,
         )
         effective_timeout = fb_timeout
-    fb_base = str(getattr(fb_client, "base_url", "") or "")
+    destination = _fallback_destination(task, fb_client, fb_model, fb_label)
+    fallback_messages, fallback_tools = _replan_synchronous_cache_sections(
+        messages,
+        tools,
+        destination=destination,
+    )
     fb_kwargs = _build_call_kwargs(
-        fb_label, fb_model, messages,
+        destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout,
+        tools=fallback_tools, timeout=effective_timeout,
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
-        base_url=fb_base, task=task)
+        base_url=destination.base_url, task=task)
     try:
         return _validate_llm_response(
             await _relay_async_completion(
                 fb_client,
                 fb_kwargs,
-                provider=fb_label,
+                provider=destination.provider,
+                api_mode=destination.api_mode,
             ),
             task,
         )
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
-        fb_provider = _auth_refresh_provider_for_route(fb_label, fb_base)
+        fb_provider = _auth_refresh_provider_for_route(
+            destination.provider, destination.base_url
+        )
         if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
             retry_client, retry_model = _get_cached_client(
-                fb_provider, fb_model, async_mode=True)
+                fb_provider,
+                destination.model,
+                async_mode=True,
+                base_url=destination.base_url or None,
+                api_mode=destination.api_mode,
+            )
             if retry_client is not None:
+                retry_destination = _FallbackDestination(
+                    fb_provider,
+                    destination.base_url
+                    or str(getattr(retry_client, "base_url", "") or ""),
+                    destination.api_mode,
+                    retry_model or destination.model,
+                )
+                retry_messages, retry_tools = _replan_synchronous_cache_sections(
+                    messages,
+                    tools,
+                    destination=retry_destination,
+                )
                 retry_kwargs = _build_call_kwargs(
-                    fb_provider, retry_model or fb_model, messages,
+                    retry_destination.provider,
+                    retry_destination.model,
+                    retry_messages,
                     temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, timeout=effective_timeout,
+                    tools=retry_tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     reasoning_config=reasoning_config,
-                    base_url=str(getattr(retry_client, "base_url", "") or fb_base), task=task)
+                    base_url=retry_destination.base_url, task=task)
                 try:
                     return _validate_llm_response(
                         await _relay_async_completion(
                             retry_client,
                             retry_kwargs,
-                            provider=fb_provider,
+                            provider=retry_destination.provider,
+                            api_mode=retry_destination.api_mode,
                         ),
                         task,
                     )

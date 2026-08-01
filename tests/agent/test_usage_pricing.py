@@ -312,3 +312,25 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
 
     assert result.status == "estimated"
     assert result.amount_usd is not None and result.amount_usd > 0
+
+
+def test_openrouter_reported_cost_helper():
+    """_openrouter_reported_cost reads usage.cost and guards bad values."""
+    from agent.conversation_loop import _openrouter_reported_cost
+
+    # OpenRouter returns the real charged amount in usage.cost.
+    resp = SimpleNamespace(usage=SimpleNamespace(cost=0.0142))
+    assert _openrouter_reported_cost(resp) == 0.0142
+
+    # Missing field -> None (caller falls back to estimate).
+    resp_nocost = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=100))
+    assert _openrouter_reported_cost(resp_nocost) is None
+
+    # Non-numeric / NaN / negative -> None (defensive).
+    assert _openrouter_reported_cost(SimpleNamespace(usage=SimpleNamespace(cost="oops"))) is None
+    assert _openrouter_reported_cost(SimpleNamespace(usage=SimpleNamespace(cost=float("nan")))) is None
+    assert _openrouter_reported_cost(SimpleNamespace(usage=SimpleNamespace(cost=-1))) is None
+
+    # No usage at all -> None.
+    assert _openrouter_reported_cost(SimpleNamespace(usage=None)) is None
+    assert _openrouter_reported_cost(SimpleNamespace()) is None

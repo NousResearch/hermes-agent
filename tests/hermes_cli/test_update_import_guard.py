@@ -44,8 +44,13 @@ def test_syntax_guard_passes_but_import_guard_catches_skew(monkeypatch, tmp_path
     _write_skewed_tree(tmp_path, skewed=True)
 
     # Both files are valid Python -- the syntax guard sees nothing wrong.
+    # NOTE: patch update_cmd's global, not hermes_main's. Both modules expose
+    # the name, but _validate_critical_files_syntax reads the one in its own
+    # module. Patching the re-export leaves the real list in place, the stub
+    # files are never looked at, and the guard returns a vacuous (True, None,
+    # None) that would make this test pass no matter what the code did.
     monkeypatch.setattr(
-        hermes_main, "_UPDATE_CRITICAL_FILES", ("consumer.py", "provider/thing.py")
+        update_cmd, "_UPDATE_CRITICAL_FILES", ("consumer.py", "provider/thing.py")
     )
     syntax_ok, _, _ = hermes_main._validate_critical_files_syntax(tmp_path)
     assert syntax_ok, "sanity: the skewed tree must parse cleanly"
@@ -171,3 +176,20 @@ def test_import_guard_flags_missing_first_party_module(monkeypatch, tmp_path):
     assert ok is False
     assert module == "consumer"
     assert error is not None and "tools.nonexistent_module" in error
+
+
+@pytest.mark.parametrize("modname", ["agents", "agentops", "toolsets_x", "hermesx"])
+def test_hint_does_not_claim_partial_update_for_lookalike_third_party(modname):
+    """``startswith`` would match third-party ``agents``/``agentops`` and blame
+    our updater for someone else's import error."""
+    exc = ImportError("boom")
+    exc.name = modname
+    assert partial_update_hint(exc) == []
+
+
+@pytest.mark.parametrize("modname", ["tools.todo_tool", "agent.context_compressor",
+                                     "hermes_constants", "cli"])
+def test_hint_fires_for_each_first_party_root(modname):
+    exc = ImportError("cannot import name 'X'")
+    exc.name = modname
+    assert partial_update_hint(exc), f"expected guidance for {modname}"

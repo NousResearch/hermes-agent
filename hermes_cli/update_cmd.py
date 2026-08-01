@@ -3819,22 +3819,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(
                 _m().PROJECT_ROOT
             )
-            if syntax_ok:
-                # Parsing clean isn't enough: a tree can be syntactically valid
-                # and still unimportable when modules land out of sync (see
-                # _validate_critical_modules_import). Catch that here too so the
-                # same rollback path covers both failure modes.
-                (
-                    syntax_ok,
-                    failing_path,
-                    syntax_error,
-                ) = _m()._validate_critical_modules_import(_m().PROJECT_ROOT)
-                failure_label = "cannot be imported (partially-updated tree)"
-            else:
-                failure_label = "has a syntax error"
             if not syntax_ok:
                 print()
-                print(f"✗ Pulled code {failure_label} in a critical file:")
+                print("✗ Pulled code has a syntax error in a critical file:")
                 print(f"  {failing_path}")
                 if syntax_error:
                     # py_compile errors can be multi-line; show the first
@@ -4014,6 +4001,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # reinstall + lazy refresh above may have stripped or downgraded
         # plugin.yaml-declared deps that aren't in extras (#53272, #70636).
         _m()._refresh_active_memory_provider_dependencies()
+
+        # Everything that can legitimately produce a transient ImportError has
+        # now run (bytecode sweep, dependency reinstall, lazy refresh), so a
+        # module that still won't import is real breakage. Warn only — never
+        # roll back here: `cannot import name X` is also the signature of the
+        # stale-bytecode class (#6207, #60242), and the launch-time sweep in
+        # _sweep_stale_bytecode_if_checkout_changed() self-heals that on the
+        # next run. A destructive reset would undo a good update over a state
+        # that fixes itself.
+        import_ok, failing_module, import_error = _validate_critical_modules_import(
+            _m().PROJECT_ROOT
+        )
+        if not import_ok:
+            print()
+            print(f"  ⚠ {failing_module} still fails to import after updating:")
+            print(f"      {import_error}")
+            print("    Run `hermes update` again — if it persists, reinstall:")
+            print("    https://hermes-agent.nousresearch.com")
 
         node_failures = _update_node_dependencies()
         _m()._build_web_ui(_m().PROJECT_ROOT / "web")

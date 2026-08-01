@@ -165,4 +165,32 @@ describe('watchSessionPins remote pull', () => {
 
     expect($pinnedSessionIds.get()).not.toContain('race')
   })
+
+  it('does not let a stale page undo a pin before the write fires', async () => {
+    // Regression: pullRemotePins ran before the push pass, so a stale page
+    // showing pinned=false immediately undid a just-made pin before writePin
+    // ever fired. The justChanged guard now skips ids in this window.
+    $sessions.set([row('stale', { pinned: false })])
+    $pinnedSessionIds.set(['stale'])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('stale', true, undefined)
+    expect($pinnedSessionIds.get()).toContain('stale')
+  })
+
+  it('does not let a stale page re-pin a just-unpinned session', async () => {
+    // Regression: pullRemotePins ran before the push pass, so a stale page
+    // showing pinned=true immediately re-pinned a just-unpinned session
+    // before writePin(false) ever fired.
+    $sessions.set([row('stale-2', { pinned: true })])
+    $pinnedSessionIds.set(['stale-2'])
+    await flush()
+    patch.mockClear()
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('stale-2', false, undefined)
+    expect($pinnedSessionIds.get()).not.toContain('stale-2')
+  })
 })

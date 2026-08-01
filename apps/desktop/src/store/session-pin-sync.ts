@@ -59,8 +59,14 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
  * Runs before the push pass so a remote pin is already in the local set by the
  * time we reconcile — it gets marked as mirrored rather than echoed straight
  * back as a redundant PATCH.
+ *
+ * ``justChanged`` carries ids whose local state was just changed by the user
+ * (the symmetric difference between the pinned set and what we've successfully
+ * mirrored).  Those ids must be skipped: the ``$sessions`` page is stale until
+ * the push pass writes the new value and the next refresh carries it, so
+ * adopting the server's old state would immediately undo the user's click.
  */
-function pullRemotePins(): void {
+function pullRemotePins(justChanged: Set<string>): void {
   const local = new Set($pinnedSessionIds.get())
 
   for (const row of $sessions.get()) {
@@ -72,6 +78,13 @@ function pullRemotePins(): void {
     // Pins are keyed on the durable lineage root so they survive compression
     // tip rotation; the row may surface under either identity.
     const pinId = sessionPinId(row)
+
+    // Skip ids whose local state was just changed by the user — the page is
+    // stale and the push pass will write the correct value.
+    if (justChanged.has(pinId) || justChanged.has(row.id)) {
+      continue
+    }
+
     const heldLocally = local.has(pinId) || local.has(row.id)
 
     // A write of ours the page hasn't caught up to yet is newer than the page.
@@ -99,8 +112,34 @@ function reconcile(): void {
     return
   }
 
-  pullRemotePins()
+  // Compute the set of ids whose local pin state was just changed by the user
+  // but hasn't been mirrored to the server yet.  Pull must skip these: the
+  // $sessions page still carries the old server value and would immediately
+  // undo the user's click.  This is the symmetric difference between what the
+  // local set says and what we've successfully mirrored.
+  const prePull = new Set($pinnedSessionIds.get())
+  const justChanged = new Set<string>()
 
+  // Newly pinned (in local set, not yet mirrored) — the push pass will write
+  // pinned=true; pull must not see pinned=false and undo it.
+  for (const id of prePull) {
+    if (!mirrored.has(id) && !pending.has(id)) {
+      justChanged.add(id)
+    }
+  }
+
+  // Newly unpinned (was mirrored/pending, no longer in local set) — the push
+  // pass will write pinned=false; pull must not see pinned=true and re-pin it.
+  for (const id of [...mirrored, ...pending]) {
+    if (!prePull.has(id)) {
+      justChanged.add(id)
+    }
+  }
+
+  pullRemotePins(justChanged)
+
+  // Re-read after pull — pullRemotePins may have adopted/dropped pins via
+  // pinSession/unpinSession, and the push pass must see the updated set.
   const current = new Set($pinnedSessionIds.get())
 
   // Unpinned: anything we were tracking that's no longer in the set.

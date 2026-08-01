@@ -13,11 +13,12 @@ import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
   $layoutTree,
+  bindToolPaneCollapse,
   bindTreeSideVisibility,
   declareDefaultTree,
   dismissTreePane,
   dockPaneBeside,
-  markCollapsePane,
+  isToolPaneVisible,
   mirrorLayoutTree,
   paneRootSide,
   registerLayoutResetHandler,
@@ -25,8 +26,8 @@ import {
   registerPaneOpener,
   resetLayoutTree,
   revealTreePane,
-  setPaneCollapsed,
   setTreePaneHidden,
+  toggleToolPane,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -175,7 +176,11 @@ registry.registerMany([
     // staying collapsed behind the ⌃` toggle. height sizes the fixed track (a
     // single-pane zone declaring a height is a fixed track — the preset weight
     // is moot): a short deck, not a third of the window.
-    data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
+    //
+    // NO minHeight: a tool panel drags all the way down to its collapsed
+    // header (the sash floors it at COLLAPSED_ZONE_PX and folds the zone to
+    // its rail there). A real floor left a sliver of unusable terminal.
+    data: { placement: 'bottom', height: '20vh', maxHeight: '80vh', revealOnPreset: true },
     render: () => <WiredPane part="terminal" />
   },
   {
@@ -236,7 +241,8 @@ registry.registerMany([
     title: 'logs',
     // revealOnPreset: the Quad layout places logs, so applying it turns the
     // logs pane on (like a ⌘K "Toggle logs") instead of leaving it collapsed.
-    data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
+    // No minHeight — same tool-panel rule as the terminal above.
+    data: { placement: 'bottom', height: '20vh', maxHeight: '80vh', revealOnPreset: true },
     render: () => idle(<LogsPane />)
   }
 ])
@@ -488,27 +494,9 @@ function bindPaneVisibility(
   }
 }
 
-// TOOL PANELS (terminal, logs): like bindPaneVisibility but the toggle COLLAPSES
-// the zone to a persistent rail (tab stays) instead of hiding it — the
-// IntelliJ/VS-Code tool-window model. Restore routes back through `open` (rail
-// click / chevron) so ⌃`/the button stay truthful; Close removes the tab.
-//
-// OPEN goes through revealTreePane, not setPaneCollapsed: Close DISMISSES the
-// pane, and setPaneCollapsed can't act on a pane that has left the tree — the
-// toggle would flip its store with nothing coming back. revealTreePane
-// un-dismisses and re-adopts.
-function bindPaneCollapse(
-  paneId: string,
-  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
-  close: () => void,
-  open: () => void
-) {
-  markCollapsePane(paneId)
-  setPaneCollapsed(paneId, !$open.get())
-  $open.listen(isOpen => (isOpen ? revealTreePane(paneId) : setPaneCollapsed(paneId, true)))
-  registerPaneCloser(paneId, close)
-  registerPaneOpener(paneId, open)
-}
+// TOOL PANELS (terminal, logs): the binding lives in the tree store —
+// bindToolPaneCollapse — so the boot rule it encodes is testable against the
+// real function instead of a copy. See its docblock for the semantics.
 
 // SIDES have one source of truth: the TREE. The legacy $panesFlipped flag is
 // DERIVED from where the sessions zone actually sits (TitlebarControls maps
@@ -573,7 +561,7 @@ bindPaneVisibility(
 )
 // ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
 // hides; PTYs stay alive while collapsed (see PersistentTerminal).
-bindPaneCollapse(
+bindToolPaneCollapse(
   'terminal',
   $terminalTakeover,
   () => setTerminalTakeover(false),
@@ -591,7 +579,7 @@ bindPaneVisibility('preview', $previewVisible, closeRightRail)
 // Logs are optional chrome: off by default, toggled from ⌘K, persisted.
 const $logsOpen = persistentAtom('hermes.desktop.logsOpen', false, Codecs.bool)
 
-bindPaneCollapse(
+bindToolPaneCollapse(
   'logs',
   $logsOpen,
   () => $logsOpen.set(false),
@@ -603,8 +591,10 @@ registry.register(
     label: 'Toggle logs',
     icon: FileText,
     keywords: ['logs', 'agent log', 'tail', 'debug'],
-    get: () => $logsOpen.get(),
-    set: enabled => $logsOpen.set(enabled)
+    // On-screen, not the store's boolean: logs stacks with the terminal, and
+    // behind its sibling's tab `$logsOpen` stays true while nothing is visible.
+    get: () => isToolPaneVisible('logs'),
+    set: () => toggleToolPane('logs')
   })
 )
 

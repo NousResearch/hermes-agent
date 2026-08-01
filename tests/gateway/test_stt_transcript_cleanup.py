@@ -74,20 +74,26 @@ async def test_disabled_cleanup_does_not_import_cleanup_module(monkeypatch):
 async def test_cleanup_exception_keeps_raw_transcript_without_logging_content(caplog):
     runner = _runner({"enabled": True})
     raw = "private raw words"
+    topic = "secret channel topic"
 
     with (
         _successful_stt(raw),
-        patch("tools.transcript_cleanup.cleanup_transcript", side_effect=RuntimeError("boom")),
+        patch(
+            "tools.transcript_cleanup.cleanup_transcript",
+            side_effect=RuntimeError(f"cleanup failed for {raw} in {topic}"),
+        ),
     ):
         enriched, successful = await runner._enrich_message_with_transcription(
             "",
             ["/tmp/voice.ogg"],
+            topic_context=topic,
         )
 
     assert enriched == f'"{raw}"'
     assert successful == [raw]
     assert "cleanup" in caplog.text.lower()
     assert raw not in caplog.text
+    assert topic not in caplog.text
 
 
 @pytest.mark.asyncio

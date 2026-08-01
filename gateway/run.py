@@ -24967,7 +24967,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             transcript = cleanup_result.text
                         except Exception:
-                            logger.exception(
+                            logger.warning(
                                 "Transcript cleanup failed; using raw transcript"
                             )
                     successful_transcripts.append(transcript)

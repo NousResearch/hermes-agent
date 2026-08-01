@@ -39,6 +39,33 @@ class TestIsTtsEcho:
         transcript = "stop"
         assert is_tts_echo(transcript, spoken) is False
 
+    def test_short_fragment_of_longer_multi_sentence_reply_is_echo(self):
+        # Playback-phase captures are cut immediately on trigger and only
+        # span pre-roll + time-to-silence, so a real self-capture is
+        # typically a short fragment of a much longer spoken reply, not a
+        # near-verbatim repeat of the whole thing. A whole-string ratio
+        # dilutes with the length mismatch and misses this case (#75780
+        # review).
+        spoken = (
+            "Sure, here's a summary of what we found. The build failed "
+            "because of a missing dependency in the lockfile. I've already "
+            "gone ahead and regenerated it, and the tests are passing "
+            "again locally. Let me know if you'd like me to open a PR for "
+            "this or if you want to review the diff first before I do "
+            "anything else."
+        )
+        transcript = "Sure, here's a summary of what we found."
+        assert is_tts_echo(transcript, spoken) is True
+
+    def test_short_fragment_from_middle_of_reply_is_echo(self):
+        spoken = (
+            "The deployment finished successfully. All three services "
+            "came up healthy, and the smoke tests passed without any "
+            "errors."
+        )
+        transcript = "the smoke tests passed without any errors"
+        assert is_tts_echo(transcript, spoken) is True
+
     def test_empty_inputs_are_not_echo(self):
         assert is_tts_echo("", "hello") is False
         assert is_tts_echo("hello", "") is False

@@ -1338,6 +1338,16 @@ def is_tts_echo(
     a strong signal of speaker-bleed self-capture (fail-closed guard for the
     playback-phase full-duplex listener, which has no acoustic echo
     cancellation; see #75780).
+
+    The playback-phase capture is cut immediately when the barge trigger
+    fires and only spans the pre-roll buffer plus time-to-silence, so for
+    any spoken reply longer than a clause the transcript is a short
+    FRAGMENT of `spoken_text`, not a near-verbatim repeat of the whole
+    thing. A whole-string ratio dilutes towards 0 as `spoken_text` grows
+    past the fragment's length, so when the whole-string check misses, we
+    also slide a window sized to the transcript's word count across
+    `spoken_text` and compare against each window, catching a short
+    fragment echoed from within a much longer multi-sentence reply.
     """
     if not transcript or not spoken_text:
         return False
@@ -1345,7 +1355,19 @@ def is_tts_echo(
     b = _normalize_for_echo_compare(spoken_text)
     if not a or not b:
         return False
-    return difflib.SequenceMatcher(None, a, b).ratio() >= threshold
+    if difflib.SequenceMatcher(None, a, b).ratio() >= threshold:
+        return True
+    b_words = b.split(" ")
+    a_word_count = len(a.split(" "))
+    if a_word_count >= len(b_words):
+        return False
+    best_ratio = 0.0
+    for start in range(0, len(b_words) - a_word_count + 1):
+        window = " ".join(b_words[start : start + a_word_count])
+        ratio = difflib.SequenceMatcher(None, a, window).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+    return best_ratio >= threshold
 
 
 def voice_stop_hint() -> str:

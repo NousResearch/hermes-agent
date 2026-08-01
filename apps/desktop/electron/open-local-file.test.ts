@@ -48,42 +48,42 @@ function harness(opts: {
   return { rec, deps }
 }
 
-test('macOS PDF opens via Preview and skips the default handler on success', async () => {
-  const { rec, deps } = harness({ platform: 'darwin', previewResult: null })
+test('macOS PDF opens via the default handler and skips Preview on success', async () => {
+  const { rec, deps } = harness({ platform: 'darwin', openPathResult: '' })
 
   await openLocalFile('/tmp/report.pdf', deps)
 
-  assert.deepEqual(rec.preview, ['/tmp/report.pdf'])
-  assert.deepEqual(rec.openPath, [], 'default handler must not run when Preview succeeds')
+  assert.deepEqual(rec.openPath, ['/tmp/report.pdf'], 'the user default handler runs first')
+  assert.deepEqual(rec.preview, [], 'Preview must not run when the default handler succeeds')
   assert.deepEqual(rec.reveal, [])
 })
 
-test('macOS PDF falls back to the default handler when Preview fails', async () => {
+test('macOS PDF falls back to Preview when the default handler fails', async () => {
   const { rec, deps } = harness({
     platform: 'darwin',
-    previewResult: 'Preview did not launch',
-    openPathResult: ''
+    openPathResult: 'Failed to open path',
+    previewResult: null
   })
 
   await openLocalFile('/tmp/report.pdf', deps)
 
+  assert.deepEqual(rec.openPath, ['/tmp/report.pdf'], 'default handler is tried before Preview')
   assert.deepEqual(rec.preview, ['/tmp/report.pdf'])
-  assert.deepEqual(rec.openPath, ['/tmp/report.pdf'])
-  assert.deepEqual(rec.reveal, [], 'no reveal when the default handler succeeds')
-  assert.ok(rec.logs.some(l => l.includes('Preview open failed')))
+  assert.deepEqual(rec.reveal, [], 'no reveal when Preview succeeds')
+  assert.ok(rec.logs.some(l => l.includes('trying Preview')))
 })
 
-test('macOS PDF reveals in folder when both Preview and the default handler fail', async () => {
+test('macOS PDF reveals in folder when both the default handler and Preview fail', async () => {
   const { rec, deps } = harness({
     platform: 'darwin',
-    previewResult: 'Preview did not launch',
-    openPathResult: 'Failed to open path'
+    openPathResult: 'Failed to open path',
+    previewResult: 'Preview did not launch'
   })
 
   await openLocalFile('/tmp/report.pdf', deps)
 
-  assert.deepEqual(rec.preview, ['/tmp/report.pdf'])
   assert.deepEqual(rec.openPath, ['/tmp/report.pdf'])
+  assert.deepEqual(rec.preview, ['/tmp/report.pdf'])
   assert.deepEqual(rec.reveal, ['/tmp/report.pdf'])
 })
 
@@ -107,13 +107,17 @@ test('non-macOS PDF uses the default handler and never invokes Preview', async (
   assert.deepEqual(rec.reveal, [])
 })
 
-test('Preview bypass matches the .pdf extension case-insensitively', async () => {
-  const { rec, deps } = harness({ platform: 'darwin', previewResult: null })
+test('Preview fallback matches the .pdf extension case-insensitively', async () => {
+  const { rec, deps } = harness({
+    platform: 'darwin',
+    openPathResult: 'Failed to open path',
+    previewResult: null
+  })
 
   await openLocalFile('/tmp/REPORT.PDF', deps)
 
+  assert.deepEqual(rec.openPath, ['/tmp/REPORT.PDF'])
   assert.deepEqual(rec.preview, ['/tmp/REPORT.PDF'])
-  assert.deepEqual(rec.openPath, [])
 })
 
 test('a rejected openPath is logged and does not reveal (parity with prior behavior)', async () => {

@@ -22,6 +22,7 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
@@ -598,6 +599,16 @@ export function useMessageStream({
           turnStartedAt: null
         }
       })
+
+      // Persistence / mid-turn disk-full failures land as a terminal frame with
+      // an error string, not a rejected prompt.submit. Toast them here so a
+      // full disk never looks like a silent no-reply. Only fire on actual
+      // failure signals — never on a healthy reply that happens to say
+      // "disk full".
+      const diskFullSignal = failure?.error || (failure ? text : '')
+      if (diskFullSignal && isDiskFullErrorMessage(diskFullSignal)) {
+        notifyError(new Error(diskFullSignal), translateNow('notifications.errors.diskFull'))
+      }
 
       scheduleSessionsRefresh()
 

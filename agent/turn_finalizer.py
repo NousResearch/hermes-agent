@@ -647,6 +647,13 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    # Persistence failures already set failed=True + an explanation in
+    # final_response; also stamp `error` so gateway surfaces status="error"
+    # (and desktop can toast disk-full) instead of a quiet complete frame.
+    if failed and str(_turn_exit_reason) == "session_persistence_failed":
+        result["error"] = final_response or (
+            "session storage could not be written — free disk space and try again"
+        )
     # Surface any post-loop cleanup failures so the caller can distinguish a
     # clean turn from one whose trajectory/session/resource teardown raised
     # (the response is still returned either way — #8049).

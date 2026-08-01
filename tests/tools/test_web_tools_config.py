@@ -874,38 +874,37 @@ class TestNonBuiltinProviderAvailability:
 
 
 class TestFirecrawlEnvResolution:
-    """Verify Firecrawl reads env values from hermes_cli.config.get_env_value,
-    not just os.getenv.  This catches the regression reported in #40190 where
-    values stored in ~/.hermes/.env were invisible to the provider."""
+    """Verify Firecrawl reads env values through get_provider_env
+    (prefer-dotenv), not bare os.getenv / env-first get_env_value alone.
+    Covers #40190 + #65459 credential rotation."""
 
-    def test_direct_config_reads_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """_get_direct_firecrawl_config() must use get_env_value, not os.getenv."""
-        # Ensure os.environ does NOT carry the key
+    def test_direct_config_reads_via_get_provider_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_get_direct_firecrawl_config() must use get_provider_env."""
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
 
         fake_key = "fc-test-key-from-dotenv"
         with patch(
-            "hermes_cli.config.get_env_value",
-            side_effect=lambda k: fake_key if k == "FIRECRAWL_API_KEY" else None,
+            "agent.web_search_provider.get_provider_env",
+            side_effect=lambda k: fake_key if k == "FIRECRAWL_API_KEY" else "",
         ):
             from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
 
             result = _get_direct_firecrawl_config()
-            assert result is not None, "get_env_value fallback should find the key"
+            assert result is not None, "get_provider_env should find the key"
             mode, kwargs, _cache_key = result
             assert mode == "sdk"
             assert kwargs["api_key"] == fake_key
 
-    def test_direct_config_reads_url_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Self-hosted URL from .env must be picked up."""
+    def test_direct_config_reads_url_via_get_provider_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Self-hosted URL from provider env must be picked up."""
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
 
         fake_url = "https://firecrawl.internal.example.com"
         with patch(
-            "hermes_cli.config.get_env_value",
-            side_effect=lambda k: fake_url if k == "FIRECRAWL_API_URL" else None,
+            "agent.web_search_provider.get_provider_env",
+            side_effect=lambda k: fake_url if k == "FIRECRAWL_API_URL" else "",
         ):
             from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
 
@@ -943,12 +942,12 @@ class TestSiblingProvidersEnvResolution:
         assert provider.is_available() is False
 
         with patch(
-            "hermes_cli.config.get_env_value",
+            "hermes_cli.config.get_env_value_prefer_dotenv",
             side_effect=lambda k: "test-key-from-dotenv" if k == env_key else None,
         ):
             assert provider.is_available() is True, (
                 f"{cls_name}.is_available() ignored {env_key} from the "
-                "config-aware env layer (get_env_value)"
+                "config-aware env layer (get_provider_env / prefer-dotenv)"
             )
 
     def test_keenable_search_reads_key_via_get_env_value(self, monkeypatch):
@@ -960,7 +959,7 @@ class TestSiblingProvidersEnvResolution:
         mock_response.text = "{}"
 
         with patch(
-            "hermes_cli.config.get_env_value",
+            "hermes_cli.config.get_env_value_prefer_dotenv",
             side_effect=lambda k: "kn-from-dotenv" if k == "KEENABLE_API_KEY" else None,
         ), patch(
             "requests.post", return_value=mock_response
@@ -981,7 +980,7 @@ class TestSiblingProvidersEnvResolution:
         mock_response.text = "{}"
 
         with patch(
-            "hermes_cli.config.get_env_value",
+            "hermes_cli.config.get_env_value_prefer_dotenv",
             side_effect=lambda k: "tvly-from-dotenv" if k == "TAVILY_API_KEY" else None,
         ), patch(
             "plugins.web.tavily.provider.httpx.post", return_value=mock_response
@@ -997,7 +996,7 @@ class TestSiblingProvidersEnvResolution:
 
     def test_get_provider_env_unset_returns_empty(self, monkeypatch):
         monkeypatch.delenv("WSP_TEST_UNSET_KEY", raising=False)
-        with patch("hermes_cli.config.get_env_value", return_value=None):
+        with patch("hermes_cli.config.get_env_value_prefer_dotenv", return_value=None):
             from agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""

@@ -213,9 +213,9 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         # Developer machines may carry FIRECRAWL_* in ~/.hermes/.env — the
-        # config-aware lookup must see a truly keyless environment here.
+        # prefer-dotenv lookup must see a truly keyless environment here.
         monkeypatch.setattr(
-            "hermes_cli.config.get_env_value", lambda name: None, raising=True
+            "hermes_cli.config.get_env_value_prefer_dotenv", lambda name: None, raising=True
         )
 
         calls = {}

@@ -22,12 +22,15 @@ import {
   $collapsedTreeSides,
   $hiddenTreePanes,
   $narrowViewport,
+  isCollapsePane,
   persistTree,
   presetSplitWeights,
+  setTreeGroupMinimized,
   setTreeSplitWeights
 } from '../store'
 
 import {
+  COLLAPSED_ZONE_PX,
   computedPx,
   cssMax,
   edgeFixedZone,
@@ -42,6 +45,18 @@ import {
   type TrackContext
 } from './track-model'
 import { TreeNode } from './tree-node'
+
+/** The single group id a subtree resolves to, or null when it holds several
+ *  zones — the sash can only collapse a boundary that IS exactly one zone. */
+function groupIdOf(node: LayoutNode): null | string {
+  if (node.type === 'group') {
+    return node.id
+  }
+
+  const ids = new Set(node.children.map(groupIdOf))
+
+  return ids.size === 1 ? [...ids][0] : null
+}
 
 /**
  * The size overrides for a fixed set of panes, referentially stable until one
@@ -197,6 +212,11 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         // Clamps live on the zone's split-child WRAPPER (where we render them).
         const el = zoneEl?.parentElement ?? wrapper
         const cs = window.getComputedStyle(el)
+        // A tool panel (terminal / logs) may be dragged down to its collapsed
+        // header — the generic 80px floor is not its floor. Below that the
+        // release minimizes the zone instead of leaving a useless sliver.
+        const toolZone = allPaneIds(child).length > 0 && allPaneIds(child).every(isCollapsePane)
+        const floor = toolZone ? COLLAPSED_ZONE_PX : MIN_PANE_PX
 
         return {
           // EVERY shown pane of the zone: the zone's track is the max() of its
@@ -206,8 +226,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
           paneIds: zone ? shownPaneIds(zone, trackCtx) : [],
           fixed: Boolean(zone),
           size: sizeOf(zoneEl ?? wrapper),
-          min: Math.max(MIN_PANE_PX, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
-          max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY)
+          min: toolZone ? floor : Math.max(floor, computedPx(horizontal ? cs.minWidth : cs.minHeight, 0)),
+          max: computedPx(horizontal ? cs.maxWidth : cs.maxHeight, Number.POSITIVE_INFINITY),
+          collapseId: toolZone ? (zone?.id ?? groupIdOf(child)) : null,
+          floor
         }
       }
 
@@ -310,9 +332,21 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         resize.finish()
 
         if (lastShift !== null) {
-          // One store commit; the re-render rewrites `flex` and clears the
-          // preview overrides.
-          applyShift(lastShift)
+          // Dragged a tool panel down to its collapsed header? Fold the zone
+          // to its rail instead of persisting a sliver — and DON'T write the
+          // sliver size, so restoring brings back the size it had before.
+          const collapsedSide =
+            (a.collapseId && a0px + lastShift <= a.floor && a.collapseId) ||
+            (b.collapseId && b0px - lastShift <= b.floor && b.collapseId) ||
+            null
+
+          if (collapsedSide) {
+            setTreeGroupMinimized(collapsedSide, true)
+          } else {
+            // One store commit; the re-render rewrites `flex` and clears the
+            // preview overrides.
+            applyShift(lastShift)
+          }
         } else {
           // Click without movement: nothing will re-render, so put the
           // wrappers' inline styles back exactly as React last wrote them.

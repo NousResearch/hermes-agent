@@ -144,7 +144,7 @@ class SubdirectoryHintTracker:
             return False
         return (
             path not in self._loaded_dirs
-            and not _is_install_tree(path)
+            and (not _is_install_tree(path) or _is_install_tree(self.working_dir))
             and self._within_working_dir(path)
             and not self._is_excluded(path)
         )
@@ -161,6 +161,8 @@ class SubdirectoryHintTracker:
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""
         self._loaded_dirs.add(directory)
+        if _is_install_tree(directory) and not _is_install_tree(self.working_dir):
+            return None
         if not self._within_working_dir(directory):
             logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)
             return None

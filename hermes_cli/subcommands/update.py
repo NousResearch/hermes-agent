@@ -65,8 +65,11 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     target_group.add_argument(
         "--version",
         default=None,
-        metavar="TAG",
-        help="Update to this release tag instead of the latest main branch.",
+        metavar="RELEASE",
+        help=(
+            "Update to an official Hermes release (for example v2026.7.30) "
+            "instead of the latest main branch."
+        ),
     )
     update_parser.add_argument(
         "--force",

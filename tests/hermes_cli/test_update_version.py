@@ -54,6 +54,23 @@ def test_resolve_update_target(args, expected):
     assert hermes_main._resolve_update_target(args) == expected
 
 
+def test_cmd_update_rejects_non_release_version_before_backup(monkeypatch):
+    backup_called = False
+
+    def fake_backup(_args):
+        nonlocal backup_called
+        backup_called = True
+
+    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", fake_backup)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main._cmd_update_impl(
+            SimpleNamespace(version="*", branch=None), gateway_mode=False
+        )
+
+    assert not backup_called
+
+
 def test_update_check_version_fetches_and_compares_tag(monkeypatch, tmp_path, capsys):
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
@@ -65,14 +82,16 @@ def test_update_check_version_fetches_and_compares_tag(monkeypatch, tmp_path, ca
         calls.append(cmd)
         joined = " ".join(str(part) for part in cmd)
         if "fetch" in joined:
-            assert cmd[-1] == "refs/tags/v2026.7.30:refs/tags/v2026.7.30"
+            assert "--no-tags" in cmd
+            assert hermes_update_cmd.OFFICIAL_REPO_URL in cmd
+            assert cmd[-1] == "+refs/tags/v2026.7.30:refs/tags/v2026.7.30"
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if "rev-parse --verify --quiet refs/tags/v2026.7.30" in joined:
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if joined.endswith("rev-parse --verify --quiet refs/tags/v2026.7.30^{commit}"):
+            return SimpleNamespace(returncode=0, stdout="tag-sha\n", stderr="")
         if joined.endswith("rev-parse HEAD"):
             return SimpleNamespace(returncode=0, stdout="old-sha\n", stderr="")
-        if joined.endswith("rev-parse refs/tags/v2026.7.30^{}"):
-            return SimpleNamespace(returncode=0, stdout="tag-sha\n", stderr="")
+        if "rev-parse --abbrev-ref HEAD" in joined:
+            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
         if "rev-parse --is-shallow-repository" in joined:
             return SimpleNamespace(returncode=0, stdout="false\n", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -123,14 +142,18 @@ def test_cmd_update_version_checks_out_detached_tag(monkeypatch, tmp_path):
         calls.append(cmd)
         joined = " ".join(str(part) for part in cmd)
         if "fetch" in joined:
-            assert cmd[-1] == "refs/tags/v2026.7.30:refs/tags/v2026.7.30"
+            assert "--no-tags" in cmd
+            assert hermes_update_cmd.OFFICIAL_REPO_URL in cmd
+            assert cmd[-1] == "+refs/tags/v2026.7.30:refs/tags/v2026.7.30"
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if "rev-parse --abbrev-ref HEAD" in joined:
             return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
         if joined.endswith("rev-parse HEAD"):
             return SimpleNamespace(returncode=0, stdout="old-sha\n", stderr="")
-        if joined.endswith("rev-parse refs/tags/v2026.7.30^{}"):
-            return SimpleNamespace(returncode=0, stdout="tag-sha\n", stderr="")
+        if joined.endswith("rev-parse --verify --quiet refs/tags/v2026.7.30^{commit}"):
+            # HEAD is attached to main at the release commit. Explicit
+            # --version must still perform a detached checkout.
+            return SimpleNamespace(returncode=0, stdout="old-sha\n", stderr="")
         if "checkout --detach refs/tags/v2026.7.30" in joined:
             return SimpleNamespace(
                 returncode=0, stdout="HEAD is now at tag-sha\n", stderr=""
@@ -173,5 +196,5 @@ def test_update_zip_version_is_rejected_before_download(monkeypatch, tmp_path, c
 
     out = capsys.readouterr().out
     assert "--version is not supported on the Windows ZIP-fallback" in out
-    assert "hermes update --version v2026.7.30" in out
+    assert "hermes update --version <release>" in out
     assert not downloaded

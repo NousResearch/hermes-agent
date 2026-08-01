@@ -25,8 +25,8 @@ This pulls the latest code from `main`, updates dependencies, and prompts you to
 When you run `hermes update`, the following steps occur:
 
 1. **Pre-update snapshot** — a lightweight state snapshot is saved by default (covers pairing data, cron jobs, `config.yaml`, `.env`, `auth.json`, and other state files that get modified at runtime; individual files over 1 GiB are skipped so a large sessions DB never slows the update down). Controlled by `updates.pre_update_backup` (`quick` by default, `full` for a zip of all of `HERMES_HOME`, `off` to disable). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md).
-2. **Git update** — pulls the latest code from the `main` branch, or checks out the requested release tag when `--version <tag>` is supplied
-3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
+2. **Git update** — pulls the latest code from the `main` branch, or checks out the requested official release when `--version <release>` is supplied
+3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the nine critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes restores the original commit and attached/detached HEAD state so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
 6. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
@@ -42,16 +42,16 @@ hermes update --check --branch experimental   # preview behindness only
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
 
-### Updating to a specific release tag: `--version`
+### Updating to a specific official release: `--version`
 
-Pass `--version <tag>` to install an exact Hermes Agent release tag instead of the latest `main` branch. This is useful for pinning a known-good release or rolling back to a previous tag:
+Pass `--version <release>` to install an exact official Hermes Agent release instead of the latest `main` branch. Official releases use the `vYYYY.M.D` format, with an optional numeric revision such as `v2026.7.7.2`. Arbitrary Git tags and refspecs are intentionally rejected. This is useful for pinning a known-good release or rolling back:
 
 ```bash
-hermes update --version v0.19.0
-hermes update --check --version v0.19.0   # preview whether your checkout differs
+hermes update --version v2026.7.30
+hermes update --check --version v2026.7.30   # preview whether your checkout differs
 ```
 
-`--version` and `--branch` are mutually exclusive. A version update fetches the requested tag from `origin` and checks it out directly, leaving the source tree in detached-HEAD state at that immutable release tag. Local uncommitted changes are handled with the same auto-stash/restore flow as branch updates. The Windows ZIP fallback update path cannot produce an exact detached tag checkout, so it rejects `--version`; fix the git file-I/O issue and rerun the normal git-backed update path instead.
+`--version` and `--branch` are mutually exclusive. A version update fetches only the exact release tag from the canonical NousResearch repository, requires it to resolve to a commit, and checks it out directly, leaving the source tree in detached-HEAD state. Local uncommitted changes are handled with the same auto-stash/restore flow as branch updates. A failed checkout or syntax validation restores the original commit, branch/detached identity, and stashed changes. The Windows ZIP fallback update path cannot produce an exact detached tag checkout, so it rejects `--version`; fix the git file-I/O issue and rerun the normal git-backed update path instead.
 
 ### Local changes on non-interactive updates
 
@@ -73,7 +73,7 @@ In the desktop app this is **Settings → Advanced → In-App Update Local Chang
 
 ### Preview-only: `hermes update --check`
 
-Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. Add `--branch <name>` or `--version <tag>` to preview that exact target. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. Add `--branch <name>` or `--version <release>` to preview that exact target. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
 
 ### Full pre-update backup: `--backup`
 

@@ -113,3 +113,68 @@ class TestFindContextSummariesDefensiveClamp:
         idx, body = ContextCompressor._find_latest_context_summary(messages, 0, 999)
         assert idx is None
         assert body == ""
+
+
+class TestCompressEndToEndShortToolSuffix:
+    """compress()-level E2E regression for #75588.
+
+    The unit tests above poke ``_find_tail_cut_by_tokens`` and
+    ``_find_context_summaries`` directly; this class drives the REAL
+    ``compress()`` pipeline over the exact live-shaped transcript from the
+    issue: an 8-message session (system + tool-only suffix) where
+    ``_align_boundary_forward`` slides the protected start to
+    ``len(messages)`` and, pre-fix, ``_find_tail_cut_by_tokens`` returned
+    ``len(messages) + 1`` via the ``head_end + 1`` forward-progress floor.
+
+    With ``compress_start = n`` and ``compress_end = n + 1`` the
+    ``compress_start >= compress_end`` no-op guard does NOT fire, so the
+    out-of-range ``compress_end`` flows into the downstream summary scans —
+    the IndexError observed live.  Post-fix the tail cut is clamped to ``n``,
+    the guard fires, and compress() must: raise nothing, never call the
+    summary LLM, and hand the transcript back unchanged.
+    """
+
+    def _live_shaped_transcript(self):
+        """The reproduced internal bounds from #75588: len(messages)=8,
+        system prompt + a tool-only suffix (mid-run gateway hygiene shape —
+        the parent assistant tool_calls turn was already summarized away)."""
+        return [{"role": "system", "content": "sys"}] + [
+            {"role": "tool", "content": f"result {i}", "tool_call_id": "tc1"}
+            for i in range(7)
+        ]
+
+    def test_compress_short_tool_suffix_no_crash_no_llm_unchanged(self, compressor):
+        import copy
+
+        c = compressor
+        # A previously-compacted session: protect_first_n decays to 0, so the
+        # protected head is just the system prompt; the forward alignment then
+        # walks the tool-only suffix to head_end == len(messages) == 8, and
+        # pre-fix the tail cut returned 9.
+        c.compression_count = 1
+        messages = self._live_shaped_transcript()
+        snapshot = copy.deepcopy(messages)
+
+        # Sanity: this transcript really produces the boundary shape from the
+        # issue (start == n; end must be clamped to n, pre-fix it was n + 1).
+        n = len(messages)
+        start = c._align_boundary_forward(messages, c._protect_head_size(messages))
+        assert start == n, f"fixture drifted: aligned start {start} != n {n}"
+        assert c._find_tail_cut_by_tokens(messages, start) == n
+
+        with patch.object(
+            c, "_generate_summary", return_value="SHOULD NOT BE CALLED"
+        ) as gen:
+            # Must not raise (pre-fix: IndexError scanning past the end of
+            # the list with the unclamped compress_end).
+            out = c.compress(messages, current_tokens=90_000)
+
+        assert gen.call_count == 0, (
+            "compress() invoked the summary LLM even though there is no "
+            "compressible window (compress_start == len(messages)); the "
+            "clamped tail cut should make the no-op guard fire instead."
+        )
+        assert out == snapshot, (
+            "compress() must return the transcript unchanged when the "
+            f"protected head covers the whole list. Got: {out}"
+        )

@@ -27,6 +27,19 @@ const session = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 })
 
 describe('session row details', () => {
+  it('provides density-aware virtual row estimates', () => {
+    expect(sessionRowEstimate('compact')).toBe(37)
+    expect(sessionRowEstimate('comfortable')).toBe(45)
+    expect(sessionRowEstimate('detailed')).toBe(63)
+  })
+
+  it('keeps the detailed estimate even when preview is omitted as a title duplicate', () => {
+    const details = sessionRowDetails(session({ title: null }), en)
+
+    expect(details.preview).toBeNull()
+    expect(sessionRowEstimate('detailed')).toBe(63)
+  })
+
   it('formats deterministic metadata without ambiguous call wording', () => {
     expect(sessionRowDetails(session({ git_branch: 'feature/menu' }), en)).toEqual({
       metadata: 'feature/menu · gemini-3.1-pro · 26 messages · 8 tool calls',

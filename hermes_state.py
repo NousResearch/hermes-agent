@@ -1807,6 +1807,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # attempts.
     _WRITE_PATIENCE_S = 20.0
     _TRANSCRIPT_WRITE_PATIENCE_S = 60.0
+    # Observation-only activity heartbeat/label writes (#76354 review S1):
+    # these run on (or adjacent to) the response-critical path and must never
+    # wait out the full routine patience under contention. Sub-second budget;
+    # a skipped write is retried naturally at the next heartbeat window.
+    _ACTIVITY_WRITE_PATIENCE_S = 0.5
     # A live compression lock gets its own, much shorter budget than the write
     # lock. Compression publishes in a couple of seconds, so a brief wait saves
     # the overwhelming majority of concurrent turns (#75083). It deliberately
@@ -4026,7 +4031,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (when, desc, prov, session_id, when),
             )
 
-        self._execute_write(_do)
+        # Observation-only write: never let it ride the full routine
+        # write-patience budget (#76354 review S1). Under contention a
+        # heartbeat that waits ~20s would delay the response-critical path
+        # it is merely observing; give up after a sub-second budget instead
+        # (the next due window retries naturally).
+        self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
 
     def clear_session_activity_labels(self, session_id: str) -> None:
         """Clear mid-turn activity labels after a turn ends.
@@ -4036,10 +4046,34 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *what was happening at* that timestamp during an active turn; once
         the turn is idle they must not keep advertising "compressing" /
         "executing tool" (#72039).
+
+        Response-critical-path contract (#76354 review S1): runs in the
+        turn's ``finally``; a no-op clear (labels already empty) skips the
+        write transaction entirely, and a real clear uses the same short
+        sub-second busy budget as :meth:`touch_session_activity` instead of
+        the full routine write patience.
         """
         if not session_id:
             return
         from agent.session_activity import ActivityProvenance
+
+        # No-op fast path: skip the transaction when there is nothing to
+        # clear. Read-only, no write lock.
+        try:
+            row = self._conn.execute(
+                "SELECT last_activity_description, last_activity_provenance "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row is not None:
+            desc = row[0] if not isinstance(row, sqlite3.Row) else row["last_activity_description"]
+            prov = row[1] if not isinstance(row, sqlite3.Row) else row["last_activity_provenance"]
+            if not desc and (
+                not prov or prov == ActivityProvenance.UNKNOWN.value
+            ):
+                return
 
         def _do(conn):
             conn.execute(
@@ -4050,7 +4084,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ("", ActivityProvenance.UNKNOWN.value, session_id),
             )
 
-        self._execute_write(_do)
+        self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
 
     def get_session_activity(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Return the durable activity snapshot for *session_id*, or None."""

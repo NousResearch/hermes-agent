@@ -231,3 +231,45 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
     assert post_release_rows == pre_release_rows
     assert agent.session_id == session_id
     db.release_compression_lock(session_id, new_holder)
+
+
+def test_f5_session_contextvar_rebound_after_rotation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Post-compression tool reads of HERMES_SESSION_ID see the CHILD id."""
+    from gateway.session_context import (
+        clear_session_vars,
+        get_session_env,
+        set_session_vars,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "F5_CTXVAR_PARENT"
+    db.create_session(parent_sid, source="telegram")
+    agent = _build_agent_with_db(db, parent_sid)
+    agent.compression_in_place = False  # rotation mode
+    agent._cached_system_prompt = "sys"
+
+    # Enable the owned pooled wrapper so rotation happens on a WORKER thread
+    # (the caller's ContextVar can only be repaired by the caller).
+    monkeypatch.setattr(
+        "agent.conversation_compression.resolve_context_compression_timeouts",
+        lambda cfg=None: (5.0, 10.0),
+    )
+
+    # Simulate the gateway's bound session context for the caller.
+    tokens = set_session_vars(session_id=parent_sid, platform="telegram")
+    try:
+        assert get_session_env("HERMES_SESSION_ID") == parent_sid
+
+        messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+        assert agent.session_id != parent_sid  # rotation happened
+        # ── The F5 contract: caller-context reads resolve to the child ──
+        assert get_session_env("HERMES_SESSION_ID") == agent.session_id, (
+            "caller's session ContextVar still returns the parent id after "
+            "an out-of-place compression rotation"
+        )
+    finally:
+        clear_session_vars(tokens)

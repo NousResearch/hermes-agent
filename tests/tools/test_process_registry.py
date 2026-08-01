@@ -144,6 +144,40 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
     return False
 
 
+def test_deferred_completion_put_failure_is_rescheduled(monkeypatch, registry):
+    import queue
+
+    import tools.async_delegation as delegation_mod
+
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-deferred-put-retry",
+        "delivery_event_key": "task:0",
+    }
+
+    class _FailOnceQueue(queue.Queue):
+        def __init__(self):
+            super().__init__()
+            self.put_attempts = 0
+
+        def put(self, item, block=True, timeout=None):
+            self.put_attempts += 1
+            if self.put_attempts == 1:
+                raise RuntimeError("synthetic transient put failure")
+            return super().put(item, block=block, timeout=timeout)
+
+    completion_queue = _FailOnceQueue()
+    registry.completion_queue = completion_queue
+    monkeypatch.setattr(
+        delegation_mod, "get_event_delivery_retry_delay", lambda _event: 0.0
+    )
+
+    assert registry.defer_unclaimed_delivery(event)
+    assert _wait_until(lambda: not completion_queue.empty())
+    assert completion_queue.get_nowait() == event
+    assert completion_queue.put_attempts == 2
+
+
 @pytest.mark.windows_only
 def test_write_stdin_uses_str_for_windows_pty(registry):
     """pywinpty expects str input; bytes raises a PyString conversion error.

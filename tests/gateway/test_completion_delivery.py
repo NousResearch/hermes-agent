@@ -113,6 +113,125 @@ def test_duplicate_async_queue_replay_injects_once(monkeypatch, isolated_registr
     adapter.handle_message.assert_awaited_once()
 
 
+def test_gateway_claim_conflict_defers_pending_durable_event(
+    monkeypatch, isolated_registry,
+):
+    import tools.async_delegation as delegation_mod
+
+    event = _async_event("deleg_gateway_live_lease")
+    deferred = []
+    monkeypatch.setattr(delegation_mod, "claim_event_delivery", lambda *_args: None)
+    monkeypatch.setattr(
+        isolated_registry,
+        "defer_unclaimed_delivery",
+        lambda evt: deferred.append(evt) or True,
+    )
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    result = asyncio.run(runner._deliver_completion_notification("ready", event))
+
+    assert result is None
+    assert deferred == [event]
+
+
+def test_gateway_watcher_coalesces_ready_after_turn_batch_children(
+    monkeypatch, isolated_registry,
+):
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    base = {
+        **_async_event("deleg_after_turn_group"),
+        "result_delivery": "after_turn",
+        "is_batch": True,
+        "batch_size": 3,
+        "goals": ["zero", "one", "two"],
+    }
+    for index in (0, 1):
+        isolated.put(
+            {
+                **base,
+                "delivery_event_key": f"task:{index}",
+                "task_index": index,
+                "results": [
+                    {
+                        "task_index": index,
+                        "status": "completed",
+                        "summary": f"ready-{index}",
+                    }
+                ],
+            }
+        )
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    deliver = AsyncMock(return_value=True)
+    runner._deliver_completion_notification = deliver
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    deliver.assert_awaited_once()
+    text, grouped = deliver.await_args_list[0].args
+    assert grouped["delivery_event_keys"] == ["task:0", "task:1"]
+    assert [result["task_index"] for result in grouped["results"]] == [0, 1]
+    assert "RESULTS READY" in text and "2/3" in text
+    assert isolated.empty()
+
+
+def test_gateway_after_turn_waits_for_idle_boundary_then_delivers_ready_group(
+    monkeypatch, isolated_registry,
+):
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    base = {
+        **_async_event("deleg_after_turn_busy"),
+        "result_delivery": "after_turn",
+        "is_batch": True,
+        "batch_size": 3,
+        "goals": ["zero", "one", "two"],
+    }
+    for index in (0, 1):
+        isolated.put(
+            {
+                **base,
+                "delivery_event_key": f"task:{index}",
+                "task_index": index,
+                "results": [
+                    {
+                        "task_index": index,
+                        "status": "completed",
+                        "summary": f"ready-{index}",
+                    }
+                ],
+            }
+        )
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    deliver = AsyncMock(return_value=True)
+    runner._deliver_completion_notification = deliver
+    runner._running_agents = {base["session_key"]: SimpleNamespace()}
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    deliver.assert_not_awaited()
+    assert isolated.qsize() == 1
+    queued_group = isolated.get_nowait()
+    assert queued_group["delivery_event_keys"] == ["task:0", "task:1"]
+    isolated.put(queued_group)
+
+    runner._running = True
+    runner._running_agents = {}
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    deliver.assert_awaited_once()
+    _text, delivered_group = deliver.await_args_list[0].args
+    assert delivered_group["delivery_event_keys"] == ["task:0", "task:1"]
+    assert isolated.empty()
+
+
 def test_unroutable_async_event_is_not_requeued_forever(
     monkeypatch, isolated_registry,
 ):

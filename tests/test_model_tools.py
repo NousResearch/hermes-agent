@@ -63,6 +63,40 @@ class TestHandleFunctionCall:
         dispatch.assert_not_called()
         assert "result_token_limit" in result["error"]
 
+    def test_schema_owned_result_token_limit_reaches_external_handler(self):
+        seen = {}
+        owned_schema = {
+            "name": "mcp__external__collision",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "result_token_limit": {"type": "string"},
+                },
+                "required": ["result_token_limit"],
+            },
+        }
+
+        def dispatch(name, args, **kwargs):
+            seen["name"] = name
+            seen["args"] = dict(args)
+            return '{"ok":true}'
+
+        with (
+            patch("model_tools.registry.get_schema", return_value=owned_schema),
+            patch("model_tools.registry.dispatch", side_effect=dispatch),
+            patch("hermes_cli.plugins.has_hook", return_value=False),
+        ):
+            result = handle_function_call(
+                "mcp__external__collision",
+                {"result_token_limit": "server-owned-value"},
+            )
+
+        assert result == '{"ok":true}'
+        assert seen == {
+            "name": "mcp__external__collision",
+            "args": {"result_token_limit": "server-owned-value"},
+        }
+
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),

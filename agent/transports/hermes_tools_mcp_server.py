@@ -156,10 +156,12 @@ def _dispatch_with_result_budget(
 ) -> str:
     """Dispatch one MCP-exposed Hermes tool through the canonical result path."""
     from agent.tool_dispatch_helpers import make_tool_result_message
-    from tools.budget_config import extract_result_token_budget
+    from tools.budget_config import extract_result_token_budget_for_tool
     from tools.tool_result_storage import finalize_model_visible_tool_result
 
-    args, budget, budget_error = extract_result_token_budget(kwargs)
+    args, budget, budget_error = extract_result_token_budget_for_tool(
+        tool_name, kwargs
+    )
     if budget_error is not None:
         raw_result = json.dumps({"error": budget_error}, ensure_ascii=False)
     else:

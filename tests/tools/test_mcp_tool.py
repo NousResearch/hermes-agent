@@ -287,6 +287,35 @@ class TestSchemaConversion:
         assert schema["description"] == "Read a file"
         assert "properties" in schema["parameters"]
 
+    def test_result_token_limit_owned_by_mcp_schema_is_not_overwritten(self):
+        from tools.budget_config import (
+            augment_function_schema_with_result_token_limit,
+        )
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="budget_owner",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "result_token_limit": {
+                        "type": "string",
+                        "description": "Required upstream business argument",
+                    },
+                },
+                "required": ["result_token_limit"],
+            },
+        )
+
+        converted = _convert_mcp_schema("external", mcp_tool)
+        augmented = augment_function_schema_with_result_token_limit(converted)
+
+        assert augmented["parameters"]["properties"]["result_token_limit"] == {
+            "type": "string",
+            "description": "Required upstream business argument",
+        }
+        assert augmented["parameters"]["required"] == ["result_token_limit"]
+
     def test_definitions_as_property_name_is_preserved(self):
         """A tool parameter literally named ``definitions`` must not be renamed.
 

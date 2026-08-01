@@ -53,7 +53,7 @@ from tools.budget_config import (
     BudgetConfig,
     ResultTokenBudget,
     budget_for_context_window,
-    extract_result_token_budget,
+    extract_result_token_budget_for_tool,
     merge_result_token_budgets,
 )
 
@@ -393,7 +393,7 @@ def _run_agent_tool_execution_middleware(
         # reserved budget field present here was injected or mutated by a
         # request/execution middleware and must fail closed before dispatch.
         final_args, middleware_budget, middleware_budget_error = (
-            extract_result_token_budget(final_args)
+            extract_result_token_budget_for_tool(function_name, final_args)
         )
         if middleware_budget_error is None and middleware_budget.override_requested:
             middleware_budget_error = (
@@ -708,7 +708,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             continue
 
         function_args, result_budget, result_budget_error = (
-            extract_result_token_budget(function_args)
+            extract_result_token_budget_for_tool(function_name, function_args)
         )
 
         # ── Tool Search unwrap ────────────────────────────────────────
@@ -734,7 +734,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     _underlying_args, _inner_budget, _inner_budget_error = (
-                        extract_result_token_budget(_underlying_args)
+                        extract_result_token_budget_for_tool(_underlying, _underlying_args)
                     )
                     result_budget, _merge_error = merge_result_token_budgets(
                         result_budget,
@@ -1426,7 +1426,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             continue
 
         function_args, result_budget, result_budget_error = (
-            extract_result_token_budget(function_args)
+            extract_result_token_budget_for_tool(function_name, function_args)
         )
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
@@ -1439,7 +1439,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     _underlying_args, _inner_budget, _inner_budget_error = (
-                        extract_result_token_budget(_underlying_args)
+                        extract_result_token_budget_for_tool(_underlying, _underlying_args)
                     )
                     result_budget, _merge_error = merge_result_token_budgets(
                         result_budget,

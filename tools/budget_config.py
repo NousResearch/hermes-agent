@@ -89,6 +89,34 @@ def extract_result_token_budget(
     return sanitized, ResultTokenBudget(requested, True), None
 
 
+def schema_owns_result_token_limit(function_schema: Dict[str, Any] | None) -> bool:
+    """Return whether a tool's original schema owns the reserved-looking name."""
+    if not isinstance(function_schema, dict):
+        return False
+    parameters = function_schema.get("parameters")
+    if not isinstance(parameters, dict):
+        return False
+    properties = parameters.get("properties")
+    return isinstance(properties, dict) and RESULT_TOKEN_LIMIT_ARG in properties
+
+
+def extract_result_token_budget_for_tool(
+    tool_name: str,
+    arguments: Dict[str, Any],
+) -> tuple[Dict[str, Any], ResultTokenBudget, str | None]:
+    """Extract Hermes metadata unless the registered tool owns that argument.
+
+    MCP and plugin schemas are third-party contracts. A tool that already
+    declares ``result_token_limit`` must receive it unchanged rather than have
+    Hermes reinterpret or remove it as model-visible result metadata.
+    """
+    from tools.registry import registry
+
+    if schema_owns_result_token_limit(registry.get_schema(tool_name)):
+        return dict(arguments), DEFAULT_RESULT_TOKEN_BUDGET, None
+    return extract_result_token_budget(arguments)
+
+
 def merge_result_token_budgets(
     outer: ResultTokenBudget,
     inner: ResultTokenBudget,
@@ -122,6 +150,8 @@ def augment_function_schema_with_result_token_limit(
     if not isinstance(properties, dict):
         properties = {}
         parameters["properties"] = properties
+    if RESULT_TOKEN_LIMIT_ARG in properties:
+        return function
     properties[RESULT_TOKEN_LIMIT_ARG] = _result_token_limit_property_schema()
     required = parameters.get("required")
     if isinstance(required, list) and RESULT_TOKEN_LIMIT_ARG in required:

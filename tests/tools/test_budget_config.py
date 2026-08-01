@@ -73,6 +73,31 @@ def test_function_schema_augmentation_is_copy_safe_and_optional():
     assert augmented["parameters"]["required"] == ["query"]
 
 
+def test_function_schema_augmentation_preserves_schema_owned_budget_parameter():
+    original_property = {
+        "type": "string",
+        "description": "Business argument owned by an external tool",
+    }
+    original = {
+        "name": "mcp__external__collision",
+        "parameters": {
+            "type": "object",
+            "properties": {"result_token_limit": original_property},
+            "required": ["result_token_limit"],
+        },
+    }
+
+    augmented = augment_function_schema_with_result_token_limit(original)
+
+    assert augmented["parameters"]["properties"]["result_token_limit"] == (
+        original_property
+    )
+    assert augmented["parameters"]["required"] == ["result_token_limit"]
+    assert original["parameters"]["properties"]["result_token_limit"] == (
+        original_property
+    )
+
+
 # ---------------------------------------------------------------------------
 # BudgetConfig defaults
 # ---------------------------------------------------------------------------

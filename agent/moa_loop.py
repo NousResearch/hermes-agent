@@ -404,27 +404,21 @@ def _maybe_apply_moa_cache_control(
     blank-agent pattern (#76085).
     """
     try:
-        from types import SimpleNamespace
-
         from agent.agent_runtime_helpers import (
             anthropic_prompt_cache_policy,
-            prompt_caching_disabled_from_config,
+            blank_cache_policy_stub,
         )
         from agent.prompt_caching import apply_anthropic_cache_control
 
-        if cache_disabled is None:
-            cache_disabled = prompt_caching_disabled_from_config()
+        # Prefer an explicit kwarg, then a snapshot on the runtime dict
+        # (threaded from the live agent), else config via the stub factory.
+        if cache_disabled is None and "_cache_disabled" in runtime:
+            cache_disabled = runtime.get("_cache_disabled")
 
         # The policy function reads agent.* only as fallbacks for kwargs we
-        # don't pass; provide a stub so the slot is judged purely on its own
-        # resolved runtime (plus the operator disable flag).
-        stub = SimpleNamespace(
-            provider="",
-            base_url="",
-            api_mode="",
-            model="",
-            _cache_disabled=bool(cache_disabled),
-        )
+        # don't pass; blank_cache_policy_stub is the only sanctioned stub
+        # so _cache_disabled cannot be left off again (#76085).
+        stub = blank_cache_policy_stub(cache_disabled)
         should_cache, native_layout = anthropic_prompt_cache_policy(
             stub,
             provider=runtime.get("provider") or "",
@@ -450,6 +444,7 @@ def _run_reference(
     max_tokens: int | None = None,
     reference_timeout: float | None = None,
     context_length_cache: Any = None,
+    cache_disabled: bool | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, accounting)``.
 
@@ -511,7 +506,12 @@ def _run_reference(
         # caching is opt-in per request. OpenAI-family advisors are untouched
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
-        messages = _maybe_apply_moa_cache_control(messages, runtime)
+        # Pin the live agent disable onto the runtime so advisor decoration
+        # tracks conversation state, not a fresh config re-read (#76085).
+        cache_runtime = runtime
+        if cache_disabled is not None:
+            cache_runtime = {**runtime, "_cache_disabled": cache_disabled}
+        messages = _maybe_apply_moa_cache_control(messages, cache_runtime)
         # Per-slot max_tokens takes precedence over the preset-level
         # reference_max_tokens passed in by the caller. This lets each
         # reference model have its own output cap independently.
@@ -815,6 +815,9 @@ def _run_references_parallel(
     # instead of re-probing metadata sources per reference (dict get/set is
     # GIL-atomic; a rare duplicate probe on a first-use race is harmless).
     _ctx_len_cache: dict[tuple[str, str], int | None] = {}
+    cache_disabled = (
+        getattr(agent, "_cache_disabled", None) if agent is not None else None
+    )
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -833,6 +836,7 @@ def _run_references_parallel(
                     max_tokens=max_tokens,
                     reference_timeout=reference_timeout,
                     context_length_cache=_ctx_len_cache,
+                    cache_disabled=cache_disabled,
                 )
             ] = idx
 
@@ -1280,6 +1284,14 @@ def aggregate_moa_context(
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
+    # Pin the live agent disable onto synthesis decoration so mid-session
+    # config flips cannot re-enable markers on this path alone (#76085).
+    agg_cache_runtime = agg_runtime
+    if agent is not None:
+        agg_cache_runtime = {
+            **agg_runtime,
+            "_cache_disabled": getattr(agent, "_cache_disabled", None),
+        }
     try:
         # Same cache_control decoration as _run_reference's advisor calls
         # (see _maybe_apply_moa_cache_control) — this synthesis call is a
@@ -1292,7 +1304,7 @@ def aggregate_moa_context(
         # breakpoints, even when the resolved aggregator slot is a
         # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
         agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], agg_runtime
+            [{"role": "user", "content": synth_prompt}], agg_cache_runtime
         )
         response = call_llm(
             task="moa_aggregator",

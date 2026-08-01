@@ -258,3 +258,112 @@ class TestPreparedAggregatorNoAgentConfigOff:
         )
         assert not _has_cache_control(calls[0].get("messages") or [])
         assert tools == canonical_tools
+
+
+class TestBlankCachePolicyStubFactory:
+    def test_factory_sets_cache_disabled_from_config(self):
+        from agent.agent_runtime_helpers import blank_cache_policy_stub
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"prompt_caching": {"cache_ttl": "off"}},
+        ):
+            stub = blank_cache_policy_stub()
+        assert stub._cache_disabled is True
+
+    def test_factory_honors_explicit_false(self):
+        from agent.agent_runtime_helpers import blank_cache_policy_stub
+
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"prompt_caching": {"cache_ttl": "off"}},
+        ):
+            stub = blank_cache_policy_stub(False)
+        assert stub._cache_disabled is False
+
+
+class TestOneShotSynthesisAgentDisable:
+    """aggregate_moa_context must pin agent._cache_disabled onto decoration
+    so the one-shot synthesis path cannot re-enable markers mid-session.
+    """
+
+    def test_synthesis_untouched_when_agent_disables_cache(self):
+        from agent import moa_loop
+
+        calls = []
+        with (
+            patch.object(
+                moa_loop,
+                "call_llm",
+                side_effect=lambda **kwargs: calls.append(kwargs) or SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        message=SimpleNamespace(content="synth", tool_calls=[]),
+                        finish_reason="stop",
+                    )],
+                    usage=None,
+                    model="fake",
+                ),
+            ),
+            patch.object(
+                moa_loop,
+                "_run_references_parallel",
+                return_value=[("advisor-a", "advice from a", None)],
+            ),
+            patch.object(
+                moa_loop,
+                "_slot_runtime",
+                return_value={
+                    "provider": "anthropic",
+                    "model": "claude-opus-4.8",
+                    "base_url": "",
+                    "api_mode": "anthropic_messages",
+                },
+            ),
+            # Config would enable caching; agent snapshot must win.
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"prompt_caching": {"cache_ttl": "5m"}},
+            ),
+        ):
+            moa_loop.aggregate_moa_context(
+                user_prompt="what should I do next?",
+                api_messages=[{"role": "user", "content": "help me plan"}],
+                reference_models=[{"provider": "openrouter", "model": "openai/gpt-5.5"}],
+                aggregator={"provider": "anthropic", "model": "claude-opus-4.8"},
+                agent=SimpleNamespace(_cache_disabled=True),
+            )
+
+        assert calls, "synthesis must still call the LLM"
+        synth_msgs = calls[0].get("messages") or []
+        assert not _has_cache_control(synth_msgs), (
+            "agent._cache_disabled must keep the one-shot synthesis "
+            "message undecorated even on a cache-honoring route"
+        )
+
+
+class TestAdvisorRuntimeDisable:
+    def test_maybe_apply_honors_runtime_cache_disabled_snapshot(self):
+        from agent.moa_loop import _maybe_apply_moa_cache_control
+
+        messages = [
+            {"role": "system", "content": "advisor"},
+            {"role": "user", "content": "review"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "again"},
+        ]
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"prompt_caching": {"cache_ttl": "5m"}},
+        ):
+            out = _maybe_apply_moa_cache_control(
+                messages,
+                {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                    "base_url": "https://api.anthropic.com",
+                    "api_mode": "anthropic_messages",
+                    "_cache_disabled": True,
+                },
+            )
+        assert not _has_cache_control(out)
+        assert out == messages or not _has_cache_control(out)

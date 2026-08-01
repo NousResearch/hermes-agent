@@ -4,6 +4,7 @@ import threading
 
 from gateway.run import (
     _abandon_timed_out_gateway_turn,
+    _reap_gateway_turn_processes,
     _watch_gateway_turn_inactivity,
 )
 from tools.process_registry import process_registry
@@ -112,3 +113,102 @@ def test_timeout_cleanup_is_idempotent(monkeypatch):
     assert not _abandon_timed_out_gateway_turn(**kwargs)
     assert len(calls) == 1
     assert len(agent.interrupts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Cross-turn race guard (#76188 review): task_id is session-scoped, not
+# turn-scoped, so a replacement turn on the same session could otherwise
+# have its freshly-spawned process killed by a stale reaper. Gated on
+# run_generation via an injected `is_still_current` check.
+# ---------------------------------------------------------------------------
+
+
+def test_reap_skips_when_a_newer_turn_has_claimed_the_session(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda *_a, **_k: calls.append(True) or 1,
+    )
+
+    killed = _reap_gateway_turn_processes(
+        "session-a",
+        frozenset({"proc_old"}),
+        source="gateway_turn_timeout",
+        is_still_current=lambda: False,
+    )
+
+    assert killed == 0
+    assert calls == []
+
+
+def test_reap_proceeds_when_this_turn_is_still_current(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda task_id, baseline, *, source: calls.append(
+            (task_id, baseline, source)
+        )
+        or 1,
+    )
+
+    killed = _reap_gateway_turn_processes(
+        "session-a",
+        frozenset({"proc_old"}),
+        source="gateway_turn_timeout",
+        is_still_current=lambda: True,
+    )
+
+    assert killed == 1
+    assert calls == [("session-a", frozenset({"proc_old"}), "gateway_turn_timeout")]
+
+
+def test_reap_fails_open_when_is_still_current_raises(monkeypatch):
+    """A bug in the generation-check closure must not silently disable the
+    underlying leak fix — it should log and fall through to reaping."""
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda *_a, **_k: calls.append(True) or 1,
+    )
+
+    def _boom():
+        raise RuntimeError("session state lookup failed")
+
+    killed = _reap_gateway_turn_processes(
+        "session-a",
+        frozenset(),
+        source="gateway_turn_timeout",
+        is_still_current=_boom,
+    )
+
+    assert killed == 1
+    assert calls == [True]
+
+
+def test_timeout_abandon_propagates_is_still_current_to_the_reap(monkeypatch):
+    agent = _IdleAgent()
+    worker_done, timeout_fired, cleanup_lock = _state()
+    calls = []
+    monkeypatch.setattr(
+        process_registry,
+        "kill_started_since",
+        lambda *_a, **_k: calls.append(True) or 1,
+    )
+
+    assert _abandon_timed_out_gateway_turn(
+        agent_holder=[agent],
+        task_id="session-a",
+        process_baseline=frozenset(),
+        worker_done=worker_done,
+        timeout_fired=timeout_fired,
+        cleanup_lock=cleanup_lock,
+        is_still_current=lambda: False,
+    )
+
+    # The turn was still marked abandoned (interrupt fired), but the actual
+    # reap was skipped because a newer turn already claimed the session.
+    assert agent.interrupts == ["Execution timed out (inactivity)"]
+    assert calls == []

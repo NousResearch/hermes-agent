@@ -404,9 +404,9 @@ class MemoryStore:
             import datetime as _dt
 
             ts = _dt.datetime.now().strftime("%Y%m%dT%H%M%S%fZ")
-            bak = path.with_suffix(path.suffix + f".bak-{ts}")
+            bak = Path(str(path) + f".bak-{ts}")
             shutil.copy2(path, bak)
-        except OSError:
+        except Exception:
             logger.debug("Memory backup failed for %s", path, exc_info=True)
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
@@ -512,7 +512,6 @@ class MemoryStore:
                 # All identical -- safe to replace just the first
 
             idx = matches[0][0]
-
             limit = self._char_limit(target)
 
             # Check that replacement doesn't blow the budget

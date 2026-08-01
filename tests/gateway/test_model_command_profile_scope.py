@@ -17,6 +17,9 @@ persist block in ``with _profile_runtime_scope(_command_profile_home):``,
 mirroring the existing pattern used by the interactive picker callback.
 """
 
+import threading
+import types
+
 import yaml
 import pytest
 
@@ -291,4 +294,215 @@ async def test_model_refresh_lists_providers_under_routed_scope(tmp_path, monkey
     assert all(h == profile_home for h in observed), (
         f"provider listing observed {observed} instead of the routed "
         f"profile home {profile_home}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rebase-composition coverage: the routed-profile scope (#69242) must survive
+# main's event-loop offloads (asyncio.to_thread / *_async wrappers). Each test
+# asserts BOTH halves at once: the profile-dependent read happens (a) off the
+# event-loop thread and (b) under the ROUTED profile's scope, relying on
+# asyncio.to_thread's contextvars propagation into the worker thread.
+# ---------------------------------------------------------------------------
+
+
+class _CapturingPickerAdapter:
+    """Picker-capable adapter (method on the *class*, per the handler's
+    ``getattr(type(adapter), "send_model_picker", None)`` gate) that stashes
+    the ``on_model_selected`` closure so the test can fire a tap."""
+
+    def __init__(self):
+        self.captured_callback = None
+
+    async def send_model_picker(self, *, on_model_selected, **kwargs):
+        self.captured_callback = on_model_selected
+        return types.SimpleNamespace(success=True)
+
+
+def _stub_context_length(monkeypatch, value=272000):
+    """Pin the sync display-context resolver so no provider probe runs."""
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_display_context_length",
+        lambda *a, **k: value,
+    )
+
+
+@pytest.mark.asyncio
+async def test_typed_enrich_offload_sees_routed_profile_in_worker_thread(
+    tmp_path, monkeypatch
+):
+    """T1 (typed path): ``enrich_model_switch_warnings_for_gateway`` is
+    offloaded via ``await asyncio.to_thread(...)`` (main's #41289-family
+    offload) *inside* ``with _model_cmd_scope_factory():`` (#69242). The
+    worker thread must therefore still observe the ROUTED profile's
+    HERMES_HOME — to_thread copies the calling context, so the ContextVar
+    scope travels with the call. A composition that hoists the await out of
+    the ``with`` keeps the gateway responsive but silently enriches against
+    the DEFAULT profile's config."""
+    default_home = tmp_path / "default"
+    profile_home = tmp_path / "profiles" / "work"
+    _write_config(default_home, "default-model")
+    _write_config(profile_home, "profile-model")
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kw: _fake_switch_result(),
+    )
+    _stub_context_length(monkeypatch)
+
+    loop_thread = threading.get_ident()
+    observed = {}
+
+    def _observing_enrich(*_a, **_kw):
+        from hermes_constants import get_hermes_home
+
+        observed["home"] = get_hermes_home()
+        observed["thread"] = threading.get_ident()
+
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.enrich_model_switch_warnings_for_gateway",
+        _observing_enrich,
+    )
+
+    runner = _make_runner(profile_home)
+    result = await runner._handle_model_command(_make_event("/model gpt-5.5 --global"))
+
+    assert result is not None
+    assert observed, "enrich_model_switch_warnings_for_gateway was never invoked"
+    assert observed["thread"] != loop_thread, (
+        "enrich must run offloaded in a worker thread, not on the event loop"
+    )
+    assert observed["home"] == profile_home, (
+        f"enrich observed HERMES_HOME {observed['home']} in the worker thread "
+        f"instead of the routed profile home {profile_home}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_typed_context_length_async_sees_routed_profile_in_worker_thread(
+    tmp_path, monkeypatch
+):
+    """T2 (typed path): the confirmation message resolves the display context
+    length via ``await resolve_display_context_length_async(...)`` — a
+    ``to_thread`` wrapper around the sync probe ladder — from inside
+    ``_finish_switch``'s ``with _model_cmd_scope_factory():``. The sync
+    resolver in the worker thread must see the ROUTED profile's HERMES_HOME
+    (its provider probes read profile-relative config/caches/credentials)."""
+    default_home = tmp_path / "default"
+    profile_home = tmp_path / "profiles" / "work"
+    _write_config(default_home, "default-model")
+    _write_config(profile_home, "profile-model")
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kw: _fake_switch_result(),
+    )
+    # Keep the observation single-source: the real enrich also calls the sync
+    # resolver internally, which would add a second (also-scoped) sample.
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.enrich_model_switch_warnings_for_gateway",
+        lambda *_a, **_kw: None,
+    )
+
+    loop_thread = threading.get_ident()
+    observed = {}
+
+    def _observing_resolve(*_a, **_kw):
+        from hermes_constants import get_hermes_home
+
+        observed["home"] = get_hermes_home()
+        observed["thread"] = threading.get_ident()
+        return 272000
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_display_context_length",
+        _observing_resolve,
+    )
+
+    runner = _make_runner(profile_home)
+    result = await runner._handle_model_command(_make_event("/model gpt-5.5 --global"))
+
+    assert result is not None
+    assert "gpt-5.5" in result
+    assert observed, "resolve_display_context_length was never reached"
+    assert observed["thread"] != loop_thread, (
+        "the context-length resolver must run in the async wrapper's worker "
+        "thread, not on the event loop"
+    )
+    assert observed["home"] == profile_home, (
+        f"the context-length resolver observed HERMES_HOME {observed['home']} "
+        f"instead of the routed profile home {profile_home}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_picker_enrich_offload_sees_routed_profile_in_worker_thread(
+    tmp_path, monkeypatch
+):
+    """T3 (picker path): a tapped model runs ``_on_model_selected_scoped``
+    under ``with _profile_runtime_scope(_picker_profile_home):`` (the
+    ``_on_model_selected`` wrapper), and the enrich call inside it is
+    offloaded via ``await asyncio.to_thread(...)``. The worker thread must
+    observe the ROUTED profile's HERMES_HOME through the propagated scope."""
+    default_home = tmp_path / "default"
+    profile_home = tmp_path / "profiles" / "work"
+    _write_config(default_home, "default-model")
+    _write_config(profile_home, "profile-model")
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_picker_providers",
+        lambda **kw: [
+            {"slug": "openrouter", "name": "OpenRouter", "models": ["gpt-5.5"]}
+        ],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kw: _fake_switch_result(),
+    )
+    _stub_context_length(monkeypatch)
+
+    loop_thread = threading.get_ident()
+    observed = {}
+
+    def _observing_enrich(*_a, **_kw):
+        from hermes_constants import get_hermes_home
+
+        observed["home"] = get_hermes_home()
+        observed["thread"] = threading.get_ident()
+
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.enrich_model_switch_warnings_for_gateway",
+        _observing_enrich,
+    )
+
+    adapter = _CapturingPickerAdapter()
+    runner = _make_runner(profile_home)
+    runner.adapters = {Platform.DISCORD: adapter}
+
+    sent = await runner._handle_model_command(_make_event("/model --global"))
+    assert sent is None, "bare /model should send the picker and return None"
+    assert adapter.captured_callback is not None, "picker callback was not wired"
+
+    confirmation = await adapter.captured_callback("12345", "gpt-5.5", "openrouter")
+
+    assert "gpt-5.5" in confirmation
+    assert observed, "picker enrich was never invoked"
+    assert observed["thread"] != loop_thread, (
+        "picker enrich must run offloaded in a worker thread, not on the loop"
+    )
+    assert observed["home"] == profile_home, (
+        f"picker enrich observed HERMES_HOME {observed['home']} in the worker "
+        f"thread instead of the routed profile home {profile_home}"
     )

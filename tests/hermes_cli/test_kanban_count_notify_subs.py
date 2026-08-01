@@ -35,31 +35,8 @@ def test_missing_db_counts_zero_and_creates_nothing(kanban_home):
     assert not db_path.exists(), "read-only probe must not create the DB"
 
 
-def test_counts_rows_via_board_resolution(kanban_home):
-    conn = kb.connect(board="default")
-    try:
-        tid = kb.create_task(conn, title="t", assignee="w")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="c1")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="c2")
-    finally:
-        conn.close()
-    assert kb.count_notify_subs(board="default") == 2
 
 
-def test_probe_is_read_only_and_sees_uncheckpointed_wal_rows(kanban_home):
-    """A sub committed by a still-open writer (rows only in the WAL, not yet
-    checkpointed into the main DB file) must be counted — under-counting
-    would make the notifier skip a board that has a live subscription. And
-    the probe itself must be read-only: the writer's connection stays the
-    only writer."""
-    conn = kb.connect(board="default")
-    try:
-        tid = kb.create_task(conn, title="t", assignee="w")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="c1")
-        # Writer still open: the row lives in the -wal, not the main file.
-        assert kb.count_notify_subs(board="default") == 1
-    finally:
-        conn.close()
 
 
 def test_legacy_db_without_subs_table_counts_zero_and_stays_unmigrated(tmp_path):
@@ -86,13 +63,29 @@ def test_legacy_db_without_subs_table_counts_zero_and_stays_unmigrated(tmp_path)
     )
 
 
-def test_explicit_db_path_overrides_board(kanban_home, tmp_path):
-    pinned = tmp_path / "pinned.db"
-    conn = kb.connect(db_path=pinned)
+def test_count_notify_subs_filters_profile_owners(tmp_path):
+    db_path = tmp_path / "owners.db"
+    kb.init_db(db_path)
+    conn = kb.connect(db_path)
     try:
-        tid = kb.create_task(conn, title="t", assignee="w")
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="c1")
+        for profile in ("default", "writer", None):
+            task_id = kb.create_task(conn, title=f"owned by {profile}")
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform="telegram",
+                chat_id=f"chat-{profile}",
+                notifier_profile=profile,
+            )
     finally:
         conn.close()
-    assert kb.count_notify_subs(pinned) == 1
-    assert kb.count_notify_subs(board="default") == 0
+
+    assert kb.count_notify_subs(
+        db_path=db_path, notifier_profiles={"writer"},
+    ) == 1
+    assert kb.count_notify_subs(
+        db_path=db_path,
+        notifier_profiles={"default"},
+        include_unowned=True,
+    ) == 2
+

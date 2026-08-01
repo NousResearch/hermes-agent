@@ -3,13 +3,16 @@
  * through the SAME registry schema as every other surface (statusbar, titlebar,
  * panes, layouts):
  *
- *   render areas (`render`):  composer.top      — banner strip above the input
- *                             composer.bottom   — row below the input grid
- *                             composer.leading  — inline after the "+" menu
- *                             composer.actions  — inline before the model pill
+ *   render areas (`render`):  composer.top       — banner strip above the input
+ *                             composer.bottom    — row below the input grid
+ *                             composer.underside — floating strip BELOW the
+ *                                                  whole composer (no chrome)
+ *                             composer.leading   — inline after the "+" menu
+ *                             composer.actions   — inline before the model pill
  *
- *   data kinds (`data`):      composer.middleware   (ComposerMiddleware)
- *                             composer.attachments  (ComposerAttachmentProvider)
+ *   data kinds (`data`):      composer.middleware    (ComposerMiddleware)
+ *                             composer.attachments   (ComposerAttachmentProvider)
+ *                             composer.microActions  (ComposerMicroActionProvider)
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -17,17 +20,23 @@
  * draft, pass it through, or cancel the send by returning null.
  */
 
+import { useMemo } from 'react'
+
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
+import type { TodoItem } from '@/lib/todos'
 import type { ComposerAttachment } from '@/store/composer'
+import type { ComposerAction } from '@/store/composer-actions'
 
 export const COMPOSER_AREAS = {
   top: 'composer.top',
   bottom: 'composer.bottom',
+  underside: 'composer.underside',
   leading: 'composer.leading',
   actions: 'composer.actions',
   middleware: 'composer.middleware',
-  attachments: 'composer.attachments'
+  attachments: 'composer.attachments',
+  microActions: 'composer.microActions'
 } as const
 
 export interface ComposerDraft {
@@ -91,4 +100,40 @@ export function useComposerAttachmentProviders(): Array<ComposerAttachmentProvid
   return useContributions(COMPOSER_AREAS.attachments)
     .map(c => ({ key: `${c.source ?? 'core'}:${c.id}`, ...(c.data as ComposerAttachmentProvider) }))
     .filter(p => Boolean(p.label && p.run))
+}
+
+/**
+ * Payload of a `composer.microActions` data contribution — the pill strip at
+ * the top of the composer's overlay lane.
+ *
+ * `resolve` is called with the live session context and returns the badges to
+ * show right now, or `[]` for "nothing from me". Returning a list rather than
+ * a static badge is what lets a provider be conditional ("only while idle",
+ * "only with unfinished tasks") without a reactive `when()`, which the
+ * registry deliberately doesn't offer.
+ */
+export interface ComposerMicroActionProvider {
+  resolve: (ctx: ComposerMicroActionContext) => ComposerAction[]
+}
+
+/** What a micro-action provider gets to branch on. Deliberately small: every
+ *  field here is a standing compatibility promise to the plugins using it. */
+export interface ComposerMicroActionContext {
+  /** A turn is currently running in this session. */
+  busy: boolean
+  sessionId: string
+  /** Live todo list for the session (empty when there is none). */
+  todos: readonly TodoItem[]
+}
+
+/** Micro-action providers, memoised against the registry's own stable
+ *  snapshot — the strip re-resolves on every composer render, so a fresh array
+ *  here would defeat that. */
+export function useComposerMicroActionProviders(): ComposerMicroActionProvider[] {
+  const contributions = useContributions(COMPOSER_AREAS.microActions)
+
+  return useMemo(
+    () => contributions.map(c => c.data as ComposerMicroActionProvider).filter(p => typeof p?.resolve === 'function'),
+    [contributions]
+  )
 }

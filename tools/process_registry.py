@@ -29,6 +29,7 @@ Usage:
     process_registry.kill(session.id)
 """
 
+import codecs
 import json
 import logging
 import os
@@ -960,6 +961,14 @@ class ProcessRegistry:
         lazy reconcile in poll()/wait() remains the safety net.
         """
         first_chunk = True
+        # Incremental decoder: raw pipe reads can split a multibyte UTF-8
+        # character across two read1() chunks. A stateless per-chunk
+        # ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
+        # mojibake. The incremental decoder holds the partial sequence until
+        # the continuation bytes arrive — same treatment the foreground path
+        # already has in ``tools/environments/base.py::_wait_for_process``.
+        # (Ported from openclaw/openclaw#112325.)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _append_chunk(chunk: str):
             nonlocal first_chunk
@@ -1007,7 +1016,9 @@ class ProcessRegistry:
                         raw = raw_read(4096)
                         if not raw:
                             break  # true EOF — all writers closed
-                        _append_chunk(raw.decode("utf-8", errors="replace"))
+                        chunk = decoder.decode(raw)
+                        if chunk:
+                            _append_chunk(chunk)
                         idle_after_exit = 0
                     elif proc.poll() is not None:
                         # Direct child is gone and the pipe was idle for
@@ -1024,7 +1035,9 @@ class ProcessRegistry:
                         raw = raw_read(4096)
                         if not raw:
                             break
-                        chunk = raw.decode("utf-8", errors="replace")
+                        chunk = decoder.decode(raw)
+                        if not chunk:
+                            continue  # partial multibyte sequence — wait for more bytes
                     else:
                         # Fallback for mocked/alternate streams without a buffered raw
                         # interface. This may be less "live", but keeps compatibility.
@@ -1036,6 +1049,15 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
+            # Flush any bytes still pending in the incremental decoder (a
+            # truncated multibyte sequence at EOF becomes one U+FFFD instead
+            # of being dropped silently).
+            try:
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    _append_chunk(tail)
+            except Exception:
+                pass
             # Always reap the child to prevent zombie processes.
             try:
                 session.process.wait(timeout=5)
@@ -1108,25 +1130,42 @@ class ProcessRegistry:
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""
         pty = session._pty
+        # PTY reads can split a multibyte UTF-8 character across chunks just
+        # like pipe reads — hold partial sequences until the rest arrives.
+        # (Ported from openclaw/openclaw#112325.)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        def _append_text(text: str):
+            with session._lock:
+                session.output_buffer += text
+                if len(session.output_buffer) > session.max_output_chars:
+                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
+            self._check_watch_patterns(session, text)
+            self._emit_output(session, text)
+
         try:
             while pty.isalive():
                 try:
                     chunk = pty.read(4096)
                     if chunk:
-                        # ptyprocess returns bytes
-                        text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                        with session._lock:
-                            session.output_buffer += text
-                            if len(session.output_buffer) > session.max_output_chars:
-                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                        self._check_watch_patterns(session, text)
-                        self._emit_output(session, text)
+                        # ptyprocess returns bytes; pywinpty returns str
+                        text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
+                        if text:
+                            _append_text(text)
                 except EOFError:
                     break
                 except Exception:
                     break
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
+
+        # Flush any partial multibyte sequence held by the decoder.
+        try:
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                _append_text(tail)
+        except Exception:
+            pass
 
         # Process exited
         try:

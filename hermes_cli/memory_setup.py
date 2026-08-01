@@ -162,16 +162,22 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
-    from hermes_cli.tools_config import _pip_install
+    # Environment-aware install: on immutable hosted images the agent venv
+    # is sealed read-only and installs must go to the durable target on the
+    # data volume (HERMES_LAZY_INSTALL_TARGET). install_specs handles the
+    # routing/gating; on normal installs it is venv-scoped as before (NS-605).
+    from tools.lazy_deps import install_specs
 
     manual_cmd = f"uv pip install {' '.join(missing)}"
     try:
-        result = _pip_install(["--quiet"] + missing, timeout=120)
-        if result.returncode == 0:
+        outcome = install_specs(missing, timeout=120)
+        if outcome.ok:
             print(f"  ✓ Installed {', '.join(missing)}")
+        elif outcome.blocked:
+            print(f"  ⚠ Cannot install {', '.join(missing)}: {outcome.reason}")
         else:
             print(f"  ⚠ Failed to install {', '.join(missing)}")
-            stderr = (result.stderr or "")[:200]
+            stderr = (outcome.stderr or "")[:200]
             if stderr:
                 print(f"    {stderr}")
             print(f"  Run manually: {manual_cmd}")

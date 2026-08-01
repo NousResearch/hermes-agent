@@ -6,7 +6,7 @@ import { PaneTab, PaneTabLabel } from './pane-tab'
 afterEach(cleanup)
 
 describe('PaneTab close gestures', () => {
-  it('middle-click (button 1) closes', () => {
+  it('middle-click closes — pointer events only, no auxclick', () => {
     const onClose = vi.fn()
     render(
       <PaneTab onClose={onClose}>
@@ -14,7 +14,9 @@ describe('PaneTab close gestures', () => {
       </PaneTab>
     )
 
-    fireEvent(screen.getByText('tab'), new MouseEvent('auxclick', { bubbles: true, button: 1 }))
+    const tab = screen.getByText('tab')
+    fireEvent.pointerDown(tab, { button: 1 })
+    fireEvent.pointerUp(tab, { button: 1 })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 

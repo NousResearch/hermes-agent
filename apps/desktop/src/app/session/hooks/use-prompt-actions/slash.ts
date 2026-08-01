@@ -1,3 +1,4 @@
+import { skillInvocationText } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { getProfiles } from '@/hermes'
@@ -35,6 +36,15 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import {
+  applyWakeStartResult,
+  applyWakeStatus,
+  applyWakeStopResult,
+  type WakeInputDeviceStatus,
+  type WakeStartResponse,
+  type WakeStatusResponse,
+  type WakeStopResponse
+} from '@/store/wake-word'
 
 import type {
   BrowserManageResponse,
@@ -59,6 +69,43 @@ import {
 // default WS request timeout on large sessions — give it the TUI client's
 // 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
 const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+const WAKE_START_TIMEOUT_MS = 180_000
+
+const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
+  if (!device) {
+    return 'system default'
+  }
+
+  const selector = device.selector
+  const name = device.name?.trim() || (selector == null ? 'system default' : String(selector))
+
+  return device.hostapi?.trim() ? `${name} (${device.hostapi.trim()})` : name
+}
+
+const renderWakeStatus = (status: WakeStatusResponse): string => {
+  const lines = [
+    'Wake Word Status',
+    `State: ${status.listening ? 'LISTENING' : 'OFF'}`,
+    `Phrase: "${status.phrase?.trim() || 'hey hermes'}"`,
+    `Provider: ${status.provider?.trim() || 'unknown'}`,
+    `Surface: ${status.owner_surface?.trim() || status.configured_surface?.trim() || 'auto'}`,
+    `Input: ${wakeDeviceLabel(status.input_device)}`
+  ]
+
+  if (status.audio_silent) {
+    lines.push('Audio: silent')
+  }
+
+  if (status.input_device?.error?.trim()) {
+    lines.push(`Input error: ${status.input_device.error.trim()}`)
+  }
+
+  if (status.hint?.trim()) {
+    lines.push(`Hint: ${status.hint.trim()}`)
+  }
+
+  return lines.join('\n')
+}
 
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
@@ -264,9 +311,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          if (dispatch.type === 'skill') {
-            renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
-          }
+          // A skill/bundle dispatch's `message` is the expanded skill body —
+          // model-facing scaffolding. Never render it; the bubble shows the
+          // invocation the gateway projected, or one read from the payload
+          // when the backend is older than this app.
+          const projected = 'display' in dispatch ? dispatch.display?.trim() : ''
+          const displayText = projected || skillInvocationText(message) || undefined
 
           // Gate on the TARGET session's own busy state, not the foreground
           // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
@@ -286,7 +336,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // whichever chat is now in front.
             const queueKey = resolveComposerSessionKey(storedSessionId, $sessions.get()) || storedSessionId || sessionId
 
-            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message })) {
+            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message, displayText })) {
               renderSlashOutput('session busy — message queued to send when the current turn finishes')
             } else {
               renderSlashOutput('session busy — /interrupt the current turn before sending this command')
@@ -299,12 +349,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // same pair the output writer and the busy gate above already use.
           // Bare `submitPromptText(message)` let submit re-resolve from
           // `activeSessionIdRef`, which names the FOREGROUND chat: a `/work`
-          // typed into a fresh ⌘T tab loaded the skill in that tab, printed
-          // "⚡ loading skill" there, then fired its kickoff as a user message
-          // into whatever conversation was on screen. Every other target the
-          // dispatcher serves (tile, background queue drain, a session created
-          // by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId })
+          // typed into a fresh ⌘T tab loaded the skill in that tab, then fired
+          // its kickoff as a user message into whatever conversation was on
+          // screen. Every other target the dispatcher serves (tile, background
+          // queue drain, a session created by this very call) had the same leak.
+          await submitPromptText(message, { sessionId, storedSessionId, displayText })
         }
 
         try {
@@ -587,6 +636,67 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
           } catch {
             notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
+          }
+        },
+        // /wake must stay in the gateway process that owns the Desktop wake
+        // lease. Sending it through slash.exec creates a separate HermesCLI in
+        // the slash worker, which can claim the machine-wide microphone lock
+        // while the Desktop UI still reports the GUI listener as off.
+        wake: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput } = resolved
+          const requested = ctx.arg.trim().toLowerCase()
+
+          if (requested && !['on', 'off', 'status'].includes(requested)) {
+            renderSlashOutput('usage: /wake [on|off|status]')
+
+            return
+          }
+
+          const status = async (): Promise<WakeStatusResponse> => {
+            const current = await requestGateway<WakeStatusResponse>('wake.status', {})
+            applyWakeStatus(current)
+
+            return current
+          }
+
+          try {
+            let action = requested
+
+            // Bare /wake is an authoritative toggle. Query the gateway instead
+            // of trusting a potentially stale renderer cache.
+            if (!action) {
+              action = (await status()).listening ? 'off' : 'on'
+            }
+
+            if (action === 'on') {
+              const started = await requestGateway<WakeStartResponse>(
+                'wake.start',
+                { persist: true, surface: 'gui' },
+                WAKE_START_TIMEOUT_MS
+              )
+
+              applyWakeStartResult(started)
+
+              if (!started?.started) {
+                renderSlashOutput(
+                  `Failed to start wake word: ${started?.hint?.trim() || started?.reason?.trim() || 'unknown error'}`
+                )
+
+                return
+              }
+            } else if (action === 'off') {
+              applyWakeStopResult(await requestGateway<WakeStopResponse>('wake.stop', { persist: true }))
+            }
+
+            renderSlashOutput(renderWakeStatus(await status()))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
         // /handoff hands this session to a messaging platform. The platform is

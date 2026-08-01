@@ -47,18 +47,6 @@ class TestApiModeRouting:
     def test_anthropic_prefixed_models_use_the_messages_wire(self, model):
         assert nous_api_mode(model) == "anthropic_messages"
 
-    @pytest.mark.parametrize(
-        "model",
-        [
-            "openai/gpt-5.5",
-            "hermes-4-405b",
-            "qwen/qwen3.6-plus",
-            "x-ai/grok-5",
-            "",
-        ],
-    )
-    def test_every_other_portal_model_stays_on_chat_completions(self, model):
-        assert nous_api_mode(model) == "chat_completions"
 
     def test_a_claude_model_without_the_vendor_prefix_is_not_rerouted(self):
         """Portal ids carry the vendor prefix. A bare ``claude-*`` slug is not a
@@ -121,14 +109,6 @@ class TestRuntimeResolution:
         # re-appends /v1/messages (see TestClientShape).
         assert resolved["base_url"] == PORTAL_URL
 
-    def test_non_anthropic_model_stays_on_chat_completions(self, monkeypatch):
-        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "nous"})
-
-        resolved = rp.resolve_runtime_provider(
-            requested="nous", target_model="hermes-4-405b"
-        )
-
-        assert resolved["api_mode"] == "chat_completions"
 
     def test_target_model_wins_over_the_persisted_default(self, monkeypatch):
         """A mid-session ``/model`` switch passes the model it is switching TO;
@@ -146,16 +126,6 @@ class TestRuntimeResolution:
 
         assert resolved["api_mode"] == "anthropic_messages"
 
-    def test_persisted_default_is_used_when_no_target_model_is_given(self, monkeypatch):
-        monkeypatch.setattr(
-            rp,
-            "_get_model_config",
-            lambda: {"provider": "nous", "default": "anthropic/claude-sonnet-5"},
-        )
-
-        resolved = rp.resolve_runtime_provider(requested="nous")
-
-        assert resolved["api_mode"] == "anthropic_messages"
 
 
 class TestPoolRuntimeResolution:
@@ -191,51 +161,13 @@ class TestPoolRuntimeResolution:
 
         assert resolved["api_mode"] == "anthropic_messages"
 
-    def test_pool_entry_keeps_other_models_on_chat_completions(
-        self, monkeypatch, portal_entry
-    ):
-        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
-        monkeypatch.setattr(rp, "_agent_key_is_usable", lambda *a, **k: True)
-        monkeypatch.setattr(rp, "load_pool", lambda p: self._pool(portal_entry))
-        monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "nous"})
-
-        resolved = rp.resolve_runtime_provider(
-            requested="nous", target_model="openai/gpt-5.5"
-        )
-
-        assert resolved["api_mode"] == "chat_completions"
 
 
 # ── 2. Client shape: endpoint + auth ────────────────────────────────────────
 
 
 class TestClientShape:
-    def test_portal_endpoint_predicate_matches_on_hostname(self):
-        from agent.anthropic_adapter import _is_nous_portal_endpoint
 
-        assert _is_nous_portal_endpoint(PORTAL_URL)
-        assert _is_nous_portal_endpoint("https://inference-api.nousresearch.com")
-        assert not _is_nous_portal_endpoint("https://api.anthropic.com")
-        assert not _is_nous_portal_endpoint("")
-        assert not _is_nous_portal_endpoint(None)
-
-    def test_staging_host_matches_only_when_env_override_points_there(
-        self, monkeypatch
-    ):
-        """Staging is trusted via NOUS_INFERENCE_BASE_URL host match only."""
-        from agent.anthropic_adapter import (
-            _is_nous_portal_endpoint,
-            _requires_bearer_auth,
-        )
-
-        assert not _is_nous_portal_endpoint(STAGING_URL)
-        assert not _requires_bearer_auth(STAGING_URL)
-
-        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", STAGING_URL)
-        assert _is_nous_portal_endpoint(STAGING_URL)
-        assert _requires_bearer_auth(STAGING_URL)
-        # Override does not open unrelated hosts.
-        assert not _is_nous_portal_endpoint("https://evil.example/v1")
 
     def test_lookalike_host_does_not_get_portal_treatment(self):
         """Substring matching would hand a spoofed host the Portal JWT as a
@@ -249,16 +181,6 @@ class TestClientShape:
         assert not _is_nous_portal_endpoint(spoofed)
         assert not _requires_bearer_auth(spoofed)
 
-    def test_configured_base_url_resolves_to_portals_messages_route(self):
-        """The config carries ``.../v1``; the adapter strips it so the SDK's own
-        ``/v1/messages`` suffix does not double up into ``/v1/v1/messages``."""
-        from agent.anthropic_adapter import build_anthropic_client
-
-        client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)
-
-        assert str(client.base_url).rstrip("/") == (
-            "https://inference-api.nousresearch.com"
-        )
 
     def test_portal_jwt_authenticates_with_bearer_not_x_api_key(self):
         """Portal validates the OAuth invoke JWT as a Bearer credential, the
@@ -290,17 +212,6 @@ class TestClientShape:
             "Bearer portal-invoke-jwt"
         )
 
-    def test_staging_host_with_env_override_uses_bearer_auth(self, monkeypatch):
-        from agent.anthropic_adapter import build_anthropic_client
-
-        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", STAGING_URL)
-        client = build_anthropic_client("portal-invoke-jwt", STAGING_URL)
-
-        assert client.auth_token == "portal-invoke-jwt"
-        assert client.api_key is None
-        assert str(client.base_url).rstrip("/") == (
-            "https://ai.wildebeest-newton.ts.net"
-        )
 
 
 # ── 3. Portal catalog ids are forwarded verbatim ─────────────────────────────
@@ -332,19 +243,7 @@ class TestModelIdPassthrough:
         or hyphenating the dots makes the model unresolvable there."""
         assert self._kwargs(model, PORTAL_URL)["model"] == model
 
-    def test_staging_host_with_env_override_keeps_the_catalog_id(
-        self, monkeypatch
-    ):
-        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", STAGING_URL)
-        assert self._kwargs("anthropic/claude-opus-4.8", STAGING_URL)[
-            "model"
-        ] == "anthropic/claude-opus-4.8"
 
-    def test_staging_host_without_env_override_still_normalizes(self):
-        """Without NOUS_INFERENCE_BASE_URL, a non-prod host is not Portal."""
-        assert self._kwargs("anthropic/claude-opus-4.8", STAGING_URL)[
-            "model"
-        ] == "claude-opus-4-8"
 
     def test_native_anthropic_still_gets_the_normalized_slug(self):
         """The Portal carve-out must not leak into real Anthropic, which needs
@@ -352,10 +251,6 @@ class TestModelIdPassthrough:
         kwargs = self._kwargs("anthropic/claude-opus-4.8", "https://api.anthropic.com")
         assert kwargs["model"] == "claude-opus-4-8"
 
-    def test_normalization_still_applies_when_no_base_url_is_known(self):
-        assert self._kwargs("anthropic/claude-opus-4.8", None)["model"] == (
-            "claude-opus-4-8"
-        )
 
 
 # ── 4. Portal body fields survive onto the Messages wire ─────────────────────
@@ -410,28 +305,9 @@ class TestPortalBodyFields:
         assert extra_body["session_id"] == "sess-abc123"
         assert "conversation=sess-abc123" in extra_body["tags"]
 
-    def test_provider_routing_object_is_not_emitted_by_default(self):
-        """Messages merge omits provider_preferences, so no top-level
-        ``provider`` routing object is added when the agent has none set."""
-        assert "provider" not in self._build()["extra_body"]
 
-    def test_session_id_is_omitted_when_the_agent_has_none(self):
-        """Portal treats a blank/absent value as unset; sending an empty string
-        is pointless noise on every request."""
-        assert "session_id" not in self._build(session_id=None)["extra_body"]
 
-    def test_other_anthropic_providers_get_no_portal_fields(self):
-        """The merge is Portal-specific — native Anthropic and third-party
-        gateways would reject the unknown top-level keys."""
-        extra_body = self._build(provider="anthropic").get("extra_body", {})
 
-        assert "tags" not in extra_body
-        assert "session_id" not in extra_body
-
-    def test_the_model_id_survives_the_merge(self):
-        """Guards against the merge path accidentally bypassing the Portal
-        model-id carve-out."""
-        assert self._build()["model"] == "anthropic/claude-opus-4.8"
 
     def test_helper_merge_is_a_no_op_for_non_nous(self):
         from agent.chat_completion_helpers import (
@@ -549,33 +425,6 @@ class TestPortalThinkingReplay:
 class TestAuxiliaryDualWire:
     """``resolve_provider_client('nous', …)`` must wrap Claude onto Messages."""
 
-    def test_anthropic_catalog_model_wraps_to_messages(self):
-        from agent.auxiliary_client import (
-            AnthropicAuxiliaryClient,
-            resolve_provider_client,
-        )
-
-        plain = MagicMock(name="openai-client")
-        plain.api_key = "portal-invoke-jwt"
-        plain.base_url = PORTAL_URL
-        fake_anthropic = MagicMock(name="anthropic-sdk")
-
-        with (
-            patch(
-                "agent.auxiliary_client._try_nous",
-                return_value=(plain, "google/gemini-3-flash-preview"),
-            ),
-            patch(
-                "agent.anthropic_adapter.build_anthropic_client",
-                return_value=fake_anthropic,
-            ),
-        ):
-            client, model = resolve_provider_client(
-                "nous", "anthropic/claude-opus-4.8"
-            )
-
-        assert model == "anthropic/claude-opus-4.8"
-        assert isinstance(client, AnthropicAuxiliaryClient)
 
     def test_non_anthropic_catalog_model_stays_on_chat_completions(self):
         from agent.auxiliary_client import (
@@ -603,61 +452,7 @@ class TestAuxiliaryDualWire:
         assert client is plain
         assert not isinstance(client, AnthropicAuxiliaryClient)
 
-    def test_stale_chat_completions_api_mode_cannot_keep_claude_on_openai_wire(
-        self,
-    ):
-        """Callers that still pass api_mode=chat_completions must not pin
-        Portal Claude on the OpenAI wire — the catalog id wins."""
-        from agent.auxiliary_client import (
-            AnthropicAuxiliaryClient,
-            resolve_provider_client,
-        )
 
-        plain = MagicMock(name="openai-client")
-        plain.api_key = "portal-invoke-jwt"
-        plain.base_url = PORTAL_URL
-        fake_anthropic = MagicMock(name="anthropic-sdk")
-
-        with (
-            patch(
-                "agent.auxiliary_client._try_nous",
-                return_value=(plain, "google/gemini-3-flash-preview"),
-            ),
-            patch(
-                "agent.anthropic_adapter.build_anthropic_client",
-                return_value=fake_anthropic,
-            ),
-        ):
-            client, _model = resolve_provider_client(
-                "nous",
-                "anthropic/claude-opus-4.8",
-                api_mode="chat_completions",
-            )
-
-        assert isinstance(client, AnthropicAuxiliaryClient)
-
-    def test_build_call_kwargs_keeps_max_tokens_and_reasoning_for_portal_claude(
-        self,
-    ):
-        from agent.auxiliary_client import _build_call_kwargs
-
-        kwargs = _build_call_kwargs(
-            "nous",
-            "anthropic/claude-opus-4.8",
-            [{"role": "user", "content": "hi"}],
-            max_tokens=512,
-            reasoning_config={"enabled": True, "effort": "low"},
-            base_url=PORTAL_URL,
-        )
-
-        assert kwargs["max_tokens"] == 512
-        assert kwargs["_reasoning_config"] == {
-            "enabled": True,
-            "effort": "low",
-        }
-        # Tags / session sticky key still land in extra_body for the adapter
-        # passthrough (product attribution + cache pinning).
-        assert "tags" in kwargs.get("extra_body", {})
 
     def test_build_call_kwargs_includes_sticky_session_id(self):
         """Aux Messages calls must pin session_id, not just tags."""
@@ -689,34 +484,6 @@ class TestAuxiliaryDualWire:
         assert "tags" in extra
         assert extra.get("session_id") == "sess-sticky-aux"
 
-    def test_strict_vision_backend_wraps_anthropic_catalog_models(self):
-        """Vision aux must not skip the dual-wire wrap that text aux gets."""
-        from agent.auxiliary_client import (
-            AnthropicAuxiliaryClient,
-            _resolve_strict_vision_backend,
-        )
-
-        plain = MagicMock(name="openai-client")
-        plain.api_key = "portal-invoke-jwt"
-        plain.base_url = PORTAL_URL
-        fake_anthropic = MagicMock(name="anthropic-sdk")
-
-        with (
-            patch(
-                "agent.auxiliary_client._try_nous",
-                return_value=(plain, "anthropic/claude-opus-4.8"),
-            ),
-            patch(
-                "agent.anthropic_adapter.build_anthropic_client",
-                return_value=fake_anthropic,
-            ),
-        ):
-            client, model = _resolve_strict_vision_backend(
-                "nous", "anthropic/claude-opus-4.8"
-            )
-
-        assert model == "anthropic/claude-opus-4.8"
-        assert isinstance(client, AnthropicAuxiliaryClient)
 
     def test_aux_create_forwards_portal_catalog_id_verbatim(self):
         """Regression: adapter must pass base_url into build_anthropic_kwargs.

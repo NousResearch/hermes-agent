@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
@@ -37,14 +37,22 @@ import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { normalizeSessionTitle } from "@/lib/chat-title";
+import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
+  PTY_RESUME_SANITIZE_WINDOW_MS,
   type PtyConnectionState,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
 } from "@/lib/pty-reconnect";
+import {
+  PTY_RESUME_LOADING_MAX_MS,
+  PTY_RESUME_LOADING_MESSAGE,
+  shouldFinishResumeHydrationOnChunk,
+  shouldShowResumeLoadingOverlay,
+} from "@/lib/pty-resume-loading";
 import {
   MOBILE_REPLACEMENT_WINDOW_MS,
   normalizePtyMobileInput,
@@ -202,6 +210,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [ptyState, setPtyState] =
     useState<PtyConnectionState>("connecting");
   const ptyStateRef = useRef<PtyConnectionState>("connecting");
+  // True until the first real PTY payload arrives for a resumed session.
+  // Covers the blank terminal + blinking-cursor window so users don't think
+  // chat is broken; clears as soon as there is something to show.
+  const [resumeHydrating, setResumeHydrating] = useState(false);
   const [lastCloseCode, setLastCloseCode] = useState<number | null>(null);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
@@ -889,6 +901,43 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    let eraseSuppressionTimer: ReturnType<typeof setTimeout> | null = null;
+    let resumeMaxTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearEraseSuppressionTimer = () => {
+      if (eraseSuppressionTimer) {
+        clearTimeout(eraseSuppressionTimer);
+        eraseSuppressionTimer = null;
+      }
+    };
+    const clearResumeLoadingTimers = () => {
+      if (resumeMaxTimer) {
+        clearTimeout(resumeMaxTimer);
+        resumeMaxTimer = null;
+      }
+    };
+    const finishResumeHydration = () => {
+      clearResumeLoadingTimers();
+      if (!unmounting) {
+        setResumeHydrating(false);
+      }
+    };
+    const noteResumePtyChunk = (chunkText: string) => {
+      if (!resumeParam || unmounting) {
+        return;
+      }
+      if (shouldFinishResumeHydrationOnChunk(chunkText)) {
+        finishResumeHydration();
+      }
+    };
+    if (resumeParam) {
+      setResumeHydrating(true);
+      resumeMaxTimer = setTimeout(
+        finishResumeHydration,
+        PTY_RESUME_LOADING_MAX_MS,
+      );
+    } else {
+      setResumeHydrating(false);
+    }
     const forceFresh = forceFreshPtyRef.current;
     forceFreshPtyRef.current = false;
     // A connect attempt is now in flight — set synchronously (before the async
@@ -989,15 +1038,47 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
 
+    // Session resume: Ink's two-pass virtual scroll floods the PTY with
+    // erase codes and blank-line bursts while replaying a long session.
+    // Suppress them for a bounded window after connect, then let ordinary
+    // in-place redraws through untouched. See pty-resume-sanitizer.ts.
+    const decoder = new TextDecoder();
+    const sanitizer = new PtyResumeSanitizer();
+    if (resumeParam) {
+      eraseSuppressionTimer = setTimeout(() => {
+        eraseSuppressionTimer = null;
+        sanitizer.endEraseSuppression();
+      }, PTY_RESUME_SANITIZE_WINDOW_MS);
+    }
+
     ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
+      const text =
+        typeof ev.data === "string"
+          ? ev.data
+          : decoder.decode(new Uint8Array(ev.data as ArrayBuffer), {
+              stream: true,
+            });
+      // Gate hydration on the payload actually written to xterm. The
+      // sanitizer can turn a nonempty erase-only / all-newline / partial-CSI
+      // resume frame into "" (pty-resume-sanitizer.ts); keying off raw `text`
+      // would hide the wait notice while the terminal is still blank.
+      const rendered = resumeParam ? sanitizer.next(text) : text;
+      term.write(rendered);
+      noteResumePtyChunk(rendered);
     };
 
     ws.onclose = (ev) => {
+      // Drain buffered sanitizer state. A buffered partial escape is dropped
+      // (writing an unterminated CSI would wedge xterm's parser); a buffered
+      // newline run is emitted collapsed.
+      if (resumeParam) {
+        clearEraseSuppressionTimer();
+        try {
+          term.write(sanitizer.flush());
+        } catch {
+          /* ignore */
+        }
+      }
       wsRef.current = null;
       connectInFlightRef.current = false;
       clearConnectingTimer();
@@ -1144,6 +1225,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       unmounting = true;
       imageUploadDisposed = true;
       syncMetricsRef.current = null;
+      clearEraseSuppressionTimer();
+      clearResumeLoadingTimers();
+      setResumeHydrating(false);
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       mobileInputCleanup?.();
@@ -1318,6 +1402,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const visibleBanner = banner ?? reconnectBanner;
   const showReconnectOverlay =
     ptyState === "reconnecting" || (ptyState === "closed" && !banner);
+  const showResumeLoadingOverlay = shouldShowResumeLoadingOverlay({
+    hasResumeTarget: Boolean(resumeParam),
+    ptyState,
+    hydrating: resumeHydrating,
+  });
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
@@ -1448,6 +1537,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 >
                   Reconnect now
                 </Button>
+              </div>
+            </div>
+          )}
+
+          {showResumeLoadingOverlay && (
+            <div
+              className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+              role="status"
+              aria-live="polite"
+              aria-label={PTY_RESUME_LOADING_MESSAGE}
+            >
+              <div className="max-w-[min(28rem,calc(100vw-3rem))] border border-current/30 bg-black/80 px-4 py-3 text-center text-xs tracking-wide text-white/85 shadow-lg">
+                {PTY_RESUME_LOADING_MESSAGE}
               </div>
             </div>
           )}

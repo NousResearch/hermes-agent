@@ -1,9 +1,14 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { StatusbarControls, type StatusbarItem } from '@/app/shell/statusbar-controls'
-import { $statusbarHiddenIds, STATUSBAR_HIDDEN_BY_DEFAULT } from '@/store/statusbar-prefs'
+import {
+  $statusbarHiddenIds,
+  $statusbarVisible,
+  STATUSBAR_HIDDEN_BY_DEFAULT,
+  toggleStatusbarVisible
+} from '@/store/statusbar-prefs'
 
 class TestResizeObserver {
   observe() {}
@@ -22,6 +27,7 @@ beforeAll(() => {
 afterEach(() => {
   cleanup()
   $statusbarHiddenIds.set([...STATUSBAR_HIDDEN_BY_DEFAULT])
+  $statusbarVisible.set(true)
 })
 
 const item = (id: string, label: string, extra: Partial<StatusbarItem> = {}): StatusbarItem => ({
@@ -116,5 +122,28 @@ describe('statusbar item visibility', () => {
 
     expect($statusbarHiddenIds.get()).not.toContain('session-timer')
     expect(within(statusbar).getByText('Session timer')).toBeTruthy()
+  })
+})
+
+describe('whole-bar visibility', () => {
+  it('hides the bar from the context menu, leaving the keybind as the way back', async () => {
+    const statusbar = bar([item('gateway-health', 'Gateway')])
+
+    openContextMenu(statusbar)
+    fireEvent.click(await screen.findByRole('menuitem', { name: /hide status bar/i }))
+
+    expect($statusbarVisible.get()).toBe(false)
+
+    toggleStatusbarVisible()
+    expect($statusbarVisible.get()).toBe(true)
+  })
+
+  it('offers the hide row even when no item opted into the show/hide list', async () => {
+    const statusbar = bar([{ id: 'plugin-thing', label: 'Plugin thing', variant: 'action' }])
+
+    openContextMenu(statusbar)
+
+    expect(await screen.findByRole('menuitem', { name: /hide status bar/i })).toBeTruthy()
+    expect(screen.queryByRole('menuitemcheckbox')).toBeNull()
   })
 })

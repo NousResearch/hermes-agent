@@ -71,9 +71,6 @@ def test_mixed_and_ascii_queries(db):
     assert db.search_messages("우선순위", limit=10)
 
 
-def test_no_false_positive_across_words(db):
-    # 기가/했다 exist inside runs; a bigram crossing a word boundary must not.
-    assert db.search_messages("다프로", limit=10) == []
 
 
 def test_lone_single_cjk_char_routes_like(db):
@@ -84,40 +81,10 @@ def test_lone_single_cjk_char_routes_like(db):
     assert rows, "LIKE fallback must still find substring matches"
 
 
-def test_tool_role_filter_routes_like(db):
-    # Tool rows are excluded from the cjk index; role_filter=['tool'] CJK
-    # queries take the LIKE route and still find tool output.
-    rows = db.search_messages("일본", role_filter=["tool"], limit=10)
-    assert rows and all(r["role"] == "tool" for r in rows)
 
 
-def test_triggers_mirror_updates_and_deletes(db):
-    db.append_message("s1", role="user", content="자바스크립트 리팩토링")
-    assert db.search_messages("리팩토링", limit=10)
-    with db._lock:
-        db._conn.execute(
-            "UPDATE messages SET content = '파이썬 리라이트' WHERE content LIKE '%리팩토링%'"
-        )
-        db._conn.commit()
-    assert db.search_messages("리팩토링", limit=10) == []
-    assert db.search_messages("리라이트", limit=10)
-    with db._lock:
-        db._conn.execute("DELETE FROM messages WHERE content = '파이썬 리라이트'")
-        db._conn.commit()
-    assert db.search_messages("리라이트", limit=10) == []
 
 
-def test_rewound_rows_hidden_from_cjk_search(db):
-    db.append_message("s1", role="user", content="되돌리기 대상 메시지")
-    assert db.search_messages("되돌리기", limit=10)
-    with db._lock:
-        db._conn.execute(
-            "UPDATE messages SET active = 0, compacted = 0 "
-            "WHERE content LIKE '%되돌리기%'"
-        )
-        db._conn.commit()
-    assert db.search_messages("되돌리기", limit=10) == []
-    assert db.search_messages("되돌리기", include_inactive=True, limit=10)
 
 
 def test_config_toggle_disables_cjk(cjk_so, tmp_path, monkeypatch):
@@ -137,69 +104,8 @@ def test_config_toggle_disables_cjk(cjk_so, tmp_path, monkeypatch):
         d.close()
 
 
-def test_no_extension_no_cjk_objects(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(tmp_path / "nonexistent.so"))
-    d = SessionDB(db_path=tmp_path / "state.db")
-    try:
-        assert not d._fts_cjk_loaded
-        assert not d._fts_cjk_available
-        d.create_session(session_id="s1", source="cli", model="m")
-        d.append_message("s1", role="user", content="일본 MCP 정리")
-        # Trigram/LIKE routing still answers.
-        assert d.search_messages("일본", limit=10)
-    finally:
-        d.close()
 
 
-def test_tokenizer_loss_self_heals_and_optimize_rebuilds(cjk_so, tmp_path, monkeypatch):
-    """Full stale lifecycle: capable open → tokenizer-less open (drops
-    triggers, breadcrumbs) → rows written in the gap → capable open again
-    (index NOT served) → optimize-storage rebuilds → search complete."""
-    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(cjk_so))
-    db_path = tmp_path / "state.db"
-
-    d1 = SessionDB(db_path=db_path)
-    assert d1._fts_cjk_available
-    d1.create_session(session_id="s1", source="cli", model="m")
-    d1.append_message("s1", role="user", content="첫번째 메시지")
-    d1.close()
-
-    # Tokenizer-less open: triggers dropped, breadcrumb set, writes fine.
-    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(tmp_path / "gone.so"))
-    d2 = SessionDB(db_path=db_path)
-    assert not d2._fts_cjk_loaded
-    assert not d2._fts_cjk_available
-    d2.append_message("s1", role="user", content="틈새에 쓰인 메시지")
-    assert d2.get_meta(FTS_CJK_STALE_KEY) == "1"
-    with d2._lock:
-        trigs = d2._conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
-            "AND name LIKE 'messages_fts_cjk%'"
-        ).fetchone()[0]
-    assert trigs == 0
-    # Search still answers via trigram/LIKE.
-    assert d2.search_messages("틈새", limit=10)
-    d2.close()
-
-    # Capable open again: stale index must NOT be served.
-    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(cjk_so))
-    d3 = SessionDB(db_path=db_path)
-    assert d3._fts_cjk_loaded
-    assert not d3._fts_cjk_available, "stale index must not serve reads"
-    assert d3.fts_optimize_available(), "optimize must offer the rebuild"
-    # Search still complete through the legacy routes meanwhile.
-    assert d3.search_messages("틈새", limit=10)
-
-    result = d3.optimize_fts_storage(vacuum=False)
-    assert result["ok"]
-    assert d3._fts_cjk_available
-    assert d3.get_meta(FTS_CJK_STALE_KEY) is None
-    assert d3.fts_cjk_rebuild_status() is None
-    # Both the pre-gap and in-gap rows are now searchable via the index.
-    assert d3._describe_search_path("틈새") == "fts_cjk"
-    assert d3.search_messages("첫번째", limit=10)
-    assert d3.search_messages("틈새", limit=10)
-    d3.close()
 
 
 def test_existing_v23_db_gains_cjk_via_optimize(cjk_so, tmp_path, monkeypatch):

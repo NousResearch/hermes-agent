@@ -59,6 +59,12 @@ def main():
     parser.add_argument("--device", default="cpu", help="Device (cpu/cuda/mps)")
     args = parser.parse_args()
 
+    # llama_cpp (backbone) offloads to GPU only for the literal string "gpu";
+    # torch (codec) only accepts "cuda". A single --device value can't satisfy
+    # both — "cuda" silently no-ops on the backbone, leaving it on CPU.
+    backbone_device = "gpu" if args.device == "cuda" else args.device
+    codec_device = args.device
+
     # Validate inputs
     ref_audio = Path(args.ref_audio).expanduser()
     ref_text_path = Path(args.ref_text).expanduser()
@@ -80,9 +86,9 @@ def main():
 
     tts = NeuTTS(
         backbone_repo=args.model,
-        backbone_device=args.device,
+        backbone_device=backbone_device,
         codec_repo="neuphonic/neucodec",
-        codec_device=args.device,
+        codec_device=codec_device,
     )
     ref_codes = tts.encode_reference(str(ref_audio))
     wav = tts.infer(args.text, ref_codes, ref_text)

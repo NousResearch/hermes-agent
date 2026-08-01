@@ -8,9 +8,9 @@ import { cn } from '@/lib/utils'
 // sections and the project/workspace tree, so it lives outside either to keep
 // imports one-directional (no index <-> projects cycle).
 
-/** The muted count chip next to a section/workspace label. */
-export function SidebarCount({ children }: { children: React.ReactNode }) {
-  return <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
+/** The muted slot beside a section label (loading glyph, status hint). */
+export function SidebarSectionMeta({ children }: { children: React.ReactNode }) {
+  return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
 // ── Row geometry (session row is canonical — everything composes these) ─────

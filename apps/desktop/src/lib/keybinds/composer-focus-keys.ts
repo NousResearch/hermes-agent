@@ -56,19 +56,61 @@ export function isActivateOnEnterTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * Dialogs, menus, terminal, full pages, session switcher, any open overlay
- * (settings / command-center / star map / …), and a live clarify choices card —
+ * True when a live clarify card binds THIS key, so type-to-focus must yield it.
+ *
+ * The card owns Enter plus the shortcuts it actually renders — `1..N+1` and
+ * `A..` for its N choices and the trailing "Other" row. It does NOT own the
+ * rest of the alphabet: typing a real message instead of picking an option is a
+ * legitimate answer ("none of these"), and blanket-blocking every printable
+ * left the user unable to start that message at all — the first letter vanished
+ * and the composer never focused. Out-of-range keys fall through to the
+ * composer, which skips the question on send.
+ *
+ * The choice count rides in the attribute's value, so this stays a DOM read
+ * with no store coupling.
+ */
+export function clarifyCardOwnsKey(event: KeyboardEvent): boolean {
+  const card = queryVisible(BLOCKING_IN_SURFACE)
+
+  if (!card) {
+    return false
+  }
+
+  if (event.key === 'Enter') {
+    return true
+  }
+
+  // "Other" is the row past the last choice, hence the +1.
+  const rows = Number(card.getAttribute('data-clarify-choices')) + 1
+
+  if (!Number.isFinite(rows)) {
+    return false
+  }
+
+  const key = event.key.toLowerCase()
+
+  if (key.length !== 1) {
+    return false
+  }
+
+  const index = /^[1-9]$/.test(key) ? Number(key) - 1 : key >= 'a' && key <= 'z' ? key.charCodeAt(0) - 97 : -1
+
+  return index >= 0 && index < rows
+}
+
+/**
+ * Dialogs, menus, terminal, full pages, session switcher, and any open overlay —
  * they keep their keys, so type-to-focus / soft `/` / Enter stand down rather
  * than stealing keystrokes those surfaces own (or leaking them into the composer
- * mounted behind an overlay).
+ * mounted behind an overlay). A live clarify card is handled per-key by
+ * `clarifyCardOwnsKey`, not here — it only owns its own shortcuts.
  */
 export function composerFocusBlockedBySurface(): boolean {
   return (
     switcherActive() ||
     $workspaceIsPage.get() ||
     isFocusWithin('[data-terminal]') ||
-    Boolean(document.querySelector(BLOCKING_OVERLAY)) ||
-    Boolean(queryVisible(BLOCKING_IN_SURFACE))
+    Boolean(document.querySelector(BLOCKING_OVERLAY))
   )
 }
 
@@ -95,7 +137,8 @@ export function composerFocusKeysAllowed(event: KeyboardEvent, combo: string): b
     event.defaultPrevented ||
     event.isComposing ||
     isEditableTarget(event.target) ||
-    composerFocusBlockedBySurface()
+    composerFocusBlockedBySurface() ||
+    clarifyCardOwnsKey(event)
   ) {
     return false
   }

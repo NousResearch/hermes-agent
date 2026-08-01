@@ -730,7 +730,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     return next
   }
 
-  const toggleServer = async (serverName: string, enabled: boolean) => {
+  const setServerEnabled = async (serverName: string, enabled: boolean) => {
     if (profilePending) {
       return
     }
@@ -978,7 +978,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
             onBack={() => setCursor(0)}
             onProbe={() => void runProbe(selected)}
             onRemove={() => void removeServer(selected)}
-            onToggle={checked => void toggleServer(selected, checked)}
+            onToggle={checked => void setServerEnabled(selected, checked)}
             onToggleTool={toolName => void toggleTool(selected, toolName)}
             probe={probes[selected]}
             saved={savedEntry !== undefined}
@@ -1019,7 +1019,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
                         onProbe={() => void runProbe(serverName)}
                         onRemove={() => void removeServer(serverName)}
                         onSelect={() => focusServer(serverName)}
-                        onToggle={checked => void toggleServer(serverName, checked)}
+                        onToggle={checked => void setServerEnabled(serverName, checked)}
                         status={status}
                         statusText={statusLine(m, status, probes[serverName], server)}
                       />

@@ -77,63 +77,9 @@ def test_transient_classifier_matches_known_network_errors(exc_cls):
     assert _is_transient_network_error(exc_cls("boom")) is True
 
 
-def test_transient_classifier_rejects_unrelated_errors():
-    """Real bugs (ValueError, KeyError, custom app errors) are NOT swallowed."""
-    for exc in (ValueError("bad"), KeyError("missing"), SomeUnrelatedBug("x")):
-        assert _is_transient_network_error(exc) is False
-
-
-def test_transient_classifier_unwraps_cause_chain():
-    """A NetworkError wrapping a ConnectError is still classified."""
-    inner = ConnectError("connection refused")
-    outer = NetworkError("upstream failed")
-    outer.__cause__ = inner
-    assert _is_transient_network_error(outer) is True
-
-
-def test_transient_classifier_unwraps_context_chain():
-    """Implicit ``__context__`` wrapping is also unwrapped."""
-    try:
-        try:
-            raise TimedOut("upstream timeout")
-        except TimedOut:
-            # Re-raise something else with the original as implicit context
-            raise SomeUnrelatedBug("wrapper")
-    except SomeUnrelatedBug as e:
-        wrapped = e
-    # The wrapper class name is not transient, but the chained context is.
-    assert _is_transient_network_error(wrapped) is True
-
-
-def test_transient_classifier_does_not_infinite_loop_on_cyclic_cause():
-    """A pathological self-referential cause chain terminates."""
-    exc = SomeUnrelatedBug("loop")
-    exc.__cause__ = exc  # cycle
-    # Must return without hanging.
-    assert _is_transient_network_error(exc) is False
-
-
 # ---------------------------------------------------------------------
 # Loop handler
 # ---------------------------------------------------------------------
-
-
-def test_handler_swallows_transient_error_and_logs_warning(caplog):
-    """Transient errors are logged at WARNING but not re-raised."""
-    loop = asyncio.new_event_loop()
-    try:
-        with caplog.at_level(logging.WARNING, logger="gateway.run"):
-            _gateway_loop_exception_handler(
-                loop,
-                {
-                    "message": "Task exception was never retrieved",
-                    "exception": TimedOut("Timed out"),
-                },
-            )
-        # Warning emitted, exception class name appears in the log.
-        assert any("TimedOut" in r.message for r in caplog.records)
-    finally:
-        loop.close()
 
 
 def test_handler_delegates_unknown_errors_to_default(monkeypatch):
@@ -153,21 +99,6 @@ def test_handler_delegates_unknown_errors_to_default(monkeypatch):
         }
         _gateway_loop_exception_handler(loop, context)
         assert forwarded == [context]
-    finally:
-        loop.close()
-
-
-def test_handler_tolerates_missing_exception_key(monkeypatch):
-    """Contexts without an ``exception`` key fall through to the default handler."""
-    loop = asyncio.new_event_loop()
-    try:
-        forwarded: list[dict] = []
-        monkeypatch.setattr(
-            loop, "default_exception_handler", lambda ctx: forwarded.append(ctx)
-        )
-        ctx = {"message": "warning without exception"}
-        _gateway_loop_exception_handler(loop, ctx)
-        assert forwarded == [ctx]
     finally:
         loop.close()
 

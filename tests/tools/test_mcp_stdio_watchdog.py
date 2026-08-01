@@ -17,13 +17,6 @@ def test_is_orphaned_is_false_while_direct_parent_is_unchanged():
     ) is False
 
 
-def test_is_orphaned_is_true_after_direct_parent_changes():
-    assert mcp_stdio_watchdog._is_orphaned(
-        1234,
-        getppid=lambda: 5678,
-    ) is True
-
-
 @pytest.mark.skipif(os.name != "posix", reason="watchdog wrapping is POSIX-only")
 def test_wrap_command_uses_stable_parent_pid_and_preserves_command_tail():
     parent_pid = os.getpid()

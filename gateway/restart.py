@@ -45,6 +45,18 @@ def is_gateway_supervisor_process(
     }
 
 
+def is_container_restart_context() -> bool:
+    """Return whether the gateway is running inside a container for restart
+    routing purposes (Docker/Podman ⇒ the detached setsid path dies with the
+    cgroup; exit-75 service restart is the only viable path).
+
+    Extracted from the inline probe in the /restart handler so tests can mock
+    container detection hermetically — a real ``/.dockerenv`` on a
+    containerized CI runner otherwise flips the routing under the test.
+    """
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
 def parse_restart_drain_timeout(raw: object) -> float:
     """Parse a configured drain timeout, falling back to the shared default."""
     try:

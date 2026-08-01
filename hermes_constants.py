@@ -1276,7 +1276,13 @@ def partial_update_hint(exc: BaseException) -> list[str]:
     if isinstance(exc, ModuleNotFoundError):
         return []
     name = getattr(exc, "name", None)
-    if not name or not str(name).startswith(("tools", "agent", "hermes", "gateway")):
+    # Compare the first dotted segment against an exact set: a bare
+    # ``startswith`` would also match third-party ``agents``, ``agentops``,
+    # ``toolsets``, etc. and blame our updater for their import errors.
+    root = str(name).split(".")[0] if name else ""
+    if root not in {"tools", "agent", "gateway", "plugins", "providers"} and not (
+        root == "cli" or root.startswith("hermes_") or root == "hermes"
+    ):
         return []
     return [
         "",

@@ -2651,8 +2651,10 @@ def init_agent(
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
+    _terminal_cwd = os.getenv("TERMINAL_CWD") or None
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=os.getenv("TERMINAL_CWD") or None,
+        working_dir=_terminal_cwd,
+        allow_install_tree=bool(_terminal_cwd) or agent.platform in ("cli", "tui"),
     )
     agent._user_turn_count = 0
     # Copilot x-initiator flag: first API call of a user turn sends "user" (#3040).

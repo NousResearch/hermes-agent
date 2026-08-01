@@ -117,12 +117,30 @@ class TestSubdirectoryHintTracker:
         (install_tree / "AGENTS.md").write_text("Install-tree contributor guide")
         monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
 
-        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        tracker = SubdirectoryHintTracker(
+            working_dir=str(tmp_path), allow_install_tree=False
+        )
         result = tracker.check_tool_call(
             "read_file", {"path": str(install_tree / "agent.py")}
         )
 
         assert result is None
+
+    def test_skips_fallback_install_tree_hints(self, tmp_path, monkeypatch):
+        """A fallback cwd in the install tree must not gain hint authority."""
+        from agent import runtime_cwd
+
+        install_tree = tmp_path / "hermes-agent"
+        subdir = install_tree / "apps" / "desktop"
+        subdir.mkdir(parents=True)
+        (subdir / "AGENTS.md").write_text("Desktop contributor guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+        monkeypatch.chdir(install_tree)
+
+        tracker = SubdirectoryHintTracker()
+        assert tracker.check_tool_call("read_file", {"path": str(subdir / "main.py")}) is None
+        assert tracker._load_hints_for_directory(subdir) is None
+
 
     def test_allows_hints_when_developing_inside_install_tree(self, tmp_path, monkeypatch):
         """An explicit Hermes checkout remains a valid workspace."""

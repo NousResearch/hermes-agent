@@ -5,3 +5,5 @@ author: "Hauzer S. Lee"
 hooks:
   - on_session_start
   - post_tool_call
+  - pre_tool_call
+  - pre_llm_call

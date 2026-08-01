@@ -57,6 +57,14 @@ second @url:"https://two.example" @file:\`src/app.ts\``
     expect(copyableCodeText(code)).toBe('first https://one.example\nsecond https://two.example @file:`src/app.ts`')
   })
 
+  it('keeps hostless HTTP(S) URL directives raw', () => {
+    const http = '@url:http://'
+    const https = '@url:https://'
+
+    expect(copyableCodeText(http)).toBe(http)
+    expect(copyableCodeText(https)).toBe(https)
+  })
+
   it('leaves invalid URL directives and other reference kinds unchanged', () => {
     const code = '@url:ftp://example.com @url:example.com @image:https://example.com/image.png'
 

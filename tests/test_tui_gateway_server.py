@@ -15701,6 +15701,38 @@ def test_session_delete_unknown_profile_active_key_fails_closed(monkeypatch, tmp
     assert resp["error"]["message"] == _C2_MSG.format(name="beta")
 
 
+@pytest.mark.parametrize("bad", [123, {"a": 1}, ["x"], True])
+def test_non_string_profile_rejected_as_invalid_params(monkeypatch, tmp_path, bad):
+    """A non-string profile value must be rejected cleanly (-32602), never
+    escape as AttributeError from the ``.strip()`` idiom — on stdio that
+    escape would kill the gateway."""
+    _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
+    resp = server.handle_request(
+        {"id": "t1", "method": "session.list", "params": {"profile": bad}}
+    )
+    assert resp["error"]["code"] == -32602
+    assert resp["error"]["message"] == "invalid params: profile must be a string"
+
+
+def test_null_profile_still_uses_launch(monkeypatch, tmp_path):
+    """``profile: null`` (and omitted) keep launch behavior — only present,
+    non-null, non-string values are malformed."""
+    _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
+
+    class _EmptyDb:
+        def list_sessions_rich(self, **kw):
+            return []
+
+        def list_sessions(self, **kw):
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: _EmptyDb())
+    resp = server.handle_request(
+        {"id": "t2", "method": "session.list", "params": {"profile": None}}
+    )
+    assert resp.get("error", {}).get("code") != -32602
+
+
 def test_profile_home_unstatable_name_fails_closed(monkeypatch, tmp_path):
     """A name the filesystem cannot stat (embedded NUL) is an unknown profile,
     not a server error — it must not escape as ValueError (the stdio entry

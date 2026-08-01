@@ -1812,8 +1812,15 @@ def handle_request(req: dict) -> dict | None:
         # active-session refusal, complete.path's session-cwd short-circuit).
         # Validating here makes every current and future method fail closed
         # with no per-handler ordering rules.
-        if isinstance(params, dict) and (params.get("profile") or "").strip():
-            _profile_home(params.get("profile"))
+        raw_profile = params.get("profile") if isinstance(params, dict) else None
+        if raw_profile is not None and not isinstance(raw_profile, str):
+            # Malformed request, not an unknown profile: the handlers' own
+            # ``(params.get("profile") or "").strip()`` idiom raises
+            # AttributeError on a non-string value, and the stdio entry loop
+            # has no dispatch backstop — reject as invalid params up front.
+            return _err(rid, -32602, "invalid params: profile must be a string")
+        if raw_profile and raw_profile.strip():
+            _profile_home(raw_profile)
         return fn(rid, params)
     except _UnknownProfileError as exc:
         # Fail closed: a request that names a profile absent on this host must

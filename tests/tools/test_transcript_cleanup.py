@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.transcript_cleanup import cleanup_transcript
 
 
@@ -42,15 +41,19 @@ def _install_provider(monkeypatch, resolved_model="openai/gpt-4o-mini"):
     return calls
 
 
-def test_cleanup_defaults():
-    assert DEFAULT_CONFIG["stt"]["cleanup"] == {
-        "enabled": False,
-        "provider": "openrouter",
-        "model": "openai/gpt-4o-mini",
-        "timeout_seconds": 5,
-        "minimum_confidence": 0.90,
-        "max_topic_context_chars": 1000,
-    }
+def test_missing_enabled_flag_keeps_cleanup_disabled(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("provider should not be resolved")
+
+    monkeypatch.setattr(
+        "tools.transcript_cleanup.resolve_provider_client", unexpected
+    )
+    result = cleanup_transcript("raw transcript", "topic", {})
+
+    assert result.text == "raw transcript"
+    assert result.applied is False
+    assert result.reason == "disabled"
+    assert result.confidence is None
 
 
 def test_disabled_returns_raw_without_provider_call(monkeypatch):

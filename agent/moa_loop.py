@@ -383,6 +383,8 @@ def _merge_slot_extra_body(
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]],
     runtime: dict[str, Any],
+    *,
+    cache_disabled: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Decorate an advisor or aggregator request with cache_control when its
     route honors it.
@@ -396,17 +398,33 @@ def _maybe_apply_moa_cache_control(
 
     Returns the messages unchanged on any resolution error or when the
     policy says the route doesn't honor markers.
+
+    ``cache_disabled`` (or the live config when omitted) is stamped onto the
+    policy stub so ``prompt_caching.cache_ttl: off`` is not bypassed by the
+    blank-agent pattern (#76085).
     """
     try:
         from types import SimpleNamespace
 
-        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
+        from agent.agent_runtime_helpers import (
+            anthropic_prompt_cache_policy,
+            prompt_caching_disabled_from_config,
+        )
         from agent.prompt_caching import apply_anthropic_cache_control
+
+        if cache_disabled is None:
+            cache_disabled = prompt_caching_disabled_from_config()
 
         # The policy function reads agent.* only as fallbacks for kwargs we
         # don't pass; provide a stub so the slot is judged purely on its own
-        # resolved runtime.
-        stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+        # resolved runtime (plus the operator disable flag).
+        stub = SimpleNamespace(
+            provider="",
+            base_url="",
+            api_mode="",
+            model="",
+            _cache_disabled=bool(cache_disabled),
+        )
         should_cache, native_layout = anthropic_prompt_cache_policy(
             stub,
             provider=runtime.get("provider") or "",
@@ -1680,6 +1698,9 @@ class MoAChatCompletions:
                 base_url=agg_runtime.get("base_url") or "",
                 api_mode=agg_runtime.get("api_mode") or "",
                 model=agg_runtime.get("model") or "",
+                cache_disabled=bool(
+                    getattr(self._agent, "_cache_disabled", False)
+                ),
             )
             if guidance:
                 _attach_reference_guidance(agg_messages, str(guidance))

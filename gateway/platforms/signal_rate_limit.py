@@ -21,6 +21,8 @@ import re
 import time
 from typing import Any, Optional
 
+from agent.retry_utils import parse_retry_after_seconds
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,7 +85,9 @@ def _extract_retry_after_seconds(err: Any) -> Optional[float]:
        AttachmentInvalidException during attachment upload, where the
        structured field stays null.
 
-    Returns None when neither yields a value.
+    Numeric parsing delegates to the shared
+    :func:`agent.retry_utils.parse_retry_after_seconds` core.
+    Returns None when neither source yields a value.
     """
     msg = ""
     if isinstance(err, dict):
@@ -91,16 +95,17 @@ def _extract_retry_after_seconds(err: Any) -> Optional[float]:
         response = data.get("response") or {}
         results = response.get("results") or []
         candidates = [
-            r.get("retryAfterSeconds") for r in results
+            parse_retry_after_seconds(r.get("retryAfterSeconds")) for r in results
             if isinstance(r, dict) and r.get("retryAfterSeconds")
         ]
+        candidates = [c for c in candidates if c is not None]
         if candidates:
-            return float(max(candidates))
+            return max(candidates)
         msg = str(err.get("message", ""))
     else:
         msg = str(err)
     match = _RETRY_AFTER_RE.search(msg)
-    return float(match.group(1)) if match else None
+    return parse_retry_after_seconds(match.group(1)) if match else None
 
 
 def _is_signal_rate_limit_error(err: Any) -> bool:

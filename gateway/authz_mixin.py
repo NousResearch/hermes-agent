@@ -43,6 +43,35 @@ def _auth_env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 
+def _platform_gate_env(name: str, default: str = "") -> str:
+    """Read a platform allow/deny gate env var with per-profile isolation.
+
+    Like ``_auth_env`` but authoritative under multiplex: when a profile
+    secret scope is installed AND multiplexing is active, a key absent from
+    the scope returns ``default`` instead of falling through to
+    ``os.environ``. Under multiplex the process env may hold ANOTHER
+    profile's first-writer-bridged value (the YAML→env bridges in the
+    Discord/Telegram adapters' ``_apply_yaml_config`` are first-writer-wins),
+    so falling through would leak profile A's allowlist into profile B
+    (issue #72348). Single-profile deployments — no scope installed, or
+    multiplex off — behave exactly like the legacy ``os.getenv`` read.
+    """
+    if not name:
+        return default
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        scope = current_secret_scope()
+        if scope is not None and is_multiplex_active():
+            val = scope.get(name)
+            if val is None:
+                return default
+            return str(val).strip()
+    except Exception:
+        pass
+    return (os.getenv(name) or default).strip()
+
+
 def _coerce_allow_set(raw) -> set[str]:
     """Parse allowlist values from config or env var into a set of strings.
 
@@ -78,6 +107,16 @@ class GatewayAuthorizationMixin:
             return None
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
+            active_profile = None
+            active_profile_fn = getattr(self, "_active_profile_name", None)
+            if callable(active_profile_fn):
+                try:
+                    active_profile = active_profile_fn()
+                except Exception:
+                    active_profile = None
+            if profile_name == active_profile:
+                adapters = getattr(self, "adapters", None) or {}
+                return adapters.get(platform)
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)

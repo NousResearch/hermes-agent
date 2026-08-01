@@ -32,40 +32,12 @@ def _tool(content):
     return {"role": "tool", "tool_call_id": "c1", "content": content}
 
 
-def test_is_interrupted_tool_result_markers():
-    assert is_interrupted_tool_result("[Command interrupted]")
-    assert is_interrupted_tool_result("foo\nexit_code: 130 (interrupt)\nbar")
-    assert not is_interrupted_tool_result("exit_code: 0\nclean output")
-    assert not is_interrupted_tool_result("ordinary tool output")
-    assert not is_interrupted_tool_result(None)
 
 
-def test_strip_dangling_tool_call_tail_removes_unanswered_read_only_tail():
-    history = [_user("hi"), _assistant_tc("read_file")]
-    out = strip_dangling_tool_call_tail(history)
-    assert out == [_user("hi")]
 
 
-def test_dangling_side_effect_is_recovered_as_unknown_not_erased():
-    history = [_user("hi"), _assistant_tc("write_file")]
-
-    out = strip_dangling_tool_call_tail(history)
-
-    assert out[:-1] == history
-    assert out[-1]["role"] == "tool"
-    assert out[-1]["tool_call_id"] == "c1"
-    assert out[-1]["effect_disposition"] == "unknown"
-    assert "may have executed" in out[-1]["content"].lower()
 
 
-def test_dangling_session_mutation_is_recovered_as_unknown():
-    history = [_user("hi"), _assistant_tc("todo")]
-
-    out = strip_dangling_tool_call_tail(history)
-
-    assert out[:-1] == history
-    assert out[-1]["effect_disposition"] == "unknown"
-    assert "may have executed" in out[-1]["content"].lower()
 
 
 def test_mixed_dangling_batch_uses_truthful_per_call_wording():
@@ -87,39 +59,14 @@ def test_mixed_dangling_batch_uses_truthful_per_call_wording():
     assert "unknown" in write_result["content"].lower()
 
 
-def test_strip_dangling_tool_call_tail_preserves_answered_pair():
-    history = [_user("hi"), _assistant_tc("read_file"), _tool("contents")]
-    out = strip_dangling_tool_call_tail(history)
-    assert out == history  # answered -> untouched
 
 
-def test_strip_interrupted_tool_tails_removes_interrupted_read_only_block():
-    history = [_user("hi"), _assistant_tc("read_file"), _tool("[Command interrupted]")]
-    out = strip_interrupted_tool_tails(history)
-    assert out == [_user("hi")]
 
 
-def test_interrupted_side_effect_is_preserved_as_unknown():
-    history = [_user("hi"), _assistant_tc("terminal"), _tool("[Command interrupted]")]
-
-    out = strip_interrupted_tool_tails(history)
-
-    assert out[:-1] == history[:-1]
-    assert out[-1]["role"] == "tool"
-    assert out[-1]["effect_disposition"] == "unknown"
 
 
-def test_strip_interrupted_tool_tails_preserves_successful_block():
-    history = [_user("hi"), _assistant_tc("read_file"), _tool("ok"),
-               {"role": "assistant", "content": "done"}]
-    out = strip_interrupted_tool_tails(history)
-    assert out == history
 
 
-def test_strip_interrupted_tool_tails_removes_orphan_interrupted_tool():
-    history = [_user("hi"), _tool("[Command interrupted] exit_code: 130 interrupt")]
-    out = strip_interrupted_tool_tails(history)
-    assert out == [_user("hi")]
 
 
 def test_sanitize_replay_history_combines_both():

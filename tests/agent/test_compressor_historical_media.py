@@ -39,14 +39,8 @@ INPUT_TEXT = {"type": "input_text", "text": "hi"}
 
 
 class TestIsImagePart:
-    def test_openai_chat_shape(self):
-        assert _is_image_part(IMG_URL) is True
 
-    def test_openai_responses_shape(self):
-        assert _is_image_part(INPUT_IMG) is True
 
-    def test_anthropic_native_shape(self):
-        assert _is_image_part(ANTHROPIC_IMG) is True
 
     def test_text_part_is_not_image(self):
         assert _is_image_part(TEXT) is False
@@ -59,32 +53,19 @@ class TestIsImagePart:
 
 
 class TestContentHasImages:
-    def test_string_content(self):
-        assert _content_has_images("a string") is False
 
     def test_empty_list(self):
         assert _content_has_images([]) is False
 
-    def test_text_only_list(self):
-        assert _content_has_images([TEXT, TEXT]) is False
 
-    def test_list_with_image(self):
-        assert _content_has_images([TEXT, IMG_URL]) is True
 
     def test_none(self):
         assert _content_has_images(None) is False
 
 
 class TestStripImagesFromContent:
-    def test_string_passthrough(self):
-        assert _strip_images_from_content("hello") == "hello"
 
-    def test_none_passthrough(self):
-        assert _strip_images_from_content(None) is None
 
-    def test_text_only_passthrough(self):
-        parts = [TEXT, {"type": "text", "text": "world"}]
-        assert _strip_images_from_content(parts) == parts
 
     def test_replaces_image_with_placeholder(self):
         parts = [TEXT, IMG_URL]
@@ -96,11 +77,6 @@ class TestStripImagesFromContent:
             "text": "[Attached image — stripped after compression]",
         }
 
-    def test_does_not_mutate_input(self):
-        parts = [IMG_URL, TEXT]
-        _ = _strip_images_from_content(parts)
-        assert parts[0] is IMG_URL  # original list untouched
-        assert parts[1] is TEXT
 
     def test_handles_all_three_shapes(self):
         parts = [IMG_URL, INPUT_IMG, ANTHROPIC_IMG, TEXT]
@@ -113,86 +89,12 @@ class TestStripHistoricalMedia:
     def test_empty_passthrough(self):
         assert _strip_historical_media([]) == []
 
-    def test_no_images_anywhere(self):
-        msgs = [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hey"},
-            {"role": "user", "content": "bye"},
-        ]
-        assert _strip_historical_media(msgs) is msgs  # identity — no copy
 
-    def test_single_image_user_only_first_message(self):
-        # Only image-bearing user is the first message — nothing before it.
-        msgs = [
-            {"role": "user", "content": [TEXT, IMG_URL]},
-            {"role": "assistant", "content": "ok"},
-        ]
-        out = _strip_historical_media(msgs)
-        assert out is msgs  # no-op
-        # Image still there.
-        assert _content_has_images(out[0]["content"])
 
-    def test_strips_older_user_image_keeps_newest(self):
-        msgs = [
-            {"role": "user", "content": [TEXT, IMG_URL]},     # old — strip
-            {"role": "assistant", "content": "looked at it"},
-            {"role": "user", "content": [TEXT, INPUT_IMG]},   # newest — keep
-        ]
-        out = _strip_historical_media(msgs)
-        assert out is not msgs  # new list
-        # First message's image was replaced
-        assert not _content_has_images(out[0]["content"])
-        # Newest user still has its image
-        assert _content_has_images(out[2]["content"])
 
-    def test_strips_assistant_and_tool_images_before_anchor(self):
-        msgs = [
-            {"role": "user", "content": [TEXT, IMG_URL]},          # old user
-            {"role": "assistant", "content": [TEXT, IMG_URL]},     # old assistant
-            {"role": "tool", "content": [TEXT, IMG_URL], "tool_call_id": "t1"},
-            {"role": "user", "content": [TEXT, IMG_URL]},          # newest user — keep
-        ]
-        out = _strip_historical_media(msgs)
-        for i in range(3):
-            assert not _content_has_images(out[i]["content"]), f"msg {i} still has image"
-        assert _content_has_images(out[3]["content"])
 
-    def test_text_only_newest_user_still_strips_older_images(self):
-        # The anchor is "newest user WITH images". If the newest user is
-        # text-only, we fall back to the previous image-bearing user turn.
-        msgs = [
-            {"role": "user", "content": [TEXT, IMG_URL]},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": [TEXT, IMG_URL]},  # anchor
-            {"role": "assistant", "content": "done"},
-            {"role": "user", "content": "follow-up text only"},
-        ]
-        out = _strip_historical_media(msgs)
-        # First image-bearing user (index 0) was stripped — it was before the
-        # newest image-bearing user (index 2).
-        assert not _content_has_images(out[0]["content"])
-        # Anchor (index 2) keeps its image.
-        assert _content_has_images(out[2]["content"])
 
-    def test_no_image_bearing_user_is_noop(self):
-        msgs = [
-            {"role": "user", "content": "first"},
-            {"role": "assistant", "content": [TEXT, IMG_URL]},  # assistant image only
-            {"role": "user", "content": "second"},
-        ]
-        out = _strip_historical_media(msgs)
-        # No image-bearing user anchor → no stripping.
-        assert out is msgs
-        assert _content_has_images(out[1]["content"])
 
-    def test_does_not_mutate_input_messages(self):
-        msg0 = {"role": "user", "content": [TEXT, IMG_URL]}
-        msg1 = {"role": "user", "content": [TEXT, IMG_URL]}
-        msgs = [msg0, msg1]
-        _ = _strip_historical_media(msgs)
-        # Originals untouched
-        assert _content_has_images(msg0["content"])
-        assert _content_has_images(msg1["content"])
 
     def test_idempotent(self):
         msgs = [

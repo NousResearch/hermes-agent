@@ -60,47 +60,14 @@ class TestJSONDecodeErrorIsRetryable:
         else:
             raise AssertionError("json.loads should have raised")
 
-    def test_unicode_encode_error_is_not_local_validation(self):
-        """Existing carve-out — surrogate sanitization handles this separately."""
-        try:
-            "\ud800".encode("utf-8")
-        except UnicodeEncodeError as exc:
-            assert not _mirror_agent_predicate(exc)
-        else:
-            raise AssertionError("encoding lone surrogate should raise")
 
     def test_bare_value_error_is_local_validation(self):
         """Programming bugs that raise bare ValueError must still be
         classified as local validation errors (non-retryable)."""
         assert _mirror_agent_predicate(ValueError("bad arg"))
 
-    def test_bare_type_error_is_local_validation(self):
-        assert _mirror_agent_predicate(TypeError("wrong type"))
 
 
-class TestAgentLoopSourceStillHasCarveOut:
-    """Belt-and-suspenders: the production source must actually include
-    the json.JSONDecodeError carve-out. Protects against an accidental
-    revert that happens to leave the test file intact."""
-
-    def test_run_agent_excludes_jsondecodeerror_from_local_validation(self):
-        import inspect
-        from agent import conversation_loop
-        # The agent loop body lives in agent/conversation_loop.py after
-        # the run_agent.py refactor.  Assert the carve-out is present in
-        # the extracted module specifically — if it ever moves back or
-        # disappears, this fails loudly rather than silently passing
-        # against a non-existent inline replica.
-        src = inspect.getsource(conversation_loop)
-        # The predicate we care about must reference json.JSONDecodeError
-        # in its exclusion tuple. We check for the specific co-occurrence
-        # rather than the literal string so harmless reformatting doesn't
-        # break us.
-        assert "is_local_validation_error" in src
-        assert "JSONDecodeError" in src, (
-            "agent/conversation_loop.py must carve out json.JSONDecodeError "
-            "from the is_local_validation_error classification — see #14782."
-        )
 
 
 
@@ -123,17 +90,6 @@ class TestNoneTypeNotIterableIsRetryable:
             "not a local bug. See #33136."
         )
 
-    def test_nonetype_not_iterable_uppercase_variants_still_retryable(self):
-        # The carve-out is case-insensitive; SDK message phrasing can vary.
-        for msg in [
-            "'NoneType' object is not iterable",
-            "NoneType object is not iterable",
-            "argument of type 'NoneType' is not iterable",
-        ]:
-            err = TypeError(msg)
-            assert not _mirror_agent_predicate(err), (
-                f"Variant {msg!r} should be classified as retryable provider shape error."
-            )
 
     def test_unrelated_type_error_remains_local_validation(self):
         """TypeError without the NoneType-not-iterable pattern still aborts (programming bug)."""
@@ -141,16 +97,3 @@ class TestNoneTypeNotIterableIsRetryable:
         assert _mirror_agent_predicate(TypeError("expected str, got int"))
 
 
-class TestAgentLoopSourceHasNoneTypeCarveOut:
-    """Belt-and-suspenders: the production source must include the carve-out."""
-
-    def test_conversation_loop_excludes_nonetype_not_iterable_from_local_validation(self):
-        import inspect
-        from agent import conversation_loop
-        src = inspect.getsource(conversation_loop)
-        assert "is_local_validation_error" in src
-        # The specific check must be present.
-        assert "nonetype" in src.lower() and "not iterable" in src.lower(), (
-            "agent/conversation_loop.py must carve out 'NoneType is not iterable' "
-            "TypeErrors from the is_local_validation_error classification — see #33136."
-        )

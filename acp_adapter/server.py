@@ -114,6 +114,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
             load_config,
         )
         from hermes_cli.models import fetch_api_models
+        from hermes_cli.providers import custom_provider_slug
     except ImportError:
         return []
 
@@ -145,8 +146,7 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
         base_url = str(entry.get("base_url", "") or "").strip()
         if not name or not base_url:
             continue
-        slug_source = provider_key or name
-        slug = "custom:" + slug_source.strip().lower().replace(" ", "-")
+        slug = custom_provider_slug(name, provider_key)
 
         api_key = str(entry.get("api_key", "") or "").strip()
         if not api_key:
@@ -1037,6 +1037,102 @@ class HermesACPAgent(acp.Agent):
                 exc_info=True,
             )
 
+    def _schedule_mcp_late_refresh(self, state: SessionState) -> None:
+        """Refresh the agent's tool snapshot when background MCP discovery lands late.
+
+        ACP entry.py starts MCP tool discovery in a background daemon thread so a
+        slow/dead configured server can't block ``asyncio.run()``.  ``_make_agent``
+        briefly joins that thread (``wait_for_mcp_discovery``, bounded ~1.5s) so
+        already-spawning fast servers land in the snapshot — but a server slower
+        than the bound lands *after* the agent is built, leaving its tools absent
+        for the whole session.
+
+        This schedules an off-critical-path daemon that waits for discovery to
+        finish (bounded 30s), then rebuilds the snapshot via the shared
+        ``refresh_agent_mcp_tools`` helper — the same rebuild ``/reload-mcp``
+        performs, but automatic.  Mirrors the TUI late-refresh (PR #48403).
+
+        Cache safety: the rebuild only runs while the session is still
+        pre-first-turn (no API call made yet → nothing cached to invalidate).
+        Once the user has sent a message we leave the snapshot frozen rather
+        than break the cached prompt prefix mid-conversation; servers that land
+        later are picked up cache-safely by the between-turns prologue refresh
+        (``agent/turn_context.py``) at the next turn boundary.  The marginal
+        value of this pre-first-turn daemon is therefore freshness in the
+        window [session created → first message] — e.g. the "Available tools"
+        listing a client may request before the first prompt.
+        No-op when discovery already finished, when the join times out, when the
+        registry was unchanged, or when the session was closed while waiting.
+        """
+        try:
+            from hermes_cli.mcp_startup import mcp_discovery_in_flight
+        except Exception:
+            return
+        if not mcp_discovery_in_flight():
+            return
+
+        import threading
+
+        agent = state.agent
+        session_id = state.session_id
+
+        def _wait_then_refresh() -> None:
+            try:
+                from hermes_cli.mcp_startup import join_mcp_discovery
+
+                if not join_mcp_discovery(timeout=30.0):
+                    return
+
+                # Session may have been closed while we waited.  In-memory-only
+                # lookup on purpose: ``get_session()`` falls through to a DB
+                # restore that builds a whole new AIAgent as a side effect just
+                # to decide "no-op" here (the TUI equivalent also checks its
+                # in-memory dict only).
+                with self.session_manager._lock:
+                    current = self.session_manager._sessions.get(session_id)
+                if current is None or current.agent is not agent:
+                    return
+
+                # Cache safety: never rebuild the tool list once the conversation
+                # has started — that would invalidate the cached prompt prefix.
+                # Serialized with turn start: ``prompt()`` flips ``is_running``
+                # under ``runtime_lock`` before dispatching, so holding it here
+                # (and bailing when a turn is already running) closes the window
+                # where the guard passes but the first prompt starts before the
+                # refresh publishes — which would swap ``tools=`` mid-turn and
+                # break the just-created cache prefix.
+                with current.runtime_lock:
+                    if current.is_running:
+                        return
+                    if (
+                        int(getattr(agent, "_user_turn_count", 0) or 0) > 0
+                        or int(getattr(agent, "_api_call_count", 0) or 0) > 0
+                    ):
+                        return
+
+                    from tools.mcp_tool import refresh_agent_mcp_tools
+
+                    added = refresh_agent_mcp_tools(agent, quiet_mode=True)
+                if added:
+                    logger.info(
+                        "Session %s: late MCP refresh added %d tools: %s",
+                        session_id,
+                        len(added),
+                        ", ".join(sorted(added)),
+                    )
+            except Exception:
+                logger.debug(
+                    "Session %s: late MCP refresh failed",
+                    session_id,
+                    exc_info=True,
+                )
+
+        threading.Thread(
+            target=_wait_then_refresh,
+            name=f"acp-mcp-late-refresh-{session_id}",
+            daemon=True,
+        ).start()
+
     # ---- ACP lifecycle ------------------------------------------------------
 
     async def initialize(
@@ -1343,6 +1439,7 @@ class HermesACPAgent(acp.Agent):
     ) -> NewSessionResponse:
         state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
@@ -1367,6 +1464,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("load_session: session %s not found", session_id)
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("Loaded session %s", session_id)
         # Per ACP spec, `session/load` must stream the prior conversation back
         # to the client via `session/update` notifications BEFORE responding,
@@ -1414,6 +1512,7 @@ class HermesACPAgent(acp.Agent):
             logger.warning("resume_session: session %s not found, creating new", session_id)
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
+        self._schedule_mcp_late_refresh(state)
         logger.info("Resumed session %s", state.session_id)
         # See `load_session` above for the spec rationale — replay must
         # complete before the response so clients receive the full transcript
@@ -1761,7 +1860,16 @@ class HermesACPAgent(acp.Agent):
                     clear_session_vars,
                     set_session_vars,
                 )
-                session_tokens = set_session_vars(session_key=session_id)
+                # ``cwd`` pins the logical working directory for this context,
+                # which is what the system prompt's "Current working directory"
+                # line reports (agent/prompt_builder.py -> resolve_agent_cwd).
+                # Without it the prompt advertises the global Hermes workspace
+                # while the tools are rooted at the client's project, so the
+                # model emits absolute paths under ~/.hermes/workspace and the
+                # edit silently lands outside the editor's workspace.
+                session_tokens = set_session_vars(
+                    session_key=session_id, cwd=state.cwd,
+                )
             except Exception:
                 session_tokens = None
                 clear_session_vars = None  # type: ignore[assignment]
@@ -2048,8 +2156,26 @@ class HermesACPAgent(acp.Agent):
         if handler is None:
             return None  # not a known command — let the LLM handle it
 
-        try:
+        # Slash handlers run on the event-loop thread, OUTSIDE the per-turn
+        # contextvars.copy_context() that pins the session cwd for the agent
+        # call. ``/compress`` and ``/model`` reach code that REBUILDS the
+        # system prompt (agent._build_system_prompt -> resolve_agent_cwd), so
+        # an unpinned handler bakes the Hermes install tree into the session's
+        # cached prompt — persisted, and therefore poisoning every later turn
+        # even though the turn itself is pinned. Pin inside a fresh context so
+        # the write can't leak into other concurrent ACP sessions and needs no
+        # teardown.
+        def _dispatch() -> str | None:
+            try:
+                from agent.runtime_cwd import set_session_cwd
+
+                set_session_cwd(state.cwd)
+            except Exception:
+                logger.debug("Could not pin ACP session cwd for slash command", exc_info=True)
             return handler(args, state)
+
+        try:
+            return contextvars.copy_context().run(_dispatch)
         except Exception as e:
             logger.error("Slash command /%s error: %s", cmd, e, exc_info=True)
             return f"Error executing /{cmd}: {e}"

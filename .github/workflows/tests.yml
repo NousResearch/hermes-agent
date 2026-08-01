@@ -74,6 +74,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
+          # Pin the uv version: unpinned, setup-uv resolves "latest" by
+          # fetching a manifest from raw.githubusercontent.com on EVERY job —
+          # a transient fetch failure fails the whole job (2026-07-28 slice-5
+          # incident). Pinned, the binary downloads directly; no manifest hop.
+          version: "0.9.28"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
           # pyproject.toml or uv.lock changes. `uv sync` still runs every
@@ -92,9 +97,18 @@ jobs:
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
         # `uv venv` step is needed.
+        #
+        # The trailing extras beyond all/dev are the lazy-install features
+        # (tools/lazy_deps.py) that tests exercise for real: provider.anthropic,
+        # stt/tts.mistral, image.fal, terminal.modal, terminal.daytona,
+        # memory.hindsight, search.parallel. The hermetic test env forbids
+        # mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
+        # tests/conftest.py), so the SDKs those tests need must be in the
+        # venv up front — resolved from uv.lock like everything else, which
+        # also honors the exact supply-chain pins these extras carry.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to
@@ -188,6 +202,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
+          # Pin the uv version: unpinned, setup-uv resolves "latest" by
+          # fetching a manifest from raw.githubusercontent.com on EVERY job —
+          # a transient fetch failure fails the whole job (2026-07-28 slice-5
+          # incident). Pinned, the binary downloads directly; no manifest hop.
+          version: "0.9.28"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
           # pyproject.toml or uv.lock changes. `uv sync` still runs every
@@ -206,9 +225,14 @@ jobs:
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
         # `uv venv` step is needed.
+        #
+        # Same extras as the test job's sync above: the hermetic test env
+        # forbids mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
+        # tests/conftest.py), so lazy-install SDKs exercised by tests must be
+        # in the venv up front.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to

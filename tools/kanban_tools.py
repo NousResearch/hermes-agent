@@ -320,6 +320,85 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
 
 
+# Live operator-note injection: poll the worker's task for new comments and
+# fold them into the running agent via the OUT-OF-BAND steer channel, so a user
+# can "talk to" a running kanban task without the block → comment → unblock
+# dance (or a restart). Rate-limited on its own (tighter than the 60s heartbeat
+# so notes land within a few seconds), watermarked per task id.
+_COMMENT_POLL_MIN_INTERVAL_SECONDS = 6.0
+_comment_poll_last_attempt: float = 0.0
+# task_id -> highest comment id already seen (seeded on first poll so history
+# already present in build_worker_context isn't re-injected).
+_comment_watermark: dict[str, int] = {}
+
+
+def inject_new_comments_from_env(agent: Any) -> bool:
+    """Fold new operator comments on the current worker's task into ``agent``.
+
+    Best-effort and self-gating: no-op unless this process is a kanban worker
+    (``HERMES_KANBAN_TASK`` set) and ``agent`` exposes ``steer``. Returns True
+    if a steer was injected, else False. Never raises into the agent loop.
+
+    The first poll only *seeds* the watermark to the newest existing comment —
+    those are already in the worker's context — so only comments added after
+    the run started are injected. The worker's own authored comments (matched
+    by ``HERMES_PROFILE``) are skipped to avoid echoing itself.
+    """
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid or agent is None or not hasattr(agent, "steer"):
+        return False
+    global _comment_poll_last_attempt
+    import time as _time
+    now = _time.monotonic()
+    if (now - _comment_poll_last_attempt) < _COMMENT_POLL_MIN_INTERVAL_SECONDS:
+        return False
+    _comment_poll_last_attempt = now
+
+    seen = _comment_watermark.get(tid)
+    try:
+        kb, conn = _connect()
+        try:
+            rows = kb.list_comments_after(conn, tid, after_id=seen or 0)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("comment-inject: bridge failed", exc_info=True)
+        return False
+
+    if seen is None:
+        # First poll for this task: seed past the existing thread, inject nothing.
+        _comment_watermark[tid] = max((c.id for c in rows), default=0)
+        return False
+    if not rows:
+        return False
+
+    # Advance the watermark past everything we just read (including our own
+    # notes) so nothing is re-injected next poll.
+    _comment_watermark[tid] = max(c.id for c in rows)
+
+    own = (os.environ.get("HERMES_PROFILE") or "").strip()
+    fresh = [c for c in rows if (c.author or "").strip() != own and (c.body or "").strip()]
+    if not fresh:
+        return False
+
+    lines = [f"- {c.author or 'operator'}: {c.body.strip()}" for c in fresh]
+    note = (
+        "New note"
+        + ("s" if len(fresh) > 1 else "")
+        + " on your kanban task from the operator (delivered mid-run). "
+        + "Take it into account for the work you're doing right now:\n"
+        + "\n".join(lines)
+    )
+    try:
+        return bool(agent.steer(note))
+    except Exception:
+        logger.debug("comment-inject: steer failed", exc_info=True)
+        return False
+
+
 def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
@@ -1272,10 +1351,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
 
     Subscription paths:
 
-    - **Gateway** (telegram/discord/slack/etc): ``HERMES_SESSION_PLATFORM``
-      and ``HERMES_SESSION_CHAT_ID`` are set in ContextVars by the
-      messaging gateway before agent dispatch. The notification poller
-      already keys off these, so we just register a row.
+    - **Gateway** (telegram/discord/slack/etc): ``HERMES_SESSION_PLATFORM``,
+      ``HERMES_SESSION_CHAT_ID``, and ``HERMES_SESSION_CHAT_TYPE`` are set in
+      ContextVars by the messaging gateway before agent dispatch. The
+      notification poller already keys off these, so we just register a row.
 
     - **TUI** (herm desktop / herm TUI): the platform/chat_id ContextVars
       are intentionally cleared (TUI is a single-channel local UI, not
@@ -1333,18 +1412,43 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             chat_id = session_key
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+        chat_type = get_session_env("HERMES_SESSION_CHAT_TYPE", "") or None
+        message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "") or ""
         notifier_profile = (
             get_session_env("HERMES_SESSION_PROFILE", "")
             or os.environ.get("HERMES_PROFILE")
         )
+        if not notifier_profile:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                notifier_profile = get_active_profile_name() or "default"
+            except Exception:
+                notifier_profile = "default"
+        delivery_metadata: dict[str, Any] = {}
+        if thread_id:
+            delivery_metadata["thread_id"] = thread_id
+        if chat_type:
+            delivery_metadata["chat_type"] = chat_type
+        if (
+            platform.lower() == "telegram"
+            and thread_id
+            and (chat_type or "").lower() in {"dm", "direct", "private"}
+        ):
+            delivery_metadata["telegram_dm_topic_reply_fallback"] = True
+            if str(thread_id) not in {"", "1"}:
+                delivery_metadata["direct_messages_topic_id"] = str(thread_id)
+            if message_id:
+                delivery_metadata["telegram_reply_to_message_id"] = str(message_id)
 
         # Lazy-import to keep the module-level dependency light
         from hermes_cli import kanban_db as _kb
         _kb.add_notify_sub(
             conn, task_id=task_id,
             platform=platform, chat_id=chat_id,
+            chat_type=chat_type,
             thread_id=thread_id, user_id=user_id,
             notifier_profile=notifier_profile,
+            delivery_metadata=delivery_metadata or None,
         )
         return True
     except Exception as _exc:

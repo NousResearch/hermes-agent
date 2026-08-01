@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { api } from "@/lib/api";
 import type {
   HubAgentPluginRow,

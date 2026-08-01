@@ -40,7 +40,28 @@ from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
-from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+
+# ``agent.auxiliary_client`` pulls credential_pool → hermes_cli.auth → httpx
+# → rich (~50 ms cold); only vision handlers need it. Loaded lazily; both
+# names stay module attributes so tests can keep patching
+# ``tools.vision_tools.async_call_llm``. Truthy-skip: injected mocks win.
+async_call_llm: Any = None
+extract_content_or_reasoning: Any = None
+
+
+def _load_auxiliary_client() -> None:
+    global async_call_llm, extract_content_or_reasoning
+    if async_call_llm is None or extract_content_or_reasoning is None:
+        from agent.auxiliary_client import (
+            async_call_llm as _acl,
+            extract_content_or_reasoning as _ecr,
+        )
+        if async_call_llm is None:
+            async_call_llm = _acl
+        if extract_content_or_reasoning is None:
+            extract_content_or_reasoning = _ecr
+
+
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
@@ -1251,6 +1272,7 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
+        _load_auxiliary_client()
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
             response = await async_call_llm(**call_kwargs)
@@ -1758,6 +1780,7 @@ async def video_analyze_tool(
         if model:
             call_kwargs["model"] = model
 
+        _load_auxiliary_client()
         response = await async_call_llm(**call_kwargs)
         analysis = extract_content_or_reasoning(response)
 

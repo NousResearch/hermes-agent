@@ -191,13 +191,16 @@ test('registry trims the session id before keying', () => {
   assert.equal(registry.has('s1'), true)
 })
 
-test('chatWindowWebPreferences disables background throttling so streaming paints while blurred', () => {
-  // Regression: secondary session windows used to omit this flag, so a streamed
-  // answer stalled until the window regained focus (Chromium pauses the
-  // requestAnimationFrame-gated transcript flush for backgrounded windows).
+test('chatWindowWebPreferences leaves background throttling to the runtime stream dial', () => {
+  // Regression (both directions): a static `backgroundThrottling: false` here
+  // pinned document.visibilityState to 'visible' forever, turning every
+  // visibility-gated poll into an always-on timer (~20% CPU at idle,
+  // minimized). Streaming's "paint while blurred" need is served by
+  // stream-throttle.ts flipping setBackgroundThrottling at turn boundaries —
+  // so the static flag must stay absent.
   const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
 
-  assert.equal(prefs.backgroundThrottling, false)
+  assert.equal('backgroundThrottling' in prefs, false)
 })
 
 test('chatWindowWebPreferences passes the preload path through and keeps the hardened defaults', () => {
@@ -207,4 +210,14 @@ test('chatWindowWebPreferences passes the preload path through and keeps the har
   assert.equal(prefs.contextIsolation, true)
   assert.equal(prefs.sandbox, true)
   assert.equal(prefs.nodeIntegration, false)
+})
+
+test('chatWindowWebPreferences allows autoplay so wake-started voice speaks its first reply', () => {
+  // Regression: Chromium's default autoplay policy suspends audio until a user
+  // gesture. A wake-word-started voice conversation has no preceding click, so
+  // the first reply's playback was rejected and only turn 2+ spoke. A native
+  // app the user launched should not gate audio on a gesture.
+  const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
+
+  assert.equal(prefs.autoplayPolicy, 'no-user-gesture-required')
 })

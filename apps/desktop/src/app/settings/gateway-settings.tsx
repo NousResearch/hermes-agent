@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Terminal
 } from '@/lib/icons'
+import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -252,7 +253,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // syntactically plausible URL. The probe result drives whether we render the
   // OAuth login button or the session-token entry box. The effective auth mode
   // prefers a fresh probe result over the saved value.
-  const trimmedUrl = state.remoteUrl.trim()
+  const trimmedUrl = coerceRemoteUrlScheme(state.remoteUrl)
 
   // The dashboardUrl of the currently-connected cloud instance (the saved
   // cloud connection's remoteUrl), normalized for comparison against each
@@ -404,6 +405,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     return () => void (cancelled = true)
   }, [state.mode])
 
+  // eslint-disable-next-line no-restricted-syntax -- monotonic request-sequence counters, not an atom mirror
   useEffect(() => {
     contextSeq.current += 1
     sshTestSeq.current += 1
@@ -1053,11 +1055,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-4">
           <ModeCard
             active={state.mode === 'local'}
-            description={g.localDesc}
+            description={scope === null ? g.localDesc : g.inheritDesc}
             disabled={state.envOverride}
             icon={Monitor}
             onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-            title={g.localTitle}
+            title={scope === null ? g.localTitle : g.inheritTitle}
           />
           <ModeCard
             active={state.mode === 'cloud'}

@@ -43,13 +43,13 @@ const row = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
 // separate listAllProfileSessions calls (each of which reopened every profile
 // DB) — #66377-adjacent perf work from the desktop audit canvas.
 const sidebar = (
-  recents: { sessions: SessionInfo[]; total?: number; profile_totals?: Record<string, number> },
+  recents: { sessions: SessionInfo[]; profiles_truncated?: Record<string, boolean> },
   cron: SessionInfo[] = [],
   messaging: SessionInfo[] = []
 ): SidebarSessionsResponse => ({
-  recents: { sessions: recents.sessions, total: recents.total, profile_totals: recents.profile_totals },
+  recents: { sessions: recents.sessions, profiles_truncated: recents.profiles_truncated },
   cron: { sessions: cron },
-  messaging: { sessions: messaging, total: messaging.length }
+  messaging: { sessions: messaging }
 })
 
 const listSidebarSessions = vi.fn()
@@ -90,7 +90,7 @@ afterEach(() => {
 describe('refreshSessions identity + loading hygiene', () => {
   it('keeps the previous $sessions array when the refresh is content-identical', async () => {
     const rows = [row('a'), row('b')]
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: rows, total: 2, profile_totals: { default: 2 } }))
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: rows }))
 
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 
@@ -102,9 +102,7 @@ describe('refreshSessions identity + loading hygiene', () => {
     expect(first.map(s => s.id)).toEqual(['a', 'b'])
 
     // Second refresh returns fresh (but equal) row objects, as the API does.
-    listSidebarSessions.mockResolvedValue(
-      sidebar({ sessions: [row('a'), row('b')], total: 2, profile_totals: { default: 2 } })
-    )
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a'), row('b')] }))
 
     await act(async () => {
       await result.current.refreshSessions()
@@ -114,7 +112,7 @@ describe('refreshSessions identity + loading hygiene', () => {
   })
 
   it('swaps the array when rows actually changed', async () => {
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')], total: 1, profile_totals: {} }))
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 
     await act(async () => {
@@ -123,9 +121,7 @@ describe('refreshSessions identity + loading hygiene', () => {
 
     const first = $sessions.get()
 
-    listSidebarSessions.mockResolvedValue(
-      sidebar({ sessions: [row('a', { last_active: 2000, title: 'Renamed' })], total: 1, profile_totals: {} })
-    )
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a', { last_active: 2000, title: 'Renamed' })] }))
 
     await act(async () => {
       await result.current.refreshSessions()
@@ -136,7 +132,7 @@ describe('refreshSessions identity + loading hygiene', () => {
   })
 
   it('does not flicker the loading flag over a populated list', async () => {
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')], total: 1, profile_totals: {} }))
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 
     await act(async () => {
@@ -162,9 +158,7 @@ describe('refreshSessions identity + loading hygiene', () => {
     removed.ids = new Set(['b', 'root-c'])
     listSidebarSessions.mockResolvedValue(
       sidebar({
-        sessions: [row('a'), row('b'), row('c', { _lineage_root_id: 'root-c' } as Partial<SessionInfo>)],
-        total: 3,
-        profile_totals: {}
+        sessions: [row('a'), row('b'), row('c', { _lineage_root_id: 'root-c' } as Partial<SessionInfo>)]
       })
     )
 
@@ -178,7 +172,7 @@ describe('refreshSessions identity + loading hygiene', () => {
   })
 
   it('still shows loading for the initial (empty-list) fetch', async () => {
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')], total: 1, profile_totals: {} }))
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('a')] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 
     const loadingStates: boolean[] = []
@@ -199,9 +193,7 @@ describe('refreshSessions batches slices into one request', () => {
     const cron = [row('c1', { source: 'cron', title: 'nightly' })]
     const messaging = [row('m1', { source: 'telegram', title: 'tg chat' })]
 
-    listSidebarSessions.mockResolvedValue(
-      sidebar({ sessions: recents, total: 2, profile_totals: { default: 2 } }, cron, messaging)
-    )
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents }, cron, messaging))
 
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
 
@@ -220,7 +212,7 @@ describe('refreshSessions batches slices into one request', () => {
   })
 
   it('forwards the active profile scope + section limits to the batched call', async () => {
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [], total: 0, profile_totals: {} }))
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
     const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
 
     await act(async () => {
@@ -238,7 +230,7 @@ describe('refreshSessions batches slices into one request', () => {
 
   it('scopes the cron-jobs fetch to the active profile (all → unified view)', async () => {
     const { getCronJobs } = await import('@/hermes')
-    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [], total: 0, profile_totals: {} }))
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
 
     const scoped = renderHook(() => useSessionListActions({ profileScope: 'work' }))
 

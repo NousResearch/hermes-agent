@@ -13,6 +13,7 @@ import faulthandler
 import inspect
 import json
 import logging
+import math
 import os
 import html as _html
 import re
@@ -1551,6 +1552,12 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             parsed = float(value)
         except (TypeError, ValueError):
+            return default
+        if not math.isfinite(parsed):
+            # nan/inf survive float() without raising (YAML even has literal
+            # .nan/.inf), but nan then defeats the min()/max() clamps below
+            # (nan compares False against everything) and int(nan) raises,
+            # which would crash adapter construction instead of falling back.
             return default
         if min_value is not None:
             parsed = max(parsed, min_value)

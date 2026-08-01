@@ -263,6 +263,21 @@ def test_rich_message_max_chars_controls_streaming_overflow_limit():
     assert adapter.streaming_overflow_limit() == 4096
 
 
+@pytest.mark.parametrize(
+    "bad_value",
+    [float("nan"), "nan", float("inf"), "inf", float("-inf"), "-inf"],
+)
+def test_rich_message_max_chars_rejects_non_finite_and_falls_back_to_default(bad_value):
+    """YAML 1.1 parses bare `.nan`/`.inf` literals as float, so a config typo
+    can hand this straight to float(). nan/inf parse without raising, but nan
+    then defeats the min()/max() clamps (nan compares False against
+    everything) and int(nan) raises ValueError — which would crash adapter
+    construction and take Telegram down at startup instead of falling back."""
+    adapter = _make_adapter(extra={"rich_message_max_chars": bad_value})
+
+    assert adapter._rich_message_max_chars == adapter.RICH_MESSAGE_MAX_CHARS
+
+
 @pytest.mark.asyncio
 async def test_plain_markdown_stays_on_legacy_path():
     """Ordinary replies (no table/task-list/details/math) stay on the legacy

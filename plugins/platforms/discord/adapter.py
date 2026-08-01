@@ -345,6 +345,68 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+# ── per-profile gate env reads (issue #72348) ────────────────────────────
+# Under gateway.multiplex_profiles, os.environ is process-global and the
+# YAML→env bridge in _apply_yaml_config is first-writer-wins, so a raw
+# os.getenv() on an allow/deny gate can return ANOTHER profile's value.
+# _scoped_gate_env reads the active profile's secret scope when one is
+# installed (secondary adapters connect — and their discord.py event tasks
+# are created — inside _profile_runtime_scope, so the contextvar propagates)
+# and falls back to os.getenv only outside multiplex.
+
+# Authorization/gate env vars snapshotted per-adapter at connect() time.
+_GATE_ENV_KEYS = (
+    "DISCORD_ALLOWED_USERS",
+    "DISCORD_ALLOWED_ROLES",
+    "DISCORD_ALLOWED_CHANNELS",
+    "DISCORD_IGNORED_CHANNELS",
+    "DISCORD_NO_THREAD_CHANNELS",
+    "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
+    "DISCORD_ALLOW_ALL_USERS",
+    "DISCORD_ALLOW_BOTS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    "GATEWAY_ALLOWED_USERS",
+)
+
+
+def _scoped_gate_env(name: str, default: str = "") -> str:
+    """Scope-aware gate env read: profile secret scope first under multiplex."""
+    try:
+        from gateway.authz_mixin import _platform_gate_env
+
+        return _platform_gate_env(name, default)
+    except Exception:
+        return (os.getenv(name) or default).strip()
+
+
+def _multiplex_active() -> bool:
+    """True when the gateway is running in multiplex_profiles mode."""
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        return bool(is_multiplex_active())
+    except Exception:
+        return False
+
+
+def _profile_scoped_config_load() -> bool:
+    """True when the current config load belongs to a multiplexed profile.
+
+    Secondary profile configs load inside ``_profile_runtime_scope`` (secret
+    scope installed + multiplex active). In that case the YAML→env bridge in
+    ``_apply_yaml_config`` must NOT write process-global env vars: the values
+    belong to one profile only and the first-writer-wins guard would pin them
+    for every other profile (issue #72348).
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -918,6 +980,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
+        # Per-adapter snapshot of authorization gate env vars, captured inside
+        # the owning profile's runtime scope during connect(). None until then;
+        # accessors fall back to live scope-aware reads (issue #72348).
+        self._gate_env_snapshot: Optional[Dict[str, str]] = None
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
@@ -1154,22 +1220,18 @@ class DiscordAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
 
+            # Snapshot this profile's gate env vars (issue #72348): connect()
+            # runs inside the owning profile's runtime scope under multiplex,
+            # so the snapshot holds THIS adapter's values, immune to the
+            # first-writer-wins process-global env bridge.
+            self._snapshot_gate_env()
+
             # Parse allowed user entries (may contain usernames or IDs)
-            allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
-            if allowed_env:
-                self._allowed_user_ids = {
-                    _clean_discord_id(uid) for uid in allowed_env.split(",")
-                    if uid.strip()
-                }
+            self._allowed_user_ids = self._get_allowed_users()
 
             # Parse DISCORD_ALLOWED_ROLES — comma-separated role IDs.
             # Users with ANY of these roles can interact with the bot.
-            roles_env = os.getenv("DISCORD_ALLOWED_ROLES", "")
-            if roles_env:
-                self._allowed_role_ids = {
-                    int(rid.strip()) for rid in roles_env.split(",")
-                    if rid.strip().isdigit()
-                }
+            self._allowed_role_ids = self._get_allowed_roles()
 
             # Set up intents.
             # Message Content is required for normal text replies.
@@ -1341,7 +1403,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         role_authorized = False
         if getattr(message.author, "bot", False):
-            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            allow_bots = self._get_allow_bots()
             if allow_bots == "none":
                 return False, False
             if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
@@ -2016,13 +2078,9 @@ class DiscordAdapter(BasePlatformAdapter):
             raw = str(raw or "")
             if raw.strip():
                 return {item.strip() for item in raw.split(",") if item.strip()}
-        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "")
+        raw = self._gate_env("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS")
         if not raw.strip():
-            allowed = {
-                item.strip()
-                for item in os.getenv("DISCORD_ALLOWED_CHANNELS", "").split(",")
-                if item.strip()
-            }
+            allowed = self._get_allowed_channels()
             return allowed | self._discord_free_response_channels()
         return {item.strip() for item in raw.split(",") if item.strip()}
 
@@ -4415,10 +4473,9 @@ class DiscordAdapter(BasePlatformAdapter):
         """True when *channel_ids* intersect ``DISCORD_ALLOWED_CHANNELS``."""
         if not channel_ids:
             return False
-        allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip()
-        if not allowed_raw:
+        allowed = self._get_allowed_channels()
+        if not allowed:
             return False
-        allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
         if "*" in allowed:
             return True
         return bool(channel_ids & allowed)
@@ -4484,9 +4541,9 @@ class DiscordAdapter(BasePlatformAdapter):
             return True
 
         if not has_users and not has_roles:
-            if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            if self._discord_allow_all_users():
                 return True
-            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            if self._gateway_allow_all_users():
                 return True
             # Channel-scoped guild access requires validated channel context.
             # Do not treat DISCORD_ALLOWED_CHANNELS alone as a user-wide bypass
@@ -4559,11 +4616,11 @@ class DiscordAdapter(BasePlatformAdapter):
         allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
         if allowed_users or allowed_roles:
             return
-        if os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip():
+        if self._get_allowed_channels():
             return
-        if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+        if self._discord_allow_all_users():
             return
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+        if self._gateway_allow_all_users():
             return
         self._warned_fail_closed_default = True
         logger.warning(
@@ -4642,9 +4699,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 else None,
             )
 
-            allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_raw:
-                allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
+            allowed = self._get_allowed_channels()
+            if allowed:
                 if "*" not in allowed:
                     if not channel_ids:
                         # Channel policy is configured but the interaction
@@ -4659,9 +4715,8 @@ class DiscordAdapter(BasePlatformAdapter):
             # Ignored beats allowed: even when a thread's parent channel
             # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
             # entry on the thread or its parent rejects the interaction.
-            ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            if ignored_raw and channel_ids:
-                ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
+            ignored = self._get_ignored_channels()
+            if ignored and channel_ids:
                 if "*" in ignored or (channel_keys & ignored):
                     return (False, "channel in DISCORD_IGNORED_CHANNELS")
 
@@ -5188,9 +5243,19 @@ class DiscordAdapter(BasePlatformAdapter):
         if to_resolve:
             print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
 
-        # Update internal set and env var so gateway auth checks use IDs
+        # Update the internal set. Keep the resolved IDs adapter-local first:
+        # under multiplex_profiles, writing os.environ here would clobber
+        # every OTHER profile's DISCORD_ALLOWED_USERS after this adapter's
+        # on_ready — an unguarded runtime mutation of process-global state
+        # (issue #72348). Refresh this adapter's own snapshot instead.
         self._allowed_user_ids = numeric_ids
-        os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
+        snap = getattr(self, "_gate_env_snapshot", None)
+        if snap is not None:
+            snap["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
+        if not _multiplex_active():
+            # Single-profile: preserve the legacy env rewrite so the gateway's
+            # env-based auth checks match the resolved numeric IDs.
+            os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if resolved_count:
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
 
@@ -6034,6 +6099,99 @@ class DiscordAdapter(BasePlatformAdapter):
             and getattr(att, "waveform", None) is not None
         )
 
+    # ── per-adapter authorization gates (issue #72348) ───────────────────
+    # Under gateway.multiplex_profiles every Discord adapter must enforce
+    # ITS OWN profile's allow/deny lists. os.environ is process-global and
+    # the YAML→env bridge is first-writer-wins, so raw os.getenv reads here
+    # would leak profile A's gates into profile B. Each accessor reads, in
+    # order: the per-adapter env snapshot taken inside the owning profile's
+    # runtime scope at connect() (authoritative under multiplex), then this
+    # adapter's PlatformConfig.extra (per-profile YAML), with the live
+    # scope-aware env read as the pre-connect fallback. Single-profile
+    # deployments resolve to plain os.getenv, unchanged.
+
+    def _snapshot_gate_env(self) -> None:
+        """Capture authorization env vars for THIS adapter's profile.
+
+        Must be called inside the owning profile's runtime scope (connect()
+        runs there under multiplex) so the snapshot holds the profile's own
+        values, not whichever profile bridged os.environ first.
+        """
+        self._gate_env_snapshot = {
+            key: _scoped_gate_env(key) for key in _GATE_ENV_KEYS
+        }
+
+    def _gate_env(self, name: str, default: str = "") -> str:
+        """Read a gate env var from this adapter's snapshot (scope fallback)."""
+        snap = getattr(self, "_gate_env_snapshot", None)
+        if snap is not None and name in snap:
+            return snap[name] or default
+        return _scoped_gate_env(name, default)
+
+    def _gate_raw(self, extra_key: str, env_key: str):
+        """Resolve one gate value: env/snapshot first (legacy precedence), then extra."""
+        val = self._gate_env(env_key)
+        if val:
+            return val
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        if isinstance(extra, dict):
+            return extra.get(extra_key)
+        return None
+
+    @staticmethod
+    def _gate_csv_set(raw) -> set:
+        if raw is None:
+            return set()
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _get_allowed_channels(self) -> set:
+        """This adapter's DISCORD_ALLOWED_CHANNELS gate (per-profile)."""
+        return self._gate_csv_set(self._gate_raw("allowed_channels", "DISCORD_ALLOWED_CHANNELS"))
+
+    def _get_ignored_channels(self) -> set:
+        """This adapter's DISCORD_IGNORED_CHANNELS gate (per-profile)."""
+        return self._gate_csv_set(self._gate_raw("ignored_channels", "DISCORD_IGNORED_CHANNELS"))
+
+    def _get_no_thread_channels(self) -> set:
+        """This adapter's DISCORD_NO_THREAD_CHANNELS list (per-profile)."""
+        return self._gate_csv_set(self._gate_raw("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS"))
+
+    def _get_allowed_users(self) -> set:
+        """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned)."""
+        raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
+        if raw is None:
+            extra = getattr(getattr(self, "config", None), "extra", None)
+            if isinstance(extra, dict):
+                raw = extra.get("allowed_users")
+        return {
+            _clean_discord_id(str(entry))
+            for entry in self._gate_csv_set(raw)
+            if _clean_discord_id(str(entry))
+        }
+
+    def _get_allowed_roles(self) -> set:
+        """This adapter's DISCORD_ALLOWED_ROLES role IDs (per-profile)."""
+        raw = self._gate_raw("allowed_roles", "DISCORD_ALLOWED_ROLES")
+        return {
+            int(str(entry).strip()) for entry in self._gate_csv_set(raw)
+            if str(entry).strip().isdigit()
+        }
+
+    def _discord_allow_all_users(self) -> bool:
+        """Per-profile DISCORD_ALLOW_ALL_USERS flag."""
+        raw = self._gate_raw("allow_all_users", "DISCORD_ALLOW_ALL_USERS")
+        return str(raw or "").strip().lower() in {"true", "1", "yes"}
+
+    def _gateway_allow_all_users(self) -> bool:
+        """Per-profile GATEWAY_ALLOW_ALL_USERS flag."""
+        return self._gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}
+
+    def _get_allow_bots(self) -> str:
+        """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
+        return self._gate_env("DISCORD_ALLOW_BOTS", "none").lower().strip() or "none"
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs/names where no bot mention is required.
 
@@ -6043,7 +6201,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+            raw = self._gate_env("DISCORD_FREE_RESPONSE_CHANNELS")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
@@ -6243,7 +6401,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return ""
 
         # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+        allow_bots_raw = self._get_allow_bots()
         include_other_bots = allow_bots_raw != "none"
 
         # Use the in-memory cache to narrow the fetch window on hot paths.
@@ -7451,16 +7609,14 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+            allowed_channels = self._get_allowed_channels()
+            if allowed_channels:
                 if "*" not in allowed_channels and not (channel_keys & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
                     return False
 
             # Check ignored channels - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
+            ignored_channels = self._get_ignored_channels()
             if "*" in ignored_channels or (channel_keys & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
@@ -7499,8 +7655,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
-            no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
+            no_thread_channels = self._get_no_thread_channels()
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
@@ -8010,15 +8165,20 @@ def _component_check_auth(
     if user is None or getattr(user, "id", None) is None:
         return False
 
-    if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+    # Scope-aware reads (issue #72348): component interactions are dispatched
+    # from discord.py tasks descended from the task created inside the owning
+    # profile's runtime scope, so the profile's secret-scope contextvar is
+    # inherited here. Under multiplex a raw os.getenv could return ANOTHER
+    # profile's allow-all flag and authorize a click on this profile's bot.
+    if _scoped_gate_env("DISCORD_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}:
         return True
-    if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+    if _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}:
         return True
 
     user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
     global_allowed = {
         uid.strip()
-        for uid in os.getenv("GATEWAY_ALLOWED_USERS", "").split(",")
+        for uid in _scoped_gate_env("GATEWAY_ALLOWED_USERS").split(",")
         if uid.strip()
     }
     user_set.update(global_allowed)
@@ -9671,14 +9831,42 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
+    seeded_extra = {}
+    # Authorization gate keys are ALWAYS seeded into PlatformConfig.extra so
+    # every adapter carries its own profile's allow/deny lists (issue #72348).
+    # The os.environ writes below remain first-writer-wins for legacy env-only
+    # consumers, but are skipped for profile-scoped loads under multiplex —
+    # a secondary profile's gates must never land in process-global env where
+    # they'd become another profile's policy.
+    _skip_env_bridge = _profile_scoped_config_load()
     allowed_users_cfg = (
         discord_cfg["allow_from"] if "allow_from" in discord_cfg
         else platform_extra_cfg.get("allow_from")
     )
-    if allowed_users_cfg is not None and not os.getenv("DISCORD_ALLOWED_USERS"):
+    if allowed_users_cfg is not None:
         if isinstance(allowed_users_cfg, list):
             allowed_users_cfg = ",".join(str(v) for v in allowed_users_cfg)
-        os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
+        seeded_extra["allow_from"] = str(allowed_users_cfg)
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOWED_USERS"):
+            os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
+    allowed_roles_cfg = (
+        discord_cfg["allowed_roles"] if "allowed_roles" in discord_cfg
+        else platform_extra_cfg.get("allowed_roles")
+    )
+    if allowed_roles_cfg is not None:
+        if isinstance(allowed_roles_cfg, list):
+            allowed_roles_cfg = ",".join(str(v) for v in allowed_roles_cfg)
+        seeded_extra["allowed_roles"] = str(allowed_roles_cfg)
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOWED_ROLES"):
+            os.environ["DISCORD_ALLOWED_ROLES"] = str(allowed_roles_cfg)
+    allow_all_cfg = (
+        discord_cfg["allow_all_users"] if "allow_all_users" in discord_cfg
+        else platform_extra_cfg.get("allow_all_users")
+    )
+    if allow_all_cfg is not None:
+        seeded_extra["allow_all_users"] = str(allow_all_cfg).lower()
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOW_ALL_USERS"):
+            os.environ["DISCORD_ALLOW_ALL_USERS"] = str(allow_all_cfg).lower()
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")
@@ -9686,36 +9874,43 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if approval_mentions_cfg is not None and not os.getenv("DISCORD_APPROVAL_MENTIONS"):
         os.environ["DISCORD_APPROVAL_MENTIONS"] = str(approval_mentions_cfg).lower()
     frc = discord_cfg.get("free_response_channels")
-    if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
+    if frc is not None:
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
-        os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+        seeded_extra["free_response_channels"] = str(frc)
+        if not _skip_env_bridge and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
+            os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
-    seeded_extra = {}
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):
         seeded_extra["missed_message_backfill"] = dict(backfill_cfg)
     # ignored_channels: channels where bot never responds (even when mentioned)
     ic = discord_cfg.get("ignored_channels")
-    if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
+    if ic is not None:
         if isinstance(ic, list):
             ic = ",".join(str(v) for v in ic)
-        os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+        seeded_extra["ignored_channels"] = str(ic)
+        if not _skip_env_bridge and not os.getenv("DISCORD_IGNORED_CHANNELS"):
+            os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
     # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
     ac = discord_cfg.get("allowed_channels")
-    if ac is not None and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+    if ac is not None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
-        os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
+        seeded_extra["allowed_channels"] = str(ac)
+        if not _skip_env_bridge and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+            os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
     # no_thread_channels: channels where bot responds directly without creating thread
     ntc = discord_cfg.get("no_thread_channels")
-    if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
+    if ntc is not None:
         if isinstance(ntc, list):
             ntc = ",".join(str(v) for v in ntc)
-        os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+        seeded_extra["no_thread_channels"] = str(ntc)
+        if not _skip_env_bridge and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
+            os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.

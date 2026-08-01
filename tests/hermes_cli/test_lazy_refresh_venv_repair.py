@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import hermes_cli.main as m
@@ -131,6 +132,73 @@ def test_refresh_uses_pre_rebuild_snapshot_when_provided(monkeypatch):
         ["uv", "pip"], features=["platform.telegram"]
     ) is True
     assert restored == [["platform.telegram"]]
+
+
+def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
+    tmp_path, monkeypatch
+):
+    """The updater must carry pre-rebuild state into its repair refresh."""
+    from hermes_cli import managed_uv, update_cmd
+
+    (tmp_path / ".git").mkdir()
+    snapshot = ["platform.telegram"]
+    refresh_calls = []
+
+    class RefreshReached(Exception):
+        pass
+
+    def fake_run(cmd, **kwargs):
+        if "rev-parse" in cmd:
+            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+        if "rev-list" in cmd:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def fake_refresh(prefix, *, env=None, features=None):
+        refresh_calls.append((prefix, env, features))
+        raise RefreshReached
+
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(m, "_capture_active_lazy_features", lambda: snapshot.copy())
+    monkeypatch.setattr(m, "_is_windows", lambda: False)
+    monkeypatch.setattr(m, "_run_pre_update_backup", lambda args: None)
+    monkeypatch.setattr(m, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(m, "_resume_windows_gateways_after_update", lambda state: None)
+    monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *args: None)
+    monkeypatch.setattr(m, "_get_origin_url", lambda *args: "https://github.com/NousResearch/hermes-agent.git")
+    monkeypatch.setattr(m, "_resolve_update_branch", lambda args: "main")
+    monkeypatch.setattr(m, "_stash_local_changes_if_needed", lambda *args: None)
+    monkeypatch.setattr(update_cmd, "_invalidate_update_cache", lambda: None)
+    monkeypatch.setattr(
+        update_cmd, "_venv_core_imports_healthy", lambda: (False, "broken")
+    )
+    monkeypatch.setattr(update_cmd, "_write_update_incomplete_marker", lambda: None)
+    monkeypatch.setattr(
+        m, "_install_python_dependencies_with_optional_fallback", lambda *a, **k: None
+    )
+    monkeypatch.setattr(m, "_refresh_active_lazy_features", fake_refresh)
+    monkeypatch.setattr(m.subprocess, "run", fake_run)
+    monkeypatch.setattr(managed_uv, "update_managed_uv", lambda **kwargs: None)
+    monkeypatch.setattr(managed_uv, "ensure_uv", lambda **kwargs: "uv")
+
+    args = SimpleNamespace(
+        yes=True,
+        force=False,
+        force_venv=False,
+        no_backup=True,
+        backup=False,
+        branch=None,
+    )
+    with pytest.raises(RefreshReached):
+        m._cmd_update_impl(args, gateway_mode=False)
+
+    assert refresh_calls == [
+        (
+            ["uv", "pip"],
+            {**m.os.environ, "VIRTUAL_ENV": str(tmp_path / "venv")},
+            snapshot,
+        )
+    ]
 
 
 

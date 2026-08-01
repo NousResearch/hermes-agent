@@ -1139,14 +1139,9 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
 def restore_features(features: list[str]) -> dict[str, str]:
     """Restore features captured before an explicit managed-runtime rebuild.
 
-    ``security.allow_lazy_installs`` gates installs initiated at feature-use
-    time. A runtime rebuild is different: the updater is deliberately
-    recreating the environment and may restore only features that were
-    already present before that rebuild. Feature names are still checked
-    against :data:`LAZY_DEPS`, so this never accepts arbitrary package specs.
-
-    This does not change the security setting. Subsequent runtime calls to
-    :func:`ensure` remain subject to the normal lazy-install gate.
+    Feature names are checked against :data:`LAZY_DEPS`, and installs remain
+    subject to ``security.allow_lazy_installs``. An explicit opt-out therefore
+    leaves the captured feature absent and reports it as skipped.
     """
     return _refresh_features(features, prompt=False, restoring=True)
 
@@ -1171,21 +1166,7 @@ def _refresh_features(
 
         try:
             if restoring:
-                result = _venv_pip_install(missing)
-                if not result.success:
-                    snippet = (result.stderr or result.stdout or "").strip()
-                    raise FeatureUnavailable(
-                        feature,
-                        missing,
-                        f"pip install failed: {snippet or 'no error output'}",
-                    )
-                if feature_missing(feature):
-                    raise FeatureUnavailable(
-                        feature,
-                        missing,
-                        "install reported success but packages are still missing "
-                        "(may require Python restart)",
-                    )
+                ensure(feature, prompt=False)
                 results[feature] = "restored"
             else:
                 ensure(feature, prompt=prompt)

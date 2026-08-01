@@ -358,29 +358,28 @@ class TestRefreshActiveFeatures:
             ld._unsupported_feature_reason("platform.matrix") or ""
         )
 
-    def test_restore_snapshot_reinstalls_telegram_with_lazy_installs_disabled(
+    def test_restore_snapshot_skips_telegram_with_lazy_installs_disabled(
         self, monkeypatch
     ):
-        """An update may restore a captured feature without opening runtime installs."""
+        """The security opt-out also blocks updater-driven restoration."""
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
-        satisfied = iter([False, True])
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(satisfied))
-        installs = []
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         monkeypatch.setattr(
             ld,
             "_venv_pip_install",
-            lambda specs, **kw: installs.append(specs)
-            or ld._InstallResult(True, "", ""),
+            lambda *args, **kwargs: pytest.fail(
+                "pip must not run when lazy installs are disabled"
+            ),
         )
 
         result = ld.restore_features(["platform.telegram"])
 
-        assert result == {"platform.telegram": "restored"}
-        assert installs == [("python-telegram-bot[webhooks]==22.6",)]
-        assert ld._allow_lazy_installs() is False
-        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
-        with pytest.raises(ld.FeatureUnavailable, match="lazy installs disabled"):
-            ld.ensure("platform.telegram", prompt=False)
+        assert result == {
+            "platform.telegram": (
+                "skipped: lazy installs disabled "
+                "(security.allow_lazy_installs=false)"
+            )
+        }
 
     def test_restore_snapshot_does_not_install_never_activated_features(
         self, monkeypatch

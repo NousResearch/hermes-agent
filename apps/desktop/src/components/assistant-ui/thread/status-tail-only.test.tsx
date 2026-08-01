@@ -24,6 +24,7 @@ vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
 vi.stubGlobal('CSS', { escape: (str: string) => str })
 
 Element.prototype.scrollTo = function scrollTo() {}
+
 // Enter animation fires for running messages; jsdom has no WAAPI.
 Element.prototype.animate = function animate() {
   return { cancel() {}, finished: Promise.resolve() } as unknown as Animation

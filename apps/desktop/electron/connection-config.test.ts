@@ -363,7 +363,6 @@ test('normalizeRemoteBaseUrl still rejects explicit non-http(s) schemes after sc
   assert.throws(() => normalizeRemoteBaseUrl('ftp://host:21'), /http:\/\/ or https:\/\//)
 })
 
-
 // --- buildGatewayWsUrl (token) ---
 
 test('buildGatewayWsUrl uses wss for https and bakes the token', () => {

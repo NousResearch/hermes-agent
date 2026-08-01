@@ -11395,6 +11395,55 @@ def _skill_usage_lookup():
     return usage, origin
 
 
+_SLASH_COMPLETION_LIMIT = 30
+
+
+def _rank_slash_completions(
+    items: list[dict],
+    usage,
+    origin_of,
+    *,
+    browsing: bool,
+) -> list[dict]:
+    """Rank and bound slash completions the way the menu should read.
+
+    ``usage``/``origin_of`` are the callables :func:`_skill_usage_lookup`
+    returns. Registry commands keep their existing order — only the skill
+    block is reordered, most-used first and A-Z within a tie, so the handful
+    of skills someone invokes daily lead the ones that shipped with Hermes
+    and were never opened.
+
+    The limit is spent PER KIND rather than on one flat truncation. A flat
+    cut is positional, not editorial: the completer emits every registry
+    command before the first skill, so on a 230-skill install a bare ``/``
+    hit the cap while still inside the command block and offered no skill at
+    all, and ``/p`` dropped ``/proving-a-fix-works`` (471 uses) while keeping
+    ``/pretext`` (2).
+
+    ``browsing`` separates the two things a slash means. A bare ``/`` is
+    BROWSING, so bundled skills with no recorded activity are dropped as
+    noise. A typed query is SEARCHING, and a search that hides a match is
+    broken — there nothing is pruned, the ranking only reorders.
+    """
+
+    def name_of(item: dict) -> str:
+        return str(item.get("text", "")).strip().lstrip("/").lower()
+
+    commands = [item for item in items if item.get("kind") != "skill"]
+    skills = [item for item in items if item.get("kind") == "skill"]
+
+    if browsing:
+        skills = [
+            item
+            for item in skills
+            if origin_of(name_of(item)) != "bundled" or usage(name_of(item)) > 0
+        ]
+
+    skills.sort(key=lambda item: (-usage(name_of(item)), name_of(item)))
+
+    return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
+
+
 def _cli_exec_blocked(argv: list[str]) -> str | None:
     """Return user hint if this argv must not run headless in the gateway process."""
     if not argv:

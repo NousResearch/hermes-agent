@@ -6126,6 +6126,94 @@ def test_complete_slash_reasoning_includes_current_efforts_and_global_scope():
     assert {"max", "ultra", "--global"} <= values
 
 
+_SLASH_FILLER_COUNT = 60
+
+
+def _slash_skill_fixtures(monkeypatch):
+    """Stub a skill install big enough that a flat cap would truncate it."""
+    filler = {f"/filler-{i:03d}": 0 for i in range(_SLASH_FILLER_COUNT)}
+    usage = {"work": 297, "research": 84, "clean": 12}
+
+    monkeypatch.setattr(
+        server,
+        "_skill_usage_lookup",
+        lambda: (
+            lambda name: usage.get(name, 0),
+            lambda name: "bundled" if name.startswith("unused-") else "local",
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {
+            "/work": {"description": "Fresh worktree"},
+            "/research": {"description": "Look it up"},
+            "/clean": {"description": "Polish the diff"},
+            "/unused-bundled": {"description": "Shipped, never opened"},
+            **{cmd: {"description": "Filler"} for cmd in filler},
+        },
+    )
+    monkeypatch.setattr("agent.skill_bundles.get_skill_bundles", lambda: {})
+
+
+def _slash_completions(text: str) -> list[dict]:
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": text}}
+    )
+    return resp["result"]["items"]
+
+
+def test_complete_slash_offers_skills_alongside_commands(monkeypatch):
+    """A bare `/` must reach the skills, not just the registry.
+
+    The completer emits every registry command before the first skill, so one
+    flat cap spent every row on commands and no skill was reachable at all.
+    """
+    _slash_skill_fixtures(monkeypatch)
+
+    kinds = {item["kind"] for item in _slash_completions("/")}
+
+    assert kinds == {"command", "skill"}
+
+
+def test_complete_slash_ranks_skills_by_recorded_usage(monkeypatch):
+    """The skills someone actually invokes lead the ones they never opened."""
+    _slash_skill_fixtures(monkeypatch)
+
+    skills = [
+        item["text"].strip() for item in _slash_completions("/") if item["kind"] == "skill"
+    ]
+
+    assert skills[:3] == ["work", "research", "clean"]
+
+
+def test_complete_slash_prunes_unused_builtins_only_while_browsing(monkeypatch):
+    """A bare `/` is browsing and may prune; a typed query is a search.
+
+    A search that hides a match is broken, so the never-opened bundled skill
+    disappears from `/` and comes straight back the moment it is typed for.
+    """
+    _slash_skill_fixtures(monkeypatch)
+
+    browsing = {item["text"].strip() for item in _slash_completions("/")}
+    searching = {item["text"].strip() for item in _slash_completions("/unused")}
+
+    assert "unused-bundled" not in browsing
+    assert "unused-bundled" in searching
+
+
+def test_complete_slash_leaves_argument_stages_alone(monkeypatch):
+    """Ranking applies to the command token, never to a command's own args.
+
+    `/details c` completes that command's modes; a skill named /clean also
+    starts with a `c` and must not be offered as one of them.
+    """
+    _slash_skill_fixtures(monkeypatch)
+
+    items = _slash_completions("/details c")
+
+    assert [item["text"] for item in items] == ["collapsed", "cycle"]
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")

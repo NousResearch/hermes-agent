@@ -2214,6 +2214,10 @@ class ContextCompressor(ContextEngine):
         self._micro_compact_consecutive_failures: int = 0
         self._micro_compact_last_failure_cursor: int = -1
         self._micro_compact_defrag_threshold_tokens: int = 2000
+        # Set by _defrag_rolling_summary when it pops _DB_PERSISTED_MARKER
+        # from a live dict in place; consumed by finalize_turn to invalidate
+        # the agent's bounded flush-scan cursor (sibling of the #75170 site).
+        self._flush_scan_cursor_invalidated: bool = False
         self._micro_compact_passes: int = 0
         self._micro_compact_tokens_saved_total: int = 0
         # Cadence: run a pass every Nth completed turn. Each pass rewrites
@@ -5376,6 +5380,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Content changed after a possible flush — clear the persisted
                 # stamp so the DB sync/flush rewrites the row.
                 entry.pop(_DB_PERSISTED_MARKER, None)
+                # Sibling of the finalize_turn pop site (#75170): this pop
+                # also strips the marker from a LIVE dict in place, so the
+                # bounded flush-scan cursor would identity-skip the rewritten
+                # marker and the defragged summary would never reach state.db.
+                # The compressor holds no agent reference, so raise a flag the
+                # finalizer consumes to invalidate agent._db_flush_scan_prefix.
+                # (The pop sites at module scope — fresh copies in
+                # strip-marker helpers — break identity and need no flag.)
+                self._flush_scan_cursor_invalidated = True
                 break
         logger.info(
             "Micro-compaction defrag: rolling summary re-summarized "

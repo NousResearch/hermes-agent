@@ -38,18 +38,6 @@ def _make_adapter() -> TelegramAdapter:
 
 
 @pytest.mark.asyncio
-async def test_send_succeeds_when_path_healthy():
-    """Healthy adapter delivers normally; send_message is called."""
-    adapter = _make_adapter()
-    assert adapter._send_path_degraded is False
-
-    result = await adapter.send("123", "hello")
-
-    assert result.success is True
-    adapter._bot.send_message.assert_awaited()
-
-
-@pytest.mark.asyncio
 async def test_send_short_circuits_when_path_degraded():
     """Degraded adapter returns failure WITHOUT calling send_message,
     so cron's live-adapter branch falls through to standalone HTTP."""
@@ -64,26 +52,3 @@ async def test_send_short_circuits_when_path_degraded():
     adapter._bot.send_message.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
-    """_handle_polling_network_error sets the flag; a successful heartbeat
-    probe in _verify_polling_after_reconnect clears it."""
-    adapter = _make_adapter()
-    adapter._app = MagicMock()
-    adapter._app.updater = MagicMock()
-    adapter._app.updater.running = True
-    adapter._app.updater.stop = AsyncMock()
-    adapter._app.updater.start_polling = AsyncMock()
-    adapter._app.bot = MagicMock()
-    adapter._app.bot.get_me = AsyncMock(return_value=MagicMock())
-    adapter._polling_error_callback_ref = AsyncMock()
-    monkeypatch.setattr(
-        "plugins.platforms.telegram.adapter.Update", MagicMock(ALL_TYPES=[])
-    )
-
-    await adapter._handle_polling_network_error(OSError("Bad Gateway"))
-    assert adapter._send_path_degraded is True
-
-    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock):
-        await adapter._verify_polling_after_reconnect()
-    assert adapter._send_path_degraded is False

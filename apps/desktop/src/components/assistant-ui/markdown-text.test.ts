@@ -210,4 +210,100 @@ describe('preprocessMarkdown', () => {
 
     expect(() => preprocessMarkdown(input)).not.toThrow()
   })
+
+  it('keeps $$<digit>$$ display math intact instead of escaping it as currency', () => {
+    const output = preprocessMarkdown('$$5x = 10$$')
+
+    expect(output).toContain('$$5x = 10$$')
+    expect(output).not.toContain('\\$')
+  })
+
+  it('keeps numeric inline math intact instead of escaping it as currency', () => {
+    const input = ['- The observed outcome might be $4$', '- Because $4\\in A$, event $A$ occurred'].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it.each(['$4$', '$2/3$', '$5x=10$', '$4xy$', '$10kg$'])('preserves balanced numeric inline math: %s', input => {
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('does not mistake a numeric formula closer for a later price opener', () => {
+    expect(preprocessMarkdown('Probability is $2/3$ and fee is $7.')).toBe('Probability is $2/3$ and fee is \\$7.')
+    expect(preprocessMarkdown('$4$ and $10')).toBe('$4$ and \\$10')
+  })
+
+  it('keeps escaping currency ranges instead of treating them as inline math', () => {
+    expect(preprocessMarkdown('$5-$10')).toBe('\\$5-\\$10')
+    expect(preprocessMarkdown('$5 and $x$')).toBe('\\$5 and $x$')
+    expect(preprocessMarkdown('Costs $5 + tax; formula is $x$.')).toBe('Costs \\$5 + tax; formula is $x$.')
+    expect(preprocessMarkdown('Costs $5 = base rate; formula is $x$.')).toBe('Costs \\$5 = base rate; formula is $x$.')
+  })
+
+  it.each([
+    ['Costs $5; delta is $-x$.', 'Costs \\$5; delta is $-x$.'],
+    ['Costs $5; result is $(x+1)$.', 'Costs \\$5; result is $(x+1)$.'],
+    ['Costs $5; set is $[1,2]$.', 'Costs \\$5; set is $[1,2]$.']
+  ])('escapes a price before a later complete math span: %s', (input, expected) => {
+    expect(preprocessMarkdown(input)).toBe(expected)
+  })
+
+  it('keeps the existing currency escaping semantics', () => {
+    expect(preprocessMarkdown('$1,299 total')).toBe('\\$1,299 total')
+    expect(preprocessMarkdown('already \\$5')).toBe('already \\$5')
+    expect(preprocessMarkdown('\\\\$5')).toBe('\\\\\\$5')
+  })
+
+  it('escapes a price while preserving numeric math later in the same sentence', () => {
+    const input = 'Costs $5; outcome is $4\\in A$.'
+
+    expect(preprocessMarkdown(input)).toBe('Costs \\$5; outcome is $4\\in A$.')
+  })
+
+  it('normalizes multiline bracket display math with delimiter-only lines', () => {
+    const input = [
+      'Correct.',
+      '',
+      'Both paths reach the same intersection:',
+      '',
+      '\\[',
+      'P(B)\\cdot P(A\\mid B)',
+      '=',
+      'P(A)\\cdot P(B\\mid A)',
+      '\\]',
+      '',
+      'Now isolate $P(A\\mid B)$.'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('$$\nP(B)\\cdot P(A\\mid B)\n=\nP(A)\\cdot P(B\\mid A)\n$$')
+    expect(output).not.toContain('$$P(B)')
+  })
+
+  it('keeps display math inside its markdown container', () => {
+    const listInput = ['- \\[', '  P(A)', '  =', '  P(B)', '  \\]'].join('\n')
+    const listOutput = ['- $$', '  P(A)', '  =', '  P(B)', '  $$'].join('\n')
+
+    expect(preprocessMarkdown(listInput)).toBe(listOutput)
+    expect(preprocessMarkdown(['> \\[', '> P(A)', '>  \\]'].join('\n'))).toBe(['> $$', '> P(A)', '>  $$'].join('\n'))
+  })
+
+  it('rewrites double-backslash bracket math to dollar delimiters', () => {
+    const output = preprocessMarkdown('\\\\(x^2\\\\)')
+
+    expect(output).toContain('$x^2$')
+  })
+
+  it('rewrites [/math] and [/inline] tag pairs to dollar delimiters', () => {
+    expect(preprocessMarkdown('[/math]a+b[/math]')).toContain('$$a+b$$')
+    expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
+  })
+
+  it('escapes currency dollars in prose so they are not parsed as math', () => {
+    const output = preprocessMarkdown('$5 and $10')
+
+    expect(output).toContain('\\$5')
+    expect(output).toContain('\\$10')
+  })
 })

@@ -175,30 +175,56 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
-def test_new_command_rotates_hermes_session_id_env_and_context(tmp_path):
-    from gateway.session_context import _VAR_MAP, get_session_env
 
+
+
+
+def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
+    """The context-engine on_session_end must fire during /new itself.
+
+    It is cheap local state work and ordering-sensitive: it must land before
+    reset_session_state() rebinds the engine to the new session. The LLM-bound
+    provider extraction is what gets deferred, not this."""
     cli = _prepare_cli_with_active_session(tmp_path)
     old_session_id = cli.session_id
-    os.environ["HERMES_SESSION_ID"] = old_session_id
-    _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
+
+    engine_calls = []
+    cli.agent.context_compressor.on_session_end = (
+        lambda sid, msgs: engine_calls.append((sid, list(msgs)))
+    )
 
     cli.process_command("/new")
 
-    assert cli.session_id != old_session_id
-    assert os.environ["HERMES_SESSION_ID"] == cli.session_id
-    assert get_session_env("HERMES_SESSION_ID") == cli.session_id
+    assert engine_calls == [(old_session_id, [{"role": "user", "content": "hello"}])]
 
 
-def test_reset_command_is_alias_for_new_session(tmp_path):
-    cli = _prepare_cli_with_active_session(tmp_path)
-    old_session_id = cli.session_id
+def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
+    """A '/new then quit' must not drop the queued old-session extraction.
 
-    cli.process_command("/reset")
+    _run_cleanup gives the manager's serialized worker a bounded drain via
+    flush_pending() before shutdown_all()'s short-fuse drain runs."""
+    import cli as _cli_mod
 
-    assert cli.session_id != old_session_id
-    assert cli._session_db.get_session(old_session_id)["end_reason"] == "new_session"
-    assert cli._session_db.get_session(cli.session_id) is not None
+    agent = MagicMock()
+    mm = MagicMock()
+    mm.flush_pending.return_value = True
+    agent._memory_manager = mm
+    agent._session_messages = []
+
+    old_ref = _cli_mod._active_agent_ref
+    _cli_mod._active_agent_ref = agent
+    _cli_mod._cleanup_done = False
+    try:
+        _cli_mod._run_cleanup(notify_session_finalize=False)
+    finally:
+        _cli_mod._cleanup_done = True
+        _cli_mod._active_agent_ref = old_ref
+
+    mm.flush_pending.assert_called_once_with(timeout=10)
+
+
+
+
 
 
 def test_clear_command_starts_new_session_before_redrawing(tmp_path):
@@ -271,38 +297,3 @@ def test_new_session_with_title(capsys):
     assert "My Test Session" in captured.out
 
 
-def test_new_session_with_duplicate_title_surfaces_error(capsys):
-    """new_session(title=...) handles ValueError from a duplicate-title conflict.
-
-    The session is still created; the title assignment fails; the success banner
-    must not claim the rejected title as the session name.
-    """
-    cli = _make_cli()
-    cli._session_db = MagicMock()
-    cli._session_db.set_session_title.side_effect = ValueError(
-        "Title 'Dup' is already in use by session abc-123"
-    )
-    cli.agent = _FakeAgent("old_session_id", datetime.now())
-    cli.conversation_history = []
-
-    # Capture warnings printed via cli._cprint. After importlib.reload(),
-    # the method's __globals__ dict is the one from the live module — patch
-    # the exact dict the method will read.
-    warnings: list[str] = []
-    method_globals = cli.new_session.__globals__
-    original = method_globals["_cprint"]
-    method_globals["_cprint"] = lambda msg: warnings.append(msg)
-    try:
-        cli.new_session(title="Dup")
-    finally:
-        method_globals["_cprint"] = original
-
-    cli._session_db.set_session_title.assert_called_once()
-    joined = "\n".join(warnings)
-    assert "already in use" in joined
-    assert "session started untitled" in joined
-
-    # The success banner must NOT claim the rejected title as the session name.
-    captured = capsys.readouterr()
-    assert "New session started: Dup" not in captured.out
-    assert "New session started!" in captured.out

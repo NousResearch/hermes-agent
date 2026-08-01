@@ -30,7 +30,17 @@ VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 # task description, and active lists are a handful of items, not hundreds.
 MAX_TODO_CONTENT_CHARS = 4000
 MAX_TODO_ITEMS = 256
+# Upper bound on a single todo tool-result payload accepted during history
+# hydration. The gateway/API server replays caller-supplied conversation
+# history to rebuild the store, so an oversized forged result is dropped
+# before it is parsed and re-injected (see AIAgent._hydrate_todo_store).
+MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
+# Persisted as ordinary message content. ContextCompressor uses this stable
+# header to distinguish the synthetic post-compaction row from a real user.
+TODO_INJECTION_HEADER = (
+    "[Your active task list was preserved across context compression]"
+)
 
 
 class TodoStore:
@@ -130,7 +140,7 @@ class TodoStore:
         if not active_items:
             return None
 
-        lines = ["[Your active task list was preserved across context compression]"]
+        lines = [TODO_INJECTION_HEADER]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")

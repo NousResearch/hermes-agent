@@ -59,7 +59,7 @@ Hermes Kanban 是一个持久化任务看板，在所有 Hermes 配置文件之�
 - **Link（链接）** —— `task_links` 行，记录父 → 子依赖关系。当所有父任务变为 `done` 时，调度器将 `todo → ready`。
 - **Comment（评论）** —— agent 间协议。Agent 和人类追加评论；当 worker 被（重新）启动时，它将完整的评论线程作为上下文的一部分读取。
 - **Workspace（工作区）** —— worker 操作的目录。三种类型：
-  - `scratch`（默认）—— 在 `~/.hermes/kanban/workspaces/<id>/` 下（非默认看板为 `~/.hermes/kanban/boards/<slug>/workspaces/<id>/`）创建的临时目录。**任务完成时删除** —— scratch 是临时性的，worker（或 `hermes kanban complete <id>`）将任务标记为完成的那一刻，目录即被清除。如果想保留 worker 的输出，请使用 `worktree:` 或 `dir:<path>`。在某次安装中首次创建 scratch 工作区时，调度器会记录警告并在任务上发出 `tip_scratch_workspace` 事件（可通过 `hermes kanban show <id>` 查看）。
+  - `scratch`（默认）—— 在 `~/.hermes/kanban/workspaces/<id>/` 下（非默认看板为 `~/.hermes/kanban/boards/<slug>/workspaces/<id>/`）创建的临时目录。**任务完成时删除** —— scratch 按设计是临时性的。通过 `kanban_complete(artifacts=[...])` 明确声明的文件会在清理前复制到持久的任务附件存储；旧版完成摘要中已存在的交付文件路径也会得到同样处理。其他 scratch 文件仍会被删除。如果声明的 scratch 交付文件不存在，任务会保持进行中，worker 可修正路径后重试。需要保留整个工作区时，请使用 `worktree:` 或 `dir:<path>`。在某次安装中首次创建 scratch 工作区时，调度器会记录警告并在任务上发出 `tip_scratch_workspace` 事件（可通过 `hermes kanban show <id>` 查看）。
   - `dir:<path>` —— 现有的共享目录（Obsidian vault、邮件运维目录、每账号文件夹）。**必须是绝对路径。** 像 `dir:../tenants/foo/` 这样的相对路径在调度时会被拒绝，因为它们会相对于调度器碰巧所在的 CWD 解析，这是模糊的，也是混淆代理（confused-deputy）逃逸向量。路径本身是受信任的 —— 这是你的机器、你的文件系统，worker 以你的 uid 运行。这是受信任本地用户的威胁模型；kanban 设计为单主机。**完成时保留。**
   - `worktree` —— 用于编码任务的 git worktree，位于 `.worktrees/<id>/` 下。使用 `worktree:<path>` 固定确切的目标路径。Worker 端的 `git worktree add` 创建它，提供 `--branch` 时使用该分支。**完成时保留。**
 - **Dispatcher（调度器）** —— 一个长期运行的循环，每 N 秒（默认 60 秒）执行一次：回收过期的认领、回收崩溃的 worker（PID 消失但 TTL 尚未过期）、推进就绪任务、原子性认领、启动已分配的配置文件。默认**在 gateway 内部运行**（`kanban.dispatch_in_gateway: true`）。每次 tick 一个调度器扫描所有看板；worker 启动时固定了 `HERMES_KANBAN_BOARD`，因此无法看到其他看板。在同一任务上连续启动失败 `kanban.failure_limit` 次（默认：2）后，调度器会以最后一个错误为原因自动阻塞该任务 —— 防止因配置文件不存在、工作区无法挂载等原因导致的反复抖动。
@@ -663,6 +663,26 @@ hermes kanban notify-unsubscribe t_abcd \
 ```
 
 订阅在任务达到 `done` 或 `archived` 后自动移除；无需清理。
+
+### 多 profile 部署：投递按 profile 归属
+
+在每个 profile 一个 gateway 的部署中（单一调度器，`writer`、`admin` 等各自
+运行独立的 gateway 进程 —— 参见[多 gateway 指南](https://github.com/NousResearch/hermes-agent/blob/main/docs/kanban/multi-gateway.md)），
+调度与投递的归属是分开的：
+
+- **调度保持单一所有者。** 只有一个 gateway 保持
+  `kanban.dispatch_in_gateway: true` 并运行调度器；其余 gateway 都设为
+  `false`。
+- **通知投递按 profile 归属。** 每个 gateway —— 包括非调度 gateway ——
+  都运行通知器，且只轮询标记了其所托管 profile 的订阅。从 `writer`
+  profile 的 Telegram 创建的任务，其 `completed`/`blocked` 消息由
+  `writer` gateway 投递，即使调度是由 `default` gateway 完成的。
+- **遗留订阅**（在 profile 标记之前创建、行上没有 `notifier_profile`
+  的订阅）只由实际持有调度器单例锁的 gateway 投递，因此两个 gateway
+  永远不会争抢它们。
+
+board 数据库中的原子化逐事件认领可防止跨 gateway 的重复投递。不需要中继、
+凭证共享或额外的调度器 —— 每个 profile gateway 只通过它自己的适配器投递。
 
 ## 运行记录 —— 每次尝试一行
 

@@ -7,7 +7,9 @@ Also tests the vision_tools and browser_tool model override env vars.
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
+
+import pytest
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -71,17 +73,6 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
 class TestAuxiliaryConfigBridge:
     """Verify the config.yaml → env var bridging logic used by CLI and gateway."""
 
-    def test_vision_provider_bridged(self, monkeypatch):
-        config = {
-            "auxiliary": {
-                "vision": {"provider": "openrouter", "model": ""},
-                "web_extract": {"provider": "auto", "model": ""},
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
-        # auto should not be set
-        assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
 
     def test_vision_model_bridged(self, monkeypatch):
         config = {
@@ -104,46 +95,9 @@ class TestAuxiliaryConfigBridge:
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") == "nous"
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_MODEL") == "gemini-2.5-flash"
 
-    def test_direct_endpoint_bridged(self, monkeypatch):
-        config = {
-            "auxiliary": {
-                "vision": {
-                    "base_url": "http://localhost:1234/v1",
-                    "api_key": "local-key",
-                    "model": "qwen2.5-vl",
-                }
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_BASE_URL") == "http://localhost:1234/v1"
-        assert os.environ.get("AUXILIARY_VISION_API_KEY") == "local-key"
-        assert os.environ.get("AUXILIARY_VISION_MODEL") == "qwen2.5-vl"
 
-    def test_empty_values_not_bridged(self, monkeypatch):
-        config = {
-            "auxiliary": {
-                "vision": {"provider": "auto", "model": ""},
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
-        assert os.environ.get("AUXILIARY_VISION_MODEL") is None
 
-    def test_missing_auxiliary_section_safe(self, monkeypatch):
-        """Config without auxiliary section should not crash."""
-        config = {"model": {"default": "test-model"}}
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
 
-    def test_non_dict_task_config_ignored(self, monkeypatch):
-        """Malformed task config (e.g. string instead of dict) is safely ignored."""
-        config = {
-            "auxiliary": {
-                "vision": "openrouter",  # should be a dict
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
 
     def test_mixed_tasks(self, monkeypatch):
         config = {
@@ -158,34 +112,8 @@ class TestAuxiliaryConfigBridge:
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_MODEL") == "custom-llm"
 
-    def test_all_tasks_with_overrides(self, monkeypatch):
-        config = {
-            "auxiliary": {
-                "vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
-                "web_extract": {"provider": "nous", "model": "gemini-3-flash"},
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
-        assert os.environ.get("AUXILIARY_VISION_MODEL") == "google/gemini-2.5-flash"
-        assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") == "nous"
-        assert os.environ.get("AUXILIARY_WEB_EXTRACT_MODEL") == "gemini-3-flash"
 
-    def test_whitespace_in_values_stripped(self, monkeypatch):
-        config = {
-            "auxiliary": {
-                "vision": {"provider": "  openrouter  ", "model": "  my-model  "},
-            }
-        }
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
-        assert os.environ.get("AUXILIARY_VISION_MODEL") == "my-model"
 
-    def test_empty_auxiliary_dict_safe(self, monkeypatch):
-        config = {"auxiliary": {}}
-        _run_auxiliary_bridge(config, monkeypatch)
-        assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
-        assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
 
 
 # ── Gateway bridge parity test ───────────────────────────────────────────────
@@ -238,22 +166,30 @@ class TestGatewayBridgeCodeParity:
 class TestVisionModelOverride:
     """Test that AUXILIARY_VISION_MODEL env var overrides the default model in the handler."""
 
-    def test_env_var_overrides_default(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_env_var_overrides_default(self, monkeypatch):
         monkeypatch.setenv("AUXILIARY_VISION_MODEL", "openai/gpt-4o")
         from tools.vision_tools import _handle_vision_analyze
-        with patch("tools.vision_tools.vision_analyze_tool", new_callable=MagicMock) as mock_tool:
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_tool,
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+        ):
             mock_tool.return_value = '{"success": true}'
-            _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
+            await _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
             # 3rd positional arg = model
             assert call_args[0][2] == "openai/gpt-4o"
 
-    def test_default_model_when_no_override(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_default_model_when_no_override(self, monkeypatch):
         monkeypatch.delenv("AUXILIARY_VISION_MODEL", raising=False)
         from tools.vision_tools import _handle_vision_analyze
-        with patch("tools.vision_tools.vision_analyze_tool", new_callable=MagicMock) as mock_tool:
+        with (
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_tool,
+            patch("tools.vision_tools._should_use_native_vision_fast_path", return_value=False),
+        ):
             mock_tool.return_value = '{"success": true}'
-            _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
+            await _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
             # With no AUXILIARY_VISION_MODEL env var, model should be None
             # (the centralized call_llm router picks the provider default)

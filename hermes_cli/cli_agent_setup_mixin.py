@@ -57,7 +57,15 @@ class CLIAgentSetupMixin:
                     if not _fb_provider or not _fb_model:
                         continue
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        from hermes_cli.fallback_config import resolve_entry_api_key
+
+                        _fb_kwargs = {"requested": _fb_provider}
+                        if _fb.get("base_url"):
+                            _fb_kwargs["explicit_base_url"] = _fb["base_url"]
+                        _fb_api_key = resolve_entry_api_key(_fb)
+                        if _fb_api_key:
+                            _fb_kwargs["explicit_api_key"] = _fb_api_key
+                        runtime = resolve_runtime_provider(**_fb_kwargs)
                         logger.warning(
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,
@@ -185,6 +193,9 @@ class CLIAgentSetupMixin:
             "api_key": self.api_key,
             "base_url": self.base_url,
             "provider": self.provider,
+            "requested_provider": getattr(
+                self, "requested_provider", self.provider
+            ),
             "api_mode": self.api_mode,
             "command": self.acp_command,
             "args": list(self.acp_args or []),
@@ -196,6 +207,7 @@ class CLIAgentSetupMixin:
             "signature": (
                 self.model,
                 runtime["provider"],
+                runtime["requested_provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
                 runtime["command"],
@@ -234,9 +246,12 @@ class CLIAgentSetupMixin:
         if not self._ensure_runtime_credentials():
             return False
 
-        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+        from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
-        wait_for_mcp_discovery()
+        ensure_mcp_discovery_before_agent_build(
+            logger=logger,
+            single_query=getattr(self, "_single_query_mode", False),
+        )
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
@@ -286,7 +301,9 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
-            restored = self._session_db.get_messages_as_conversation(self.session_id)
+            restored = self._session_db.get_messages_as_conversation(
+                self.session_id, repair_alternation=True
+            )
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]
                 self.conversation_history = restored
@@ -334,6 +351,9 @@ class CLIAgentSetupMixin:
                 "api_key": self.api_key,
                 "base_url": self.base_url,
                 "provider": self.provider,
+                "requested_provider": getattr(
+                    self, "requested_provider", self.provider
+                ),
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
                 "args": list(self.acp_args or []),
@@ -345,6 +365,7 @@ class CLIAgentSetupMixin:
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),
                 provider=runtime.get("provider"),
+                requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"),
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
@@ -390,6 +411,7 @@ class CLIAgentSetupMixin:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice,
                 notice_clear_callback=self._on_notice_clear,
+                reaction_callback=self._on_reaction,
             )
             # Store reference for atexit memory provider shutdown.
             # NOTE: this MUST write to the ``cli`` module's global, not a
@@ -418,6 +440,7 @@ class CLIAgentSetupMixin:
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
+                runtime.get("requested_provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
                 runtime.get("command"),
@@ -438,7 +461,12 @@ class CLIAgentSetupMixin:
                     # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
-            ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
+            console = ChatConsole()
+            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_constants import partial_update_hint
+
+            for line in partial_update_hint(e):
+                console.print(line)
             return False
 
     def _preload_resumed_session(self) -> bool:
@@ -483,11 +511,21 @@ class CLIAgentSetupMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
-        restored = self._session_db.get_messages_as_conversation(self.session_id)
+        model_history, display_history = self._session_db.get_resume_conversations(self.session_id)
+        restored = model_history
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]
             self.conversation_history = restored
-            msg_count = len([m for m in restored if m.get("role") == "user"])
+            self._resume_display_history = [
+                m for m in display_history if m.get("role") != "session_meta"
+            ]
+            msg_count = len(
+                [
+                    m
+                    for m in self._resume_display_history
+                    if m.get("role") == "user" and not m.get("display_kind")
+                ]
+            )
             title_part = ""
             if session_meta.get("title"):
                 title_part = f' "{session_meta["title"]}"'
@@ -529,7 +567,9 @@ class CLIAgentSetupMixin:
         an indicator for earlier hidden messages.
         """
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
-        if not self.conversation_history:
+        from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
+        display_history = getattr(self, "_resume_display_history", self.conversation_history)
+        if not display_history:
             return
 
         # Check config: resume_display setting
@@ -548,10 +588,23 @@ class CLIAgentSetupMixin:
         entries = []  # list of (role, display_text)
         _last_asst_idx = None       # index of last assistant entry
         _last_asst_full = None      # un-truncated display text for last assistant
-        for msg in self.conversation_history:
+        for msg in display_history:
             role = msg.get("role", "")
+            display_kind = msg.get("display_kind")
             content = msg.get("content")
             tool_calls = msg.get("tool_calls") or []
+
+            if display_kind == "hidden":
+                continue
+            if display_kind == "model_switch":
+                entries.append(("event", "model changed"))
+                continue
+            if display_kind == "async_delegation_complete":
+                entries.append(("event", "background delegation completed"))
+                continue
+            if display_kind == "auto_continue":
+                entries.append(("event", "resumed interrupted turn"))
+                continue
 
             if role == "system":
                 continue
@@ -569,13 +622,18 @@ class CLIAgentSetupMixin:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
+                # Stored history is untrusted for display: strip escape
+                # sequences/control chars so replaying a message can't
+                # clear the screen, retitle the window, or restyle the
+                # recap panel (see tools/ansi_strip.sanitize_display_text).
+                text = _sanitize_display_text(text)
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
             elif role == "assistant":
                 text = "" if content is None else str(content)
-                text = _strip_reasoning_tags(text)
+                text = _sanitize_display_text(_strip_reasoning_tags(text))
                 parts = []
                 full_parts = []  # un-truncated version
                 if text:
@@ -654,7 +712,9 @@ class CLIAgentSetupMixin:
             )
 
         for i, (role, text) in enumerate(entries):
-            if role == "user":
+            if role == "event":
+                lines.append(f"  ◈ {text}\n", style="dim italic")
+            elif role == "user":
                 lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
                 # Show first line inline, indent rest
                 msg_lines = text.splitlines()

@@ -1,6 +1,7 @@
 import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { onThemeRepaint } from '@/hooks/use-theme-epoch'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -265,6 +266,7 @@ export const DiffusionCanvas: FC = () => {
 
   useResizeObserver(fitToContainer, canvasRef)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const probe = document.createElement('span')
     probe.style.cssText = 'position:absolute;width:0;height:0;visibility:hidden;pointer-events:none'
@@ -278,18 +280,15 @@ export const DiffusionCanvas: FC = () => {
 
     // Re-resolve when the theme repaints (`applyTheme` toggles `.dark` and
     // rewrites inline custom props on the root) instead of per animation frame.
-    const observer = new MutationObserver(sync)
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class', 'style', 'data-hermes-mode']
-    })
+    const unsubscribe = onThemeRepaint(sync)
 
     return () => {
-      observer.disconnect()
+      unsubscribe()
       probe.remove()
     }
   }, [])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const canvas = canvasRef.current
     const ctx = canvas?.getContext('2d')

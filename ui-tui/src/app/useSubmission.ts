@@ -1,56 +1,50 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
-import { attachedImageNotice } from '../domain/messages.js'
-import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
+import { expandTokens } from '../domain/attachments.js'
+import { completionToApplyOnSubmit, looksLikeSlashCommand, parseSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  InputDetectDropResponse,
-  PromptSubmitResponse,
-  SessionSteerResponse,
-  ShellExecResponse
-} from '../gatewayTypes.js'
+import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
+import { queueItem, type QueueItem } from '../hooks/useQueue.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
-import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
+import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
+import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
-const SESSION_BUSY_RE = /session busy|waiting for model response/i
-
-const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
-
-const expandSnips = (snips: PasteSnippet[]) => {
-  const byLabel = new Map<string, string[]>()
-
-  for (const { label, text } of snips) {
-    const hit = byLabel.get(label)
-    hit ? hit.push(text) : byLabel.set(label, [text])
-  }
-
-  return (value: string) => value.replace(PASTE_SNIPPET_RE, tok => byLabel.get(tok)?.shift() ?? tok)
-}
 
 const spliceMatches = (text: string, matches: RegExpMatchArray[], results: string[]) =>
   matches.reduceRight((acc, m, i) => acc.slice(0, m.index!) + results[i] + acc.slice(m.index! + m[0].length), text)
 
+export const expandPasteTokens = (tokens: ComposerToken[]) =>
+  expandTokens(tokens.filter(token => token.kind === 'paste'))
+
+const slashArgument = (command: string) => /^\/\S+\s+([\s\S]+)$/.exec(command)?.[1] ?? ''
+
+export const queueItemFromSlash = (displayCommand: string, expandedCommand: string): QueueItem | undefined => {
+  const display = slashArgument(displayCommand)
+
+  if (!display.trim()) {
+    return undefined
+  }
+
+  return queueItem(slashArgument(expandedCommand), display)
+}
+
+export const prepareSubmission = (display: string, tokens: ComposerToken[]) => ({
+  display,
+  text: expandTokens(tokens)(display)
+})
+
+export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
+
 export function useSubmission(opts: UseSubmissionOptions) {
-  const {
-    appendMessage,
-    composerActions,
-    composerRefs,
-    composerState,
-    gw,
-    maybeGoodVibes,
-    setLastUserMsg,
-    slashRef,
-    submitRef,
-    sys
-  } = opts
+  const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =
+    opts
 
   const lastEmptyAt = useRef(0)
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -85,67 +79,26 @@ export function useSubmission(opts: UseSubmissionOptions) {
   }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (text: string, showUserMessage = true) => {
-      const expand = expandSnips(composerState.pasteSnips)
+    (text: string, showUserMessage = true, displayText?: string, expandOverride?: (value: string) => string) => {
+      // Read tokens off the ref, not render state: a paste immediately followed
+      // by Enter submits before React has re-rendered with the new token.
+      const expand = expandOverride ?? expandTokens(composerRefs.tokensRef.current)
 
-      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
-        const sid = getUiState().sid
-
-        if (!sid) {
-          return sys('session not ready yet')
-        }
-
-        turnController.clearStatusTimer()
-        maybeGoodVibes(submitText)
-        setLastUserMsg(text)
-
-        if (showUserMessage) {
-          appendMessage({ role: 'user', text: displayText })
-        }
-
-        patchUiState({ busy: true, status: 'running…' })
-        turnController.bufRef = ''
-        turnController.interrupted = false
-
-        gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
-          if (isSessionBusyError(e)) {
-            composerActions.enqueue(submitText)
-            patchUiState({ busy: true, status: 'queued for next turn' })
-
-            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
-          }
-
-          sys(`error: ${e.message}`)
-          patchUiState({ busy: false, status: 'ready' })
-        })
-      }
-
-      const sid = getUiState().sid
-
-      if (!sid) {
-        return sys('session not ready yet')
-      }
-
-      // Always ask the backend whether this looks like a file drop.
-      // The backend's _detect_file_drop handles paths with spaces, quotes,
-      // Windows drive letters, and escaped characters correctly.
-      gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
-        .then(r => {
-          if (!r?.matched) {
-            return startSubmit(text, expand(text), showUserMessage)
-          }
-
-          if (r.is_image) {
-            turnController.pushActivity(attachedImageNotice(r))
-          } else {
-            turnController.pushActivity(`detected file: ${r.name}`)
-          }
-
-          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
-        })
-        .catch(() => startSubmit(text, expand(text), showUserMessage))
+      submitPrompt(
+        text,
+        {
+          appendMessage,
+          enqueue: composerActions.enqueue,
+          expand,
+          gw,
+          setLastUserMsg,
+          sys
+        },
+        showUserMessage,
+        displayText
+      )
     },
-    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerRefs, gw, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -220,23 +173,22 @@ export function useSubmission(opts: UseSubmissionOptions) {
   //   - 'steer'     : inject into the current turn via session.steer; falls
   //                   back to queue when steer is rejected (no agent / no
   //                   tool window).
-  //   - 'interrupt' (default): queue the text + interrupt with `keepBusy`; the
-  //                   busy→false settle edge drains it once (desktop parity).
-  //                   No optimistic send → no duplicate bubble / race note.
+  //   - 'interrupt' (default): submit immediately; the backend redirects the
+  //                   active model request (or safely steers after a tool),
+  //                   with legacy interrupt + queue as its compatibility path.
   //
   // `opts.fallbackToFront` re-inserts at the queue head (queue-edit picks keep
   // their position); the mainline submit path appends.
   const handleBusyInput = useCallback(
-    (full: string, opts: { fallbackToFront?: boolean } = {}) => {
+    (item: QueueItem, opts: { fallbackToFront?: boolean } = {}) => {
       const live = getUiState()
       const mode = live.busyInputMode
 
       const enqueueText = () => {
         if (opts.fallbackToFront) {
-          composerRefs.queueRef.current.unshift(full)
-          composerActions.syncQueue()
+          composerActions.prependQueue(item)
         } else {
-          composerActions.enqueue(full)
+          composerActions.enqueue(item.text, item.display)
         }
       }
 
@@ -246,11 +198,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       if (mode === 'queue') {
-        return composerActions.enqueue(full)
+        return enqueueText()
       }
 
       if (mode === 'steer' && live.sid) {
-        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: full })
+        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: item.text })
           .then(raw => {
             const r = asRpcResult<SessionSteerResponse>(raw)
 
@@ -263,14 +215,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
-      // 'interrupt': queue + interrupt(keepBusy); the settle edge drains it once.
-      enqueueText()
-
-      if (live.sid) {
-        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: true })
-      }
+      // The gateway owns the atomic redirect decision because it knows whether
+      // the agent is in model generation, tool execution, or an older runtime.
+      // Reuse the normal submit pipeline so the correction gets its user bubble
+      // and file-drop interpolation exactly once.
+      send(item.text)
     },
-    [appendMessage, composerActions, composerRefs, gw, sys]
+    [composerActions, gw, send, sys]
   )
 
   const dispatchSubmission = useCallback(
@@ -279,10 +230,32 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
+      // History stores resolved content, not `[[…]]` labels: tokens are cleared
+      // on submit, so recall must be self-contained. Image tokens resolve to
+      // nothing — a detached image can't be re-attached by recalling the text.
+      // Idempotent on token-free text, so re-submitting a recalled entry is
+      // stable.
+      const submissionTokens = [...composerRefs.tokensRef.current]
+      const submission = prepareSubmission(full, submissionTokens)
+      const toHistory = submission.text
+      const queuePayload = expandPasteTokens(submissionTokens)(full)
+
       if (looksLikeSlashCommand(full)) {
         appendMessage({ kind: 'slash', role: 'system', text: full })
-        composerActions.pushHistory(full)
-        slashRef.current(full)
+        composerActions.pushHistory(toHistory)
+
+        const parsed = parseSlashCommand(full)
+
+        const queued =
+          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(full, queuePayload) : undefined
+
+        if (queued) {
+          composerActions.enqueue(queued.text, queued.display)
+          sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
+        } else {
+          slashRef.current(full)
+        }
+
         composerActions.clearIn()
 
         return
@@ -297,7 +270,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const live = getUiState()
 
       if (!live.sid) {
-        composerActions.pushHistory(full)
+        composerActions.pushHistory(toHistory)
         composerActions.enqueue(full)
         composerActions.clearIn()
 
@@ -308,9 +281,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       composerActions.clearIn()
 
       if (editIdx !== null) {
-        composerActions.replaceQueue(editIdx, full)
-        const picked = composerRefs.queueRef.current.splice(editIdx, 1)[0]
-        composerActions.syncQueue()
+        const picked = composerActions.takeQueue(editIdx, full)
         composerActions.setQueueEdit(null)
 
         if (!picked || !live.sid) {
@@ -322,32 +293,43 @@ export function useSubmission(opts: UseSubmissionOptions) {
           // silently going back to the queue.  handleBusyInput resolves
           // mode-specific behavior (interrupt-and-send, steer, or queue).
           if (getUiState().busyInputMode === 'queue') {
-            composerRefs.queueRef.current.unshift(picked)
-
-            return composerActions.syncQueue()
+            return composerActions.prependQueue(picked)
           }
 
           return handleBusyInput(picked, { fallbackToFront: true })
         }
 
-        return sendQueued(picked)
+        return sendQueued(picked.text)
       }
 
-      composerActions.pushHistory(full)
+      composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
-        return handleBusyInput(full)
+        return handleBusyInput(queueItem(full))
       }
 
-      if (hasInterpolation(full)) {
+      if (shouldInterpolateSubmission(full)) {
         patchUiState({ busy: true })
 
-        return interpolate(full, send)
+        return interpolate(full, text =>
+          send(prepareSubmission(text, submissionTokens).text, true, text, value => value)
+        )
       }
 
-      send(full)
+      send(submission.text, true, submission.display, value => value)
     },
-    [appendMessage, composerActions, composerRefs, handleBusyInput, interpolate, send, sendQueued, shellExec, slashRef]
+    [
+      appendMessage,
+      composerActions,
+      composerRefs,
+      handleBusyInput,
+      interpolate,
+      send,
+      sendQueued,
+      shellExec,
+      slashRef,
+      sys
+    ]
   )
 
   const submit = useCallback(
@@ -377,8 +359,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {
           const next = composerActions.dequeue()
-
-          composerActions.syncQueue()
 
           if (next) {
             composerActions.setQueueEdit(null)
@@ -413,7 +393,6 @@ export interface UseSubmissionOptions {
   composerRefs: ComposerRefs
   composerState: ComposerState
   gw: GatewayClient
-  maybeGoodVibes: (text: string) => void
   setLastUserMsg: (value: string) => void
   slashRef: MutableRefObject<(cmd: string) => boolean>
   submitRef: MutableRefObject<(value: string) => void>

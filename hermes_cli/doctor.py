@@ -8,9 +8,16 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.util
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import (
+    detect_install_method,
+    get_env_path,
+    get_hermes_home,
+    get_project_root,
+    recommended_update_command_for_method,
+)
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from hermes_constants import agent_browser_runnable
@@ -25,11 +32,13 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
+from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
+    "DEEPINFRA_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -42,12 +51,14 @@ _PROVIDER_ENV_HINTS = (
     "KIMI_API_KEY",
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
+    "FIREWORKS_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
     "DEEPSEEK_API_KEY",
     "DASHSCOPE_API_KEY",
     "HF_TOKEN",
+    "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
@@ -68,6 +79,22 @@ def _system_package_install_cmd(pkg: str) -> str:
     if sys.platform == "darwin":
         return f"brew install {pkg}"
     return f"sudo apt install {pkg}"
+
+
+def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
+    """Return an actionable SQLite upgrade hint for this install layout."""
+    method = install_method or detect_install_method(PROJECT_ROOT)
+    if method == "docker":
+        command = recommended_update_command_for_method(method)
+        action = f"run `{command}`, then recreate all Hermes containers"
+    elif method in {"nix", "nixos"}:
+        action = recommended_update_command_for_method(method)
+    else:
+        action = "run `hermes update`"
+    return (
+        f"({action}; fixed versions: 3.51.3+ / 3.50.7 / 3.44.6 — "
+        "see https://sqlite.org/wal.html#walresetbug)"
+    )
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -199,6 +226,130 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+# Deprecated / legacy config keys still read for back-compat. Doctor surfaces
+# them as non-failing warnings with the modern replacement — it does not
+# auto-migrate or delete (migrations live in config.py version steps).
+_DEPRECATED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
+    # (section, key, replacement)
+    ("display", "tool_progress_overrides", "display.platforms"),
+    ("delegation", "max_async_children", "delegation.max_concurrent_children"),
+)
+
+# compression.summary_* → auxiliary.compression (model/provider/base_url)
+_DEPRECATED_COMPRESSION_SUMMARY_KEYS: tuple[str, ...] = (
+    "summary_model",
+    "summary_provider",
+    "summary_base_url",
+)
+
+# Deprecated env vars (checked in the .env file, not process env, so config→env
+# bridges like terminal.cwd → TERMINAL_CWD do not false-positive).
+_DEPRECATED_ENV_VARS: tuple[tuple[str, str], ...] = (
+    # HERMES_TOOL_PROGRESS is fully unsupported since the v12 config support
+    # floor removed its only consumer (the v3→4 migration) — it is silently
+    # ignored. HERMES_TOOL_PROGRESS_MODE is still read by the gateway as a
+    # back-compat fallback but remains deprecated.
+    ("HERMES_TOOL_PROGRESS", "display.tool_progress in config.yaml — ignored/unsupported since config floor v12"),
+    ("HERMES_TOOL_PROGRESS_MODE", "display.tool_progress in config.yaml"),
+    ("TERMINAL_CWD", "terminal.cwd in config.yaml"),
+    ("MESSAGING_CWD", "terminal.cwd in config.yaml"),
+    ("QQ_HOME_CHANNEL", "QQBOT_HOME_CHANNEL"),
+    ("QQ_HOME_CHANNEL_NAME", "QQBOT_HOME_CHANNEL_NAME"),
+)
+
+
+def collect_deprecated_config_keys(raw_config: dict | None) -> list[tuple[str, str]]:
+    """Return ``(legacy_path, replacement)`` for deprecated keys present in *raw_config*.
+
+    Only keys that appear in the on-disk YAML are reported (raw file load, not
+    merged defaults). Empty containers still count — presence of the legacy
+    key is the signal that the user should migrate.
+    """
+    findings: list[tuple[str, str]] = []
+    if not isinstance(raw_config, dict):
+        return findings
+
+    for section, key, replacement in _DEPRECATED_CONFIG_KEYS:
+        section_val = raw_config.get(section)
+        if isinstance(section_val, dict) and key in section_val:
+            findings.append((f"{section}.{key}", replacement))
+
+    compression = raw_config.get("compression")
+    if isinstance(compression, dict):
+        for key in _DEPRECATED_COMPRESSION_SUMMARY_KEYS:
+            if key in compression:
+                findings.append((f"compression.{key}", "auxiliary.compression"))
+
+    return findings
+
+
+def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
+    """Return ``(legacy_env, replacement)`` for deprecated vars present in *env_map*.
+
+    *env_map* should come from the on-disk ``.env`` (e.g. ``load_env()``), not
+    ``os.environ``, so bridged runtime vars do not trigger false positives.
+    """
+    findings: list[tuple[str, str]] = []
+    if not isinstance(env_map, dict):
+        return findings
+    for name, replacement in _DEPRECATED_ENV_VARS:
+        val = env_map.get(name)
+        if val is not None and str(val).strip() != "":
+            findings.append((name, replacement))
+    return findings
+
+
+def report_deprecated_config_and_env(
+    raw_config: dict | None = None,
+    env_map: dict | None = None,
+) -> list[tuple[str, str]]:
+    """Emit non-failing doctor warnings for deprecated config keys and env vars.
+
+    Returns the list of ``(legacy, replacement)`` findings that were reported
+    (empty when nothing deprecated is present). Does not mutate config/env and
+    does not append to the blocking ``issues`` list.
+    """
+    findings = collect_deprecated_config_keys(raw_config)
+    findings.extend(collect_deprecated_env_vars(env_map))
+    if not findings:
+        check_ok("No deprecated config keys or env vars")
+        return findings
+
+    for legacy, replacement in findings:
+        check_warn(
+            f"Deprecated: {legacy}",
+            f"(use {replacement} instead)",
+        )
+        check_info(f"Replace {legacy} → {replacement} (warn-only; not auto-migrated here)")
+    return findings
+
+
+def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
+    """Return toolsets enabled for the CLI, or None if config resolution fails."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        return {str(toolset) for toolset in _get_platform_tools(load_config() or {}, "cli")}
+    except Exception:
+        return None
+
+
+def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
+    """Filter unavailable API-key toolsets to those enabled for the CLI."""
+    api_key_unavailable = [
+        item for item in unavailable
+        if item.get("missing_vars") or item.get("env_vars")
+    ]
+    enabled_toolsets = _enabled_cli_toolsets_for_doctor()
+    if enabled_toolsets is None:
+        return api_key_unavailable
+    return [
+        item for item in api_key_unavailable
+        if str(item.get("name") or "") in enabled_toolsets
+    ]
+
+
 def _read_pyproject_version() -> str | None:
     """Read the ``version = "..."`` from ``pyproject.toml`` at the project root.
 
@@ -301,21 +452,90 @@ def _check_s6_supervision(issues: list[str]) -> None:
     )
 
 
-def check_certificates() -> None:
+def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
     """Verify the certifi CA bundle is loadable.
 
     Surfaces the SSLConfigurationError user-friendly path before they hit
     a wall of tracebacks on the first outbound HTTPS call.
+
+    With ``--fix``, a broken bundle (missing/corrupt ``cacert.pem`` — e.g.
+    after a brew Python upgrade rebuilt the venv, #29866) is repaired by
+    force-reinstalling certifi into THIS interpreter's environment and
+    re-verifying.
     """
     try:
         from agent.ssl_guard import verify_ca_bundle_with_fallback
         from agent.errors import SSLConfigurationError
-        verify_ca_bundle_with_fallback()
-        check_ok("SSL CA certificate bundle is valid")
-    except SSLConfigurationError as e:
-        check_fail("SSL CA certificate bundle is broken", str(e))
     except Exception as e:
         check_warn("SSL certificate check skipped", str(e))
+        return
+
+    try:
+        verify_ca_bundle_with_fallback()
+        check_ok("SSL CA certificate bundle is valid")
+        return
+    except SSLConfigurationError as e:
+        first_error = str(e)
+    except Exception as e:
+        check_warn("SSL certificate check skipped", str(e))
+        return
+
+    if not should_fix:
+        check_fail("SSL CA certificate bundle is broken", first_error)
+        if issues is not None:
+            issues.append(
+                "Repair the CA bundle: run `hermes doctor --fix`, or "
+                f"`{sys.executable} -m pip install --force-reinstall certifi`"
+            )
+        return
+
+    # --fix: force-reinstall certifi into the running interpreter's env and
+    # re-verify. importlib caches are invalidated so certifi.where() resolves
+    # the fresh install without a process restart.
+    check_fail("SSL CA certificate bundle is broken", first_error)
+    print("    → Repairing: force-reinstalling certifi...")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--force-reinstall", "certifi"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except Exception as exc:
+        check_fail("certifi repair could not run pip", str(exc))
+        if issues is not None:
+            issues.append(
+                f"Reinstall certifi manually: {sys.executable} -m pip install "
+                "--force-reinstall certifi"
+            )
+        return
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout or "")[-500:]
+        check_fail("certifi reinstall failed", tail)
+        if issues is not None:
+            issues.append(
+                f"Reinstall certifi manually: {sys.executable} -m pip install "
+                "--force-reinstall certifi"
+            )
+        return
+
+    # Drop any cached certifi module so where() re-resolves the new bundle.
+    import importlib
+    for mod_name in [m for m in sys.modules if m == "certifi" or m.startswith("certifi.")]:
+        sys.modules.pop(mod_name, None)
+    importlib.invalidate_caches()
+
+    try:
+        verify_ca_bundle_with_fallback()
+        check_ok("SSL CA certificate bundle repaired (certifi reinstalled)")
+    except SSLConfigurationError as e:
+        check_fail("SSL CA certificate bundle still broken after reinstall", str(e))
+        if issues is not None:
+            issues.append(
+                "certifi reinstall did not restore the CA bundle — check for a "
+                "custom CA env var (SSL_CERT_FILE/REQUESTS_CA_BUNDLE) pointing "
+                "at a missing file, or recreate the venv."
+            )
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
@@ -387,6 +607,7 @@ def _build_apikey_providers_list() -> list:
         ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
+        ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
         # OpenCode Go has no shared /models endpoint; skip the health check.
@@ -402,7 +623,7 @@ def _build_apikey_providers_list() -> list:
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
         "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
-        "MiniMax (China)": "minimax-cn",
+        "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
         "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
         "OpenCode Go": "opencode-go",
     }
@@ -617,7 +838,33 @@ def run_doctor(args):
             "Upgrade Python to 3.10+",
             issues,
         )
-    
+
+    # Linked SQLite library (issue #69784): version + source id matter independently
+    # of the Python minor — uv's python-build-standalone can keep a vulnerable
+    # SQLite across Python upgrades.
+    try:
+        import sqlite3
+        from hermes_state import is_sqlite_wal_reset_vulnerable, sqlite_source_id
+
+        _sqlite_ver = sqlite3.sqlite_version
+        _sqlite_src = sqlite_source_id()
+        _sqlite_src_short = (
+            (_sqlite_src[:48] + "…") if len(_sqlite_src) > 48 else _sqlite_src
+        )
+        if is_sqlite_wal_reset_vulnerable():
+            # Warn-only: Hermes already refuses to enable WAL on fresh DBs.
+            # Do not append to ``issues`` because runtime repair remains
+            # best-effort and unsupported installs may need manual action.
+            check_warn(
+                f"SQLite {_sqlite_ver} (WAL-reset bug)",
+                _sqlite_upgrade_hint(),
+            )
+        else:
+            check_ok(f"SQLite {_sqlite_ver}")
+        if _sqlite_src_short:
+            check_info(f"SQLite source id: {_sqlite_src_short}")
+    except Exception as e:
+        check_warn(f"SQLite version probe failed: {e}")
     # Check if in virtual environment
     in_venv = sys.prefix != sys.base_prefix
     if in_venv:
@@ -630,7 +877,7 @@ def run_doctor(args):
     _check_version_consistency(issues)
 
     _section("SSL / CA Certificates")
-    check_certificates()
+    check_certificates(should_fix=should_fix, issues=manual_issues)
 
     _section("Required Packages")
     required_packages = [
@@ -669,11 +916,13 @@ def run_doctor(args):
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
         
-        # Check for common issues. Pin encoding to UTF-8 because .env files are
-        # written as UTF-8 everywhere in the codebase, while Path.read_text()
-        # defaults to the system locale — which crashes on non-UTF-8 Windows
-        # locales (e.g. GBK) as soon as the file contains any non-ASCII byte.
-        content = env_path.read_text(encoding="utf-8")
+        # Prefer UTF-8 (.env is written as UTF-8 elsewhere). Fall back to
+        # latin-1 for Windows Notepad/cp1252 files that are not valid UTF-8 —
+        # matches hermes_cli.env_loader._load_dotenv_with_fallback.
+        try:
+            content = env_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = env_path.read_text(encoding="latin-1")
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
         else:
@@ -710,8 +959,9 @@ def run_doctor(args):
 
         # Validate model.provider and model.default values
         try:
-            import yaml as _yaml
-            cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            # Raw-file diagnostic: inspects what the user actually wrote.
+            from hermes_cli.config import read_user_config_raw
+            cfg = read_user_config_raw(config_path)
             model_section = cfg.get("model") or {}
             provider_raw = (model_section.get("provider") or "").strip()
             provider = provider_raw.lower()
@@ -723,18 +973,20 @@ def run_doctor(args):
                     PROVIDER_REGISTRY,
                     resolve_provider as _resolve_auth_provider,
                 )
-                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto", "moa"}
             except Exception:
                 _resolve_auth_provider = None
                 pass
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (
+                    custom_provider_aliases as _custom_provider_aliases,
                     normalize_provider as _normalize_catalog_provider,
                     resolve_provider_full as _resolve_provider_full,
                 )
             except Exception:
                 _compatible_custom_providers = None
+                _custom_provider_aliases = None
                 _normalize_catalog_provider = None
                 _resolve_provider_full = None
 
@@ -747,13 +999,21 @@ def run_doctor(args):
 
             user_providers = cfg.get("providers")
             if isinstance(user_providers, dict):
-                known_providers.update(str(name).strip().lower() for name in user_providers if str(name).strip())
+                from hermes_cli.config import is_provider_enabled
+                known_providers.update(
+                    str(name).strip().lower()
+                    for name, prov_cfg in user_providers.items()
+                    if str(name).strip() and is_provider_enabled(prov_cfg)
+                )
             for entry in custom_providers:
                 if not isinstance(entry, dict):
                     continue
                 name = str(entry.get("name") or "").strip()
-                if name:
-                    known_providers.add("custom:" + name.lower().replace(" ", "-"))
+                provider_key = str(entry.get("provider_key") or "").strip()
+                if name and _custom_provider_aliases is not None:
+                    known_providers.update(
+                        _custom_provider_aliases(name, provider_key)
+                    )
 
             valid_provider_ids = set(known_providers)
             provider_ids_to_accept = {provider} if provider else set()
@@ -813,12 +1073,21 @@ def run_doctor(args):
             providers_accepting_vendor_slugs = {
                 "openrouter",
                 "auto",
+                "ai-gateway",
                 "kilocode",
                 "opencode-zen",
                 "huggingface",
                 "lmstudio",
                 "nous",
                 "nvidia",
+                # Fireworks' native model IDs are slash-form
+                # (accounts/fireworks/models/... and .../routers/...), so a "/"
+                # is expected, not an aggregator vendor prefix.
+                "fireworks",
+                # DeepInfra is an aggregator-style gateway: its catalog
+                # is exclusively ``vendor/model`` slugs (Qwen/Qwen3.5-…,
+                # meta-llama/Llama-3-…, anthropic/claude-opus-4-7, …).
+                "deepinfra",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs
@@ -930,9 +1199,9 @@ def run_doctor(args):
 
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
-            import yaml
-            with open(config_path, encoding="utf-8") as f:
-                raw_config = yaml.safe_load(f) or {}
+            # Raw-file diagnostic: stale-key detection must see the raw file.
+            from hermes_cli.config import read_user_config_raw
+            raw_config = read_user_config_raw(config_path)
             stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
             if stale_root_keys:
                 check_warn(
@@ -957,8 +1226,8 @@ def run_doctor(args):
                             model_section[k] = raw_config.pop(k)
                         else:
                             raw_config.pop(k)
-                    from utils import atomic_yaml_write
-                    atomic_yaml_write(config_path, raw_config)
+                    from hermes_cli.config import atomic_config_write
+                    atomic_config_write(config_path, raw_config)
                     check_ok("Migrated stale root-level keys into model section")
                     fixed_count += 1
                 else:
@@ -977,10 +1246,9 @@ def run_doctor(args):
         # Read the .env FILE directly (load_env), not get_env_value/os.environ,
         # which the startup bridge may already have overridden.
         try:
-            import yaml
-            from hermes_cli.config import load_env, remove_env_value
-            with open(config_path, encoding="utf-8") as f:
-                raw_config = yaml.safe_load(f) or {}
+            from hermes_cli.config import load_env, read_user_config_raw, remove_env_value
+            # Raw-file diagnostic: drift check against the raw file.
+            raw_config = read_user_config_raw(config_path)
             agent_cfg = raw_config.get("agent")
             cfg_max_turns = (
                 agent_cfg.get("max_turns")
@@ -1023,6 +1291,25 @@ def run_doctor(args):
         except Exception:
             pass
 
+        # Surface deprecated/legacy config keys and env vars (warn-only).
+        # Migrations may still live in config.py version steps; doctor does
+        # not auto-delete here — only tells the user the modern replacement.
+        try:
+            from hermes_cli.config import load_env as _load_env_depr
+            from hermes_cli.config import read_user_config_raw as _read_raw_depr
+
+            # Raw-file diagnostic: deprecation sweep inspects the raw file.
+            _raw_for_depr = _read_raw_depr(config_path)
+            # Prefer the on-disk .env so bridged process env (e.g. TERMINAL_CWD
+            # from terminal.cwd) does not false-positive.
+            try:
+                _env_for_depr = _load_env_depr()
+            except Exception:
+                _env_for_depr = {}
+            report_deprecated_config_and_env(_raw_for_depr, _env_for_depr)
+        except Exception:
+            pass
+
         # Validate config structure (catches malformed custom_providers, etc.)
         try:
             from hermes_cli.config import validate_config_structure
@@ -1038,6 +1325,19 @@ def run_doctor(args):
                     for hint_line in ci.hint.splitlines():
                         check_info(hint_line)
                     issues.append(ci.message)
+        except Exception:
+            pass
+
+    if not config_path.exists():
+        # No config.yaml — still surface deprecated env vars from .env.
+        try:
+            from hermes_cli.config import load_env as _load_env_depr
+
+            try:
+                _env_for_depr = _load_env_depr()
+            except Exception:
+                _env_for_depr = {}
+            report_deprecated_config_and_env({}, _env_for_depr)
         except Exception:
             pass
 
@@ -1070,12 +1370,14 @@ def run_doctor(args):
 
     try:
         from hermes_cli.auth import (
-            get_nous_auth_status,
+            get_nous_auth_status_local,
             get_codex_auth_status,
             get_minimax_oauth_auth_status,
         )
 
-        nous_status = get_nous_auth_status()
+        # Read-only display: refresh-free snapshot — doctor must never
+        # trigger an OAuth refresh as a side effect of a health check.
+        nous_status = get_nous_auth_status_local()
         if nous_status.get("logged_in"):
             check_ok("Nous Portal auth", "(logged in)")
         else:
@@ -1478,7 +1780,7 @@ def run_doctor(args):
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                     timeout=15
                 )
             except subprocess.TimeoutExpired:
@@ -1518,6 +1820,68 @@ def run_doctor(args):
                 issues,
             )
 
+    # Vercel Sandbox (if using vercel_sandbox backend)
+    if terminal_env == "vercel_sandbox":
+        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
+        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
+            check_ok("Vercel runtime", f"({runtime})")
+        else:
+            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+            _fail_and_issue(
+                "Vercel runtime unsupported",
+                f"({runtime}; use {supported})",
+                f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}",
+                issues,
+            )
+
+        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
+        if disk in {"", "0", "51200"}:
+            check_ok("Vercel disk setting", "(uses platform default)")
+        else:
+            _fail_and_issue(
+                "Vercel custom disk unsupported",
+                "(reset terminal.container_disk to 51200)",
+                "Vercel Sandbox does not support custom container_disk; use the shared default 51200",
+                issues,
+            )
+
+        if importlib.util.find_spec("vercel") is not None:
+            check_ok("vercel SDK", "(installed)")
+        else:
+            _fail_and_issue(
+                "vercel SDK not installed",
+                "(pip install 'hermes-agent[vercel]')",
+                "Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'",
+                issues,
+            )
+
+        auth_status = describe_vercel_auth()
+        if auth_status.ok:
+            check_ok("Vercel auth", f"({auth_status.label})")
+        elif auth_status.label.startswith("partial"):
+            _fail_and_issue(
+                "Vercel auth incomplete",
+                f"({auth_status.label})",
+                "Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together",
+                issues,
+            )
+        else:
+            _fail_and_issue(
+                "Vercel auth not configured",
+                f"({auth_status.label})",
+                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID",
+                issues,
+            )
+        for line in auth_status.detail_lines:
+            check_info(f"Vercel auth {line}")
+
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
+        if persistent:
+            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
+        else:
+            check_info("Vercel persistence: ephemeral filesystem")
+
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):
         check_ok("Node.js")
@@ -1525,10 +1889,36 @@ def run_doctor(args):
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
         agent_browser_ok = False
         _which_ab = shutil.which("agent-browser")
+        # `hermes acp --setup-browser` installs agent-browser into the
+        # Hermes-managed node prefix, which isn't necessarily on PATH. Mirror
+        # dep_ensure._has_hermes_agent_browser() so doctor and dep_ensure agree
+        # on what "installed" means; otherwise doctor false-negatives (#53192).
+        # Resolve with PATHEXT-aware ``shutil.which`` (not a bare is_file())
+        # so Windows picks the executable ``.cmd`` shim — the same class of
+        # miss fixed for _has_agent_browser() in #73932.
+        def _which_in(directory) -> str | None:
+            try:
+                if not directory.is_dir():
+                    return None
+                return shutil.which("agent-browser", path=str(directory))
+            except Exception:
+                return None
+
+        _managed_ab = (
+            _which_in(HERMES_HOME / "node" / "bin")
+            or _which_in(HERMES_HOME / "node")
+        )
+        _legacy_ab = _which_in(HERMES_HOME / "node_modules" / ".bin")
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
             agent_browser_ok = True
         elif _which_ab and agent_browser_runnable(_which_ab):
+            check_ok("agent-browser", "(browser automation)")
+            agent_browser_ok = True
+        elif _managed_ab and agent_browser_runnable(_managed_ab):
+            check_ok("agent-browser", "(browser automation)")
+            agent_browser_ok = True
+        elif _legacy_ab and agent_browser_runnable(_legacy_ab):
             check_ok("agent-browser", "(browser automation)")
             agent_browser_ok = True
         elif _which_ab:
@@ -1562,7 +1952,7 @@ def run_doctor(args):
                     _chromium_installed,
                     _is_camofox_mode,
                     _get_cloud_provider,
-                    _get_cdp_override,
+                    _get_cdp_override_raw,
                     _using_lightpanda_engine,
                 )
             except Exception:
@@ -1575,7 +1965,7 @@ def run_doctor(args):
                 # Lightpanda all bypass the local Chromium requirement.
                 skip_chromium_check = (
                     _is_camofox_mode()
-                    or bool(_get_cdp_override())
+                    or bool(_get_cdp_override_raw())
                     or _get_cloud_provider() is not None
                     or _using_lightpanda_engine()
                 )
@@ -1642,7 +2032,7 @@ def run_doctor(args):
                 audit_result = subprocess.run(
                     [_npm_bin, "audit", "--json", *audit_extra],
                     cwd=str(npm_dir),
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                 )
                 import json as _json
                 audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
@@ -2044,7 +2434,6 @@ def run_doctor(args):
                 [f"Install azure-identity: {sys.executable} -m pip install azure-identity"],
             )
 
-        base_url = str(model_cfg.get("base_url") or "").strip()
         entra_cfg = model_cfg.get("entra") or {}
         if not isinstance(entra_cfg, dict):
             entra_cfg = {}
@@ -2161,8 +2550,10 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        # Count missing API-key requirements only for toolsets enabled in the
+        # current CLI platform. Default-off or explicitly disabled toolsets may
+        # still show warnings above, but should not pollute the final summary.
+        api_disabled = _missing_api_key_toolsets_for_summary(unavailable)
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:
@@ -2176,7 +2567,7 @@ def run_doctor(args):
         if lock_file.exists():
             try:
                 import json
-                lock_data = json.loads(lock_file.read_text())
+                lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
                 count = len(lock_data.get("installed", {}))
                 check_ok(f"Lock file OK ({count} hub-installed skill(s))")
             except Exception:
@@ -2212,11 +2603,11 @@ def run_doctor(args):
     _section("Memory Provider")
     _active_memory_provider = ""
     try:
-        import yaml as _yaml
+        from hermes_cli.config import read_user_config_raw as _read_raw_mem
         _mem_cfg_path = HERMES_HOME / "config.yaml"
         if _mem_cfg_path.exists():
-            with open(_mem_cfg_path, encoding="utf-8") as _f:
-                _raw_cfg = _yaml.safe_load(_f) or {}
+            # Raw-file diagnostic (+ managed overlay below, unchanged).
+            _raw_cfg = _read_raw_mem(_mem_cfg_path)
             try:
                 from hermes_cli import managed_scope
                 _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)
@@ -2342,7 +2733,7 @@ def run_doctor(args):
                     if not wrapper.is_file():
                         continue
                     try:
-                        content = wrapper.read_text()
+                        content = wrapper.read_text(encoding="utf-8")
                         if "hermes -p" in content:
                             _m = _re.search(r"hermes -p (\S+)", content)
                             if _m and not profile_exists(_m.group(1)):

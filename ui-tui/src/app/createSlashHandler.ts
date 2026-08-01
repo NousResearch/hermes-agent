@@ -1,6 +1,8 @@
 import { parseSlashCommand } from '../domain/slash.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
 import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
+import { launchWidget } from '../sdk/host.js'
+import { getWidgetApp } from '../sdk/registry.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
 import { findSlashCommand } from './slash/registry.js'
@@ -41,6 +43,19 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
     if (found) {
       found.run(parsed.arg, runCtx, cmd)
+
+      return true
+    }
+
+    // Registry-first fallback: widget apps registered AFTER the static
+    // command table was built (user widgets from $HERMES_HOME/tui-widgets,
+    // /widgets-reload) dispatch straight off the live registry.
+    if (getWidgetApp(parsed.name)) {
+      const err = launchWidget(parsed.name, parsed.arg)
+
+      if (err) {
+        sys(err)
+      }
 
       return true
     }
@@ -89,10 +104,22 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         return void handler(`/${d.target}${argTail}`)
       }
 
-      if (d.type === 'skill') {
-        sys(`⚡ loading skill: ${d.name}`)
+      // A skill/bundle dispatch's `message` is the expanded skill body —
+      // model-facing scaffolding. `display` is the invocation the gateway
+      // projected; the transcript shows that instead. An ordinary send has no
+      // projection and goes through unchanged. No client-side fallback here:
+      // the TUI spawns its gateway from this same checkout, so the two can't
+      // version-skew (unlike the desktop, which can meet an older backend).
+      const sendDispatch = (display: string | undefined, message: string) => {
+        const shown = display?.trim()
 
-        return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: skill payload missing message`)
+        return shown ? send(message, true, shown) : send(message)
+      }
+
+      if (d.type === 'skill') {
+        return d.message?.trim()
+          ? sendDispatch(d.display, d.message)
+          : sys(`/${parsed.name}: skill payload missing message`)
       }
 
       if (d.type === 'send') {
@@ -100,7 +127,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           sys(d.notice)
         }
 
-        return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
+        return d.message?.trim() ? sendDispatch(d.display, d.message) : sys(`/${parsed.name}: empty message`)
       }
 
       if (d.type === 'prefill') {

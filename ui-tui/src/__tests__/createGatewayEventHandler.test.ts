@@ -94,6 +94,62 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual([])
   })
 
+  it('opens a billing confirm dialog routing Nous to /topup', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: {
+        billing: {
+          billing_url: null,
+          is_nous: true,
+          message: 'out of credits',
+          model: 'm',
+          provider: 'nous',
+          provider_label: 'Nous Portal'
+        },
+        text: 'Billing or credits exhausted: ...'
+      },
+      type: 'message.complete'
+    } as any)
+
+    const { confirm } = getOverlayState()
+    expect(confirm?.title).toContain('Nous')
+    expect(confirm?.confirmLabel).toBe('Top up')
+
+    confirm!.onConfirm()
+    expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('/topup')
+  })
+
+  it('deep-links a third-party provider billing page from the confirm dialog', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+    openExternalUrlMock.mockClear()
+
+    onEvent({
+      payload: {
+        billing: {
+          billing_url: 'https://openrouter.ai/settings/credits',
+          is_nous: false,
+          message: 'out of credits',
+          model: 'm',
+          provider: 'openrouter',
+          provider_label: 'OpenRouter'
+        },
+        text: 'Billing or credits exhausted: ...'
+      },
+      type: 'message.complete'
+    } as any)
+
+    const { confirm } = getOverlayState()
+    expect(confirm?.confirmLabel).toBe('Open billing page')
+
+    confirm!.onConfirm()
+    expect(openExternalUrlMock).toHaveBeenCalledWith('https://openrouter.ai/settings/credits')
+  })
+
   it('archives completed todos into transcript flow at end of turn', () => {
     const appended: Msg[] = []
     const todos = [{ content: 'Serve tiny latte', id: 'serve', status: 'completed' }]
@@ -410,6 +466,55 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('renders moa.reference as a labelled thinking-style segment', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { count: 2, index: 1, label: 'openrouter:openai/gpt-5.5', text: 'Paris.' },
+      type: 'moa.reference'
+    } as any)
+    onEvent({
+      payload: { count: 2, index: 2, label: 'openrouter:anthropic/claude-opus-4.8', text: 'Paris.' },
+      type: 'moa.reference'
+    } as any)
+
+    const segments = getTurnState().streamSegments
+    const refBlocks = segments.filter(m => typeof m.thinking === 'string' && m.thinking.includes('Reference'))
+    expect(refBlocks).toHaveLength(2)
+    expect(refBlocks[0]?.thinking).toContain('Reference 1/2 — openrouter:openai/gpt-5.5')
+    expect(refBlocks[0]?.thinking).toContain('Paris.')
+    expect(refBlocks[1]?.thinking).toContain('Reference 2/2 — openrouter:anthropic/claude-opus-4.8')
+  })
+
+  it('renders moa.reference even when showReasoning is off (it is the MoA process, not reasoning)', () => {
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: { label: 'openrouter:openai/gpt-5.5', text: 'Four.' },
+      type: 'moa.reference'
+    } as any)
+
+    const segments = getTurnState().streamSegments
+    const refBlocks = segments.filter(m => typeof m.thinking === 'string' && m.thinking.includes('Reference'))
+    expect(refBlocks).toHaveLength(1)
+    expect(refBlocks[0]?.thinking).toContain('openrouter:openai/gpt-5.5')
+  })
+
+  it('moa.aggregating does not append a transcript segment', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    const before = getTurnState().streamSegments.length
+    onEvent({ payload: { aggregator: 'openrouter:anthropic/claude-opus-4.8' }, type: 'moa.aggregating' } as any)
+    expect(getTurnState().streamSegments.length).toBe(before)
+  })
+
   it('uses message.complete reasoning when no streamed reasoning ref', () => {
     const appended: Msg[] = []
     const fromServer = 'recovered from last_reasoning'
@@ -674,6 +779,171 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
+  it('picks the polarity-matching paired palette from gateway.ready skins', async () => {
+    const appended: Msg[] = []
+
+    const skin = {
+      colors: { banner_title: '#00FF88', banner_text: '#FFF8DC' },
+      light_colors: { banner_title: '#8B0000', banner_text: '#22201C' }
+    }
+
+    // Dark terminal (clean env): the dark-authored `colors` block wins.
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '')
+    createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
+    expect(getUiState().theme.color.primary).toBe('#00FF88')
+
+    // Light terminal: the hand-tuned light_colors block wins over adaptation.
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#ffffff')
+    createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
+    expect(getUiState().theme.color.primary).toBe('#8B0000')
+    vi.unstubAllEnvs()
+  })
+
+  it('a skin that owns the background paints BOTH terminal defaults (OSC 11 bg + OSC 10 fg)', () => {
+    // Default-fg tokens (markdown body, borders) render with the TERMINAL's
+    // default foreground. A dark skin on a light terminal repaints the
+    // backdrop black via OSC-11 — without the OSC-10 pair, those tokens stay
+    // the host's near-black: invisible. The invariant is fg == theme text.
+    const writes: string[] = []
+
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => {
+      writes.push(String(chunk))
+
+      return true
+    })
+
+    const tty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
+
+    try {
+      const handle = createGatewayEventHandler(buildCtx([]))
+      handle({ payload: { colors: { background: '#000000', ui_text: '#ff9f0a' } }, type: 'skin.changed' } as any)
+
+      const joined = writes.join('')
+      expect(joined).toContain('\x1b]11;#000000\x07')
+      expect(joined).toContain(`\x1b]10;${getUiState().theme.color.text}\x07`)
+
+      // Dropping the background releases BOTH defaults back to the terminal.
+      writes.length = 0
+      handle({ payload: { colors: { ui_text: '#ff9f0a' } }, type: 'skin.changed' } as any)
+      expect(writes.join('')).toContain('\x1b]111\x07')
+      expect(writes.join('')).toContain('\x1b]110\x07')
+    } finally {
+      write.mockRestore()
+
+      if (tty) {
+        Object.defineProperty(process.stdout, 'isTTY', tty)
+      }
+    }
+  })
+
+  it('infers polarity from the OSC-10 foreground only when the answer is decisive', async () => {
+    const { polarityBackgroundFromForeground } = await import('../app/createGatewayEventHandler.js')
+
+    // Bright foreground = dark theme; dark foreground = light theme.
+    expect(polarityBackgroundFromForeground('#cccccc')).toBe('#1e1e1e')
+    expect(polarityBackgroundFromForeground('#333333')).toBe('#ffffff')
+
+    // Unset-default fingerprints and ambiguous mid-grays commit nothing.
+    expect(polarityBackgroundFromForeground('#000000')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('#ffffff')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('#808080')).toBeUndefined()
+    expect(polarityBackgroundFromForeground('not-a-color')).toBeUndefined()
+  })
+
+  it('claims wake-word ownership when the gateway becomes ready', () => {
+    const ctx = buildCtx([])
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('wake.start', { surface: 'tui' })
+  })
+
+  it('ends voice mode on a stop-phrase transcript without submitting a turn', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { stop_phrase: true, text: 'stop' }, type: 'voice.transcript' } as any)
+
+    expect(ctx.voice.setVoiceEnabled).toHaveBeenCalledWith(false)
+    expect(ctx.voice.setRecording).toHaveBeenCalledWith(false)
+    expect(ctx.voice.setProcessing).toHaveBeenCalledWith(false)
+    expect(ctx.system.sys).toHaveBeenCalledWith('voice: stop phrase — voice chat ended')
+    // The stop phrase is user intent to END the chat — never a turn.
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+  })
+
+  it('ends voice mode on a typed stop phrase consumed server-side', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { stop_phrase: true, typed: true }, type: 'voice.transcript' } as any)
+
+    expect(ctx.voice.setVoiceEnabled).toHaveBeenCalledWith(false)
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+  })
+
+  it('still submits ordinary voice transcripts as turns', async () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'stop the docker container' }, type: 'voice.transcript' } as any)
+
+    await vi.waitFor(() => expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('stop the docker container'))
+    expect(ctx.voice.setVoiceEnabled).not.toHaveBeenCalled()
+  })
+
+  it('opens a fresh session before starting voice after wake detection', async () => {
+    const ctx = buildCtx([])
+    ctx.session.newSession = vi.fn(async () => patchUiState({ sid: 'wake-session' }))
+    patchUiState({ sid: 'old-session' })
+
+    createGatewayEventHandler(ctx)({
+      payload: { phrase: 'hey hermes', start_new_session: true },
+      type: 'wake.detected'
+    } as any)
+
+    await vi.waitFor(() =>
+      expect(ctx.gateway.rpc).toHaveBeenCalledWith('voice.record', {
+        action: 'start',
+        session_id: 'wake-session'
+      })
+    )
+    expect(ctx.session.newSession).toHaveBeenCalledOnce()
+    expect(ctx.voice.setVoiceEnabled).toHaveBeenCalledWith(true)
+  })
+
+  it('keeps the current session when wake detection disables session creation', async () => {
+    const ctx = buildCtx([])
+    patchUiState({ sid: 'current-session' })
+
+    createGatewayEventHandler(ctx)({
+      payload: { phrase: 'hey hermes', start_new_session: false },
+      type: 'wake.detected'
+    } as any)
+
+    await vi.waitFor(() =>
+      expect(ctx.gateway.rpc).toHaveBeenCalledWith('voice.record', {
+        action: 'start',
+        session_id: 'current-session'
+      })
+    )
+    expect(ctx.session.newSession).not.toHaveBeenCalled()
+  })
+
+  it('rearms wake detection when no session is available', async () => {
+    const ctx = buildCtx([])
+    patchUiState({ sid: '' })
+
+    createGatewayEventHandler(ctx)({
+      payload: { start_new_session: false },
+      type: 'wake.detected'
+    } as any)
+
+    await vi.waitFor(() => expect(ctx.gateway.rpc).toHaveBeenCalledWith('wake.resume', {}))
+    expect(ctx.gateway.rpc).not.toHaveBeenCalledWith('voice.record', expect.anything())
+  })
+
   it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
@@ -898,6 +1168,23 @@ describe('createGatewayEventHandler', () => {
       command: 'curl suspicious | bash',
       description: 'content-security warning'
     })
+  })
+
+  it('preserves Smart DENY and explicit approval choices on the overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        allow_permanent: true,
+        choices: ['once', 'deny'],
+        command: 'rm -rf /tmp/x',
+        description: 'smart deny override',
+        smart_denied: true
+      },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'], smartDenied: true })
   })
 
   it('still surfaces terminal turn failures as errors', () => {
@@ -1258,6 +1545,24 @@ describe('createGatewayEventHandler', () => {
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
   })
 
+  it('clears only the matching sensitive prompt when the gateway expires it', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    patchOverlayState({
+      secret: { envVar: 'NEW_KEY', prompt: 'Enter new key', requestId: 'secret-new' },
+      sudo: { requestId: 'sudo-1' }
+    })
+
+    onEvent({ payload: { request_id: 'secret-old' }, type: 'secret.expire' } as any)
+    expect(getOverlayState().secret?.requestId).toBe('secret-new')
+
+    onEvent({ payload: { request_id: 'secret-new' }, type: 'secret.expire' } as any)
+    expect(getOverlayState().secret).toBeNull()
+
+    onEvent({ payload: { request_id: 'sudo-1' }, type: 'sudo.expire' } as any)
+    expect(getOverlayState().sudo).toBeNull()
+  })
+
   // ── Credits notice (Strategy B) ──────────────────────────────────────
   describe('credits notice', () => {
     it('shows a notice immediately when idle (no turn in flight)', () => {
@@ -1597,6 +1902,83 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('message.interim', () => {
+    it('finalizes an interim segment without settling the turn', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'streaming text' }, type: 'message.delta' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'streaming text' }, type: 'message.interim' } as any)
+
+      // Turn is still active — busy stays true, no completion messages appended
+      expect(getUiState().busy).toBe(true)
+      expect(appended).toHaveLength(0)
+    })
+
+    it('keeps identical interim and terminal replies as separate messages without response_previewed', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'same reply' }, type: 'message.interim' } as any)
+      onEvent({ payload: { text: 'same reply' }, type: 'message.complete' } as any)
+
+      const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
+      expect(assistantMsgs).toHaveLength(2)
+    })
+
+    it('settles identical terminal reply onto interim when response_previewed', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'same reply' }, type: 'message.interim' } as any)
+      onEvent({ payload: { response_previewed: true, text: 'same reply' }, type: 'message.complete' } as any)
+
+      // With response_previewed, the terminal reply is the same model
+      // response that was published provisionally — settle onto the
+      // interim instead of duplicating. (#65919 review)
+      const assistantMsgs = appended.filter(m => m.role === 'assistant' && m.text)
+      expect(assistantMsgs).toHaveLength(1)
+      expect(assistantMsgs[0]?.text).toBe('same reply')
+    })
+
+    it('deduplicates flushed chunks within the terminal message after an interim boundary', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      // Interim seals the first segment
+      onEvent({ payload: { already_streamed: true, text: 'interim answer' }, type: 'message.interim' } as any)
+      // Post-interim deltas that match the final text — these get deduped
+      onEvent({ payload: { text: 'final answer' }, type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+      const texts = appended.filter(m => m.role === 'assistant' && m.text).map(m => m.text)
+      // interim + final, no duplication of the final
+      expect(texts).toContain('interim answer')
+      expect(texts.filter(t => t === 'final answer')).toHaveLength(1)
+    })
+
+    it('ignores malformed message.interim payload', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      // No payload at all
+      onEvent({ type: 'message.interim' } as any)
+      // Empty text
+      onEvent({ payload: { text: '' }, type: 'message.interim' } as any)
+      // Undefined text
+      onEvent({ payload: { text: undefined }, type: 'message.interim' } as any)
+
+      // Turn continues without finalizing or throwing
+      expect(getUiState().busy).toBe(true)
+      expect(appended).toHaveLength(0)
     })
   })
 })

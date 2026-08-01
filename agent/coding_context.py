@@ -55,10 +55,12 @@ import json
 import logging
 import os
 import re
-import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+from hermes_cli._subprocess_compat import bounded_git_probe
 
 logger = logging.getLogger("hermes.coding_context")
 
@@ -335,9 +337,9 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     """Return the normalized ``agent.coding_context`` mode (auto/focus/on/off)."""
     if config is None:
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
 
-            config = load_config()
+            config = load_config_readonly()
         except Exception:
             config = {}
     raw = ((config or {}).get("agent", {}) or {}).get("coding_context", "auto")
@@ -349,6 +351,29 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     if mode in {"off", "false", "no", "0", "never"}:
         return "off"
     return "auto"
+
+
+def _coding_instructions(config: Optional[dict[str, Any]]) -> str:
+    """Standing operator instructions for the coding posture (config).
+
+    ``agent.coding_instructions`` — a string or list of strings appended to the
+    coding brief as an extra stable system block, so a user can pin project-wide
+    coding-workflow rules (e.g. "for UI work don't run tsc/lint until I approve;
+    clean the diff before committing") without editing the shipped brief.
+    Cache-safe: resolved once per session into the stable system-prompt tier,
+    like the rest of the posture.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+    raw = ((config or {}).get("agent", {}) or {}).get("coding_instructions", "")
+    if isinstance(raw, (list, tuple)):
+        return "\n".join(str(item).strip() for item in raw if str(item).strip())
+    return str(raw or "").strip()
 
 
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
@@ -387,10 +412,18 @@ def _marker_root(cwd: Path) -> Optional[Path]:
     """
     current = cwd.resolve()
     home = _home()
+    # Shared world-writable temp roots are never project roots: a stray
+    # manifest in /tmp (left by any process) must not flip every session
+    # whose cwd lives under the temp dir into the coding posture. Same
+    # reasoning as the $HOME skip below.
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except Exception:
+        temp_root = None
     for depth, parent in enumerate([current, *current.parents]):
         if depth > 6:
             break
-        if parent == home:
+        if parent == home or (temp_root is not None and parent == temp_root):
             continue
         for marker in _PROJECT_MARKERS:
             if (parent / marker).exists():
@@ -457,6 +490,9 @@ class RuntimeMode:
     # only to steer edit-format guidance toward the model's family — see
     # ``_edit_format_line``. Fixed for the session, so cache-safe.
     model: Optional[str] = None
+    # Standing operator instructions (``agent.coding_instructions``), appended
+    # as an extra stable system block. Empty unless the user configures it.
+    instructions: str = ""
 
     @property
     def kind(self) -> str:
@@ -484,26 +520,46 @@ class RuntimeMode:
             return None
         return [self.profile.toolset, *_enabled_mcp_servers(config)]
 
-    def system_blocks(self) -> list[str]:
-        """Stable system-prompt blocks for this posture (brief + workspace).
+    def system_prompt_parts(self) -> tuple[list[str], list[str], list[str]]:
+        """Return prefix, workspace, and trailing posture blocks separately.
 
         The operating brief carries a model-family edit-format nudge appended
         to it (one cached string, not a separate block) so the model is steered
         toward the `patch` mode it handles best — see ``_edit_format_line``.
+
+        The three lists preserve the historical flat prompt order: the brief,
+        the live workspace snapshot, then configured operator instructions.
+        Prompt assembly can therefore put a cache boundary before the snapshot
+        without changing the persisted system-prompt bytes.
         """
         if not self.is_coding:
-            return []
-        blocks: list[str] = []
+            return [], [], []
+        prefix: list[str] = []
+        workspace_parts: list[str] = []
+        trailing: list[str] = []
         if self.profile.guidance:
             brief = self.profile.guidance
             edit_line = _edit_format_line(self.model)
             if edit_line:
                 brief = f"{brief}\n{edit_line}"
-            blocks.append(brief)
+            prefix.append(brief)
         workspace = build_coding_workspace_block(self.cwd)
         if workspace:
-            blocks.append(workspace)
-        return blocks
+            workspace_parts.append(workspace)
+        # Operator instructions ride their own block so the brief (block 0) stays
+        # byte-stable and cache-keyed independently of user config.
+        if self.instructions:
+            trailing.append(f"Operator instructions (from config):\n{self.instructions}")
+        return prefix, workspace_parts, trailing
+
+    def system_blocks(self) -> list[str]:
+        """Return posture blocks in their historical display order.
+
+        ``system_prompt_parts`` is the cache-aware API. This compatibility
+        helper retains the public flat list for callers outside prompt assembly.
+        """
+        prefix, workspace, trailing = self.system_prompt_parts()
+        return [*prefix, *workspace, *trailing]
 
     def compact_skill_categories(self) -> frozenset[str]:
         """Skill categories to demote to names-only in the prompt's skill index.
@@ -555,6 +611,7 @@ def resolve_runtime_mode(
         cwd=resolved_cwd,
         config_mode=mode,
         model=model,
+        instructions=_coding_instructions(config),
     )
 
 
@@ -603,6 +660,19 @@ def coding_system_blocks(
     ).system_blocks()
 
 
+def coding_system_prompt_parts(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    config: Optional[dict[str, Any]] = None,
+    model: Optional[str] = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Return coding prefix, workspace snapshot, and trailing guidance."""
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config, model=model
+    ).system_prompt_parts()
+
+
 def coding_compact_skill_categories(
     *,
     platform: Optional[str] = None,
@@ -647,16 +717,14 @@ def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(cwd), *args],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+    """``git -C <cwd> <args>`` → stripped stdout, or ``""`` on any failure.
+
+    Uses the shared :func:`bounded_git_probe` so the post-kill cleanup is bounded
+    on Windows — a plain ``subprocess.run(timeout=...)`` here deadlocked the agent
+    turn inside ``build_coding_workspace_block`` when a killed git left a suspended
+    descendant holding the pipe handles (issue #66037).
+    """
+    return bounded_git_probe(["git", "-C", str(cwd), *args], timeout=_GIT_TIMEOUT)
 
 
 def _parse_status(porcelain: str) -> tuple[dict[str, str], dict[str, int]]:

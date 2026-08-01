@@ -23,8 +23,118 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import urllib.parse
 
 from hermes_cli.config import clear_model_endpoint_credentials
+from hermes_cli.providers import custom_provider_slug
+
+
+# AWS cross-region inference profile prefixes. Any geo-prefixed profile only
+# routes from endpoints in its own geography, so the Bedrock picker must not
+# offer (e.g.) us.* profiles to an eu-central-2 endpoint — selecting one
+# produces a config AWS rejects regardless of credentials (#28156).
+# global.* routes from everywhere. Full set per the AWS cross-region
+# inference docs.
+BEDROCK_GEO_PREFIXES = (
+    "us.", "eu.", "ap.", "apac.", "jp.", "ca.", "sa.", "me.", "af.",
+)
+
+
+def bedrock_region_geo_prefix(region_name: str) -> str:
+    """Map an AWS region name to its inference-profile geo prefix ('' = unknown)."""
+    r = (region_name or "").lower()
+    for geo, region_prefixes in (
+        ("us.", ("us-", "us_gov")),
+        ("eu.", ("eu-",)),
+        ("ap.", ("ap-",)),
+        ("ca.", ("ca-",)),
+        ("sa.", ("sa-",)),
+        ("me.", ("me-",)),
+        ("af.", ("af-",)),
+    ):
+        if r.startswith(region_prefixes):
+            return geo
+    return ""
+
+
+def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
+    """True when *model_id* can be invoked from *region_name*'s endpoint.
+
+    Bare foundation-model ids and ``global.*`` profiles route from anywhere.
+    Geo-prefixed inference profiles (``us.*``, ``eu.*``, ...) only route from
+    endpoints in their own geography. Unknown region shapes hide nothing.
+    """
+    mid = (model_id or "").lower()
+    matched_geo = next((p for p in BEDROCK_GEO_PREFIXES if mid.startswith(p)), None)
+    if matched_geo is None or mid.startswith("global."):
+        return True
+    geo = bedrock_region_geo_prefix(region_name)
+    if not geo:
+        return True
+    if geo == "ap.":
+        # Asia-Pacific regions can carry ap./apac./jp. profile spellings.
+        return matched_geo in ("ap.", "apac.", "jp.")
+    return matched_geo == geo
+
+
+def _existing_api_key_for_model_flow(provider_id: str, pconfig) -> tuple[str, str]:
+    """Resolve an existing wizard credential without changing its storage."""
+    from hermes_cli.auth import _resolve_api_key_provider_secret
+
+    return _resolve_api_key_provider_secret(provider_id, pconfig)
+
+
+def _prune_replaced_custom_model_config_credentials(
+    base_url: str,
+    *,
+    provider_name: str = "",
+) -> None:
+    """Drop stale ``model_config`` credentials from inactive custom pools.
+
+    ``model_config`` means "the credential currently stored under
+    ``model.api_key``". After an explicit custom-endpoint switch, any old
+    custom pool still carrying that source points at the previous endpoint and
+    can be selected before the freshly saved config is tried.
+    """
+    try:
+        from agent.credential_pool import (
+            CUSTOM_POOL_PREFIX,
+            get_custom_provider_pool_key,
+        )
+        from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+        active_pool_key = get_custom_provider_pool_key(
+            base_url,
+            provider_name=provider_name or None,
+        )
+        if not active_pool_key:
+            return
+        pools = read_credential_pool(None)
+        if not isinstance(pools, dict):
+            return
+        for pool_key, entries in pools.items():
+            if (
+                not isinstance(pool_key, str)
+                or not pool_key.startswith(CUSTOM_POOL_PREFIX)
+                or pool_key == active_pool_key
+                or not isinstance(entries, list)
+            ):
+                continue
+            retained = []
+            removed_ids = []
+            changed = False
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("source") == "model_config":
+                    changed = True
+                    entry_id = entry.get("id")
+                    if entry_id:
+                        removed_ids.append(str(entry_id))
+                    continue
+                retained.append(entry)
+            if changed:
+                write_credential_pool(pool_key, retained, removed_ids=removed_ids)
+    except Exception:
+        return
 
 
 def _prompt_auth_credentials_choice(title: str) -> str:
@@ -75,8 +185,6 @@ def _model_flow_openrouter(config, current_model=""):
         _save_model_choice,
         deactivate_provider,
     )
-    from hermes_cli.config import get_env_value
-
     # Route through _prompt_api_key so users can replace a stale/broken key
     # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand. The
     # previous bypass-when-key-exists branch left no way to recover from a
@@ -88,11 +196,16 @@ def _model_flow_openrouter(config, current_model=""):
         auth_type="api_key",
         api_key_env_vars=("OPENROUTER_API_KEY",),
     )
-    existing_key = get_env_value("OPENROUTER_API_KEY") or ""
+    existing_key, existing_source = _existing_api_key_for_model_flow("openrouter", pconfig)
     if not existing_key:
         print("Get one at: https://openrouter.ai/keys")
         print()
-    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="openrouter")
+    _resolved, abort = _prompt_api_key(
+        pconfig,
+        existing_key,
+        provider_id="openrouter",
+        existing_source=existing_source,
+    )
     if abort:
         return
 
@@ -141,6 +254,60 @@ def _print_moa_preset(name: str, preset: dict) -> None:
         print(f"    {idx}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
     print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+
+
+def _model_flow_ai_gateway(config, current_model=""):
+    """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
+    from hermes_constants import AI_GATEWAY_BASE_URL
+    from hermes_cli.main import _prompt_api_key
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value
+
+    # Route through _prompt_api_key so users can replace a stale/broken key
+    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand.
+    pconfig = PROVIDER_REGISTRY["ai-gateway"]
+    existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
+    if not existing_key:
+        print(
+            "Create API key here: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway&title=AI+Gateway"
+        )
+        print("Add a payment method to get $5 in free credits.")
+        print()
+    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="ai-gateway")
+    if abort:
+        return
+
+    from hermes_cli.models import ai_gateway_model_ids, get_pricing_for_provider
+
+    models_list = ai_gateway_model_ids(force_refresh=True)
+    pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
+
+    selected = _prompt_model_selection(
+        models_list, current_model=current_model, pricing=pricing
+    )
+    if selected:
+        _save_model_choice(selected)
+
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "ai-gateway"
+        model["base_url"] = AI_GATEWAY_BASE_URL
+        model["api_mode"] = "chat_completions"
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via Vercel AI Gateway)")
+    else:
+        print("No change.")
 
 
 def _model_flow_moa(config, current_model=""):
@@ -567,12 +734,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
-                # Forward CLI flags from ``hermes model --manual-paste``
-                # / ``--no-browser`` / ``--timeout`` into the loopback
-                # login. Without this, browser-only remotes (#26923)
-                # can't reach the manual-paste path via ``hermes model``.
                 mock_args = argparse.Namespace(
-                    manual_paste=bool(getattr(args, "manual_paste", False)),
                     no_browser=bool(getattr(args, "no_browser", False)),
                     timeout=getattr(args, "timeout", None),
                 )
@@ -594,7 +756,6 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         print()
         try:
             mock_args = argparse.Namespace(
-                manual_paste=bool(getattr(args, "manual_paste", False)),
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None),
             )
@@ -738,7 +899,13 @@ def _model_flow_custom(config):
     """
     from hermes_cli.main import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import get_env_value, load_config, save_config
+    from hermes_cli.config import (
+        custom_endpoint_key_env,
+        get_env_value,
+        load_config,
+        save_config,
+        save_env_value,
+    )
     from hermes_cli.secret_prompt import masked_secret_prompt
 
     current_url = get_env_value("OPENAI_BASE_URL") or ""
@@ -784,8 +951,8 @@ def _model_flow_custom(config):
     )
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
-        print(f"  Hint: Did you mean to add /v1 at the end?")
-        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print("  Hint: Did you mean to add /v1 at the end?")
+        print("  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
         print(f"  e.g. {effective_url.rstrip('/')}/v1")
         try:
             _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
@@ -893,6 +1060,18 @@ def _model_flow_custom(config):
             print(f"Invalid context length: {context_length_str} — will auto-detect.")
             context_length = None
 
+    # The key goes to .env and config.yaml only references it (#69449). Keyed
+    # on host:port so two servers on one machine keep separate credentials.
+    custom_key_env = ""
+    if effective_key:
+        _parsed = urllib.parse.urlparse(effective_url)
+        _identity = _parsed.hostname or ""
+        if _parsed.port:
+            _identity = f"{_identity}_{_parsed.port}"
+        custom_key_env = custom_endpoint_key_env(_identity)
+        save_env_value(custom_key_env, effective_key)
+        print(f"  API key saved to .env as {custom_key_env}")
+
     if model_name:
         _save_model_choice(model_name)
 
@@ -904,8 +1083,8 @@ def _model_flow_custom(config):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = effective_url
-        if effective_key:
-            model["api_key"] = effective_key
+        if custom_key_env:
+            model["api_key"] = f"${{{custom_key_env}}}"
         if api_mode:
             model["api_mode"] = api_mode
         else:
@@ -930,8 +1109,8 @@ def _model_flow_custom(config):
             _caller_model = {"default": _caller_model} if _caller_model else {}
         _caller_model["provider"] = "custom"
         _caller_model["base_url"] = effective_url
-        if effective_key:
-            _caller_model["api_key"] = effective_key
+        if custom_key_env:
+            _caller_model["api_key"] = f"${{{custom_key_env}}}"
         if api_mode:
             _caller_model["api_mode"] = api_mode
         else:
@@ -947,7 +1126,13 @@ def _model_flow_custom(config):
         context_length=context_length,
         name=display_name,
         api_mode=api_mode,
+        key_env=custom_key_env,
     )
+    _prune_replaced_custom_model_config_credentials(
+        effective_url,
+        provider_name=display_name,
+    )
+
 
 def _model_flow_azure_foundry(config, current_model=""):
     """Azure Foundry provider: configure endpoint, auth mode, API mode, and model.
@@ -1027,7 +1212,7 @@ def _model_flow_azure_foundry(config, current_model=""):
         )
         print(f"  Current API mode:  {_lbl}")
     if current_auth_mode == "entra_id":
-        print(f"  Current auth mode: Microsoft Entra ID (keyless)")
+        print("  Current auth mode: Microsoft Entra ID (keyless)")
     elif current_api_key:
         print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
     print()
@@ -1452,7 +1637,7 @@ def _model_flow_named_custom(config, provider_info):
         model = {"default": model} if model else {}
         cfg["model"] = model
     if provider_key:
-        model["provider"] = provider_key
+        model["provider"] = custom_provider_slug(name, provider_key)
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:
@@ -1851,18 +2036,16 @@ def _model_flow_kimi(config, current_model=""):
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
     # Step 1: Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -1937,17 +2120,15 @@ def _model_flow_stepfun(config, current_model=""):
 
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -2046,18 +2227,28 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     from hermes_cli.config import (
         load_config,
         save_config,
-        get_env_value,
         save_env_value,
     )
     from hermes_cli.models import _PROVIDER_MODELS
 
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
-    # Prompt for API key
-    existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
+    # Check env var and credential pool (keys added via `hermes auth`)
+    from hermes_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
+    bedrock_pconfig = ProviderConfig(
+        id="bedrock",
+        name="Bedrock",
+        auth_type="api_key",
+        api_key_env_vars=("AWS_BEARER_TOKEN_BEDROCK",),
+    )
+    existing_key, existing_source = _resolve_api_key_provider_secret(
+        "bedrock", bedrock_pconfig
+    )
     if existing_key:
         from hermes_cli.env_loader import format_secret_source_suffix
-        source_suffix = format_secret_source_suffix("AWS_BEARER_TOKEN_BEDROCK")
+        source_suffix = format_secret_source_suffix(
+            existing_source or "AWS_BEARER_TOKEN_BEDROCK"
+        )
         print(f"  Bedrock API Key: {existing_key[:12]}... ✓{source_suffix}")
     else:
         print(f"  Endpoint: {mantle_base_url}")
@@ -2213,6 +2404,8 @@ def _model_flow_bedrock(config, current_model=""):
             "global.twelvelabs.",
         )
         _EXCLUDE_SUBSTRINGS = ("safeguard", "voxtral", "palmyra-vision")
+
+
         filtered = []
         for m in live_models:
             mid = m["id"]
@@ -2220,44 +2413,59 @@ def _model_flow_bedrock(config, current_model=""):
                 continue
             if any(s in mid.lower() for s in _EXCLUDE_SUBSTRINGS):
                 continue
+            if not bedrock_model_routable_from_region(mid, region):
+                continue
             filtered.append(m)
 
-        # Deduplicate: prefer inference profiles (us.*, global.*) over bare
-        # foundation model IDs.
+        # Deduplicate: prefer inference profiles (geo-prefixed or global.*)
+        # over bare foundation model IDs.
+        _PROFILE_PREFIXES = BEDROCK_GEO_PREFIXES + ("global.",)
         profile_base_ids = set()
         for m in filtered:
             mid = m["id"]
-            if mid.startswith(("us.", "global.")):
-                base = mid.split(".", 1)[1] if "." in mid[3:] else mid
-                profile_base_ids.add(base)
+            _pp = next((p for p in _PROFILE_PREFIXES if mid.startswith(p)), None)
+            if _pp:
+                profile_base_ids.add(mid[len(_pp):])
 
         deduped = []
         for m in filtered:
             mid = m["id"]
-            if not mid.startswith(("us.", "global.")) and mid in profile_base_ids:
+            if (
+                not mid.startswith(_PROFILE_PREFIXES)
+                and mid in profile_base_ids
+            ):
                 continue
             deduped.append(m)
 
-        _RECOMMENDED = [
-            "us.anthropic.claude-sonnet-4-6",
-            "us.anthropic.claude-opus-4-6",
-            "us.anthropic.claude-haiku-4-5",
-            "us.amazon.nova-pro",
-            "us.amazon.nova-lite",
-            "us.amazon.nova-micro",
+        # Recommended models, matched geo-agnostically so an EU (eu.*) or
+        # APAC (apac.*) picker pins its own region's profile of the same
+        # model rather than a us.* one it can't route to (#28156).
+        _RECOMMENDED_BASES = [
+            "anthropic.claude-sonnet-4-6",
+            "anthropic.claude-opus-4-6",
+            "anthropic.claude-haiku-4-5",
+            "amazon.nova-pro",
+            "amazon.nova-lite",
+            "amazon.nova-micro",
             "deepseek.v3",
-            "us.meta.llama4-maverick",
-            "us.meta.llama4-scout",
+            "meta.llama4-maverick",
+            "meta.llama4-scout",
         ]
+
+        def _base_id(mid: str) -> str:
+            _pp = next((p for p in _PROFILE_PREFIXES if mid.startswith(p)), None)
+            return mid[len(_pp):] if _pp else mid
 
         def _sort_key(m):
             mid = m["id"]
-            for i, rec in enumerate(_RECOMMENDED):
-                if mid.startswith(rec):
-                    return (0, i, mid)
+            base = _base_id(mid)
+            for i, rec in enumerate(_RECOMMENDED_BASES):
+                if base.startswith(rec):
+                    # In-region geo profile beats global.* for the same model
+                    return (0, i, 0 if not mid.startswith("global.") else 1, mid)
             if mid.startswith("global."):
-                return (1, 0, mid)
-            return (2, 0, mid)
+                return (1, 0, 0, mid)
+            return (2, 0, 0, mid)
 
         deduped.sort(key=_sort_key)
         model_list = [m["id"] for m in deduped]
@@ -2313,6 +2521,110 @@ def _model_flow_bedrock(config, current_model=""):
         deactivate_provider()
 
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
+    else:
+        print("  No change.")
+
+
+def _model_flow_vertex(config, current_model=""):
+    """Google Vertex AI provider: Gemini via the OpenAI-compatible endpoint.
+
+    Auth is OAuth2 — short-lived tokens minted from a service-account JSON or
+    Application Default Credentials (ADC). No static API key. The credential
+    *path* lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS);
+    project ID and region are non-secret and saved to config.yaml under vertex:.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config, get_env_value
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    # 1. Credential source detection (fast, no network / no google-auth import).
+    sa_path = (
+        get_env_value("VERTEX_CREDENTIALS_PATH")
+        or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+        or ""
+    ).strip()
+    if sa_path:
+        print(f"  Vertex credentials: service account JSON ({sa_path}) ✓")
+    else:
+        print("  Vertex credentials: Application Default Credentials (ADC)")
+        print("    Vertex uses OAuth2, not a static API key. Either:")
+        print("      • run 'gcloud auth application-default login', or")
+        print("      • set VERTEX_CREDENTIALS_PATH in ~/.hermes/.env to a service account JSON")
+    print()
+
+    cfg = load_config()
+    vertex_cfg = cfg.get("vertex")
+    if not isinstance(vertex_cfg, dict):
+        vertex_cfg = {}
+
+    # 2. Project ID (optional — falls back to the project embedded in creds).
+    current_project = str(vertex_cfg.get("project_id") or "").strip()
+    try:
+        project_input = input(
+            f"  GCP project ID [{current_project or 'from credentials'}]: "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    project_id = project_input or current_project
+
+    # 3. Region (default global — required for the Gemini 3.x previews).
+    current_region = str(vertex_cfg.get("region") or "global").strip() or "global"
+    try:
+        region_input = input(f"  Vertex region [{current_region}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    region = region_input or current_region
+
+    # 4. Model selection (curated list — Vertex has no /models listing route).
+    model_list = _PROVIDER_MODELS.get("vertex", []) or [
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+    ]
+    base_url_preview = (
+        "https://aiplatform.googleapis.com/v1beta1/projects/<project>/"
+        f"locations/{region}/endpoints/openapi"
+        if region == "global"
+        else f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/<project>/"
+        f"locations/{region}/endpoints/openapi"
+    )
+    selected = _prompt_model_selection(
+        model_list,
+        current_model=current_model,
+        confirm_provider="vertex",
+        confirm_base_url=base_url_preview,
+    )
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "vertex"
+        # base_url is computed at runtime from project+region; do not pin it.
+        model.pop("base_url", None)
+        model.pop("api_mode", None)  # chat_completions is the profile default
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
+
+        vcfg = cfg.get("vertex")
+        if not isinstance(vcfg, dict):
+            vcfg = {}
+        vcfg["project_id"] = project_id
+        vcfg["region"] = region
+        cfg["vertex"] = vcfg
+
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
     else:
         print("  No change.")
 
@@ -2401,14 +2713,13 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     base_url_env = pconfig.base_url_env_var or ""
 
     # Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -2636,9 +2947,22 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model_list = list(dict.fromkeys(mid for mid in model_list if mid))
 
     if model_list:
+        # Per-model pricing, when the provider supports it (fireworks via the
+        # models.dev disk cache, novita/deepinfra via their cached /models
+        # endpoints). get_pricing_for_provider() is memoized in-process and
+        # returns {} for providers without pricing — never a blocking fetch
+        # beyond the catalog lookup that already happened above.
+        pricing: dict = {}
+        try:
+            from hermes_cli.models import get_pricing_for_provider
+
+            pricing = get_pricing_for_provider(provider_id) or {}
+        except Exception:
+            pricing = {}
         selected = _prompt_model_selection(
             model_list,
             current_model=current_model,
+            pricing=pricing,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
             confirm_api_key=existing_key,

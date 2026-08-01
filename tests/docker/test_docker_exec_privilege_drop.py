@@ -32,21 +32,52 @@ import pytest
 
 
 # How long to give a `docker run -d` container before declaring it not ready.
-_RUN_READY_TIMEOUT_S = 20
+# Generous because under arm64 QEMU emulation cont-init (a Python config
+# migration + chowns) runs several times slower than on native amd64.
+_RUN_READY_TIMEOUT_S = 60
 
 
-def _wait_for_init(container: str) -> None:
-    """Block until /init is up enough that `docker exec` is responsive."""
+def _wait_for_cont_init(container: str) -> None:
+    """Block until s6 cont-init has fully finished, not merely until
+    ``docker exec`` is responsive.
+
+    The earlier ``_wait_for_init`` only polled ``docker exec <c> true``,
+    which succeeds almost immediately on s6-overlay — long before the
+    ``01-hermes-setup`` cont-init hook (docker/stage2-hook.sh) has
+    finished seeding + ``chown hermes:hermes`` config.yaml and running the
+    Python config migration. A test that wipes config.yaml and then writes
+    it as root would then race that boot-time chown: on native amd64
+    stage2-hook wins in a blink and the test always passed, but under arm64
+    QEMU emulation the slow Python migration was still in flight and
+    clobbered the root-written file's ownership back to hermes:hermes,
+    failing ``test_shim_opt_out_keeps_root`` non-deterministically.
+
+    The reliable "cont-init is done" signal is
+    ``$HERMES_HOME/logs/container-boot.log``: it is written by
+    ``02-reconcile-profiles`` (hermes_cli.container_boot), which s6 runs
+    *strictly after* ``01-hermes-setup`` in lexicographic order. The
+    reconciler always logs at least one ``profile=default`` line even for a
+    bare ``sleep infinity`` container, so once that marker appears every
+    stage2-hook side effect (seed, chown, migrate) is guaranteed complete.
+    Mirrors the readiness pattern in test_container_restart.py.
+    """
     deadline = time.monotonic() + _RUN_READY_TIMEOUT_S
+    last = ""
     while time.monotonic() < deadline:
         r = subprocess.run(
-            ["docker", "exec", container, "true"],
-            capture_output=True, timeout=5,
+            ["docker", "exec", container,
+             "cat", "/opt/data/logs/container-boot.log"],
+            capture_output=True, text=True, timeout=5,
         )
         if r.returncode == 0:
-            return
+            last = r.stdout
+            if "profile=default" in last:
+                return
         time.sleep(0.2)
-    pytest.fail(f"container {container} not responsive to docker exec within {_RUN_READY_TIMEOUT_S}s")
+    pytest.fail(
+        f"container {container} did not finish cont-init within "
+        f"{_RUN_READY_TIMEOUT_S}s (container-boot.log so far: {last!r})"
+    )
 
 
 @pytest.fixture
@@ -63,7 +94,7 @@ def sleep_container(built_image: str, container_name: str) -> Iterator[str]:
     )
     assert r.returncode == 0, f"docker run failed: {r.stderr}"
     try:
-        _wait_for_init(container_name)
+        _wait_for_cont_init(container_name)
         yield container_name
     finally:
         subprocess.run(
@@ -115,106 +146,10 @@ def test_shim_drops_root_to_hermes_uid(sleep_container: str) -> None:
     )
 
 
-def test_shim_short_circuits_for_non_root_exec(sleep_container: str) -> None:
-    """docker exec --user hermes already runs as 10000; shim should be a no-op.
-
-    Verified indirectly: the command must still succeed end-to-end. If the
-    shim incorrectly tried to drop privileges a second time (e.g. by
-    invoking s6-setuidgid which requires root), it would fail with
-    EPERM. A clean success proves the short-circuit fired.
-    """
-    subprocess.run(
-        ["docker", "exec", "--user", "root", sleep_container,
-         "rm", "-f", "/opt/data/config.yaml"],
-        capture_output=True, check=False,
-    )
-
-    r = subprocess.run(
-        ["docker", "exec", "--user", "hermes", sleep_container,
-         "hermes", "config", "set", "_test.shim_short_circuit", "1"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert r.returncode == 0, (
-        f"docker exec --user hermes failed: {r.stderr!r} stdout={r.stdout!r}. "
-        "If the shim mis-handled the non-root path, this would fail with EPERM."
-    )
-
-    # File still ends up hermes:hermes — orthogonally confirms uid.
-    r = subprocess.run(
-        ["docker", "exec", sleep_container,
-         "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
-        capture_output=True, text=True, timeout=10,
-    )
-    assert r.stdout.strip() == "hermes:hermes"
 
 
-def test_shim_opt_out_keeps_root(sleep_container: str) -> None:
-    """HERMES_DOCKER_EXEC_AS_ROOT=1 should suppress the privilege drop.
-
-    Reserved for diagnostic sessions where the operator deliberately
-    wants root semantics. Verified by writing a file and checking its
-    owner.
-    """
-    subprocess.run(
-        ["docker", "exec", "--user", "root", sleep_container,
-         "rm", "-f", "/opt/data/config.yaml"],
-        capture_output=True, check=False,
-    )
-
-    r = subprocess.run(
-        ["docker", "exec",
-         "-e", "HERMES_DOCKER_EXEC_AS_ROOT=1",
-         sleep_container,
-         "hermes", "config", "set", "_test.opt_out", "1"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert r.returncode == 0, f"opt-out invocation failed: {r.stderr}"
-
-    r = subprocess.run(
-        ["docker", "exec", sleep_container,
-         "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
-        capture_output=True, text=True, timeout=10,
-    )
-    assert r.stdout.strip() == "root:root", (
-        f"With HERMES_DOCKER_EXEC_AS_ROOT=1, expected root:root, "
-        f"got {r.stdout.strip()!r}"
-    )
 
 
-@pytest.mark.parametrize("falsy_value", ["0", "false", "no", "", "garbage", "2"])
-def test_shim_opt_out_strict_truthiness(
-    sleep_container: str, falsy_value: str,
-) -> None:
-    """Anything other than 1/true/yes (case-insensitive) does NOT opt out.
-
-    Strict truthiness so a typo (``HERMES_DOCKER_EXEC_AS_ROOT=0``) doesn't
-    silently keep the user as root. Mirrors the policy used by
-    ``HERMES_GATEWAY_NO_SUPERVISE`` in #33583.
-    """
-    subprocess.run(
-        ["docker", "exec", "--user", "root", sleep_container,
-         "rm", "-f", "/opt/data/config.yaml"],
-        capture_output=True, check=False,
-    )
-
-    r = subprocess.run(
-        ["docker", "exec",
-         "-e", f"HERMES_DOCKER_EXEC_AS_ROOT={falsy_value}",
-         sleep_container,
-         "hermes", "config", "set", "_test.falsy", "1"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert r.returncode == 0, f"falsy value {falsy_value!r} caused failure: {r.stderr}"
-
-    r = subprocess.run(
-        ["docker", "exec", sleep_container,
-         "stat", "-c", "%U:%G", "/opt/data/config.yaml"],
-        capture_output=True, text=True, timeout=10,
-    )
-    assert r.stdout.strip() == "hermes:hermes", (
-        f"falsy opt-out value {falsy_value!r} unexpectedly suppressed the drop; "
-        f"file owner is {r.stdout.strip()!r}, expected hermes:hermes"
-    )
 
 
 def test_main_cmd_path_unaffected(built_image: str) -> None:

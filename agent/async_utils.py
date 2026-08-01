@@ -66,3 +66,19 @@ def safe_schedule_threadsafe(
             coro.close()
         log.log(log_level, "%s: %s", log_message, exc)
         return None
+
+
+def consume_detached_task_result(task: "asyncio.Future[Any]") -> None:
+    """Retrieve a detached task's result without surfacing cancellation.
+
+    Used as an ``add_done_callback`` on tasks that were cancelled and
+    detached (e.g. an adapter close path that swallows ``CancelledError``
+    past its teardown deadline). Observing ``task.exception()`` prevents
+    "exception was never retrieved" noise on the event loop; cancellation
+    and any terminal error are deliberately swallowed — the task's owner
+    already gave up on it.
+    """
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass

@@ -25,7 +25,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | Paid |
-| **xAI (Grok)** | `XAI_API_KEY` or `hermes auth login xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
+| **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
@@ -39,39 +39,19 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## How `web_extract` handles long pages
 
-Backends return raw page markdown, which can be huge (forum threads, docs sites, news articles with embedded comments). To keep your context window usable and your costs down, `web_extract` runs returned content through the **`web_extract` auxiliary model** before handing it to the agent. Behavior is purely size-driven:
+Backends return raw page markdown, which can be huge (forum threads, docs sites, news articles with embedded comments). To keep your context window usable, `web_extract` applies a **deterministic character budget** — no LLM summarization is involved:
 
 | Page size (characters) | What happens |
 |------------------------|--------------|
-| Under 5 000 | Returned as-is — no LLM call, full markdown reaches the agent |
-| 5 000 – 500 000 | Single-pass summary via the `web_extract` auxiliary model, capped at ~5 000 chars of output |
-| 500 000 – 2 000 000 | Chunked: split into 100 k-char chunks, summarize each in parallel, then synthesize a final summary (~5 000 chars) |
-| Over 2 000 000 | Refused with a hint to use a more focused source URL |
+| At or under the budget (default 15 000) | Returned whole — full markdown reaches the agent |
+| Over the budget | Head+tail window (~75% head / ~25% tail, cut on markdown line boundaries) plus an explicit `[TRUNCATED]` footer. The full clean text is stored to disk and the footer tells the agent the file path and the exact `read_file` call to page through the omitted middle |
+| Over 2 000 000 | Stored text is capped at 2 MB |
 
-The summary keeps quotes, code blocks, and key facts in their original formatting — it's a content compressor, not a paraphraser. If summarization fails or times out, Hermes falls back to the first ~5 000 chars of raw content rather than a useless error.
+The per-page budget is configurable via `web.extract_char_limit` in `config.yaml` (default `15000`, clamped to 2 000–500 000), and the agent can raise it per-call with the tool's `char_limit` argument.
 
-### Which model does the summarizing?
+### When truncation gets in the way
 
-The `web_extract` auxiliary task. By default (`auxiliary.web_extract.provider: "auto"`), this is your **main chat model** — same provider, same model as `hermes model`. That's fine for most setups, but on expensive reasoning models (Opus, MiniMax M2.7, etc.) every long-page extract adds meaningful cost.
-
-To route extraction summaries to a cheap, fast model regardless of your main:
-
-```yaml
-# ~/.hermes/config.yaml
-auxiliary:
-  web_extract:
-    provider: openrouter
-    model: google/gemini-3-flash-preview
-    timeout: 360       # seconds; raise if you hit summarization timeouts
-```
-
-Or pick interactively: `hermes model` → **Configure auxiliary models** → `web_extract`.
-
-See [Auxiliary Models](/user-guide/configuration#auxiliary-models) for the full reference and per-task override patterns.
-
-### When summarization gets in the way
-
-If you specifically need raw, unsummarized page content — for example, you're scraping a structured page where the LLM summary would drop important fields — use `browser_navigate` + `browser_snapshot` instead. The browser tool returns the live accessibility tree without auxiliary-model rewriting (subject to its own 8 000-char snapshot cap on huge pages).
+If you specifically need the live DOM rather than extracted markdown — for example, a JS-heavy page where extraction returns little content — use `browser_navigate` + `browser_snapshot` instead. The browser tool returns the live accessibility tree (subject to its own snapshot cap on huge pages).
 
 ---
 
@@ -158,17 +138,33 @@ SearXNG ships with JSON output disabled by default. Copy the generated config an
 docker cp searxng:/etc/searxng/settings.yml ~/searxng/searxng/settings.yml
 ```
 
-Open `~/searxng/searxng/settings.yml` and find the `formats` block (around line 84):
+Open `~/searxng/searxng/settings.yml`.
+If `use_default_settings: true` is present, the file only contains your overrides. All other settings are inherited from the built-in defaults.
+To enable JSON responses for Hermes, add the following override:
 
 ```yaml
-# Before (default — JSON disabled):
-formats:
-  - html
+search:
+  formats:
+    - html
+    - json
+```
 
-# After (enable JSON for Hermes):
-formats:
-  - html
-  - json
+Your `settings.yml` should look similar to:
+
+```yaml
+# Read the documentation before extending the defaults:
+# https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  secret_key: "abcdef12345678"
+  image_proxy: true
+
+search:
+  formats:
+    - html
+    - json
 ```
 
 **5. Restart to apply:**
@@ -288,7 +284,7 @@ XAI_API_KEY=sk-xai-your-key-here
 or for SuperGrok subscribers:
 
 ```bash
-hermes auth login xai-oauth
+hermes auth add xai-oauth
 ```
 
 Then select xAI as the search backend:
@@ -357,11 +353,13 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 
 | Credential present | Auto-selected backend |
 |--------------------|-----------------------|
-| `FIRECRAWL_API_KEY` or `FIRECRAWL_API_URL` | firecrawl |
-| `PARALLEL_API_KEY` | parallel |
 | `TAVILY_API_KEY` | tavily |
 | `EXA_API_KEY` | exa |
+| `PARALLEL_API_KEY` | parallel |
+| `FIRECRAWL_API_KEY` or `FIRECRAWL_API_URL` (or the Nous Tool Gateway is ready) | firecrawl |
 | `SEARXNG_URL` | searxng |
+| `BRAVE_SEARCH_API_KEY` | brave-free |
+| `ddgs` package importable | ddgs |
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 
@@ -421,13 +419,9 @@ Some public instances disable certain search engines or categories. Try:
 
 Switch to a self-hosted instance (see [Option A](#option-a--self-host-with-docker-recommended) above). With Docker, your own instance has no rate limits.
 
-### `web_extract` returns truncated content with a "summarization timed out" note
+### `web_extract` returns truncated content with a `[TRUNCATED]` footer
 
-The auxiliary model didn't finish summarizing within the configured timeout. Either:
-
-- Raise `auxiliary.web_extract.timeout` in `config.yaml` (default 360s on fresh installs, 30s if the key is missing)
-- Switch the `web_extract` auxiliary task to a faster model (e.g. `google/gemini-3-flash-preview`) — see [How `web_extract` handles long pages](#how-web_extract-handles-long-pages)
-- For pages where summarization is the wrong tool, use `browser_navigate` instead
+That's expected for pages over the character budget. The footer names the on-disk file holding the full clean text and the exact `read_file` call to page through the omitted middle. To see more inline, raise `web.extract_char_limit` in `config.yaml` or pass a larger `char_limit` on the call.
 
 ---
 

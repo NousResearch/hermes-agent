@@ -20,6 +20,7 @@ The fix:
 These tests pin the corrected behavior.
 """
 import asyncio
+import json
 import time
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -107,31 +108,6 @@ def test_minimax_login_does_not_launch_anthropic_flow():
     assert body["expires_in"] == 600
 
 
-def test_nous_dashboard_device_flow_ignores_legacy_scope_override(monkeypatch):
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
-
-    requested_scopes = []
-
-    def fake_request_device_code(**kwargs):
-        requested_scopes.append(kwargs["scope"])
-        return _fake_nous_device_data()
-
-    monkeypatch.setenv("HERMES_AGENT_USE_LEGACY_SESSION_KEYS", "true")
-    monkeypatch.setattr(auth_mod, "_request_device_code", fake_request_device_code)
-    monkeypatch.setattr(ws, "_nous_poller", lambda sid: None)
-
-    result = asyncio.run(ws._start_device_code_flow("nous"))
-    try:
-        assert requested_scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
-        assert result["flow"] == "device_code"
-        assert result["user_code"] == "NOUS-1234"
-        assert (
-            ws._oauth_sessions[result["session_id"]]["scope"]
-            == auth_mod.DEFAULT_NOUS_SCOPE
-        )
-    finally:
-        ws._oauth_sessions.pop(result["session_id"], None)
 
 
 def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
@@ -195,31 +171,75 @@ def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypa
         ws._oauth_sessions.pop(session_id, None)
 
 
-def test_nous_dashboard_device_flow_does_not_retry_legacy_scope_on_invoke_refusal(monkeypatch):
+
+
+def test_codex_dashboard_start_rewords_device_authorization_error(monkeypatch):
+    from hermes_cli import web_server as ws
+
+    before_sessions = set(ws._oauth_sessions)
+
+    class _Resp:
+        status_code = 400
+        text = "Enable device code authorization"
+
+        def json(self):
+            return {
+                "error": {
+                    "message": "Enable device code authorization",
+                    "code": "device_authorization_not_enabled",
+                }
+            }
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            assert url.endswith("/deviceauth/usercode")
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    try:
+        resp = client.post(
+            "/api/providers/oauth/openai-codex/start",
+            headers=HEADERS,
+        )
+
+        assert resp.status_code == 500
+        detail = resp.json()["detail"]
+        assert "OpenAI rejected the device-code login request" in detail
+        assert "Enable device-code authorization in OpenAI" in detail
+        assert "click Login again" in detail
+        assert "hermes auth" not in detail
+    finally:
+        for sid in set(ws._oauth_sessions) - before_sessions:
+            ws._oauth_sessions.pop(sid, None)
+
+
+def test_codex_dashboard_worker_stops_polling_after_cancel(tmp_path, monkeypatch):
+    """A real DELETE mid-poll must stop the worker before it exchanges/saves tokens.
+
+    Regression for IA-01: cancelling only popped the session dict; the
+    background worker kept polling/exchanging/saving regardless, and once
+    the session was gone `_oauth_session_profile()` fell back to the
+    caller's current profile scope instead of the one the login started
+    in. The fix marks the dict `cancelled` before popping, and the worker
+    checks that flag before every remaining step.
+
+    Exercises the actual `DELETE /api/providers/oauth/sessions/{id}`
+    endpoint (rather than mutating the session dict directly) so the
+    endpoint/worker race and the real removal from `_oauth_sessions` are
+    both under test.
+    """
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws
-
-    requested_scopes = []
-
-    def fake_request_device_code(**kwargs):
-        requested_scopes.append(kwargs["scope"])
-        raise _invoke_scope_refusal()
-
-    monkeypatch.delenv("HERMES_AGENT_USE_LEGACY_SESSION_KEYS", raising=False)
-    monkeypatch.setattr(auth_mod, "_request_device_code", fake_request_device_code)
-    monkeypatch.setattr(ws, "_nous_poller", lambda sid: None)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        asyncio.run(ws._start_device_code_flow("nous"))
-    assert requested_scopes == [auth_mod.DEFAULT_NOUS_SCOPE]
-
-
-def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch):
-    from hermes_cli import web_server as ws
-    from hermes_cli.auth import get_active_provider
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-
-    access_token = "h.eyJleHAiOjk5OTk5OTk5OTl9.s"
 
     class _Resp:
         def __init__(self, status_code, payload):
@@ -246,41 +266,50 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
                     "interval": 3,
                     "user_code": "CODEX-1234",
                 })
-            if url.endswith("/deviceauth/token"):
-                return _Resp(200, {
-                    "authorization_code": "authorization-code",
-                    "code_verifier": "code-verifier",
-                })
-            return _Resp(200, {
-                "access_token": access_token,
-                "refresh_token": "codex-refresh",
-            })
+            raise AssertionError(
+                f"worker must stop before calling {url} once cancelled"
+            )
 
+    saved = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(httpx, "Client", _Client)
-    monkeypatch.setattr(ws.time, "sleep", lambda _: None)
+    monkeypatch.setattr(auth_mod, "_save_codex_tokens", lambda tokens: saved.append(tokens))
 
-    sid, _ = ws._new_oauth_session("openai-codex", "device_code")
+    sid, _ = ws._new_oauth_session("openai-codex", "device_code", profile="coder")
+
+    def fake_sleep(_interval):
+        # Simulate a real concurrent DELETE /api/providers/oauth/sessions/{sid}
+        # firing while the worker is asleep between polls.
+        resp = client.delete(f"/api/providers/oauth/sessions/{sid}", headers=HEADERS)
+        assert resp.status_code == 200, resp.text
+
+    monkeypatch.setattr(ws.time, "sleep", fake_sleep)
+
     try:
         ws._codex_full_login_worker(sid)
 
-        assert ws._oauth_sessions[sid]["status"] == "approved"
-        assert get_active_provider() == "openai-codex"
-
-        runtime = resolve_runtime_provider(requested=None)
-        assert runtime["provider"] == "openai-codex"
-        assert runtime["api_key"] == access_token
-        assert runtime["api_mode"] == "codex_responses"
+        assert saved == []
+        assert sid not in ws._oauth_sessions
     finally:
         ws._oauth_sessions.pop(sid, None)
 
 
-def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkeypatch):
+def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypatch):
+    """The final cancellation check and the token save must be one atomic
+    section under `_oauth_sessions_lock`.
+
+    Regression: checking `cancelled` and calling `_save_codex_tokens()` used
+    to be two separate steps with no lock held across them, so a DELETE
+    landing in that gap flipped the flag too late for the worker to see it
+    and the tokens were saved anyway. This drives a real DELETE from another
+    thread exactly while the worker holds the lock for its check+save, and
+    asserts DELETE stays blocked for the whole critical section instead of
+    slipping in between the check and the save.
+    """
+    import threading
+
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws
-    from hermes_constants import get_hermes_home
-
-    profile_home = _make_profile_home(tmp_path, monkeypatch)
 
     class _Resp:
         def __init__(self, status_code, payload):
@@ -304,40 +333,99 @@ def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkey
             if url.endswith("/deviceauth/usercode"):
                 return _Resp(200, {
                     "device_auth_id": "device-auth-id",
-                    "interval": 3,
+                    "interval": 0,
                     "user_code": "CODEX-1234",
                 })
-            if url.endswith("/deviceauth/token"):
-                return _Resp(200, {
-                    "authorization_code": "authorization-code",
-                    "code_verifier": "code-verifier",
-                })
             return _Resp(200, {
-                "access_token": "codex-access",
-                "refresh_token": "codex-refresh",
+                "authorization_code": "auth-code",
+                "code_verifier": "verifier",
             })
 
-    saved_homes = []
-    monkeypatch.setattr(httpx, "Client", _Client)
-    monkeypatch.setattr(ws.time, "sleep", lambda _: None)
-    monkeypatch.setattr(
-        auth_mod,
-        "_save_codex_tokens",
-        lambda tokens: saved_homes.append(get_hermes_home()),
+    class _TokenClient(_Client):
+        def post(self, url, **kwargs):
+            return _Resp(200, {"access_token": "at", "refresh_token": "rt"})
+
+    clients = iter([_Client, _Client, _TokenClient])
+    _make_profile_home(tmp_path, monkeypatch, profile="coder")
+    monkeypatch.setattr(httpx, "Client", lambda *a, **k: next(clients)(*a, **k))
+
+    saved = []
+    delete_threads = []
+    delete_started = threading.Event()
+    delete_finished = threading.Event()
+
+    def fake_save(tokens):
+        # We are inside the worker's critical section right now (holding
+        # _oauth_sessions_lock). Fire a real DELETE from another thread and
+        # prove it cannot complete until this section releases the lock.
+        # Do NOT join the DELETE thread here: it is blocked on the very
+        # lock this section holds, so joining here would deadlock.
+        delete_thread = threading.Thread(target=_fire_delete, daemon=True)
+        delete_threads.append(delete_thread)
+        delete_thread.start()
+        delete_started.wait(timeout=2)
+        still_blocked = not delete_finished.wait(timeout=0.2)
+        saved.append((tokens, still_blocked))
+
+    def _fire_delete():
+        delete_started.set()
+        client.delete(f"/api/providers/oauth/sessions/{sid}", headers=HEADERS)
+        delete_finished.set()
+
+    monkeypatch.setattr(auth_mod, "_save_codex_tokens", fake_save)
+    monkeypatch.setattr(ws.time, "sleep", lambda *_a, **_k: None)
+
+    sid, _ = ws._new_oauth_session("openai-codex", "device_code", profile="coder")
+
+    ws._codex_full_login_worker(sid)
+
+    # The lock is released now (worker returned), so the DELETE thread can
+    # finally complete.
+    delete_threads[0].join(timeout=2)
+
+    assert len(saved) == 1
+    tokens, delete_was_still_blocked_during_save = saved[0]
+    assert tokens == {"access_token": "at", "refresh_token": "rt"}
+    assert delete_was_still_blocked_during_save, (
+        "DELETE must block until the worker's check+save critical section "
+        "finishes, not slip in between the check and the save"
+    )
+    # DELETE arrived after the point of no return (save already committed),
+    # so this is the legitimate too-late-to-cancel outcome: token saved,
+    # session subsequently removed by the now-unblocked DELETE.
+    assert sid not in ws._oauth_sessions
+
+
+def test_cancel_oauth_session_marks_dict_cancelled_before_popping():
+    """The DELETE endpoint must flag the session dict before removing it.
+
+    A background worker holds its own reference to the same dict object;
+    it can only observe cancellation if the flag is set on that shared
+    object prior to (or instead of) removal from the global session map.
+    """
+    from hermes_cli import web_server as ws
+
+    session_id = "cancel-flag-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "openai-codex",
+        "flow": "device_code",
+        "profile": "coder",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+    }
+    worker_ref = ws._oauth_sessions[session_id]
+
+    resp = client.delete(
+        f"/api/providers/oauth/sessions/{session_id}",
+        headers=HEADERS,
     )
 
-    sid, _ = ws._new_oauth_session(
-        "openai-codex",
-        "device_code",
-        profile="coder",
-    )
-    try:
-        ws._codex_full_login_worker(sid)
-
-        assert ws._oauth_sessions[sid]["status"] == "approved"
-        assert saved_homes == [profile_home]
-    finally:
-        ws._oauth_sessions.pop(sid, None)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "session_id": session_id}
+    assert session_id not in ws._oauth_sessions
+    assert worker_ref["cancelled"] is True
 
 
 def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(monkeypatch):
@@ -390,83 +478,15 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
         ws._oauth_sessions.pop(session_id, None)
 
 
-def test_minimax_dashboard_poller_accepts_absolute_ms_expired_in():
-    """Dashboard MiniMax completion must accept unix-ms token expiry values."""
-    from hermes_cli import web_server as ws
-
-    now = datetime.now(timezone.utc)
-    abs_ms = int((now.timestamp() + 1800) * 1000)
-    session_id = "minimax-absolute-ms-test"
-    ws._oauth_sessions[session_id] = {
-        "session_id": session_id,
-        "provider": "minimax-oauth",
-        "flow": "device_code",
-        "created_at": time.time(),
-        "status": "pending",
-        "error_message": None,
-        "portal_base_url": "https://api.minimax.io",
-        "client_id": "client-id",
-        "user_code": "ABCD-1234",
-        "code_verifier": "verifier",
-        "interval_ms": 2000,
-        "expired_in_raw": abs_ms,
-        "region": "global",
-    }
-    captured_state = {}
-
-    try:
-        with patch(
-            "hermes_cli.auth._minimax_poll_token",
-            return_value={
-                "status": "success",
-                "access_token": "access",
-                "refresh_token": "refresh",
-                "expired_in": abs_ms,
-                "token_type": "Bearer",
-            },
-        ), patch(
-            "hermes_cli.auth._minimax_save_auth_state",
-            side_effect=lambda state: captured_state.update(state),
-        ):
-            ws._minimax_poller(session_id)
-    finally:
-        ws._oauth_sessions.pop(session_id, None)
-
-    assert captured_state["access_token"] == "access"
-    assert 1790 <= captured_state["expires_in"] <= 1810
-    assert datetime.fromisoformat(captured_state["expires_at"]).year < 9999
 
 
-def test_anthropic_pkce_branch_still_works():
-    """Sanity: the dispatcher tightening doesn't break the legitimate Anthropic PKCE path."""
-    fake_anthropic_response = {
-        "session_id": "stub-session",
-        "flow": "pkce",
-        "auth_url": "https://claude.ai/oauth/authorize?code=true&...",
-        "expires_in": 600,
-    }
-    with patch(
-        "hermes_cli.web_server._start_anthropic_pkce",
-        return_value=fake_anthropic_response,
-    ):
-        resp = client.post(
-            "/api/providers/oauth/anthropic/start",
-            headers=HEADERS,
-        )
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["flow"] == "pkce"
-    assert "claude.ai" in body["auth_url"]
-
-
-def test_xai_oauth_listed_as_loopback_flow():
-    """xAI Grok OAuth must surface in the catalog as a first-class loopback flow."""
+def test_xai_oauth_listed_as_device_code_flow():
+    """xAI Grok OAuth must surface in the catalog as a device-code flow."""
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}
     assert "xai-oauth" in providers
-    assert providers["xai-oauth"]["flow"] == "loopback"
+    assert providers["xai-oauth"]["flow"] == "device_code"
     assert "grok" in providers["xai-oauth"]["name"].lower()
 
 
@@ -489,17 +509,6 @@ def test_accounts_offers_every_oauth_provider_from_catalog():
             )
 
 
-def test_copilot_acp_now_in_accounts():
-    """Regression: copilot-acp was a canonical provider the CLI could configure,
-    but had no Accounts card (the reported GUI/CLI drift).
-    """
-    resp = client.get("/api/providers/oauth", headers=HEADERS)
-    assert resp.status_code == 200, resp.text
-    providers = {p["id"]: p for p in resp.json()["providers"]}
-    assert "copilot-acp" in providers
-    # copilot-acp is managed by an external CLI: read-only card, not auto-removable.
-    assert providers["copilot-acp"]["flow"] == "external"
-    assert providers["copilot-acp"]["disconnectable"] is False
 
 
 def test_oauth_catalog_marks_external_providers_not_disconnectable():
@@ -557,285 +566,102 @@ def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
     assert "Settings" in delete_resp.text
 
 
-def test_xai_loopback_start_returns_authorize_url(monkeypatch):
-    """Start MUST bind the loopback listener and hand back an xAI authorize URL."""
+def test_xai_dashboard_poller_seeds_single_entry_and_clears_suppression(tmp_path, monkeypatch):
+    """The dashboard device-code poller must leave exactly ONE pool entry — the
+    singleton-seeded ``device_code`` source — and must NOT create a parallel
+    ``manual:dashboard_*`` entry.
+
+    Dedupe: a parallel dashboard entry would share the singleton's single-use
+    refresh token, and two entries racing the same rotation ->
+    ``refresh_token_reused`` (on main, the dashboard login inserted exactly
+    such a duplicate alongside the singleton seed). The poller writes the
+    singleton only; the seed is the single source of truth.
+
+    Suppression: an interactive dashboard login must also clear any
+    ``device_code`` suppression left by a prior ``hermes auth remove
+    xai-oauth``.
+    """
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws
+    from agent.credential_pool import load_pool
 
-    class _FakeServer:
-        def shutdown(self):
-            pass
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
 
-        def server_close(self):
-            pass
-
-    class _FakeThread:
-        def join(self, timeout=None):
-            pass
-
-    redirect_uri = (
-        f"http://{auth_mod.XAI_OAUTH_REDIRECT_HOST}:{auth_mod.XAI_OAUTH_REDIRECT_PORT}"
-        f"{auth_mod.XAI_OAUTH_REDIRECT_PATH}"
+    # Existing chat provider must not be overwritten by dashboard OAuth.
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "openrouter",
+                "providers": {},
+            }
+        ),
+        encoding="utf-8",
     )
+
+    # Prior `hermes auth remove xai-oauth` left the source suppressed.
+    auth_mod.suppress_credential_source("xai-oauth", "device_code")
+    assert auth_mod.is_source_suppressed("xai-oauth", "device_code") is True
 
     monkeypatch.setattr(
         auth_mod,
         "_xai_oauth_discovery",
-        lambda *a, **k: {
-            "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
-            "token_endpoint": "https://auth.x.ai/oauth2/token",
-        },
+        lambda *a, **k: {"token_endpoint": "https://auth.x.ai/token"},
     )
     monkeypatch.setattr(
         auth_mod,
-        "_xai_start_callback_server",
-        lambda *a, **k: (_FakeServer(), _FakeThread(), {"code": None, "error": None}, redirect_uri),
-    )
-    # Don't let the background worker run a real callback wait/exchange.
-    monkeypatch.setattr(ws, "_xai_loopback_worker", lambda sid: None)
-
-    resp = client.post("/api/providers/oauth/xai-oauth/start", headers=HEADERS)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    try:
-        assert body["flow"] == "loopback"
-        assert "user_code" not in body  # loopback has nothing to paste/show
-        assert body["auth_url"].startswith("https://auth.x.ai/oauth2/auth?")
-        assert "code_challenge" in body["auth_url"]
-        sess = ws._oauth_sessions[body["session_id"]]
-        assert sess["provider"] == "xai-oauth"
-        assert sess["flow"] == "loopback"
-    finally:
-        ws._oauth_sessions.pop(body["session_id"], None)
-
-
-def test_xai_loopback_worker_persists_tokens_on_success(monkeypatch):
-    """The worker exchanges the callback code and marks the session approved."""
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
-
-    saved = {}
-    session_id = "xai-loopback-success-test"
-    ws._oauth_sessions[session_id] = {
-        "session_id": session_id,
-        "provider": "xai-oauth",
-        "flow": "loopback",
-        "created_at": time.time(),
-        "status": "pending",
-        "error_message": None,
-        "server": object(),
-        "thread": object(),
-        "callback_result": {"code": "auth-code", "state": "st"},
-        "redirect_uri": "http://127.0.0.1:56121/callback",
-        "verifier": "verifier",
-        "challenge": "challenge",
-        "state": "st",
-        "token_endpoint": "https://auth.x.ai/oauth2/token",
-        "discovery": {"token_endpoint": "https://auth.x.ai/oauth2/token"},
-    }
-
-    monkeypatch.setattr(
-        auth_mod,
-        "_xai_wait_for_callback",
-        lambda *a, **k: {"code": "auth-code", "state": "st"},
-    )
-    monkeypatch.setattr(
-        auth_mod,
-        "_xai_oauth_exchange_code_for_tokens",
-        lambda **k: {
-            "access_token": "xai-access",
-            "refresh_token": "xai-refresh",
+        "_xai_oauth_poll_device_token",
+        lambda client, **kwargs: {
+            "access_token": "xai-dashboard-access",
+            "refresh_token": "rt-dashboard",
+            "id_token": "",
             "expires_in": 3600,
             "token_type": "Bearer",
         },
     )
-    monkeypatch.setattr(
-        auth_mod,
-        "_save_xai_oauth_tokens",
-        lambda tokens, **k: saved.update(tokens),
-    )
-    monkeypatch.setattr(ws, "_add_xai_oauth_pool_entry", lambda *a, **k: None)
 
+    session_id = "xai-dashboard-dedupe-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "device_code",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "device_code": "device-code",
+        "interval": 5,
+        "expires_at": time.time() + 600,
+    }
     try:
-        ws._xai_loopback_worker(session_id)
+        ws._xai_device_poller(session_id)
         assert ws._oauth_sessions[session_id]["status"] == "approved"
-        assert saved["access_token"] == "xai-access"
-        assert saved["refresh_token"] == "xai-refresh"
     finally:
         ws._oauth_sessions.pop(session_id, None)
 
+    # The interactive dashboard login cleared the suppression marker.
+    assert auth_mod.is_source_suppressed("xai-oauth", "device_code") is False
 
-def test_xai_loopback_worker_fails_on_state_mismatch(monkeypatch):
-    """A mismatched OAuth state must fail the session, not persist tokens."""
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
+    after = json.loads(auth_path.read_text(encoding="utf-8"))
+    assert after["active_provider"] == "openrouter"
+    assert after["providers"]["xai-oauth"]["tokens"]["access_token"] == "xai-dashboard-access"
 
-    session_id = "xai-loopback-state-test"
-    ws._oauth_sessions[session_id] = {
-        "session_id": session_id,
-        "provider": "xai-oauth",
-        "flow": "loopback",
-        "created_at": time.time(),
-        "status": "pending",
-        "error_message": None,
-        "server": object(),
-        "thread": object(),
-        "callback_result": {},
-        "redirect_uri": "http://127.0.0.1:56121/callback",
-        "verifier": "verifier",
-        "challenge": "challenge",
-        "state": "expected-state",
-        "token_endpoint": "https://auth.x.ai/oauth2/token",
-        "discovery": {},
-    }
-
-    monkeypatch.setattr(
-        auth_mod,
-        "_xai_wait_for_callback",
-        lambda *a, **k: {"code": "auth-code", "state": "ATTACKER-state"},
+    # The credential pool has exactly one entry, seeded from the
+    # singleton as ``device_code`` — no parallel ``manual:dashboard_*``
+    # duplicate sharing the single-use refresh token.
+    entries = load_pool("xai-oauth").entries()
+    assert len(entries) == 1
+    assert entries[0].source == "device_code"
+    assert entries[0].refresh_token == "rt-dashboard"
+    assert not any(
+        getattr(e, "source", "").startswith("manual:dashboard") for e in entries
     )
 
-    def _boom(**kwargs):
-        raise AssertionError("token exchange must not run on state mismatch")
-
-    monkeypatch.setattr(auth_mod, "_xai_oauth_exchange_code_for_tokens", _boom)
-
-    try:
-        ws._xai_loopback_worker(session_id)
-        sess = ws._oauth_sessions[session_id]
-        assert sess["status"] == "error"
-        assert "state mismatch" in sess["error_message"].lower()
-    finally:
-        ws._oauth_sessions.pop(session_id, None)
 
 
-def test_xai_loopback_worker_skips_persist_when_cancelled(monkeypatch):
-    """If the session is cancelled while waiting, the worker must not persist."""
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import web_server as ws
 
-    session_id = "xai-loopback-cancel-test"
-    ws._oauth_sessions[session_id] = {
-        "session_id": session_id,
-        "provider": "xai-oauth",
-        "flow": "loopback",
-        "created_at": time.time(),
-        "status": "pending",
-        "error_message": None,
-        "server": object(),
-        "thread": object(),
-        "callback_result": {},
-        "redirect_uri": "http://127.0.0.1:56121/callback",
-        "verifier": "verifier",
-        "challenge": "challenge",
-        "state": "st",
-        "token_endpoint": "https://auth.x.ai/oauth2/token",
-        "discovery": {},
-    }
-
-    def _wait_then_cancel(*args, **kwargs):
-        # Simulate the user cancelling (DELETE /sessions/{id}) while we were
-        # blocked on the callback: the session vanishes, then a valid code
-        # arrives. The worker must notice and bail before persisting.
-        ws._oauth_sessions.pop(session_id, None)
-        return {"code": "auth-code", "state": "st"}
-
-    monkeypatch.setattr(auth_mod, "_xai_wait_for_callback", _wait_then_cancel)
-
-    def _must_not_persist(*args, **kwargs):
-        raise AssertionError("tokens must not be persisted for a cancelled session")
-
-    monkeypatch.setattr(auth_mod, "_save_xai_oauth_tokens", _must_not_persist)
-    monkeypatch.setattr(ws, "_add_xai_oauth_pool_entry", _must_not_persist)
-
-    # Should return cleanly without raising and without persisting.
-    ws._xai_loopback_worker(session_id)
-    assert session_id not in ws._oauth_sessions
-
-
-def test_cancel_loopback_session_shuts_down_callback_server():
-    """Cancelling a loopback session must free the bound callback port now."""
-    from hermes_cli import web_server as ws
-
-    shutdown_calls = {"shutdown": 0, "close": 0, "join": 0}
-
-    class _FakeServer:
-        def shutdown(self):
-            shutdown_calls["shutdown"] += 1
-
-        def server_close(self):
-            shutdown_calls["close"] += 1
-
-    class _FakeThread:
-        def join(self, timeout=None):
-            shutdown_calls["join"] += 1
-
-    # callback_result is the dict the worker's _xai_wait_for_callback polls.
-    callback_result = {"code": None, "error": None}
-    session_id = "xai-loopback-cancel-shutdown-test"
-    ws._oauth_sessions[session_id] = {
-        "session_id": session_id,
-        "provider": "xai-oauth",
-        "flow": "loopback",
-        "created_at": time.time(),
-        "status": "pending",
-        "server": _FakeServer(),
-        "thread": _FakeThread(),
-        "callback_result": callback_result,
-    }
-
-    try:
-        resp = client.delete(
-            f"/api/providers/oauth/sessions/{session_id}", headers=HEADERS
-        )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["ok"] is True
-        assert shutdown_calls == {"shutdown": 1, "close": 1, "join": 1}
-        # The waiting worker must be signalled so it returns promptly instead
-        # of spinning until the timeout.
-        assert callback_result["error"] == "cancelled"
-        assert session_id not in ws._oauth_sessions
-    finally:
-        ws._oauth_sessions.pop(session_id, None)
-
-
-def test_unknown_pkce_provider_rejected_cleanly():
-    """A future PKCE provider without an explicit branch must NOT silently route to Anthropic.
-
-    Simulates a hypothetical catalog entry with ``flow: "pkce"`` and an
-    id other than "anthropic". The dispatcher should fall through past
-    the pkce branch (now gated on provider_id) and the device_code
-    branch, then hit "Unsupported flow" — proving the bug class is
-    structurally prevented.
-    """
-    from hermes_cli import web_server as ws
-
-    # Inject a hypothetical catalog entry that's pkce-flagged but isn't
-    # anthropic. This shape mirrors what would happen if a developer
-    # added a new provider entry without remembering to wire up its
-    # start function.
-    fake_entry = {
-        "id": "hypothetical-pkce-provider",
-        "name": "Hypothetical PKCE Provider",
-        "flow": "pkce",
-        "cli_command": "hermes auth add hypothetical-pkce-provider",
-        "docs_url": "https://example.com",
-        "status_fn": None,
-    }
-    original_catalog = ws._OAUTH_PROVIDER_CATALOG
-    try:
-        ws._OAUTH_PROVIDER_CATALOG = original_catalog + (fake_entry,)
-        resp = client.post(
-            "/api/providers/oauth/hypothetical-pkce-provider/start",
-            headers=HEADERS,
-        )
-    finally:
-        ws._OAUTH_PROVIDER_CATALOG = original_catalog
-
-    # Either 400 "Unsupported flow" (the explicit fall-through) or any
-    # 4xx — what we MUST NOT see is a 200 with claude.ai in the body.
-    assert resp.status_code >= 400, resp.text
-    assert "claude.ai" not in resp.text.lower()
 
 
 def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
@@ -869,23 +695,5 @@ def test_status_falls_through_to_generic_dispatcher_for_catalog_only_provider():
     assert out["has_refresh_token"] is True
 
 
-def test_status_hardcoded_branch_wins_over_generic_fallback():
-    """An existing hardcoded branch (nous) is unaffected by the fallthrough."""
-    import hermes_cli.web_server as ws
-
-    with patch(
-        "hermes_cli.auth.get_nous_auth_status",
-        return_value={"logged_in": True, "portal_base_url": "https://portal.test"},
-    ):
-        out = ws._resolve_provider_status("nous", None)
-    assert out["source"] == "nous_portal"
-    assert out["source_label"] == "https://portal.test"
 
 
-def test_status_unknown_provider_degrades_to_logged_out():
-    """A provider the generic dispatcher can't resolve stays logged-out cleanly."""
-    import hermes_cli.web_server as ws
-
-    with patch("hermes_cli.auth.get_auth_status", return_value={"logged_in": False}):
-        out = ws._resolve_provider_status("totally-unknown", None)
-    assert out["logged_in"] is False

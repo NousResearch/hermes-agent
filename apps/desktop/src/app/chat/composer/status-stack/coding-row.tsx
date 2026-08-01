@@ -1,51 +1,27 @@
 import { useStore } from '@nanostores/react'
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 
+import { WorktreeDialog } from '@/app/chat/sidebar/projects/worktree-dialog'
 import { StatusRow } from '@/components/chat/status-row'
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  ActionsMenu,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
 import { DiffCount } from '@/components/ui/diff-count'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
-import { SanitizedInput } from '@/components/ui/sanitized-input'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
-import { gitRef } from '@/lib/sanitize'
-import { $repoStatus, $repoWorktrees } from '@/store/coding-status'
+import { displayPath } from '@/lib/display-path'
+import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
 import { $newWorktreeRequest } from '@/store/projects'
 
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
-
-interface BranchActionCopy {
-  branchCreateWorktree: string
-  branchOpenExisting: string
-  branchSwitchHome: string
-}
-
-const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
-  if (branch.checkedOut) {
-    return copy.branchOpenExisting
-  }
-
-  return branch.isDefault ? copy.branchSwitchHome : copy.branchCreateWorktree
-}
 
 interface CodingStatusRowProps {
   /** Branch the current draft off into a fresh worktree + session, based on
@@ -64,6 +40,8 @@ interface CodingStatusRowProps {
   onOpenWorktree?: (path: string) => void
   /** Switch the current repo checkout to another branch. */
   onSwitchBranch?: (branch: string) => Promise<void>
+  /** Repo root path for the worktree dialog. */
+  repoPath?: null | string
 }
 
 /**
@@ -79,121 +57,30 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   onListBranches,
   onOpen,
   onOpenWorktree,
-  onSwitchBranch
+  onSwitchBranch,
+  repoPath
 }: CodingStatusRowProps) {
   const { t } = useI18n()
   const s = t.statusStack.coding
   const p = t.sidebar.projects
-  const status = useStore($repoStatus)
-  const worktrees = useStore($repoWorktrees)
+  const resolvedRepoPath = repoPath?.trim() || undefined
+  // This surface's OWN worktree, always — never the primary's. The row used to
+  // fall back to the global `$repoStatus` for a blank repoPath, which painted
+  // the main pane's branch/± onto a tile whose cwd hadn't resolved yet. That
+  // fallback bought nothing (the primary's computed is keyed to `$currentCwd`,
+  // which is blank in exactly the same case) and cost a wrong-tree rail.
+  const status = useStore(repoStatusForCwd(resolvedRepoPath))
+  const worktrees = useStore(repoWorktreesForCwd(resolvedRepoPath))
 
-  const [branchOpen, setBranchOpen] = useState(false)
-  const [branchName, setBranchName] = useState('')
-  const [branchBase, setBranchBase] = useState<string | undefined>(undefined)
-  const [branchPending, setBranchPending] = useState(false)
-  const [convertMode, setConvertMode] = useState(false)
-  const [branches, setBranches] = useState<HermesGitBranch[]>([])
-  const [branchesLoading, setBranchesLoading] = useState(false)
+  // While mounted, keep this worktree in the coding-status refresh set so the
+  // turn-settle / tool-complete / focus edges re-probe it too (tiles otherwise
+  // only refreshed when the MAIN cwd probe happened to cover them).
+  useEffect(() => registerRepoStatusCwd(resolvedRepoPath), [resolvedRepoPath])
 
-  const loadBranches = useCallback(async () => {
-    if (!onListBranches) {
-      return
-    }
-
-    setBranchesLoading(true)
-
-    try {
-      setBranches(await onListBranches())
-    } catch {
-      setBranches([])
-    } finally {
-      setBranchesLoading(false)
-    }
-  }, [onListBranches])
-
-  // Open the name dialog for a chosen base. Deferred so the dropdown finishes
-  // closing before the dialog grabs focus (Radix focus-trap handoff races
-  // otherwise).
-  const startBranch = (base: string | undefined) => {
-    setBranchBase(base)
-    setBranchName('')
-    setConvertMode(false)
-    setTimeout(() => setBranchOpen(true), 0)
-  }
-
-  const startConvert = () => {
-    setBranchBase(undefined)
-    setBranchName('')
-    setConvertMode(true)
-    void loadBranches()
-    setTimeout(() => setBranchOpen(true), 0)
-  }
-
-  const enterConvert = () => {
-    setConvertMode(true)
-    void loadBranches()
-  }
-
-  const convertBranch = async (branch: HermesGitBranch) => {
-    if (branchPending || !branch || !onConvertBranch) {
-      return
-    }
-
-    setBranchPending(true)
-
-    try {
-      await onConvertBranch(branch.name, branch.worktreePath, branch.isDefault)
-      setBranchOpen(false)
-    } catch (err) {
-      notifyError(err, p.startWorkFailed)
-    } finally {
-      setBranchPending(false)
-    }
-  }
-
-  // Global ⌘⇧B (workspace.newWorktree): open the name dialog for a worktree off
-  // current HEAD. The rail only renders inside a repo, so the hotkey naturally
-  // no-ops elsewhere. Guarded by a token ref so it fires on the keypress, not on
-  // mount or unrelated re-renders.
-  const worktreeReq = useStore($newWorktreeRequest)
-  const lastWorktreeReqRef = useRef(worktreeReq)
-
-  useEffect(() => {
-    if (worktreeReq === lastWorktreeReqRef.current) {
-      return
-    }
-
-    lastWorktreeReqRef.current = worktreeReq
-
-    if (!onBranchOff) {
-      return
-    }
-
-    setBranchBase(undefined)
-    setBranchName('')
-    setConvertMode(false)
-    setBranchOpen(true)
-  }, [onBranchOff, worktreeReq])
-
-  const submitBranch = async () => {
-    const branch = branchName.trim()
-
-    if (branchPending || !branch || !onBranchOff) {
-      return
-    }
-
-    setBranchPending(true)
-
-    try {
-      await onBranchOff(branch, branchBase)
-      setBranchOpen(false)
-      setBranchName('')
-    } catch (err) {
-      notifyError(err, p.startWorkFailed)
-    } finally {
-      setBranchPending(false)
-    }
-  }
+  // Shared worktree dialog — replaces the old inline dialog. Opened by the
+  // dropdown menu's "branch off" items and the global ⌘⇧B hotkey.
+  const [worktreeOpen, setWorktreeOpen] = useState(false)
+  const [worktreeBase, setWorktreeBase] = useState<string | undefined>(undefined)
 
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {
@@ -205,6 +92,35 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     } catch (err) {
       notifyError(err, s.switchFailed(branch))
     }
+  }
+
+  // Global ⌘⇧B (workspace.newWorktree): open the shared worktree dialog. The
+  // coding row only renders inside a repo, so the hotkey naturally no-ops
+  // elsewhere. Guarded by a token ref so it fires on the keypress, not on
+  // mount or unrelated re-renders.
+  const worktreeReq = useStore($newWorktreeRequest)
+  const lastWorktreeReqRef = useRef(worktreeReq)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    if (worktreeReq === lastWorktreeReqRef.current) {
+      return
+    }
+
+    lastWorktreeReqRef.current = worktreeReq
+
+    if (!resolvedRepoPath || !onOpenWorktree) {
+      return
+    }
+
+    setWorktreeBase(undefined)
+    setWorktreeOpen(true)
+  }, [onOpenWorktree, resolvedRepoPath, worktreeReq])
+
+  // Open the worktree dialog from the dropdown menu with a pre-selected base.
+  const startBranch = (base: string | undefined) => {
+    setWorktreeBase(base)
+    setTimeout(() => setWorktreeOpen(true), 0)
   }
 
   if (!status) {
@@ -247,223 +163,167 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   // they're the only change (otherwise +/- tells the story).
   const untrackedOnly = !hasLineDelta && status.untracked > 0
 
+  // The branch actions, rendered identically by the kebab dropdown and the
+  // row's right-click menu so the two never drift. `onBranchOff` gates the
+  // whole menu (omitted = remote backend), matching the kebab.
+  const renderBranchItems = (kit: MenuKit) => {
+    const branchItems: ActionItemSpec[] = branchTargets.map(target => ({
+      key: target.base ?? '__head__',
+      label: <span className="truncate">{target.label}</span>,
+      onSelect: () => startBranch(target.base)
+    }))
+
+    const worktreeItems: ActionItemSpec[] = otherWorktrees.map(worktree => ({
+      key: worktree.path,
+      label: <span className="truncate">{worktree.branch}</span>,
+      onSelect: () => onOpenWorktree?.(worktree.path)
+    }))
+
+    return (
+      <>
+        <kit.Label className={MENU_SECTION}>{s.newBranch}</kit.Label>
+        {branchItems.map(item => renderActionItem(kit, item))}
+        {switchTarget &&
+          renderActionItem(kit, {
+            key: '__switch__',
+            label: <span className="truncate">{s.switchTo(switchTarget)}</span>,
+            onSelect: () => void switchToBranch(switchTarget)
+          })}
+        <kit.Separator />
+        <kit.Label className={MENU_SECTION}>{s.worktrees}</kit.Label>
+        {worktreeItems.map(item => renderActionItem(kit, item))}
+        {/* Create a fresh worktree off the current HEAD (the generic "spin up a
+            worktree here", mirroring the sidebar's + button). */}
+        {renderActionItem(kit, {
+          key: '__start__',
+          label: <span className="truncate">{p.startWork}</span>,
+          onSelect: () => startBranch(undefined)
+        })}
+        {onConvertBranch &&
+          renderActionItem(kit, {
+            key: '__convert__',
+            label: <span className="truncate">{p.convertBranch}</span>,
+            onSelect: () => startBranch(undefined)
+          })}
+      </>
+    )
+  }
+
   return (
     <>
-      <StatusRow
-        // The base "where am I working" strip is part of the composer surface
-        // itself, so it inherits the composer's width and clipped top radius.
-        className="coding-status-bar min-h-7 rounded-t-[inherit] rounded-b-none border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 hover:bg-transparent"
-        // Static branch glyph — never the loading spinner. This row only renders
-        // once `status` exists, so a spinner here only ever fired on *refreshes*
-        // of an already-loaded repo (window focus, turn settle), reading as an
-        // annoying icon "blip" with no first-load value. Refreshes are silent.
-        leading={<Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />}
-        onActivate={onOpen}
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-1">
-          <span
-            className="min-w-0 truncate text-xs font-normal text-muted-foreground/92 transition-colors group-hover/status-row:text-foreground/90"
-            title={branchLabel}
-          >
-            {branchLabel}
-          </span>
+      <ActionsContextMenu contentClassName="w-60" disabled={!onBranchOff} items={renderBranchItems}>
+        <StatusRow
+          // The base "where am I working" strip is part of the composer surface
+          // itself, so it inherits the composer's width and clipped top radius.
+          className="coding-status-bar min-h-7 rounded-t-[inherit] rounded-b-none border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 hover:bg-transparent"
+          // Static branch glyph — never the loading spinner. This row only renders
+          // once `status` exists, so a spinner here only ever fired on *refreshes*
+          // of an already-loaded repo (window focus, turn settle), reading as an
+          // annoying icon "blip" with no first-load value. Refreshes are silent.
+          // It's a button (not the whole row) so the glyph opens the review pane
+          // while the strip around it stays inert; size-3.5 fills the slot exactly.
+          leading={
+            <button className="flex size-3.5 items-center justify-center" onClick={onOpen} type="button">
+              <Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />
+            </button>
+          }
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            {/* Branch name — the other half of the review-pane target. `contents`
+                so the button lays out nothing of its own: the label stays the
+                same flex child it always was, and the hit area is the text. */}
+            <button className="contents" onClick={onOpen} type="button">
+              <span className="min-w-0 truncate text-xs font-normal text-muted-foreground/92" title={branchLabel}>
+                {branchLabel}
+              </span>
+            </button>
 
-          {/* Branch actions kebab — same pattern as the session/worktree rows.
-              ALWAYS laid out; only its opacity flips on hover/focus/open, so
-              revealing it never reflows the row (no layout shift). pointer-events
-              follow opacity so the invisible trigger isn't clickable at rest. */}
-          {onBranchOff && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
+            {/* Worktree path — plain muted text, not a chip. Always in the flex
+                so hover doesn't reflow the row; opacity alone reveals it.
+                `displayPath` collapses home → ~ (shell / VS Code convention). */}
+            {resolvedRepoPath && (
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[0.62rem] leading-4 text-muted-foreground/50 opacity-0 transition-opacity group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100"
+                data-slot="coding-status-cwd"
+              >
+                {displayPath(resolvedRepoPath)}
+              </span>
+            )}
+
+            {/* Branch actions kebab — same pattern as the session/worktree rows.
+                ALWAYS laid out; only its opacity flips on hover/focus/open, so
+                revealing it never reflows the row (no layout shift). pointer-events
+                follow opacity so the invisible trigger isn't clickable at rest. */}
+            {onBranchOff && (
+              <ActionsMenu
+                align="end"
+                contentClassName="w-60"
+                // The row sits at the bottom of the screen (above the composer),
+                // so the menu opens upward.
+                items={renderBranchItems}
+                side="top"
+              >
                 <Button
                   aria-label={s.newBranch}
                   className="pointer-events-none size-4 shrink-0 text-muted-foreground/60 opacity-0 transition hover:text-foreground group-hover/status-row:pointer-events-auto group-hover/status-row:opacity-100 group-focus-within/status-row:pointer-events-auto group-focus-within/status-row:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:opacity-100"
-                  onClick={event => event.stopPropagation()}
-                  onKeyDown={event => {
-                    // The row's onActivate also fires on Enter/Space; keep it from
-                    // opening the review pane when the kebab is the focus target.
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.stopPropagation()
-                    }
-                  }}
                   size="icon-xs"
                   variant="ghost"
                 >
                   <Codicon name="kebab-vertical" size="0.8rem" />
                 </Button>
-              </DropdownMenuTrigger>
-              {/* The row sits at the bottom of the screen (above the composer),
-                  so the menu opens upward. */}
-              <DropdownMenuContent align="end" className="w-60" side="top" sideOffset={6}>
-                <DropdownMenuLabel className={MENU_SECTION}>{s.newBranch}</DropdownMenuLabel>
-                {branchTargets.map(target => (
-                  <DropdownMenuItem key={target.base ?? '__head__'} onSelect={() => startBranch(target.base)}>
-                    <span className="truncate">{target.label}</span>
-                  </DropdownMenuItem>
-                ))}
-
-                {switchTarget && (
-                  <DropdownMenuItem onSelect={() => void switchToBranch(switchTarget)}>
-                    <span className="truncate">{s.switchTo(switchTarget)}</span>
-                  </DropdownMenuItem>
-                )}
-
-                <DropdownMenuSeparator />
-                <DropdownMenuLabel className={MENU_SECTION}>{s.worktrees}</DropdownMenuLabel>
-                {otherWorktrees.map(worktree => (
-                  <DropdownMenuItem key={worktree.path} onSelect={() => onOpenWorktree?.(worktree.path)}>
-                    <span className="truncate">{worktree.branch}</span>
-                  </DropdownMenuItem>
-                ))}
-                {/* Create a fresh worktree off the current HEAD (the generic
-                    "spin up a worktree here", mirroring the sidebar's + button). */}
-                <DropdownMenuItem onSelect={() => startBranch(undefined)}>
-                  <span className="truncate">{p.startWork}</span>
-                </DropdownMenuItem>
-                {/* Check an EXISTING branch out into a worktree (no new branch). */}
-                {onConvertBranch && (
-                  <DropdownMenuItem onSelect={() => startConvert()}>
-                    <span className="truncate">{p.convertBranch}</span>
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-        </div>
-
-        {(status.ahead > 0 || status.behind > 0) && (
-          <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
-            {status.ahead > 0 && (
-              <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
-                <span aria-hidden>↑</span>
-                {status.ahead}
-              </span>
+              </ActionsMenu>
             )}
-            {status.behind > 0 && (
-              <span className="flex items-center gap-0.5" title={s.behind(status.behind)}>
-                <span aria-hidden>↓</span>
-                {status.behind}
-              </span>
-            )}
-          </span>
-        )}
+          </div>
 
-        {hasLineDelta ? (
-          <DiffCount
-            added={status.added}
-            className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
-            removed={status.removed}
-          />
-        ) : untrackedOnly ? (
-          <span
-            className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
-          >
-            {s.changed(status.untracked)}
-          </span>
-        ) : null}
-      </StatusRow>
-
-      <Dialog onOpenChange={open => !branchPending && setBranchOpen(open)} open={branchOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{convertMode ? p.convertBranchTitle : p.newWorktreeTitle}</DialogTitle>
-            <DialogDescription>
-              {convertMode ? p.convertBranchDesc : p.newWorktreeDesc}
-              {!convertMode && branchBase && (
-                <span className="mt-1 block text-(--ui-text-secondary)">{s.branchOffFrom(branchBase)}</span>
+          {/* The counts describe what's in the review pane, so clicking them
+              opens it. `contents` again: the two spans stay direct flex children
+              of the row, keeping their gap and `ml-auto` behaviour untouched. */}
+          {(status.ahead > 0 || status.behind > 0 || hasLineDelta || untrackedOnly) && (
+            <button className="contents" onClick={onOpen} type="button">
+              {(status.ahead > 0 || status.behind > 0) && (
+                <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
+                  {status.ahead > 0 && (
+                    <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
+                      <span aria-hidden>↑</span>
+                      {status.ahead}
+                    </span>
+                  )}
+                  {status.behind > 0 && (
+                    <span className="flex items-center gap-0.5" title={s.behind(status.behind)}>
+                      <span aria-hidden>↓</span>
+                      {status.behind}
+                    </span>
+                  )}
+                </span>
               )}
-            </DialogDescription>
-          </DialogHeader>
 
-          {convertMode ? (
-            <Command
-              className="rounded-md border border-(--ui-stroke-tertiary)"
-              // The branch name is the authoritative key; filter on it directly.
-              filter={(value, search) => (value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0)}
-            >
-              <CommandInput autoFocus disabled={branchPending} placeholder={p.convertBranchPlaceholder} />
-              <CommandList className="max-h-64">
-                <CommandEmpty>{branchesLoading ? p.branchesLoading : p.noBranches}</CommandEmpty>
-                <CommandGroup>
-                  {branches.map(branch => (
-                    <CommandItem
-                      disabled={branchPending}
-                      key={branch.name}
-                      onSelect={() => void convertBranch(branch)}
-                      value={branch.name}
-                    >
-                      <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="git-branch" size="0.8rem" />
-                      <span className="truncate">{branch.name}</span>
-                      <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
-                        {branchActionLabel(branch, p)}
-                      </span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </CommandList>
-            </Command>
-          ) : (
-            <SanitizedInput
-              autoFocus
-              disabled={branchPending}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void submitBranch()
-                } else if (event.key === 'Escape') {
-                  setBranchOpen(false)
-                }
-              }}
-              onValueChange={setBranchName}
-              placeholder={p.branchPlaceholder}
-              sanitize={gitRef}
-              value={branchName}
-            />
+              {hasLineDelta ? (
+                <DiffCount
+                  added={status.added}
+                  className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+                  removed={status.removed}
+                />
+              ) : untrackedOnly ? (
+                <span
+                  className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+                >
+                  {s.changed(status.untracked)}
+                </span>
+              ) : null}
+            </button>
           )}
+        </StatusRow>
+      </ActionsContextMenu>
 
-          {convertMode ? (
-            <DialogFooter className="sm:justify-start">
-              <Button
-                className="px-0 text-(--ui-text-secondary) hover:text-foreground"
-                disabled={branchPending}
-                onClick={() => setConvertMode(false)}
-                type="button"
-                variant="link"
-              >
-                {t.common.cancel}
-              </Button>
-            </DialogFooter>
-          ) : (
-            <DialogFooter className="sm:justify-between">
-              {onConvertBranch ? (
-                <Button
-                  className="px-0 text-(--ui-text-secondary) hover:text-foreground"
-                  disabled={branchPending}
-                  onClick={enterConvert}
-                  type="button"
-                  variant="link"
-                >
-                  {p.convertBranchInstead}
-                </Button>
-              ) : (
-                <span />
-              )}
-              <div className="flex items-center gap-2">
-                <Button disabled={branchPending} onClick={() => setBranchOpen(false)} type="button" variant="ghost">
-                  {t.common.cancel}
-                </Button>
-                <Button
-                  disabled={branchPending || !branchName.trim()}
-                  onClick={() => void submitBranch()}
-                  type="button"
-                >
-                  {p.startWork}
-                </Button>
-              </div>
-            </DialogFooter>
-          )}
-        </DialogContent>
-      </Dialog>
+      {resolvedRepoPath && onOpenWorktree && (
+        <WorktreeDialog
+          initialBase={worktreeBase}
+          onOpenChange={setWorktreeOpen}
+          onStarted={onOpenWorktree}
+          open={worktreeOpen}
+          repoPath={resolvedRepoPath}
+        />
+      )}
     </>
   )
 })

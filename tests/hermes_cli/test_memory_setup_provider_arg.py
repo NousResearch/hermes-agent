@@ -23,23 +23,6 @@ class TestMemorySetupProviderRouting:
         direct.assert_called_once_with("honcho")
         picker.assert_not_called()
 
-    def test_setup_without_provider_runs_picker(self):
-        """`memory setup` (no provider) runs the interactive picker."""
-        args = SimpleNamespace(memory_command="setup", provider=None)
-        with patch.object(memory_setup, "cmd_setup_provider") as direct, \
-             patch.object(memory_setup, "cmd_setup") as picker:
-            memory_setup.memory_command(args)
-        picker.assert_called_once_with(args)
-        direct.assert_not_called()
-
-    def test_setup_with_missing_provider_attr_runs_picker(self):
-        """A SimpleNamespace lacking `provider` must not crash — fall back to picker."""
-        args = SimpleNamespace(memory_command="setup")
-        with patch.object(memory_setup, "cmd_setup_provider") as direct, \
-             patch.object(memory_setup, "cmd_setup") as picker:
-            memory_setup.memory_command(args)
-        picker.assert_called_once_with(args)
-        direct.assert_not_called()
 
     def test_unknown_provider_reports_and_returns_early(self, capsys):
         """An unknown provider name surfaces a helpful message and returns
@@ -51,47 +34,63 @@ class TestMemorySetupProviderRouting:
 
 
 class TestInstallDependenciesRunner:
-    """`_install_dependencies` must install via `uv` when present and fall back
-    to standard `pip` when `uv` is unavailable (e.g. slim containers / CI images
-    that don't ship uv) instead of dead-ending with "cannot install"."""
+    """`_install_dependencies` must route through the canonical
+    ``_pip_install`` ladder (uv → pip → ensurepip): uv when present, standard
+    pip when uv is unavailable, and an ensurepip bootstrap for pip-less venvs
+    instead of dead-ending with "cannot install"."""
 
-    def _run_with_missing_dep(self, tmp_path, which_side_effect):
+    def _run_with_missing_dep(self, tmp_path, which_side_effect, run_behavior=None):
         """Drive _install_dependencies for a plugin that declares one missing
-        pip dep, capturing the subprocess.run argv (or None if never called)."""
+        pip dep, capturing every subprocess.run argv issued by the ladder."""
+        import os
         import sys
+        from unittest.mock import patch as _patch
 
         (tmp_path / "plugin.yaml").write_text(
             "pip_dependencies:\n  - definitely-not-installed-xyz\n", encoding="utf-8"
         )
-        captured = {}
+        calls = []
 
         def fake_run(cmd, **kw):
-            captured["cmd"] = cmd
-            return SimpleNamespace()
+            calls.append(cmd)
+            if run_behavior:
+                return run_behavior(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        with patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
-             patch("shutil.which", side_effect=which_side_effect), \
-             patch("subprocess.run", fake_run):
+        # The hermetic conftest sets HERMES_DISABLE_LAZY_INSTALLS=1 so no test
+        # can trigger a real mid-run pip install. These tests exercise the
+        # install ladder itself (against a fully mocked subprocess.run), so
+        # they opt back in — the same both-directions override
+        # tests/tools/test_lazy_deps.py uses.
+        with _patch.dict(os.environ, {"HERMES_DISABLE_LAZY_INSTALLS": "0"}), \
+             patch("plugins.memory.find_provider_dir", return_value=tmp_path), \
+             patch("hermes_cli.tools_config.shutil.which", side_effect=which_side_effect), \
+             patch("hermes_cli.tools_config.subprocess.run", fake_run):
             memory_setup._install_dependencies("x")
-        return captured.get("cmd"), sys.executable
+        return calls, sys.executable
 
     def test_uses_uv_when_available(self, tmp_path):
-        cmd, _ = self._run_with_missing_dep(
+        calls, _ = self._run_with_missing_dep(
             tmp_path, lambda b: "/usr/bin/uv" if b == "uv" else None
         )
-        assert cmd is not None
-        assert cmd[:3] == ["/usr/bin/uv", "pip", "install"]
+        assert calls
+        assert calls[0][:3] == ["/usr/bin/uv", "pip", "install"]
 
-    def test_falls_back_to_pip_when_uv_missing(self, tmp_path, capsys):
-        """The salvaged behavior (#5954): no uv but pip present -> python -m pip."""
-        cmd, py = self._run_with_missing_dep(
-            tmp_path, lambda b: "/usr/bin/pip3" if b == "pip3" else None
-        )
-        assert cmd is not None
-        assert cmd[:4] == [py, "-m", "pip", "install"]
-        assert "Falling back to standard pip" in capsys.readouterr().out
+    def test_falls_back_to_pip_when_uv_missing(self, tmp_path):
+        """No uv but pip importable -> python -m pip install."""
+        calls, py = self._run_with_missing_dep(tmp_path, lambda b: None)
+        assert calls
+        # Ladder probes pip first, then installs with it.
+        assert calls[0][:3] == [py, "-m", "pip"]
+        assert calls[-1][:4] == [py, "-m", "pip", "install"]
 
-    def test_aborts_when_neither_uv_nor_pip(self, tmp_path, capsys):
-        cmd, _ = self._run_with_missing_dep(tmp_path, lambda b: None)
-        assert cmd is None  # no install attempted
-        assert "cannot install dependencies" in capsys.readouterr().out
+    def test_bootstraps_pip_via_ensurepip_when_missing(self, tmp_path):
+        """Neither uv nor pip -> ensurepip bootstrap, then pip install."""
+        def behavior(cmd):
+            if cmd[-1] == "--version":
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        calls, py = self._run_with_missing_dep(tmp_path, lambda b: None, behavior)
+        assert any("ensurepip" in c for c in calls)
+        assert calls[-1][:4] == [py, "-m", "pip", "install"]

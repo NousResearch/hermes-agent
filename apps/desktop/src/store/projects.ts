@@ -1,12 +1,30 @@
 import { atom } from 'nanostores'
 
-import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import type { HermesGitBranch } from '@/global'
+import {
+  liveSessionProjectId,
+  NO_PROJECT_ID,
+  type SidebarProjectTree
+} from '@/app/chat/sidebar/projects/workspace-groups'
+import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
+import { getHermesConfig, type HermesGateway } from '@/hermes'
+import { translateNow } from '@/i18n'
+import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
+import { desktopGit } from '@/lib/desktop-git'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
-import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
+import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
-import { requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, workspaceCwdForNewSession } from '@/store/session'
+import { notify } from '@/store/notifications'
+import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
+import {
+  $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
+  idsShareLineage,
+  sessionMatchesStoredId,
+  workspaceCwdForNewSession
+} from '@/store/session'
+import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -23,6 +41,24 @@ export const $activeProjectId = atom<null | string>(null)
 // source of project membership — the desktop no longer derives it.
 export const $projectTree = atom<SidebarProjectTree[]>([])
 export const $projectTreeLoading = atom(false)
+
+// False when the connected backend predates the projects.* JSON-RPC surface
+// (same semver label, older install). Null until the first probe.
+export const $projectsRpcAvailable = atom<boolean | null>(null)
+
+function markProjectsRpcSuccess(): void {
+  $projectsRpcAvailable.set(true)
+}
+
+function markProjectsRpcFailure(err: unknown): void {
+  if (isMissingRpcMethod(err)) {
+    $projectsRpcAvailable.set(false)
+  }
+}
+
+function projectsStaleBackendError(): Error {
+  return new Error(translateNow('sidebar.projects.staleBackend'))
+}
 
 // Client-side cache eviction (Apollo-style optimistic layer): ids the user just
 // deleted/archived. The backend tree is a snapshot that still lists them until
@@ -70,6 +106,32 @@ export function untombstoneSessions(ids: Array<null | string | undefined>): void
   }
 }
 
+// Ids whose delete/archive RPC is still in flight. Their tombstones are pinned
+// against the projects.tree prune below: a refresh whose snapshot predates the
+// mutation completing must NOT drop the tombstone, or the row flashes back until
+// the backend catches up. Keyed by id, so concurrent deletes stay independent.
+export const $sessionMutationsInFlight = atom<Set<string>>(new Set())
+
+function mutateInFlight(ids: Array<null | string | undefined>, add: boolean): void {
+  const current = $sessionMutationsInFlight.get()
+  const next = new Set(current)
+
+  for (const id of ids) {
+    const trimmed = id?.trim()
+
+    if (trimmed) {
+      add ? next.add(trimmed) : next.delete(trimmed)
+    }
+  }
+
+  if (next.size !== current.size) {
+    $sessionMutationsInFlight.set(next)
+  }
+}
+
+export const beginSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, true)
+export const endSessionMutation = (ids: Array<null | string | undefined>): void => mutateInFlight(ids, false)
+
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
 
@@ -96,8 +158,8 @@ export function enterProject(id: string): void {
   $projectScope.set(id)
 
   // Only explicit, persisted projects (ids are `p_<hex>`) become active. Auto
-  // projects (ids are filesystem paths) and the "No project" bucket have no
-  // durable row to pin, so they're view-scope only.
+  // projects (ids are filesystem paths) and the Home bucket have no durable row
+  // to pin, so they're view-scope only.
   if (id.startsWith('p_')) {
     void setActiveProject(id).catch(() => undefined)
   }
@@ -107,25 +169,116 @@ export function exitProjectScope(): void {
   $projectScope.set(ALL_PROJECTS)
 }
 
-// The cwd a NEW chat should start in. The "active project" is just an atom
-// ($projectScope) — so when you're inside a project, a new session (cmd-n, the
-// trunk "+") starts at that project's root (its primary repo = the default-branch
-// checkout) instead of inheriting whatever unrelated worktree the live cwd
-// drifted into. Outside a project it falls back to the plain default (detached),
-// so a bare new chat shows no branch.
+// A project's working root: its primary folder, else the first repo that has
+// one. Empty for the path-less Home bucket. (The sidebar's `projectTreeCwd` is
+// the same rule over the same tree — this is the store-side copy so the store
+// doesn't reach into the sidebar's React module.)
+const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
+  (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+
+// ⌘K "go to project": flip the sidebar into grouped mode and enter the project
+// — a pure scope switch, same as clicking the overview row (never spends main).
+// With `newSession` (⌘-select / ⌘-Enter) it also lands on a fresh session draft
+// anchored at the project root — stacked as a tab when main already holds a
+// chat (palette opens are opens-from-nowhere). A path-less project (the Home
+// bucket) gets a plain detached draft.
+export function goToProject(id: string, options?: { newSession?: boolean }): void {
+  setSidebarAgentsGrouped(true)
+  enterProject(id)
+
+  if (!options?.newSession) {
+    return
+  }
+
+  const cwd = projectRootCwd($projectTree.get().find(node => node.id === id))
+
+  if (cwd) {
+    requestStartWorkSession(cwd, undefined, { openTab: true })
+  } else {
+    requestFreshSession()
+  }
+}
+
+// The cwd a NEW chat should start in.
+//
+// Priority (first hit wins):
+//   1. Explicit sidebar project scope (drilled into a project / Home bucket)
+//   2. The FOCUSED session's workspace — so ⌘N / ⌘T from a chat that's already
+//      in a project/worktree stay there without requiring a sidebar drill-in
+//   3. Configured default project dir / remote remembered cwd (detached otherwise)
+//
+// The "active project" is just an atom ($projectScope) — so when you're inside
+// a project, a new session (cmd-n, the trunk "+") starts at that project's root
+// (its primary repo = the default-branch checkout). Outside a project it used
+// to fall straight to the plain default (detached), which dropped the workspace
+// of the chat you were looking at — that's the case (2) covers.
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
+  // Inside Home, "no folder" is the point: a new chat must stay detached rather
+  // than silently attaching to the configured default dir and leaving Home.
+  if (scope === NO_PROJECT_ID) {
+    return ''
+  }
+
   if (scope !== ALL_PROJECTS) {
-    const project = $projectTree.get().find(node => node.id === scope)
-    const cwd = (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+    const cwd = projectRootCwd($projectTree.get().find(node => node.id === scope))
 
     if (cwd) {
       return cwd
     }
   }
 
+  // Inherit the focused chat's workspace. ⌘N/⌘T from a session that already
+  // has a project/pwd should stay there — drilling into the sidebar project
+  // is the uncommon path, not the requirement.
+  const focusedCwd = focusedSessionWorkspaceCwd()
+
+  if (focusedCwd) {
+    return focusedCwd
+  }
+
   return workspaceCwdForNewSession()
+}
+
+/** Live workspace of the session the user is looking at (tile or primary). */
+function focusedSessionWorkspaceCwd(): string {
+  const focusedStoredId = $focusedStoredSessionId.get()
+  const state = $focusedSessionState.get()
+
+  // Prefer the live runtime slice when it belongs to the focused chat
+  // (agent can relocate mid-turn). Cold tabs / mid-switch lag fall through
+  // to the stored session row.
+  const stateCwd = state?.cwd?.trim() || ''
+  const stateStoredId = state?.storedSessionId?.trim() || ''
+
+  if (
+    stateCwd &&
+    (!focusedStoredId ||
+      !stateStoredId ||
+      stateStoredId === focusedStoredId ||
+      idsShareLineage(focusedStoredId, stateStoredId, $sessions.get()))
+  ) {
+    return stateCwd
+  }
+
+  if (focusedStoredId) {
+    const row = $sessions.get().find(s => sessionMatchesStoredId(s, focusedStoredId))
+    const rowCwd = row?.cwd?.trim() || ''
+
+    if (rowCwd) {
+      return rowCwd
+    }
+
+    // Focused a real session with no workspace → stay detached. Do NOT fall
+    // through to `$currentCwd` (it may still hold a remembered path from an
+    // earlier chat and would re-attach a project the user left).
+    return ''
+  }
+
+  // No focused stored session: primary draft. The composer atom is the draft's
+  // workspace target (set by startFreshSession / startSessionInWorkspace).
+  return $currentCwd.get().trim()
 }
 
 const underPath = (parent: string, child: string): boolean =>
@@ -150,6 +303,44 @@ export function projectIdForCwd(cwd: string): null | string {
       if (p && underPath(p, cwd) && p.length > bestLen) {
         bestLen = p.length
         best = project.id
+      }
+    }
+  }
+
+  return best
+}
+
+// The display NAME of the explicit, named project owning `cwd` (longest path
+// match), or null when the cwd sits in no named project. The status bar reads
+// this to label the workspace by project instead of the bare cwd leaf. We skip
+// auto-projects (a repo root promoted with no projects.db row) and the synthetic
+// Home bucket on purpose: those have no human name, so their sessions keep the
+// cwd-leaf label — matching the backend `_project_info_for_cwd`, which
+// only resolves projects.db rows, so the desktop and TUI name the same session
+// identically without threading a second per-session copy through session.info.
+export function projectNameForCwd(cwd: string): null | string {
+  const target = (cwd || '').trim()
+
+  if (!target) {
+    return null
+  }
+
+  let best: null | string = null
+  let bestLen = -1
+
+  for (const project of $projectTree.get()) {
+    if (project.isAuto || project.isNoProject) {
+      continue
+    }
+
+    const paths = [project.path, ...project.repos.flatMap(repo => [repo.path, ...repo.groups.map(group => group.path)])]
+
+    for (const path of paths) {
+      const p = (path || '').trim()
+
+      if (p && underPath(p, target) && p.length > bestLen) {
+        bestLen = p.length
+        best = project.label
       }
     }
   }
@@ -204,6 +395,34 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
+async function gatewayRequestOn<T>(
+  gateway: HermesGateway,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  return gateway.request<T>(method, params)
+}
+
+interface ActiveProjectsContext {
+  gateway: HermesGateway
+  profile: string
+}
+
+async function activeProjectsContext(): Promise<ActiveProjectsContext> {
+  const profile = $activeGatewayProfile.get() || 'default'
+  let gateway = activeGateway()
+
+  if (!gateway || gateway.connectionState !== 'open') {
+    gateway = await ensureActiveGatewayOpen()
+  }
+
+  if (!gateway || gateway !== activeGateway() || profile !== ($activeGatewayProfile.get() || 'default')) {
+    throw new Error('Active Hermes profile changed while connecting')
+  }
+
+  return { gateway, profile }
+}
+
 function applyPayload(payload: ProjectsPayload): void {
   $projects.set(payload.projects ?? [])
   $activeProjectId.set(payload.active_id ?? null)
@@ -214,7 +433,9 @@ function applyPayload(payload: ProjectsPayload): void {
 export async function refreshProjects(): Promise<void> {
   try {
     applyPayload(await gatewayRequest<ProjectsPayload>('projects.list'))
-  } catch {
+    markProjectsRpcSuccess()
+  } catch (err) {
+    markProjectsRpcFailure(err)
     // Backend may not be ready; keep the last known list.
   }
 }
@@ -225,37 +446,62 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
-// Pull the authoritative project tree (overview structure + counts + preview
-// sessions + the scoped-session-id set). Best-effort: a failure leaves the
-// cached tree intact so the sidebar doesn't flicker.
-export async function refreshProjectTree(): Promise<void> {
-  $projectTreeLoading.set(true)
+let projectTreeRefreshGeneration = 0
+
+async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
+  const generation = ++projectTreeRefreshGeneration
+
+  if (activeGateway() === gateway) {
+    $projectTreeLoading.set(true)
+  }
 
   try {
-    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
-    // The flat Sessions list shows everything; scoped ids are only used here to
-    // reconcile the optimistic eviction layer against what the server still lists.
-    const scoped = new Set(res.scoped_session_ids ?? [])
+    const res = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
+      preview_limit: 3
+    })
 
+    if (generation !== projectTreeRefreshGeneration || activeGateway() !== gateway) {
+      return
+    }
+
+    const scoped = new Set(res.scoped_session_ids ?? [])
     $projectTree.set(res.projects ?? [])
     $activeProjectId.set(res.active_id ?? null)
-
-    // Reconcile the optimistic eviction layer against the fresh snapshot: keep
-    // evicting ids the server still lists (delete in flight) and drop the rest
-    // (server caught up), so the set can't grow unbounded across a long session.
     const tombstones = $removedSessionIds.get()
 
     if (tombstones.size) {
-      const pending = new Set([...tombstones].filter(id => scoped.has(id)))
+      // Keep a tombstone while the backend still lists the id (delete pending on
+      // its side) OR while its mutation is still in flight locally — dropping it
+      // early flashes the row back until the RPC lands.
+      const inFlight = $sessionMutationsInFlight.get()
+      const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
 
       if (pending.size !== tombstones.size) {
         $removedSessionIds.set(pending)
       }
     }
+
+    markProjectsRpcSuccess()
+  } catch (err) {
+    if (activeGateway() === gateway) {
+      markProjectsRpcFailure(err)
+    }
+  } finally {
+    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
+      $projectTreeLoading.set(false)
+    }
+  }
+}
+
+// Pull the authoritative project tree (overview structure + counts + preview
+// sessions + the scoped-session-id set). Best-effort: a failure leaves the
+// cached tree intact so the sidebar doesn't flicker.
+export async function refreshProjectTree(): Promise<void> {
+  try {
+    const { gateway } = await activeProjectsContext()
+    await refreshProjectTreeOn(gateway)
   } catch {
     // Backend may not be ready; keep the last known tree.
-  } finally {
-    $projectTreeLoading.set(false)
   }
 }
 
@@ -274,30 +520,129 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   }
 }
 
-// One filesystem scan per app run: the heavy disk walk happens once, the result
-// is cached in the backend, and later opens read the cache. Desktop-only (needs
-// the native crawler); elsewhere discovery falls back to session-derived repos.
-let didScanRepos = false
+export interface RepoDiscoveryPolicy {
+  enabled: boolean
+  roots: string[]
+  exclude_paths: string[]
+}
+
+export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPolicy {
+  const desktopValue = config && typeof config === 'object' ? (config as { desktop?: unknown }).desktop : undefined
+
+  const desktop =
+    desktopValue && typeof desktopValue === 'object'
+      ? (desktopValue as {
+          repo_scan_enabled?: unknown
+          repo_scan_exclude_paths?: unknown
+          repo_scan_roots?: unknown
+        })
+      : {}
+
+  return {
+    enabled: desktop.repo_scan_enabled !== false,
+    roots: Array.isArray(desktop.repo_scan_roots)
+      ? desktop.repo_scan_roots.filter((value): value is string => typeof value === 'string')
+      : [],
+    exclude_paths: Array.isArray(desktop.repo_scan_exclude_paths)
+      ? desktop.repo_scan_exclude_paths.filter((value): value is string => typeof value === 'string')
+      : []
+  }
+}
+
+export function repoDiscoveryPolicySignature(policy: RepoDiscoveryPolicy): string {
+  return JSON.stringify(policy)
+}
+
+interface RepoScanState {
+  completedSignature?: string
+  generation: number
+  runningSignature?: string
+}
+
+const repoScanStates = new WeakMap<HermesGateway, RepoScanState>()
+const scanningGatewayGenerations = new WeakMap<HermesGateway, number>()
+
+function syncReposScanning(): void {
+  const gateway = activeGateway()
+  $reposScanning.set(Boolean(gateway && scanningGatewayGenerations.has(gateway)))
+}
+
+$gateway.subscribe(syncReposScanning)
 
 export async function scanAndRecordRepos(force = false): Promise<void> {
-  const scan = window.hermesDesktop?.git?.scanRepos
-
-  if (!scan || (didScanRepos && !force)) {
+  if (isDesktopFsRemoteMode()) {
     return
   }
 
-  didScanRepos = true
-  $reposScanning.set(true)
+  let context: ActiveProjectsContext
 
   try {
-    const repos = await scan([])
-    await gatewayRequest('projects.record_repos', { repos })
-    // The disk scan may surface new zero-session repos; refold them into the tree.
-    await refreshProjectTree()
+    context = await activeProjectsContext()
   } catch {
-    didScanRepos = false // let a later open retry a failed scan
+    return
+  }
+
+  const scan = desktopGit()?.scanRepos
+
+  if (!scan) {
+    return
+  }
+
+  const state = repoScanStates.get(context.gateway) ?? { generation: 0 }
+  repoScanStates.set(context.gateway, state)
+  let generation: number | undefined
+
+  try {
+    const policy = repoDiscoveryPolicyFromConfig(await getHermesConfig(context.profile))
+    const signature = repoDiscoveryPolicySignature(policy)
+
+    if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
+      return
+    }
+
+    generation = ++state.generation
+    state.runningSignature = signature
+
+    if (!policy.enabled) {
+      await gatewayRequestOn(context.gateway, 'projects.record_repos', {
+        discovery_policy: policy,
+        repos: []
+      })
+    } else {
+      scanningGatewayGenerations.set(context.gateway, generation)
+      syncReposScanning()
+
+      const repos = await scan(policy.roots, {
+        enabled: true,
+        excludePaths: policy.exclude_paths
+      })
+
+      if (state.generation !== generation) {
+        return
+      }
+
+      await gatewayRequestOn(context.gateway, 'projects.record_repos', {
+        discovery_policy: policy,
+        repos
+      })
+    }
+
+    if (state.generation !== generation) {
+      return
+    }
+
+    state.completedSignature = signature
+    await refreshProjectTreeOn(context.gateway)
+  } catch {
+    state.completedSignature = undefined
   } finally {
-    $reposScanning.set(false)
+    state.runningSignature = undefined
+
+    if (scanningGatewayGenerations.get(context.gateway) === generation) {
+      scanningGatewayGenerations.delete(context.gateway)
+    }
+
+    syncReposScanning()
   }
 }
 
@@ -334,20 +679,19 @@ export async function generateProjectIdea(name: string): Promise<string> {
   }
 }
 
-// Write IDEA.md to a project's primary folder (desktop only, best-effort). Local
-// fs write is hardened in the electron main; a remote backend / missing bridge
-// just skips it.
+// Write IDEA.md to a project's primary folder (best-effort). Routes through the
+// remote-aware fs write, so it lands on the backend for a remote gateway and on
+// disk locally — the project is created regardless of whether the file lands.
 async function writeProjectIdea(folder: null | string | undefined, idea: string): Promise<void> {
   const dir = (folder || '').trim()
   const body = idea.trim()
-  const write = window.hermesDesktop?.writeTextFile
 
-  if (!dir || !body || !write) {
+  if (!dir || !body) {
     return
   }
 
   try {
-    await write(`${dir.replace(/[/\\]+$/, '')}/IDEA.md`, body.endsWith('\n') ? body : `${body}\n`)
+    await writeDesktopFileText(`${dir.replace(/[/\\]+$/, '')}/IDEA.md`, body.endsWith('\n') ? body : `${body}\n`)
   } catch {
     // Best-effort: the project is created regardless of whether IDEA.md lands.
   }
@@ -409,17 +753,34 @@ function projectInfoToTreeNode(project: ProjectInfo): SidebarProjectTree {
 }
 
 export async function createProject(input: CreateProjectInput): Promise<ProjectInfo | null> {
-  const res = await gatewayRequest<{ project: ProjectInfo | null }>('projects.create', {
-    name: input.name,
-    folders: input.folders ?? [],
-    primary_path: input.primaryPath,
-    slug: input.slug,
-    description: input.description,
-    icon: input.icon,
-    color: input.color,
-    board_slug: input.boardSlug,
-    use: input.use ?? false
-  })
+  if ($projectsRpcAvailable.get() === false) {
+    throw projectsStaleBackendError()
+  }
+
+  let res: { project: ProjectInfo | null }
+
+  try {
+    res = await gatewayRequest<{ project: ProjectInfo | null }>('projects.create', {
+      name: input.name,
+      folders: input.folders ?? [],
+      primary_path: input.primaryPath,
+      slug: input.slug,
+      description: input.description,
+      icon: input.icon,
+      color: input.color,
+      board_slug: input.boardSlug,
+      use: input.use ?? false
+    })
+  } catch (err) {
+    if (isMissingRpcMethod(err)) {
+      $projectsRpcAvailable.set(false)
+      throw projectsStaleBackendError()
+    }
+
+    throw err
+  }
+
+  markProjectsRpcSuccess()
 
   // Not optimistic (the create awaits the RPC first, so there's nothing to roll
   // back): apply the server's row into the cached list + tree at once, so it
@@ -443,6 +804,8 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
     if (input.use) {
       $activeProjectId.set(created.id)
     }
+
+    setSidebarAgentsGrouped(true)
   }
 
   reconcileProjects()
@@ -487,6 +850,38 @@ export async function updateProject(
       ...(patch.icon === null && { icon: '' })
     })
   )
+}
+
+// Appearance for an AUTO (inherited git-repo) project has no projects.db row to
+// write to — its id is just the repo path. So the first color/icon change ADOPTS
+// the repo as a real project (folder = repo root, name = its label) carrying the
+// chosen look; from then on it patches in place like any explicit project.
+// Returns true when an adoption happened, so an incremental picker can close
+// (the node's id changes on adopt, and a second stale write would double-create).
+export async function setProjectAppearance(
+  project: Pick<SidebarProjectTree, 'color' | 'icon' | 'id' | 'isAuto' | 'label' | 'path'>,
+  patch: { color?: null | string; icon?: null | string }
+): Promise<boolean> {
+  if (!project.isAuto) {
+    await updateProject(project.id, patch)
+
+    return false
+  }
+
+  if (!project.path) {
+    return false
+  }
+
+  await createProject({
+    name: project.label,
+    folders: [project.path],
+    primaryPath: project.path,
+    // Carry any already-set look so setting one field doesn't wipe the other.
+    color: (patch.color ?? project.color) || undefined,
+    icon: (patch.icon ?? project.icon) || undefined
+  })
+
+  return true
 }
 
 export async function addProjectFolder(
@@ -539,7 +934,7 @@ function openSessionBelongsToProject(projectId: string, projects: ProjectInfo[])
     return false
   }
 
-  const open = $sessions.get().find(s => s.id === openId || s._lineage_root_id === openId)
+  const open = $sessions.get().find(s => sessionMatchesStoredId(s, openId))
 
   return Boolean(open && liveSessionProjectId(open, projects) === projectId)
 }
@@ -590,6 +985,15 @@ export interface ProjectDialogState {
 export const $projectDialog = atom<null | ProjectDialogState>(null)
 
 export function openProjectCreate(): void {
+  if ($projectsRpcAvailable.get() === false) {
+    notify({
+      kind: 'warning',
+      message: translateNow('sidebar.projects.staleBackend')
+    })
+
+    return
+  }
+
   $projectDialog.set({ mode: 'create' })
 }
 
@@ -630,7 +1034,7 @@ export async function startWorkInRepo(
   repoPath: string,
   options?: { name?: string; branch?: string; base?: string; existingBranch?: string }
 ): Promise<null | { path: string; branch: string }> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git || !repoPath) {
     return null
@@ -645,7 +1049,7 @@ export async function startWorkInRepo(
 // Local branches for the composer's "convert a branch into a worktree" picker.
 // Empty on a remote backend / non-repo (the Electron probe can't run).
 export async function listRepoBranches(repoPath: string): Promise<HermesGitBranch[]> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git?.branchList || !repoPath) {
     return []
@@ -654,8 +1058,21 @@ export async function listRepoBranches(repoPath: string): Promise<HermesGitBranc
   return git.branchList(repoPath)
 }
 
+// Local + remote-tracking branches for the base-branch picker in the
+// new-worktree dialog. The remote default (origin/HEAD) is flagged so the
+// UI can preselect it. Empty on a remote backend / non-repo.
+export async function listBaseBranches(repoPath: string): Promise<HermesGitBaseBranch[]> {
+  const git = desktopGit()
+
+  if (!git?.baseBranchList || !repoPath) {
+    return []
+  }
+
+  return git.baseBranchList(repoPath)
+}
+
 export async function switchBranchInRepo(repoPath: string, branch: string): Promise<void> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git || !repoPath || !branch.trim()) {
     return
@@ -673,6 +1090,8 @@ export async function switchBranchInRepo(repoPath: string, branch: string): Prom
 // effect even if the path repeats.
 export interface StartWorkSessionRequest {
   draft?: string
+  /** Stack the fresh session as a tab when main already holds a chat (palette/⌘O opens-from-nowhere). */
+  openTab?: boolean
   path: string
   token: number
 }
@@ -692,7 +1111,7 @@ export function requestNewWorktree(): void {
 
 let startWorkToken = 0
 
-export function requestStartWorkSession(path: string, draft?: string): void {
+export function requestStartWorkSession(path: string, draft?: string, options?: { openTab?: boolean }): void {
   const target = path.trim()
 
   if (!target) {
@@ -700,7 +1119,12 @@ export function requestStartWorkSession(path: string, draft?: string): void {
   }
 
   startWorkToken += 1
-  $startWorkSessionRequest.set({ draft: draft?.trim() || undefined, path: target, token: startWorkToken })
+  $startWorkSessionRequest.set({
+    draft: draft?.trim() || undefined,
+    openTab: options?.openTab || undefined,
+    path: target,
+    token: startWorkToken
+  })
 }
 
 export async function removeWorktreePath(
@@ -708,7 +1132,7 @@ export async function removeWorktreePath(
   worktreePath: string,
   options?: { force?: boolean }
 ): Promise<void> {
-  const git = window.hermesDesktop?.git
+  const git = desktopGit()
 
   if (!git) {
     return
@@ -732,20 +1156,60 @@ export async function copyPath(path: null | string): Promise<void> {
   }
 }
 
-// Open the native directory picker (reuses the Electron default-project-dir
-// chooser). Returns the chosen absolute path, or null when cancelled.
+// Pick a project folder via the remote-aware picker: a remote gateway browses
+// the backend filesystem (seeded at its default cwd) where sessions run; local
+// mode opens the native dialog. Returns the absolute path, or null if cancelled.
 export async function pickProjectFolder(): Promise<null | string> {
-  const pick = window.hermesDesktop?.settings?.pickDefaultProjectDir
+  const [dir] = await selectDesktopPaths({
+    defaultPath: (await desktopDefaultCwd())?.cwd,
+    directories: true,
+    multiple: false
+  })
 
-  if (!pick) {
-    return null
+  return dir || null
+}
+
+// ⌘O / palette "Open folder…": open a folder AS a project, upserting. A folder
+// already covered by a project (explicit or auto) just enters it; anything else
+// becomes a new project named after the folder. Either way the sidebar scopes
+// to the project and a fresh session draft lands anchored at the folder — the
+// one-keystroke version of new project → enter → new session. Like goToProject,
+// this is an open-from-nowhere: an occupied main gets a stacked tab, not stolen.
+export async function openFolderAsProject(dir?: string): Promise<void> {
+  const target = (dir ?? (await pickProjectFolder()) ?? '').trim()
+
+  if (!target) {
+    return
   }
 
-  try {
-    const result = await pick()
+  // Refresh first so the membership check runs against live truth — a repo
+  // cloned since the last scan should enter its auto project, not double-create.
+  await refreshProjectTree()
 
-    return result.canceled ? null : result.dir
-  } catch {
-    return null
+  const existing = projectIdForCwd(target)
+
+  if (existing) {
+    setSidebarAgentsGrouped(true)
+    enterProject(existing)
+  } else {
+    const name =
+      target
+        .replace(/[/\\]+$/, '')
+        .split(/[/\\]/)
+        .pop() || target
+
+    try {
+      const created = await createProject({ name, folders: [target], primaryPath: target, use: true })
+
+      if (created) {
+        enterProject(created.id)
+      }
+    } catch (err) {
+      // Stale backend (no projects.* RPC) or a failed write: still open the
+      // folder as a plain workspace session below — the project row can wait.
+      notify({ kind: 'warning', message: err instanceof Error ? err.message : String(err) })
+    }
   }
+
+  requestStartWorkSession(target, undefined, { openTab: true })
 }

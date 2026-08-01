@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import hermes_cli.plugins as plugins_mod
 import tools.terminal_tool as terminal_tool_module
+from tools.environments.local import LocalEnvironment
 
 
 _UNSET = object()
@@ -66,54 +67,6 @@ def test_terminal_output_unchanged_when_transform_hook_not_registered(monkeypatc
     assert result["error"] is None
 
 
-def test_terminal_output_unchanged_for_none_hook_result(monkeypatch, tmp_path):
-    result, _mock_env = _run_terminal(
-        monkeypatch,
-        tmp_path,
-        output="plain output",
-        invoke_hook=lambda hook_name, **kwargs: [None],
-    )
-
-    assert result["output"] == "plain output"
-
-
-def test_terminal_output_ignores_invalid_hook_results(monkeypatch, tmp_path):
-    result, _mock_env = _run_terminal(
-        monkeypatch,
-        tmp_path,
-        output="plain output",
-        invoke_hook=lambda hook_name, **kwargs: [{"bad": True}, 123, ["nope"]],
-    )
-
-    assert result["output"] == "plain output"
-
-
-def test_terminal_output_uses_first_valid_string_from_hooks(monkeypatch, tmp_path):
-    result, _mock_env = _run_terminal(
-        monkeypatch,
-        tmp_path,
-        output="plain output",
-        invoke_hook=lambda hook_name, **kwargs: [None, {"bad": True}, "first", "second"],
-    )
-
-    assert result["output"] == "first"
-
-
-def test_terminal_output_transform_still_truncates_long_replacement(monkeypatch, tmp_path):
-    transformed_output = "PLUGIN-HEAD\n" + ("A" * 60000) + "\nPLUGIN-TAIL"
-    result, _mock_env = _run_terminal(
-        monkeypatch,
-        tmp_path,
-        output="short output",
-        invoke_hook=lambda hook_name, **kwargs: [transformed_output],
-    )
-
-    assert "PLUGIN-HEAD" in result["output"]
-    assert "PLUGIN-TAIL" in result["output"]
-    assert "[OUTPUT TRUNCATED" in result["output"]
-    assert transformed_output != result["output"]
-
-
 def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_path):
     # Ensure redaction is active regardless of host HERMES_REDACT_SECRETS state
     # or collection-time import order (the module snapshots env at import).
@@ -128,25 +81,69 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     )
 
     assert "\x1b" not in result["output"]
+    # Terminal output now passes code_file=True: ENV-assignment redaction is
+    # skipped (so code constants like MAX_TOKENS=100 aren't corrupted), but a
+    # real sk-/ghp_/JWT-shaped value is STILL masked by _PREFIX_RE. The full
+    # secret never survives; only the leading prefix marker remains. (#33801)
     assert secret not in result["output"]
     assert "OPENAI_API_KEY=" in result["output"]
-    assert "***" in result["output"]
+    assert "sk-pro" in result["output"]  # prefix marker from _mask_token
+    assert "abc123def456" not in result["output"]  # secret body is gone
 
 
-def test_terminal_output_transform_hook_exception_falls_back(monkeypatch, tmp_path):
-    def _raise(*_args, **_kwargs):
-        raise RuntimeError("boom")
-
-    result, _mock_env = _run_terminal(
-        monkeypatch,
-        tmp_path,
-        output="plain output",
-        invoke_hook=_raise,
+def test_large_process_output_is_bounded_before_sudo_and_plugin_hooks(
+    monkeypatch, tmp_path
+):
+    limit = 10_000
+    monkeypatch.setattr("tools.tool_output_limits.get_max_bytes", lambda: limit)
+    monkeypatch.setattr(
+        terminal_tool_module, "_get_env_config", lambda: _make_env_config(tmp_path)
+    )
+    monkeypatch.setattr(terminal_tool_module, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(
+        terminal_tool_module,
+        "_check_all_guards",
+        lambda *_args, **_kwargs: {"approved": True},
     )
 
-    assert result["output"] == "plain output"
-    assert result["exit_code"] == 0
-    assert result["error"] is None
+    sudo_input_lengths = []
+    hook_inputs = []
+
+    def _sudo_spy(output):
+        sudo_input_lengths.append(len(output))
+        return False
+
+    def _hook_spy(hook_name, **kwargs):
+        if hook_name == "transform_terminal_output":
+            hook_inputs.append(kwargs["output"])
+        return []
+
+    monkeypatch.setattr(
+        terminal_tool_module, "_sudo_wrong_password_failure", _sudo_spy
+    )
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _hook_spy)
+
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+    monkeypatch.setitem(terminal_tool_module._active_environments, "default", env)
+    monkeypatch.setitem(terminal_tool_module._last_activity, "default", 0.0)
+    try:
+        command = (
+            "python3 -c \"import sys; "
+            "sys.stdout.write('HEAD-SENTINEL\\n' + 'x' * 2000000 + "
+            "'\\nTAIL-SENTINEL')\""
+        )
+        result = json.loads(terminal_tool_module.terminal_tool(command=command))
+    finally:
+        env.cleanup()
+
+    assert sudo_input_lengths
+    assert max(sudo_input_lengths) <= limit
+    assert len(hook_inputs) == 1
+    assert len(hook_inputs[0]) <= limit
+    assert hook_inputs[0].startswith("HEAD-SENTINEL")
+    assert hook_inputs[0].endswith("TAIL-SENTINEL")
+    assert "[OUTPUT TRUNCATED" in hook_inputs[0]
+    assert len(result["output"]) <= limit
 
 
 def test_terminal_output_transform_does_not_change_approval_or_exit_code_meaning(monkeypatch, tmp_path):

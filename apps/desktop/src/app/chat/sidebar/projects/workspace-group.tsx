@@ -4,16 +4,24 @@ import { useState } from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
+import { setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { newSessionInProfile } from '@/store/profile'
 import { switchBranchInRepo } from '@/store/projects'
 
-import { countLabel, SidebarRowStack } from '../chrome'
+import { SidebarRowStack } from '../chrome'
 import { SidebarLoadMoreRow } from '../load-more-row'
 
 import { SIDEBAR_GROUP_PAGE, useWorkspaceNodeOpen } from './model'
 import type { SidebarSessionGroup } from './workspace-groups'
-import { WorkspaceAddButton, WorkspaceHeader, WorkspaceMenu, WorkspaceShowMoreButton } from './workspace-header'
+import {
+  WorkspaceAddButton,
+  WorkspaceContextMenu,
+  WorkspaceHeader,
+  WorkspaceMenu,
+  WorkspaceShowMoreButton
+} from './workspace-header'
 
 interface SidebarWorkspaceGroupProps {
   group: SidebarSessionGroup
@@ -36,11 +44,13 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
   const [visibleCount, setVisibleCount] = useState(SIDEBAR_GROUP_PAGE)
 
   const loadedCount = group.sessions.length
-  // Profile groups know their on-disk total (children excluded); workspace
-  // groups only ever page within what's already loaded.
-  const totalCount = isProfileGroup ? Math.max(group.totalCount ?? loadedCount, loadedCount) : loadedCount
   const visibleSessions = group.sessions.slice(0, visibleCount)
-  const hiddenCount = Math.max(0, totalCount - visibleSessions.length)
+  // Profile groups can have more rows on the server than are loaded — the
+  // aggregator reports `hasMore` so the lane can offer another page without
+  // pricing an exact total per refresh. Workspace groups only ever page within
+  // what's already loaded.
+  const hiddenLoaded = Math.max(0, loadedCount - visibleSessions.length)
+  const hiddenCount = isProfileGroup && group.hasMore ? Math.max(hiddenLoaded, 1) : hiddenLoaded
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 
   // Leading glyph: profile color dot, a home mark for the repo's primary
@@ -62,12 +72,17 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
 
     setVisibleCount(target)
 
-    if (target > loadedCount && loadedCount < totalCount) {
+    if (target > loadedCount && group.hasMore) {
       group.onLoadMore?.()
     }
   }
 
   const handleNewSession = async () => {
+    // Reveal the lane the new session targets — an empty worktree/branch lane
+    // starts collapsed, so without this the session lands in a folder the user
+    // can't see. Stable across the lane's default flipping open once populated.
+    setWorkspaceNodeOpen(group.id, true)
+
     if (isProfileGroup) {
       newSessionInProfile(group.id)
 
@@ -96,30 +111,31 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
 
   return (
     <SidebarRowStack>
-      <WorkspaceHeader
-        action={
-          (onNewSession || isProfileGroup || onRemove) && (
-            <div className="flex items-center">
-              {(onNewSession || isProfileGroup) && (
-                <WorkspaceAddButton
-                  label={s.newSessionIn(group.label)}
-                  // Profile groups start a fresh session in that profile but keep
-                  // the all-profiles browse view; workspace groups seed the new
-                  // session's cwd. Main checkout lanes are branch-targeted.
-                  onClick={() => void handleNewSession()}
-                />
-              )}
-              {onRemove && <WorkspaceMenu onRemove={onRemove} path={group.path} />}
-            </div>
-          )
-        }
-        count={isProfileGroup ? countLabel(visibleSessions.length, totalCount) : group.sessions.length}
-        icon={leadingIcon}
-        label={group.label}
-        onToggle={toggleOpen}
-        open={open}
-        title={group.path ?? undefined}
-      />
+      <WorkspaceContextMenu onRemove={onRemove} path={group.path}>
+        <WorkspaceHeader
+          action={
+            (onNewSession || isProfileGroup || onRemove) && (
+              <div className="flex items-center">
+                {(onNewSession || isProfileGroup) && (
+                  <WorkspaceAddButton
+                    label={s.newSessionIn(group.label)}
+                    // Profile groups start a fresh session in that profile but keep
+                    // the all-profiles browse view; workspace groups seed the new
+                    // session's cwd. Main checkout lanes are branch-targeted.
+                    onClick={() => void handleNewSession()}
+                  />
+                )}
+                {onRemove && <WorkspaceMenu onRemove={onRemove} path={group.path} />}
+              </div>
+            )
+          }
+          icon={leadingIcon}
+          label={group.label}
+          onToggle={toggleOpen}
+          open={open}
+          title={group.path ? displayPath(group.path) : undefined}
+        />
+      </WorkspaceContextMenu>
       {open && (
         <>
           {visibleSessions.length === 0 ? (

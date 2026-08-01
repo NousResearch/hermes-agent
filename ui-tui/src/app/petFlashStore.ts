@@ -13,3 +13,16 @@ interface PetFlash {
 export const $petFlash = atom<PetFlash | null>(null)
 
 export const flashPet = (state: PetState, ms = 1600) => $petFlash.set({ state, until: Date.now() + ms })
+
+// Affection-heart beat: a monotonic tick the status-bar ♥ flashes on. Bumped by
+// the gateway `reaction` event (core-detected ily / <3 / good bot) — the TUI's
+// share of the same signal that plays the desktop's floating hearts.
+export const $goodVibesTick = atom(0)
+
+export const flashGoodVibes = () => $goodVibesTick.set($goodVibesTick.get() + 1)
+
+// The floating pet's footprint, or null when no pet is shown. The transcript
+// keeps its text clear of the pet responsively: on wide terminals it reserves a
+// right gutter (`width`) so lines wrap to the pet's LEFT; on narrow terminals it
+// reserves bottom rows (`height`) so lines stay full-width and sit ABOVE it.
+export const $petBox = atom<{ width: number; height: number } | null>(null)

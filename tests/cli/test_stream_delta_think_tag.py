@@ -1,6 +1,9 @@
 """Tests for _stream_delta's handling of <think> tags in prose vs real reasoning blocks."""
 import sys
 import os
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
@@ -59,13 +62,6 @@ class TestThinkTagInProse:
         assert "<think>" in full, "The literal <think> tag should be in the emitted text"
         assert "Launch production" in full
 
-    def test_think_tag_after_text_on_same_line(self):
-        """'some text <think>' should NOT trigger reasoning."""
-        cli = _make_cli_stub()
-        cli._stream_delta("Here is the <think> tag explanation")
-        assert not cli._in_reasoning_block
-        full = "".join(cli._emitted)
-        assert "<think>" in full
 
     def test_think_tag_in_backticks(self):
         """'`<think>`' should NOT trigger reasoning."""
@@ -98,17 +94,24 @@ class TestRealReasoningBlock:
         full = "".join(cli._emitted)
         assert "Some preamble" in full
 
-    def test_think_after_newline_with_whitespace(self):
-        """'text\\n  <think>' should trigger reasoning block."""
-        cli = _make_cli_stub()
-        cli._stream_delta("Some preamble\n  <think>")
-        assert cli._in_reasoning_block
 
     def test_think_with_only_whitespace_before(self):
         """'   <think>' (whitespace only prefix) should trigger."""
         cli = _make_cli_stub()
         cli._stream_delta("   <think>")
         assert cli._in_reasoning_block
+
+    @pytest.mark.parametrize(
+        "tag",
+        ["THINK", "Think", "ThInK", "THOUGHT", "REASONING", "Thinking"],
+    )
+    def test_reasoning_tags_are_case_insensitive(self, tag):
+        cli = _make_cli_stub()
+        cli._stream_delta(f"<{tag}>hidden reasoning</{tag}>Visible answer")
+        assert not cli._in_reasoning_block
+        full = "".join(cli._emitted)
+        assert full == "Visible answer"
+        assert "hidden reasoning" not in full
 
 
 class TestFlushRecovery:

@@ -3,7 +3,7 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
-import { ChevronDown, ExternalLink, Loader2, Save } from '@/lib/icons'
+import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
 
@@ -16,6 +16,13 @@ export type KeyRowProps = Omit<EnvRowProps, 'info' | 'varKey'>
 
 /** Matches Advanced / config field controls (ListRow + Input). */
 export const CREDENTIAL_CONTROL_CLASS = cn('h-8', CONTROL_TEXT)
+
+// Resting credential field: chrome stripped so it reads as plain subtext.
+// Stacked (<@2xl) it collapses to zero box (flush under its label); at @2xl it
+// keeps the full control metrics (h-8 + px-2.5/py-1.5) so it centres on the
+// label and nothing shifts when focus/expand adds the border. `!` beats the
+// unlayered chrome CSS and the shared control sizing.
+const CRED_BARE = 'border-0! bg-transparent! shadow-none! h-auto! p-0! @2xl:h-8! @2xl:px-2.5! @2xl:py-1.5!'
 
 export const isKeyVar = (key: string, info: EnvVarInfo) => info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
 
@@ -37,11 +44,13 @@ export const credentialPlaceholder = (key: string, info: EnvVarInfo, label: stri
 // (redacted value) that edits in place on click. Save appears once typed; a set
 // key also offers Remove, and Esc cancels without closing the overlay.
 export function KeyField({
+  expanded = false,
   info,
   placeholder,
   rowProps,
   varKey
 }: {
+  expanded?: boolean
   info: EnvVarInfo
   placeholder?: string
   rowProps: KeyRowProps
@@ -50,6 +59,9 @@ export function KeyField({
   const { t } = useI18n()
   const { edits, onClear, onSave, saving, setEdits } = rowProps
   const editing = edits[varKey] !== undefined
+  // Bare (plain subtext) only while the group is collapsed and idle. Expanding
+  // the card counts as "focused in", so it gets full input chrome too.
+  const bare = !editing && !expanded
   const draft = edits[varKey] ?? ''
   const dirty = draft.trim().length > 0
   const busy = saving === varKey
@@ -73,7 +85,7 @@ export function KeyField({
   if (info.is_set && !editing) {
     return (
       <Input
-        className={cn(CREDENTIAL_CONTROL_CLASS, 'cursor-pointer text-muted-foreground')}
+        className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE, 'cursor-pointer text-muted-foreground')}
         onFocus={startEdit}
         readOnly
         value={masked}
@@ -82,42 +94,46 @@ export function KeyField({
   }
 
   return (
-    <div className="grid gap-1">
-      <div className="flex items-center gap-2">
-        <Input
-          autoFocus={editing}
-          className={cn(CREDENTIAL_CONTROL_CLASS, 'min-w-0 flex-1')}
-          onChange={update}
-          onKeyDown={keydown}
-          placeholder={placeholder ?? t.settings.credentials.pasteKey}
-          type={editType}
-          value={draft}
-        />
-        {dirty && (
-          <Button className="h-8 shrink-0" disabled={busy} onClick={() => void onSave(varKey)} size="sm">
-            {busy ? <Loader2 className="animate-spin" /> : <Save />}
-            {busy ? t.settings.credentials.saving : t.common.save}
-          </Button>
-        )}
-      </div>
-      {editing && (
-        <div className="flex items-center gap-1 text-[0.6875rem]">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+      <Input
+        autoFocus={editing}
+        className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE)}
+        onChange={update}
+        onFocus={() => {
+          if (!editing) {
+            startEdit()
+          }
+        }}
+        onKeyDown={keydown}
+        placeholder={placeholder ?? t.settings.credentials.pasteKey}
+        type={editType}
+        value={draft}
+      />
+      {/* Inline trailing controls — mirrors SearchField's inline clear button.
+          No floating hint row that reflows the grid or overlaps the card body;
+          Esc still cancels via keydown. */}
+      {editing && (info.is_set || dirty) && (
+        <div className="flex items-center gap-1">
           {info.is_set && (
-            <>
-              <Button
-                className="text-[0.6875rem] text-destructive hover:text-destructive"
-                disabled={busy}
-                onClick={() => void onClear(varKey)}
-                size="inline"
-                type="button"
-                variant="text"
-              >
-                {t.settings.credentials.remove}
-              </Button>
-              <span className="text-muted-foreground">{t.settings.credentials.or}</span>
-            </>
+            <Button
+              aria-label={t.settings.credentials.remove}
+              className="text-muted-foreground hover:text-destructive"
+              disabled={busy}
+              onClick={() => void onClear(varKey)}
+              size="icon-xs"
+              title={t.settings.credentials.remove}
+              type="button"
+              variant="ghost"
+            >
+              <Trash2 />
+            </Button>
           )}
-          <span className="text-muted-foreground">{t.settings.credentials.escToCancel}</span>
+          {dirty && (
+            <Button className="h-8" disabled={busy} onClick={() => void onSave(varKey)} size="sm">
+              {busy ? <Loader2 className="animate-spin" /> : <Save />}
+              {busy ? t.settings.credentials.saving : t.common.save}
+            </Button>
+          )}
         </div>
       )}
     </div>
@@ -159,15 +175,22 @@ export function CredentialKeyCard({
   return (
     <div
       className={cn(
-        'group/card rounded-[6px] px-2 py-1 transition-colors',
+        '@container group/card rounded-[6px] p-3 transition-colors',
         expandable && 'cursor-pointer',
-        expandable && !expanded && 'hover:bg-(--ui-row-hover-background)',
+        expandable && !expanded && 'row-hover',
         expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
       )}
       onClick={expandable ? onToggle : undefined}
       onKeyDown={
         expandable
           ? e => {
+              // Only the card's own focus toggles it — ignore Enter/Space
+              // bubbling up from the inputs/buttons inside (Enter saves a key,
+              // Space types a space) so keyboard editing never collapses the card.
+              if (e.target !== e.currentTarget) {
+                return
+              }
+
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 onToggle()
@@ -178,8 +201,11 @@ export function CredentialKeyCard({
       role={expandable ? 'button' : undefined}
       tabIndex={expandable ? 0 : undefined}
     >
-      <div className="grid gap-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center">
-        <div className="flex min-w-0 items-center gap-2">
+      {/* One CSS grid: 1 col stacked, 2 cols at @2xl. p-3 card padding = gap-3
+          row/col gaps, everything top-left aligned (items-start), no indents.
+          The label row is h-8 to line up with the input row beside it. */}
+      <div className="grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:gap-y-3">
+        <div className="flex h-8 min-w-0 items-center gap-2">
           <span
             className={cn('size-2 shrink-0 rounded-full', info.is_set ? 'bg-primary' : 'bg-(--ui-stroke-secondary)')}
           />
@@ -199,7 +225,7 @@ export function CredentialKeyCard({
         </div>
 
         <div
-          className="min-w-0 sm:justify-self-end"
+          className="min-w-0"
           onClick={e => e.stopPropagation()}
           onFocus={() => {
             if (expandable && !expanded) {
@@ -207,21 +233,21 @@ export function CredentialKeyCard({
             }
           }}
         >
-          <KeyField info={info} placeholder={placeholder} rowProps={rowProps} varKey={varKey} />
+          <KeyField expanded={expanded} info={info} placeholder={placeholder} rowProps={rowProps} varKey={varKey} />
         </div>
+
+        {expandable && expanded && (
+          <div className="grid gap-3 @2xl:col-span-2" onClick={e => e.stopPropagation()}>
+            {description && (
+              <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                {description}
+              </p>
+            )}
+
+            {docsUrl && <CredentialDocsLink href={docsUrl} />}
+          </div>
+        )}
       </div>
-
-      {expandable && expanded && (
-        <div className="grid gap-2.5 pb-2 pl-4" onClick={e => e.stopPropagation()}>
-          {description && (
-            <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {description}
-            </p>
-          )}
-
-          {docsUrl && <CredentialDocsLink href={docsUrl} />}
-        </div>
-      )}
     </div>
   )
 }
@@ -236,15 +262,22 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
   return (
     <div
       className={cn(
-        'group/card rounded-[6px] px-2 py-1 transition-colors',
+        '@container group/card rounded-[6px] p-3 transition-colors',
         expandable && 'cursor-pointer',
-        expandable && !expanded && 'hover:bg-(--ui-row-hover-background)',
+        expandable && !expanded && 'row-hover',
         expanded && 'bg-(--ui-bg-quaternary) ring-1 ring-(--ui-stroke-secondary)'
       )}
       onClick={expandable ? onToggle : undefined}
       onKeyDown={
         expandable
           ? e => {
+              // Only the card's own focus toggles it — ignore Enter/Space
+              // bubbling up from the inputs/buttons inside (Enter saves a key,
+              // Space types a space) so keyboard editing never collapses the card.
+              if (e.target !== e.currentTarget) {
+                return
+              }
+
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault()
                 onToggle()
@@ -255,8 +288,10 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
       role={expandable ? 'button' : undefined}
       tabIndex={expandable ? 0 : undefined}
     >
-      <div className="grid gap-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] sm:items-center">
-        <div className="flex min-w-0 items-center gap-2">
+      {/* Same grid as CredentialKeyCard: 1 col stacked, 2 cols at @2xl, p-3 =
+          gap-3, items-start, label row h-8 to line up with the input row. */}
+      <div className="grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:gap-y-3">
+        <div className="flex h-8 min-w-0 items-center gap-2">
           <span
             className={cn(
               'size-2 shrink-0 rounded-full',
@@ -279,7 +314,7 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
         </div>
 
         <div
-          className="min-w-0 sm:justify-self-end"
+          className="min-w-0"
           onClick={e => e.stopPropagation()}
           onFocus={() => {
             if (expandable && !expanded) {
@@ -288,46 +323,48 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
           }}
         >
           <KeyField
+            expanded={expanded}
             info={group.primary[1]}
             placeholder={t.settings.credentials.pasteLabelKey(group.name)}
             rowProps={rowProps}
             varKey={group.primary[0]}
           />
         </div>
+
+        {expandable && expanded && (
+          <div className="grid gap-3 @2xl:col-span-2" onClick={e => e.stopPropagation()}>
+            {description && (
+              <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                {description}
+              </p>
+            )}
+
+            {group.advanced.map(([key, info]) => {
+              const fieldLabel = isKeyVar(key, info)
+                ? prettyName(key.replace(/(?:_API_KEY|_TOKEN|_KEY)$/i, ''))
+                : friendlyFieldLabel(key, info)
+
+              return (
+                <ListRow
+                  action={
+                    <KeyField
+                      expanded={expanded}
+                      info={info}
+                      placeholder={credentialPlaceholder(key, info, fieldLabel)}
+                      rowProps={rowProps}
+                      varKey={key}
+                    />
+                  }
+                  key={key}
+                  title={fieldLabel}
+                />
+              )
+            })}
+
+            {docsUrl && <CredentialDocsLink href={docsUrl} />}
+          </div>
+        )}
       </div>
-
-      {expandable && expanded && (
-        <div className="grid gap-2.5 pb-2 pl-4" onClick={e => e.stopPropagation()}>
-          {description && (
-            <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {description}
-            </p>
-          )}
-
-          {group.advanced.map(([key, info]) => {
-            const fieldLabel = isKeyVar(key, info)
-              ? prettyName(key.replace(/(?:_API_KEY|_TOKEN|_KEY)$/i, ''))
-              : friendlyFieldLabel(key, info)
-
-            return (
-              <ListRow
-                action={
-                  <KeyField
-                    info={info}
-                    placeholder={credentialPlaceholder(key, info, fieldLabel)}
-                    rowProps={rowProps}
-                    varKey={key}
-                  />
-                }
-                key={key}
-                title={fieldLabel}
-              />
-            )
-          })}
-
-          {docsUrl && <CredentialDocsLink href={docsUrl} />}
-        </div>
-      )}
     </div>
   )
 }

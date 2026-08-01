@@ -36,6 +36,7 @@
           "modal"
           "parallel-web"
           "tts-premium"
+          "vercel"
           "voice"
         ]
         # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
@@ -58,6 +59,8 @@
         tui = full.hermesTui;
         web = full.hermesWeb;
         desktop = full.hermesDesktop;
+
+        update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
       };
     };
 }

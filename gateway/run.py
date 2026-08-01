@@ -1815,7 +1815,15 @@ def _profile_runtime_scope(profile_home: "Path"):
     ``.env`` here does NOT mutate ``os.environ`` — ``build_profile_secret_scope``
     returns an isolated dict — which is what keeps subprocesses (MCP, kanban)
     from inheriting cross-profile secrets.
+
+    For cold multiplex profiles (secondary profiles that have never handled a
+    turn before), the profile's external secret sources (1Password, Bitwarden)
+    must be resolved before ``build_profile_secret_scope`` reads them, otherwise
+    the first turn routed to this profile sees no vault secrets (#74317). The
+    call is idempotent — ``_apply_external_secret_sources`` deduplicates by
+    ``home_path`` — so repeated scope entries for the same profile are no-ops.
     """
+    from hermes_cli.env_loader import _apply_external_secret_sources
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import (
         build_profile_secret_scope,
@@ -1824,6 +1832,10 @@ def _profile_runtime_scope(profile_home: "Path"):
     )
 
     home_token = set_hermes_home_override(str(profile_home))
+    # Resolve external secret sources for this profile before building its
+    # secret scope — vault providers (Bitwarden, 1Password) need to fetch
+    # their values so build_profile_secret_scope can include them.
+    _apply_external_secret_sources(profile_home)
     secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
     try:
         yield

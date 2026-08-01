@@ -1441,6 +1441,9 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
     "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
     "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
+    # Vertex OAuth/ADC. Aux copies this table (not plugin aliases); without these,
+    # resolve_provider_client("google-vertex") never hits auth_type=vertex (#61852).
+    "google-vertex": "vertex", "vertex-ai": "vertex", "gcp-vertex": "vertex", "vertexai": "vertex",
     "go": "opencode-go", "opencode-go-sub": "opencode-go",
     "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",

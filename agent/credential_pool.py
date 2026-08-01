@@ -2390,6 +2390,16 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
             if token:
+                source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
+                # Suppression gate BEFORE the network exchange.  The
+                # exchange retries 3x with backoff (~13s worst case), so a
+                # source the user already suppressed (hermes auth remove
+                # copilot gh_cli) must not burn that dead time on every pool
+                # load (model picker open, /model, agent startup) just to
+                # have the entry discarded afterwards.  This is the same
+                # early-gate pattern every other singleton branch uses.
+                if _is_suppressed(provider, source_name):
+                    return changed, active_sources
                 api_token, enterprise_base_url = get_copilot_api_token(token)
                 # Observability: get_copilot_api_token falls back to returning
                 # the RAW token when the exchange fails. A raw ~40-char token
@@ -2405,27 +2415,25 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         "unavailable); enterprise-only models may 400 with "
                         "model_not_available_for_integrator until exchange recovers."
                     )
-                source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
-                if not _is_suppressed(provider, source_name):
-                    active_sources.add(source_name)
-                    pconfig = PROVIDER_REGISTRY.get(provider)
-                    # Use enterprise base URL from token exchange if available,
-                    # otherwise fall back to the provider's default.
-                    effective_base_url = enterprise_base_url or (
-                        pconfig.inference_base_url if pconfig else ""
-                    )
-                    changed |= _upsert_entry(
-                        entries,
-                        provider,
-                        source_name,
-                        {
-                            "source": source_name,
-                            "auth_type": AUTH_TYPE_API_KEY,
-                            "access_token": api_token,
-                            "base_url": effective_base_url,
-                            "label": source,
-                        },
-                    )
+                active_sources.add(source_name)
+                pconfig = PROVIDER_REGISTRY.get(provider)
+                # Use enterprise base URL from token exchange if available,
+                # otherwise fall back to the provider's default.
+                effective_base_url = enterprise_base_url or (
+                    pconfig.inference_base_url if pconfig else ""
+                )
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    source_name,
+                    {
+                        "source": source_name,
+                        "auth_type": AUTH_TYPE_API_KEY,
+                        "access_token": api_token,
+                        "base_url": effective_base_url,
+                        "label": source,
+                    },
+                )
         except Exception as exc:
             logger.debug("Copilot token seed failed: %s", exc)
 

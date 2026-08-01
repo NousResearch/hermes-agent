@@ -1352,6 +1352,51 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     assert entries[0].base_url == "https://api.githubcopilot.com"
 
 
+def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
+    """A suppressed copilot source must NOT run the token exchange.
+
+    Regression test: the suppression gate used to sit AFTER
+    ``get_copilot_api_token`` (which retries 3x with backoff, ~13s worst
+    case), so every pool load — model picker open, /model, agent startup —
+    burned the full exchange dead time for a source the user had already
+    removed with ``hermes auth remove copilot gh_cli``.  The gate must run
+    BEFORE the network call.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {},
+            "suppressed_sources": {"copilot": ["gh_cli"]},
+        },
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "gh auth token"),
+    )
+
+    exchange_called = False
+
+    def _boom(token):
+        nonlocal exchange_called
+        exchange_called = True
+        raise AssertionError("exchange must not run for a suppressed source")
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.get_copilot_api_token",
+        _boom,
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert not exchange_called
+    assert not pool.has_credentials()
+    assert pool.entries() == []
+
+
 
 
 def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):

@@ -27,7 +27,7 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
         if (committed) send(committed);
       }, 16);
     },
-    noteTerminalData(_data: string) {
+    noteTerminalData() {
       // Any xterm input in the short grace window is its own composition
       // delivery (possibly chunked or normalization-different), so prefer it
       // over the fallback to avoid duplicate text.

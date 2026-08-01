@@ -134,6 +134,30 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
 
 
 @pytest.mark.asyncio
+async def test_thread_prose_does_not_overwrite_concurrent_button_choice():
+    """A button result that wins the race remains the clarify response."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-button-race",
+        SESSION_KEY,
+        "Pick a UI variant",
+        ["buttons", "dropdown"],
+    )
+    assert cm.resolve_gateway_clarify("cl-button-race", "buttons") is True
+
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(runner, _event("one more unrelated thought"))
+
+    assert entry.event.is_set()
+    assert entry.response == "buttons"
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
 async def test_prose_still_accepted_after_other_flips_text_capture():
     """After the user taps 'Other', free text IS the answer — must resolve."""
     _clear_clarify_state()
@@ -153,5 +177,4 @@ async def test_prose_still_accepted_after_other_flips_text_capture():
     assert entry.event.is_set()
     assert entry.response == "a carousel actually"
     _clear_clarify_state()
-
 

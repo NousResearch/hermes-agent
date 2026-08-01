@@ -679,11 +679,11 @@ def run_codex_app_server_turn(
         # enter the subprocess command line or JSON-RPC payload.
         codex_model_provider = None
         if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
-            requested_provider = (
-                str(getattr(agent, "requested_provider", "") or "").strip().lower()
+            from hermes_cli.runtime_provider import normalize_custom_provider_id
+
+            requested_provider = normalize_custom_provider_id(
+                str(getattr(agent, "requested_provider", "") or "")
             )
-            if requested_provider.startswith("custom:"):
-                requested_provider = requested_provider.removeprefix("custom:")
             if requested_provider and requested_provider != "custom":
                 codex_model_provider = requested_provider
 

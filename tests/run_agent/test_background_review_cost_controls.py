@@ -8,10 +8,15 @@ Covers the two behaviors this change adds:
 
 Pure-function / config-driven; no live model calls.
 """
+import os
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import yaml
+
 from agent import background_review as br
+from hermes_cli import runtime_provider as rp
 
 
 def _msg(role, content, tool_calls=None):
@@ -26,8 +31,14 @@ def _msg(role, content, tool_calls=None):
 # ---------------------------------------------------------------------------
 
 class _FakeAgent:
-    def __init__(self, provider="openai-codex", model="gpt-5.5"):
+    def __init__(
+        self,
+        provider="openai-codex",
+        model="gpt-5.5",
+        requested_provider=None,
+    ):
         self.provider = provider
+        self.requested_provider = requested_provider or provider
         self.model = model
         self._credential_pool: Any = None
         self.request_overrides = {}
@@ -39,6 +50,30 @@ class _FakeAgent:
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_mode": "codex_app_server",
         }
+
+
+def _named_custom_config(review_model: str) -> dict:
+    return {
+        "model": {
+            "provider": "custom:My Gateway",
+            "default": "gpt-5.4",
+            "openai_runtime": "codex_app_server",
+        },
+        "providers": {
+            "My Gateway": {
+                "api": "https://gateway.example.com/v1",
+                "api_key": "test-key",
+                "default_model": review_model,
+                "transport": "chat_completions",
+            }
+        },
+        "auxiliary": {
+            "background_review": {
+                "provider": "custom:My Gateway",
+                "model": review_model,
+            }
+        },
+    }
 
 
 def test_routing_auto_inherits_parent_and_downgrades_codex_app_server():
@@ -96,6 +131,87 @@ def test_routing_same_model_as_parent_is_not_routed():
     with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         rt = br._resolve_review_runtime(agent)
     assert rt["routed"] is False  # same model/provider → keep full-replay path
+
+
+def test_named_custom_same_model_keeps_original_hermes_transport():
+    config = _named_custom_config("gpt-5.4")
+    agent = _FakeAgent(
+        provider="custom",
+        requested_provider="custom:My Gateway",
+        model="gpt-5.4",
+    )
+    agent._current_main_runtime = lambda: {
+        "api_key": "test-key",
+        "base_url": "https://gateway.example.com/v1",
+        "api_mode": "codex_app_server",
+    }
+
+    with (
+        patch.object(rp, "load_config", return_value=config),
+        patch("hermes_cli.config.load_config_readonly", return_value=config),
+    ):
+        rt = br._resolve_review_runtime(agent)
+
+    assert rt["routed"] is False
+    assert rt["api_mode"] == "chat_completions"
+
+
+def test_named_custom_routed_review_never_uses_codex_app_server():
+    config = _named_custom_config("gpt-5.4-mini")
+    agent = _FakeAgent(
+        provider="custom",
+        requested_provider="custom:My Gateway",
+        model="gpt-5.4",
+    )
+    agent._current_main_runtime = lambda: {
+        "api_key": "test-key",
+        "base_url": "https://gateway.example.com/v1",
+        "api_mode": "codex_app_server",
+    }
+
+    with (
+        patch.object(rp, "load_config", return_value=config),
+        patch("hermes_cli.config.load_config_readonly", return_value=config),
+    ):
+        rt = br._resolve_review_runtime(agent)
+
+    assert rt["routed"] is True
+    assert rt["api_mode"] == "chat_completions"
+
+
+def test_named_custom_provider_does_not_collapse_into_same_named_builtin():
+    home = Path(os.environ["HERMES_HOME"])
+    config = {
+        "model": {"provider": "openrouter", "default": "shared-model"},
+        "providers": {
+            "openrouter": {
+                "api": "https://gateway.example.com/v1",
+                "api_key": "test-key",
+                "default_model": "shared-model",
+            }
+        },
+        "auxiliary": {
+            "background_review": {
+                "provider": "custom:openrouter",
+                "model": "shared-model",
+            }
+        },
+    }
+    (home / "config.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+    )
+    agent = _FakeAgent(provider="openrouter", model="shared-model")
+    agent._current_main_runtime = lambda: {
+        "api_key": "builtin-key",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+    }
+
+    rt = br._resolve_review_runtime(agent)
+
+    assert rt["routed"] is True
+    assert rt["provider"] == "custom"
+    assert rt["base_url"] == "https://gateway.example.com/v1"
 
 
 def test_routing_resolution_failure_falls_back_to_parent():

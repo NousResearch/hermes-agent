@@ -610,6 +610,7 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     captured = {}
 
     def _fake_resolve_runtime_provider(**kwargs):
+        captured["resolve_kwargs"] = kwargs
         return {
             "provider": "custom",
             "api_key": "pool-token",
@@ -650,6 +651,7 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     meta = curator._run_llm_review("review prompt")
 
     assert meta.get("error") is None, meta.get("error")
+    assert captured["resolve_kwargs"]["allow_codex_app_server"] is False
     assert captured["kwargs"]["credential_pool"] is fake_pool
     assert captured["kwargs"]["request_overrides"] == fake_overrides
 
@@ -697,8 +699,6 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
     assert result["error"] is None
     assert captured["model"] == "real-model-id"
     assert captured["max_tokens"] == 1234
-
-
 
 
 def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monkeypatch):

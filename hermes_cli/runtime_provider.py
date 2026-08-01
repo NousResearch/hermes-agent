@@ -68,6 +68,21 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def normalize_custom_provider_id(value: str) -> str:
+    """Return the canonical ID shared by Hermes and Codex custom providers."""
+    return _normalize_custom_provider_name(value).removeprefix("custom:")
+
+
+def normalize_runtime_provider_identity(value: str) -> str:
+    """Normalize a provider while preserving the custom-provider namespace."""
+    normalized = _normalize_custom_provider_name(value)
+    if normalized.startswith("custom:"):
+        return normalized
+    if has_named_custom_provider(value):
+        return f"custom:{normalized}"
+    return normalized
+
+
 def _loopback_hostname(host: str) -> bool:
     h = (host or "").lower().rstrip(".")
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -455,6 +470,7 @@ def _resolve_runtime_from_pool_entry(
     model_cfg: Optional[Dict[str, Any]] = None,
     pool: Optional[CredentialPool] = None,
     target_model: Optional[str] = None,
+    allow_codex_app_server: bool = True,
 ) -> Dict[str, Any]:
     model_cfg = model_cfg or _get_model_config()
     # When the caller is resolving for a specific target model (e.g. a /model
@@ -576,9 +592,10 @@ def _resolve_runtime_from_pool_entry(
 
     # Optional opt-in: route OpenAI/Codex turns through `codex app-server`.
     # Inert when `model.openai_runtime` is unset or "auto".
-    api_mode = _maybe_apply_codex_app_server_runtime(
-        provider=provider, api_mode=api_mode, model_cfg=model_cfg
-    )
+    if allow_codex_app_server:
+        api_mode = _maybe_apply_codex_app_server_runtime(
+            provider=provider, api_mode=api_mode, model_cfg=model_cfg
+        )
 
     if provider == "lmstudio":
         base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
@@ -1673,6 +1690,7 @@ def resolve_runtime_provider(
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
     target_model: Optional[str] = None,
+    allow_codex_app_server: bool = True,
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution.
 
@@ -1683,6 +1701,10 @@ def resolve_runtime_provider(
     api_mode is derived from the model they are switching TO, not the stale
     persisted default. Other callers can leave it None to preserve existing
     behavior (api_mode derived from config).
+
+    allow_codex_app_server: Set False for auxiliary agent loops that must keep
+    Hermes' native provider transport even when the main turn opted into Codex
+    app-server.
     """
     requested_provider = resolve_requested_provider(requested)
 
@@ -1792,12 +1814,13 @@ def resolve_runtime_provider(
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
-        custom_runtime["api_mode"] = _maybe_apply_codex_app_server_runtime(
-            provider="custom",
-            requested_provider=requested_provider,
-            api_mode=str(custom_runtime.get("api_mode") or "chat_completions"),
-            model_cfg=_get_model_config(),
-        )
+        if allow_codex_app_server:
+            custom_runtime["api_mode"] = _maybe_apply_codex_app_server_runtime(
+                provider="custom",
+                requested_provider=requested_provider,
+                api_mode=str(custom_runtime.get("api_mode") or "chat_completions"),
+                model_cfg=_get_model_config(),
+            )
         return custom_runtime
 
     # If provider is "auto" (or unset) but config.yaml has an explicit base_url
@@ -1940,6 +1963,7 @@ def resolve_runtime_provider(
                 model_cfg=model_cfg,
                 pool=pool,
                 target_model=target_model,
+                allow_codex_app_server=allow_codex_app_server,
             )
 
     if provider == "nous":

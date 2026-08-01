@@ -48,15 +48,36 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
     """Resolve provider/model/credentials for the review fork.
 
     Default (auto / unset / same as parent): inherit the parent's live runtime
-    (with codex_app_server -> codex_responses downgrade). ``routed`` is False —
-    the fork uses the main model and the warm cache, exactly as before. When
+    (with codex_app_server restored to the provider's Hermes transport).
+    ``routed`` is False — the fork uses the main model and the warm cache,
+    exactly as before. When
     ``auxiliary.background_review.{provider,model}`` names a concrete model
     different from the parent's, resolve that runtime and set ``routed=True``.
     """
     parent_runtime = agent._current_main_runtime()
     parent_api_mode = parent_runtime.get("api_mode") or None
+    parent_requested_provider = (
+        getattr(agent, "requested_provider", None) or agent.provider
+    )
     if parent_api_mode == "codex_app_server":
         parent_api_mode = "codex_responses"
+        if str(agent.provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                hermes_runtime = resolve_runtime_provider(
+                    requested=parent_requested_provider,
+                    target_model=agent.model,
+                    explicit_api_key=parent_runtime.get("api_key") or None,
+                    explicit_base_url=parent_runtime.get("base_url") or None,
+                    allow_codex_app_server=False,
+                )
+                parent_api_mode = hermes_runtime.get("api_mode") or parent_api_mode
+            except Exception:
+                logger.debug(
+                    "background-review could not recover the parent Hermes transport",
+                    exc_info=True,
+                )
     parent = {
         "provider": agent.provider,
         "model": agent.model,
@@ -83,7 +104,22 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
     task_api_key = (str(task.get("api_key", "")).strip() or None)
     if not (task_provider and task_provider != "auto" and task_model):
         return parent
-    if task_provider == (agent.provider or "") and task_model == (agent.model or ""):
+    try:
+        from hermes_cli.runtime_provider import normalize_runtime_provider_identity
+
+        task_provider_id = normalize_runtime_provider_identity(task_provider)
+        parent_provider_id = normalize_runtime_provider_identity(
+            parent_requested_provider
+        )
+    except Exception:
+        task_provider_id = task_provider.strip().lower()
+        parent_provider_id = (
+            str(parent_requested_provider or "")
+            .strip()
+            .lower()
+            .removeprefix("custom:")
+        )
+    if task_provider_id == parent_provider_id and task_model == (agent.model or ""):
         return parent  # same model/provider as parent -> not routed
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -92,6 +128,7 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
             target_model=task_model,
             explicit_api_key=task_api_key,
             explicit_base_url=task_base_url,
+            allow_codex_app_server=False,
         )
         return {
             "provider": rp.get("provider") or task_provider,

@@ -1885,6 +1885,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             target_model=_model_name,
             explicit_api_key=_binding.explicit_api_key,
             explicit_base_url=_binding.explicit_base_url,
+            allow_codex_app_server=False,
         )
         _api_key = _rp.get("api_key")
         _base_url = _rp.get("base_url")

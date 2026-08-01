@@ -259,11 +259,20 @@ _IMAGE_TOO_LARGE_PATTERNS = [
 # "base64 string of provided image cannot be decoded" for unaligned
 # truncation (confirmed by the issue reporter — same root cause, two wire
 # messages).
+# A third xAI wording covers the URL-image path — the provider downloads
+# the image itself and rejects the fetched bytes:
+# {"code":"invalid-argument","error":"code: 'Client specified an invalid
+# argument', message: \"Downloaded response does not contain a valid JPG,
+# PNG, WebP, or ICO image.\""}
+# Matched as the full observed sentence on purpose — shorter fragments
+# ("downloaded response does not contain a valid") also match non-image
+# download failures and would misroute them into strip-and-retry.
 # See: https://github.com/NousResearch/hermes-agent/issues/69078
 _IMAGE_CORRUPT_PATTERNS = [
     "invalid png image",
     "invalid jpeg image",
     "base64 string of provided image cannot be decoded",
+    "downloaded response does not contain a valid jpg, png, webp, or ico image",
 ]
 
 # Providers that follow the OpenAI spec strictly require tool message

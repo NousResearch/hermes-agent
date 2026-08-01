@@ -158,6 +158,36 @@ export const cssMax = (values: (string | null | undefined)[]): string | undefine
  *  are both 28px thick. */
 export const MINIMIZED_TRACK = '1.75rem'
 
+/**
+ * In an all-fixed split, the last uncapped track may absorb leftover space
+ * (terminal/logs stacked at 38vh with nothing else to fill the column). A
+ * CAPPED track must never be the absorber: review/files declare maxWidth
+ * 20rem, and promoting them to grow-1 + dropping the clamp made ⌘G / ⌘J open
+ * a half-window rail and ignore sash-remembered sizes (flex-basis alone
+ * can't hold against grow).
+ *
+ * Returns the child index to absorb, or -1 when every fixed track is capped
+ * (leave dead space — better than a ballooned sidebar).
+ */
+export function allFixedAbsorberIndex(
+  growable: readonly number[],
+  maxAlongAxis: (index: number) => string | undefined
+): number {
+  if (growable.length === 0) {
+    return -1
+  }
+
+  for (let i = growable.length - 1; i >= 0; i--) {
+    const index = growable[i]
+
+    if (!maxAlongAxis(index)) {
+      return index
+    }
+  }
+
+  return -1
+}
+
 export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
   if (node.type === 'group') {
     // Ancestor splits must size a minimized zone as its strip, not as its

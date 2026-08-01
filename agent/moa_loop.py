@@ -1657,6 +1657,41 @@ class MoAChatCompletions:
         max_tokens: Any = agg_kwargs.get("max_tokens")
         tools: Any = agg_kwargs.get("tools")
         extra_body: Any = agg_kwargs.get("extra_body")
+        agg_runtime = _slot_runtime(aggregator)
+        try:
+            from agent.agent_runtime_helpers import (
+                plan_cache_sections_for_destination,
+            )
+
+            guidance = prepared.get("guidance")
+            planning_messages = agg_messages
+            if guidance:
+                planning_messages = peel_reference_guidance(
+                    agg_messages,
+                    str(guidance),
+                )
+            # plan_cache_sections_for_destination never mutates its inputs
+            # and always returns request-local copies, so the prepared
+            # state stays canonical.
+            agg_messages, tools = plan_cache_sections_for_destination(
+                planning_messages,
+                tools,
+                provider=agg_runtime.get("provider") or "",
+                base_url=agg_runtime.get("base_url") or "",
+                api_mode=agg_runtime.get("api_mode") or "",
+                model=agg_runtime.get("model") or "",
+            )
+            if guidance:
+                _attach_reference_guidance(agg_messages, str(guidance))
+        except Exception as exc:  # pragma: no cover - cache planning must not block MoA
+            # Warning, not debug: since the call-block site skips MoA, this
+            # block is the aggregator's ONLY decoration path — a silent
+            # failure here ships an undecorated request and regresses the
+            # exact 0%-cache MoA failure the planning exists to prevent.
+            logger.warning(
+                "MoA aggregator cache plan failed — sending undecorated "
+                "request (cache misses expected): %s", exc,
+            )
         # Record the exact aggregator INPUT (incl. the injected reference
         # context) into the pending trace so a trace captures what the
         # aggregator actually saw, not a reconstruction. Traces are a
@@ -1697,7 +1732,6 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
-        agg_runtime = _slot_runtime(aggregator)
         # _slot_runtime may carry the provider's request_overrides.extra_body;
         # pop it and merge with the caller's extra_body (caller wins) so the
         # explicit kwarg below never collides with **agg_runtime.

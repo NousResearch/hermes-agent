@@ -1475,6 +1475,12 @@ def restore_primary_runtime(agent) -> bool:
             "use_native_cache_layout",
             agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
         )
+        # If the operator has disabled caching via config (cache_ttl is
+        # falsy → _cache_disabled flag is set), the disable must survive
+        # runtime snapshot restoration (#33555).
+        if getattr(agent, "_cache_disabled", False):
+            agent._use_prompt_caching = False
+            agent._use_native_cache_layout = False
 
         # ── Rebuild client for the primary provider ──
         if agent.provider == "moa":
@@ -1834,6 +1840,79 @@ def dump_api_request_debug(
 
 
 
+def _direct_native_anthropic_tool_cache_capability(
+    agent,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    model: Optional[str] = None,
+) -> bool:
+    """Return whether this resolved destination accepts native tool markers."""
+    eff_base_url = base_url if base_url is not None else (agent.base_url or "")
+    eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
+    return (
+        eff_api_mode == "anthropic_messages"
+        and base_url_hostname(eff_base_url) == "api.anthropic.com"
+    )
+
+
+def plan_cache_sections_for_destination(
+    messages: list,
+    tools: Optional[list],
+    *,
+    provider: str,
+    base_url: str,
+    api_mode: str,
+    model: str,
+) -> Tuple[list, list]:
+    """Plan request-local cache sections for one resolved destination.
+
+    Shared core of the synchronous acting-aggregator (MoA) and auxiliary
+    fallback senders: resolve the cache policy for the destination's real
+    provider/base_url/api_mode/model, then either return stripped canonical
+    copies (non-caching route) or a :func:`build_prompt_cache_plan` layout
+    (caching route, with the direct-native tool marker when the destination
+    is api.anthropic.com on the Messages wire).
+
+    Never mutates ``messages`` or ``tools`` — both return values are
+    request-local copies.
+    """
+    from types import SimpleNamespace
+
+    from agent.prompt_caching import (
+        build_prompt_cache_plan,
+        strip_anthropic_cache_control,
+        strip_anthropic_tool_cache_control,
+    )
+
+    stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+    should_cache, native_layout = anthropic_prompt_cache_policy(
+        stub,
+        provider=provider,
+        base_url=base_url,
+        api_mode=api_mode,
+        model=model,
+    )
+    if not should_cache:
+        canonical_messages = copy.deepcopy(messages or [])
+        strip_anthropic_cache_control(canonical_messages)
+        return canonical_messages, strip_anthropic_tool_cache_control(tools)
+    plan = build_prompt_cache_plan(
+        messages,
+        tools,
+        native_anthropic=native_layout,
+        direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
+            stub,
+            provider=provider,
+            base_url=base_url,
+            api_mode=api_mode,
+            model=model,
+        ),
+    )
+    return plan.messages, plan.tools
+
+
 def anthropic_prompt_cache_policy(
     agent,
     *,
@@ -1866,7 +1945,19 @@ def anthropic_prompt_cache_policy(
     documented this for opencode-go Qwen; #24617 reports the same gateway
     contract for DeepSeek. Without markers these providers serve zero cache
     hits, re-billing the full prompt on every turn.
+
+    If the operator has set ``prompt_caching.cache_ttl`` to a falsy value
+    (``false``, ``null``, ``"off"``, etc.) in config.yaml, prompt caching
+    is fully disabled — this early return ensures the disable survives
+    ``/model`` switches, fallback re-derivation, and runtime snapshot
+    restoration (#33555). We check ``"_cache_disabled"`` (set by
+    init_agent when the disable is detected) rather than ``_cache_ttl``
+    directly, because ``_cache_ttl`` is not yet set when the policy runs
+    during the initial ``init_agent`` call.
     """
+    if getattr(agent, "_cache_disabled", False):
+        return (False, False)
+
     eff_provider = (provider if provider is not None else agent.provider) or ""
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")

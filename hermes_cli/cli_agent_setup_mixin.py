@@ -461,7 +461,12 @@ class CLIAgentSetupMixin:
                     # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
-            ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
+            console = ChatConsole()
+            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_constants import partial_update_hint
+
+            for line in partial_update_hint(e):
+                console.print(line)
             return False
 
     def _preload_resumed_session(self) -> bool:

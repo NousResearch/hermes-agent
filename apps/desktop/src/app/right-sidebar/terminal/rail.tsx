@@ -11,7 +11,7 @@ import {
 import { Tip, TipHintLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
-import { middleClickHandlers } from '@/lib/middle-click'
+import { isMetaClose, middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
 import { $bindings } from '@/store/keybinds'
 
@@ -132,7 +132,8 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
                   : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
               )}
               {...middleClickHandlers(() => closeTerminal(term.id))}
-              onClick={() => selectTerminal(term.id)}
+              // ⌘-click closes (the pane-tab gesture); a plain click selects.
+              onClick={event => (isMetaClose(event) ? closeTerminal(term.id) : selectTerminal(term.id))}
               role="tab"
               type="button"
             >

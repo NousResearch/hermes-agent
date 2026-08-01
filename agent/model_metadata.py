@@ -273,6 +273,27 @@ CONTEXT_PROBE_TIERS = [
 # Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 
+# (model, base_url) pairs that already emitted the fallback warning.
+# The fallback result itself is deliberately never cached, so without this
+# the warning would repeat on every resolution for the same unknown model.
+_FALLBACK_WARNED: set = set()
+
+
+def _warn_context_length_fallback(model: str, base_url: str) -> None:
+    """Warn (once per model+endpoint) that context detection failed and the
+    hard default is being used, so small-context models (8K, 32K) don't
+    silently get 256K and cause hard-to-debug API failures."""
+    key = (model, base_url or "")
+    if key in _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED.add(key)
+    logger.warning(
+        "Could not determine context length for model %r (base_url=%s) "
+        "— falling back to %s tokens. Set model.context_length in "
+        "config.yaml to override.",
+        model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
+    )
+
 # Minimum context length required to run Hermes Agent.  Models with fewer
 # tokens cannot maintain enough working memory for tool-calling workflows.
 # Sessions, model switches, and cron jobs should reject models below this.
@@ -2599,6 +2620,9 @@ def get_model_context_length(
                         f"{length:,}", model, default_model,
                     )
                     return length
+            # Same silent-256K bug class as the step-9 fallback below —
+            # warn here too so custom/local endpoints aren't left invisible.
+            _warn_context_length_fallback(model, base_url)
             return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
@@ -2771,7 +2795,10 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Default fallback — 256K
+    # 9. Default fallback — warn (deduped per model+endpoint) so
+    #    small-context models don't silently get 256K. See
+    #    _warn_context_length_fallback for rationale.
+    _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
 
 

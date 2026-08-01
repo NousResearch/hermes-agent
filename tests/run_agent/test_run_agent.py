@@ -716,6 +716,66 @@ class TestInit:
             )
             assert a._cache_ttl == "5m"
 
+    @pytest.mark.parametrize(
+        "falsy_value", [False, None, "off", "false", "disabled", "no", "none"],
+    )
+    def test_prompt_caching_disabled_by_falsy_cache_ttl(self, falsy_value):
+        """Falsy cache_ttl values should fully disable prompt caching."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"prompt_caching": {"cache_ttl": falsy_value}},
+            ),
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"prompt_caching": {"cache_ttl": falsy_value}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._use_prompt_caching is False
+            assert a._use_native_cache_layout is False
+            assert a._cache_ttl is None
+
+    def test_prompt_caching_disable_survives_policy_rederivation(self):
+        """The disable must survive anthropic_prompt_cache_policy() re-derivation
+        (called during /model switch and fallback activation)."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"prompt_caching": {"cache_ttl": False}},
+            ),
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"prompt_caching": {"cache_ttl": False}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl is None
+            # Re-run the policy (simulates /model switch or fallback)
+            should_cache, use_native = a._anthropic_prompt_cache_policy()
+            assert should_cache is False
+            assert use_native is False
+            assert a._use_prompt_caching is False
 
 
     def test_constructor_max_tokens_wins_over_config(self):
@@ -1148,6 +1208,38 @@ class TestBuildApiKwargs:
         assert kwargs["model"] == agent.model
         assert kwargs["messages"] is messages
         assert kwargs["timeout"] == 1800.0
+
+    def test_explicit_request_local_tools_reach_native_transport(self, agent, monkeypatch):
+        from agent.prompt_caching import build_prompt_cache_plan
+
+        canonical_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        plan = build_prompt_cache_plan(
+            [{"role": "system", "content": "stable\nvolatile"}, {"role": "user", "content": "lookup"}],
+            canonical_tools,
+            native_anthropic=True,
+            static_system_prefix="stable",
+            direct_native_tool_cache=True,
+        )
+        transport = MagicMock()
+        transport.build_kwargs.side_effect = lambda **kwargs: kwargs
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.base_url = "https://api.anthropic.com"
+        monkeypatch.setattr(agent, "_get_transport", lambda: transport)
+        monkeypatch.setattr(agent, "_prepare_anthropic_messages_for_api", lambda messages: messages)
+
+        kwargs = agent._build_api_kwargs(plan.messages, tools_for_api=plan.tools)
+
+        assert "cache_control" not in canonical_tools[-1]
+        assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
 
     def test_public_moonshot_kimi_k2_5_omits_temperature(self, agent):
         """Kimi models should NOT have client-side temperature overrides.

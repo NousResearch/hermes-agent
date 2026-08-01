@@ -58,6 +58,8 @@ def _cache_agent(
     static=None,
     cache_ttl="5m",
     provider="openai",
+    tools=None,
+    direct_tool_cache=False,
 ):
     return SimpleNamespace(
         _cached_system_prompt=prompt,
@@ -67,6 +69,8 @@ def _cache_agent(
         _use_native_cache_layout=native,
         _cache_ttl=cache_ttl,
         provider=provider,
+        tools=tools or [],
+        _direct_native_anthropic_tool_cache_capability=lambda: direct_tool_cache,
         client=None,
     )
 
@@ -211,6 +215,46 @@ class TestRedecoratePromptCacheOnPolicyChange:
         assert _count_cache_markers(decorated) >= 2
         assert isinstance(decorated[0]["content"], list)
         assert decorated[0]["content"][0]["text"] == self._STATIC
+
+    def test_replans_tools_for_the_active_destination(self):
+        from agent.prompt_caching import build_prompt_cache_plan
+
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}]
+        messages = [
+            {"role": "system", "content": self._STATIC + "volatile"},
+            {"role": "user", "content": "lookup"},
+        ]
+        source = build_prompt_cache_plan(
+            messages,
+            tools,
+            native_anthropic=True,
+            static_system_prefix=self._STATIC,
+            direct_native_tool_cache=True,
+        )
+        agent = _cache_agent(
+            use_caching=True,
+            native=False,
+            prompt=messages[0]["content"],
+            static=self._STATIC,
+            provider="openrouter",
+            tools=tools,
+            direct_tool_cache=False,
+        )
+
+        fallback_messages, _, fallback_tools = _redecorate_prompt_cache_for_provider(
+            agent,
+            source.messages,
+            tools_for_api=source.tools,
+        )
+
+        assert "cache_control" in source.tools[-1]
+        assert "cache_control" not in fallback_tools[-1]
+        assert "cache_control" not in tools[-1]
+        assert all(
+            part.get("cache_control")
+            for part in fallback_messages[0]["content"]
+            if isinstance(part, dict)
+        )
 
 
 

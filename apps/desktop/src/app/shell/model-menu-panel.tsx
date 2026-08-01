@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -66,11 +66,19 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   const visibleModels = useStore($visibleModels)
   const touchesPrimary = view.kind === 'primary'
 
-  const cached = queryClient.getQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, activeSessionId))
+  // Subscribe to the SAME query the menu runs (identical key ⇒ React Query
+  // dedupes, no second fetch). It must be a live subscription, not a cache
+  // peek: with no model in the session store yet, currentPickerSelection falls
+  // back to the catalog's reported current, and a non-reactive read would
+  // never repaint that fallback once the catalog resolved.
+  const modelOptions = useQuery({
+    queryKey: modelOptionsQueryKey(profile, activeSessionId),
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId: activeSessionId })
+  })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
     { model: currentModel, provider: currentProvider },
-    cached
+    modelOptions.data
   )
 
   // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the

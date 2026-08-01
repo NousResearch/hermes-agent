@@ -1340,9 +1340,10 @@ export function restoreTreePane(paneId: string) {
   revealTreePane(paneId)
 }
 
-/** Is a tool pane actually ON SCREEN? In the tree, not dismissed or chrome
- *  hidden, its zone un-minimized, and holding its stack's active slot. */
-export function isToolPaneVisible(paneId: string): boolean {
+/** Is a pane actually ON SCREEN? In the tree, not dismissed, not chrome
+ *  hidden, its zone un-minimized, and holding its stack's active slot.
+ *  True for every pane class — tool panels and hide-style panes alike. */
+export function isPaneVisible(paneId: string): boolean {
   if ($dismissedPanes.get().has(paneId) || $hiddenTreePanes.get().has(paneId)) {
     return false
   }
@@ -1352,20 +1353,52 @@ export function isToolPaneVisible(paneId: string): boolean {
   return Boolean(group && !group.minimized && group.active === paneId)
 }
 
-const toolPaneVisibleCache = new Map<string, ReadableAtom<boolean>>()
+const paneVisibleCache = new Map<string, ReadableAtom<boolean>>()
 
-/** Reactive `isToolPaneVisible` for chrome that renders an on/off affordance
+/** Reactive `isPaneVisible` for chrome that renders an on/off affordance
  *  (the statusbar's terminal button). Memoized per pane id so `useStore`
  *  subscriptions stay referentially stable across renders. */
-export function $toolPaneVisible(paneId: string): ReadableAtom<boolean> {
-  let cached = toolPaneVisibleCache.get(paneId)
+export function $paneVisible(paneId: string): ReadableAtom<boolean> {
+  let cached = paneVisibleCache.get(paneId)
 
   if (!cached) {
-    cached = computed([$layoutTree, $dismissedPanes, $hiddenTreePanes], () => isToolPaneVisible(paneId))
-    toolPaneVisibleCache.set(paneId, cached)
+    cached = computed([$layoutTree, $dismissedPanes, $hiddenTreePanes], () => isPaneVisible(paneId))
+    paneVisibleCache.set(paneId, cached)
   }
 
   return cached
+}
+
+/**
+ * HIDE-STYLE PANES (files, review, preview): bind a pane's visibility STORE to
+ * the tree so its toggle HIDES the pane — its zone collapses while the content
+ * stays mounted — as opposed to the tool panels, which collapse to a rail and
+ * keep their tab.
+ *
+ * `close` and `open` are a PAIR, and passing only one is the bug this exists to
+ * prevent. The closer keeps the toggle truthful when the pane is closed from
+ * the tab menu; the opener is its mirror, so anything that shows the pane
+ * through the tree — a reveal, a preset, the toggle's own un-hide path — writes
+ * the store too. With a closer and no opener the boolean goes stale the moment
+ * something other than the toggle reveals the pane, and the next press spends
+ * itself re-asserting a value it already held.
+ */
+export function bindPaneVisibility(
+  paneId: string,
+  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
+  close?: () => void,
+  open?: () => void
+) {
+  setTreePaneHidden(paneId, !$open.get())
+  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen))
+
+  if (close) {
+    registerPaneCloser(paneId, close)
+  }
+
+  if (open) {
+    registerPaneOpener(paneId, open)
+  }
 }
 
 /**
@@ -1407,8 +1440,8 @@ export function bindToolPaneCollapse(
 }
 
 /**
- * ⌃` / the statusbar button / ⌘J's terminal fallback: ONE resolver for "flip
- * this tool panel", derived from what is on screen rather than from the
+ * EVERY pane toggle: ⌃`, ⌘G, the statusbar button, the ⌘K rows. ONE resolver
+ * for "flip this pane", derived from what is on screen rather than from the
  * toggle's own boolean.
  *
  * A free-floating `!$open.get()` diverges from the tree the moment anything
@@ -1416,10 +1449,21 @@ export function bindToolPaneCollapse(
  * menu, closed with ⌘W — and then the toggle spends its press re-asserting a
  * value the store already held, which reads as a dead key. Asking the tree
  * instead means the first press always does the visible thing.
+ *
+ * This is not a tool-panel quirk. The hide-style panes (files, review) had it
+ * too: `setTreePaneHidden(id, false)` deliberately does NOT front or
+ * un-minimize, because reactive unhides (a cwd arriving) must not clobber what
+ * the user is looking at. Correct for a reactive change, useless for a
+ * keypress — so user intent routes here and reactive bindings keep the quiet
+ * path.
+ *
+ * Close goes through `closeTreePane` so each pane keeps its own semantics: a
+ * tool panel collapses to its rail, files/review close through their store,
+ * anything else is dismissed.
  */
-export function toggleToolPane(paneId: string) {
-  if (isToolPaneVisible(paneId)) {
-    collapseTreePane(paneId)
+export function togglePaneVisible(paneId: string) {
+  if (isPaneVisible(paneId)) {
+    closeTreePane(paneId)
   } else {
     restoreTreePane(paneId)
   }

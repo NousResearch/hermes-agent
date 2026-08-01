@@ -10,9 +10,9 @@ import {
   $layoutTree,
   bindToolPaneCollapse,
   closeToolPane,
-  isToolPaneVisible,
+  isPaneVisible,
   setTreeGroupHeaderHidden,
-  toggleToolPane
+  togglePaneVisible
 } from './store'
 
 // Ground truth for "toggle terminal broke — ⌘J/⌘B work fine, but once I move
@@ -114,7 +114,7 @@ describe('binding a tool panel on boot', () => {
     $terminal.set(false)
 
     expect(toolZone()?.minimized).toBe(true)
-    expect(isToolPaneVisible('terminal')).toBe(false)
+    expect(isPaneVisible('terminal')).toBe(false)
   })
 
   it('still collapses a tool panel whose store says it is off', () => {
@@ -132,11 +132,11 @@ describe('toggling the terminal while it is stacked with logs', () => {
     bindPaneCollapse('terminal', atom(true))
     bindPaneCollapse('logs', atom(true))
 
-    toggleToolPane('terminal')
-    expect(isToolPaneVisible('terminal')).toBe(false)
+    togglePaneVisible('terminal')
+    expect(isPaneVisible('terminal')).toBe(false)
 
-    toggleToolPane('terminal')
-    expect(isToolPaneVisible('terminal')).toBe(true)
+    togglePaneVisible('terminal')
+    expect(isPaneVisible('terminal')).toBe(true)
   })
 
   it('brings the terminal forward when logs holds the active tab', () => {
@@ -146,11 +146,11 @@ describe('toggling the terminal while it is stacked with logs', () => {
 
     // The zone is open but showing LOGS, so the terminal is not on screen —
     // the first press must reveal it rather than collapse the whole zone.
-    expect(isToolPaneVisible('terminal')).toBe(false)
+    expect(isPaneVisible('terminal')).toBe(false)
 
-    toggleToolPane('terminal')
+    togglePaneVisible('terminal')
 
-    expect(isToolPaneVisible('terminal')).toBe(true)
+    expect(isPaneVisible('terminal')).toBe(true)
     expect(toolZone()?.minimized).toBeFalsy()
   })
 
@@ -163,10 +163,10 @@ describe('toggling the terminal while it is stacked with logs', () => {
     closeToolPane('terminal')
     expect(allPaneIds($layoutTree.get()!)).not.toContain('terminal')
 
-    toggleToolPane('terminal')
+    togglePaneVisible('terminal')
 
     expect(allPaneIds($layoutTree.get()!)).toContain('terminal')
-    expect(isToolPaneVisible('terminal')).toBe(true)
+    expect(isPaneVisible('terminal')).toBe(true)
   })
 })
 

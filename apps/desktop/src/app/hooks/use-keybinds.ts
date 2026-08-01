@@ -7,9 +7,9 @@ import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-
 import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
-  isToolPaneVisible,
+  isPaneVisible,
   layoutHasRootSide,
-  toggleToolPane
+  togglePaneVisible
 } from '@/components/pane-shell/tree/store'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
@@ -190,11 +190,11 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // terminal-on-bottom) would leave it a dead key, so it falls back to the
     // terminal there. The single "secondary panel" toggle.
     'view.toggleRightSidebar': () =>
-      layoutHasRootSide('right') ? toggleFileBrowserOpen() : toggleToolPane('terminal'),
+      layoutHasRootSide('right') ? toggleFileBrowserOpen() : togglePaneVisible('terminal'),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.showFiles': showFiles,
-    'view.showTerminal': () => toggleToolPane('terminal'),
+    'view.showTerminal': () => togglePaneVisible('terminal'),
     // Create first so the pane's open-effect ensure sees a non-empty set and
     // doesn't also spawn one — net effect is exactly one fresh terminal.
     'view.newTerminal': () => {
@@ -204,9 +204,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // Switch / close only act while the terminal is actually ON SCREEN — ask
     // the tree, not the toggle store (which stays true behind a stacked
     // sibling tab or a minimized zone).
-    'view.nextTerminal': () => isToolPaneVisible('terminal') && cycleTerminal(1),
-    'view.prevTerminal': () => isToolPaneVisible('terminal') && cycleTerminal(-1),
-    'view.closeTerminal': () => isToolPaneVisible('terminal') && closeActiveTerminal(),
+    'view.nextTerminal': () => isPaneVisible('terminal') && cycleTerminal(1),
+    'view.prevTerminal': () => isPaneVisible('terminal') && cycleTerminal(-1),
+    'view.closeTerminal': () => isPaneVisible('terminal') && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
     // ⌘W: close the focused tab (terminal / preview target / zone tree tab).
     // On the main tab with session tabs stacked, it shifts the next one in —

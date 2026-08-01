@@ -5,7 +5,7 @@ import type { CommandCenterSection } from '@/app/command-center'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
-import { $toolPaneVisible, toggleToolPane } from '@/components/pane-shell/tree/store'
+import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
@@ -95,7 +95,7 @@ export function useStatusbarItems({
   // What the button paints and flips is whether the terminal is ON SCREEN —
   // the takeover store alone stays true behind a stacked sibling tab or a
   // minimized zone, which lit the button for a pane the user couldn't see.
-  const terminalShowing = useStore($toolPaneVisible('terminal'))
+  const terminalShowing = useStore($paneVisible('terminal'))
   const primaryBusy = useStore($busy)
   const currentCwd = useStore($currentCwd)
   // Derive the workspace's project name from the already-cached project tree
@@ -513,7 +513,7 @@ export function useStatusbarItems({
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
         id: 'terminal',
-        onSelect: () => toggleToolPane('terminal'),
+        onSelect: () => togglePaneVisible('terminal'),
         title: terminalShowing ? copy.hideTerminal : copy.showTerminal,
         toggleLabel: copy.toggleTerminal,
         variant: 'action'

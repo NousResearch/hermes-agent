@@ -63,10 +63,12 @@ class TestSupportsSystemdServicesWSL:
         """WSL + working systemd → True."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(
+            gateway.shutil, "which", lambda _name: "/usr/bin/systemctl"
+        )
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: True)
         assert gateway.supports_systemd_services() is True
-
 
     def test_termux_still_excluded(self, monkeypatch):
         """Termux → False regardless of WSL status."""

@@ -5,6 +5,7 @@ import { openSession } from '@/app/open-session'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
 import { $activeGatewayProfile } from '@/store/profile'
+import { openFolderAsProject } from '@/store/projects'
 import {
   $sessions,
   getRememberedRoute,
@@ -128,12 +129,14 @@ export function useDesktopIntegrations({
   }, [resumeExhaustedSessionId])
 
   // Native-notification click -> jump to the session WHERE IT ALREADY IS (open
-  // tile / main) instead of forcing main. Runtime id is translated to the
-  // stored id the chat route is keyed by; action buttons resolve in place.
+  // tile / main), else beside what's loaded rather than over it — the click
+  // came from outside the app and shouldn't cost the user the chat they left
+  // on screen. Runtime id is translated to the stored id the chat route is
+  // keyed by; action buttons resolve in place.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate)
+        openSession(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current), navigate, 'stack')
       }
     })
 
@@ -184,6 +187,13 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [navigate])
+
+  // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => void openFolderAsProject())
+
+    return () => unsubscribe?.()
+  }, [])
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {

@@ -53,6 +53,13 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
     return null
   }
 
+  // A reaction's UI is the emoji landing on the bubble (message.reaction
+  // event) — a "React To Message" tool block next to it would be the agent
+  // narrating its own tapback. Failures still render so they're debuggable.
+  if (props.toolName === 'react_to_message' && !props.isError) {
+    return null
+  }
+
   if (props.toolName === 'delegate_task') {
     return <DelegateToolPart {...props} />
   }

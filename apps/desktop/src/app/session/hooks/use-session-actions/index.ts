@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
-import type { NavigateFunction } from 'react-router-dom'
+import type { NavigateFunction } from 'react-router'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
@@ -482,7 +482,7 @@ export function useSessionActions({
       try {
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd
-        // (project/default) — never the primary composer's live cwd.
+        // (focused session's project → project scope → default).
         const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
@@ -504,7 +504,9 @@ export function useSessionActions({
           upsertOptimisticSession(created, stored, null, null)
         }
 
-        const runtimeInfo = applyRuntimeInfo(created.info)
+        // A tile lives in its OWN worktree — it must not publish its cwd/branch
+        // into the composer atoms the main pane renders from.
+        const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false })
         updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
 
         openSessionTile(stored, dir)
@@ -1182,7 +1184,9 @@ export function useSessionActions({
           routedSessionId
         )
 
-        const runtimeInfo = applyRuntimeInfo(branched.info)
+        // The branch opens as its own tile in the parent's worktree, not as the
+        // primary session — keep its runtime out of the main composer atoms.
+        const runtimeInfo = applyRuntimeInfo(branched.info, { foreground: false })
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
         if (runtimeInfo) {

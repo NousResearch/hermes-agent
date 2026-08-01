@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Terminal
 } from '@/lib/icons'
+import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -252,7 +253,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // syntactically plausible URL. The probe result drives whether we render the
   // OAuth login button or the session-token entry box. The effective auth mode
   // prefers a fresh probe result over the saved value.
-  const trimmedUrl = state.remoteUrl.trim()
+  const trimmedUrl = coerceRemoteUrlScheme(state.remoteUrl)
 
   // The dashboardUrl of the currently-connected cloud instance (the saved
   // cloud connection's remoteUrl), normalized for comparison against each

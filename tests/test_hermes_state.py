@@ -1388,6 +1388,77 @@ class TestListSessionsRich:
 
 
 
+    def test_rich_list_session_key_filter_precedes_limit(self, db):
+        lane_key = "agent:main:telegram:dm:lane"
+        db.create_session(
+            "lane_oldest", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        db.create_session(
+            "lane_newest", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        for i in range(60):
+            db.create_session(
+                f"foreign_{i}", "telegram",
+                session_key=f"agent:main:telegram:dm:foreign-{i}",
+                user_id=f"foreign-user-{i}", chat_id=f"foreign-{i}",
+            )
+        db.create_session(
+            "legacy_null_key", "telegram", user_id="lane-user", chat_id="lane"
+        )
+
+        sessions = db.list_sessions_rich(
+            source="telegram", session_key=lane_key, limit=2
+        )
+
+        assert [session["id"] for session in sessions] == [
+            "lane_newest", "lane_oldest",
+        ]
+
+    def test_rich_list_session_key_scopes_search_and_projects_compression(self, db):
+        lane_key = "agent:main:telegram:dm:lane"
+        db.create_session(
+            "lane_root", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        db.set_session_title("lane_root", "Needle root")
+        db.end_session("lane_root", "compression")
+        db.create_session(
+            "lane_tip", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane", parent_session_id="lane_root",
+        )
+        db.set_session_title("lane_tip", "Needle continuation")
+        db.append_message("lane_tip", "user", "latest lane activity")
+        db.create_session(
+            "foreign_match", "telegram",
+            session_key="agent:main:telegram:dm:foreign",
+            user_id="foreign-user", chat_id="foreign",
+        )
+        db.set_session_title("foreign_match", "Needle foreign")
+
+        sessions = db.list_sessions_rich(
+            source="telegram",
+            session_key=lane_key,
+            search_query="needle",
+            order_by_last_active=True,
+            limit=1,
+        )
+
+        assert [session["id"] for session in sessions] == ["lane_tip"]
+        assert sessions[0]["_lineage_root_id"] == "lane_root"
+
+    def test_session_key_predicate_can_use_session_key_index(self, db):
+        plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT s.id FROM sessions s WHERE s.session_key = ? "
+            "ORDER BY s.started_at DESC LIMIT 10",
+            ("agent:main:telegram:dm:lane",),
+        ).fetchall()
+
+        detail = " ".join(row[-1] for row in plan)
+        assert "idx_sessions_session_key" in detail, detail
+
     def test_delegate_subagent_marker_hides_orphaned_row(self, db):
         """``_delegate_from`` keeps delegate rows out of pickers after orphaning."""
         db.create_session("parent", "cli")
@@ -2856,3 +2927,88 @@ class TestGatewayRoutingPkHeal:
         cur = db._conn.cursor()
         db._heal_gateway_routing_pk(cur)
         assert db.load_gateway_routing_entries(scope="s") == {"k1": "{}"}
+
+
+class TestApplyDatabasePragmas:
+    """Config-driven WAL-sizing pragma application (database: section)."""
+
+    @staticmethod
+    def _patch_cfg(monkeypatch, cfg):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: cfg,
+        )
+
+    def test_honors_wal_autocheckpoint_from_config(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(monkeypatch, {"database": {"wal_autocheckpoint": 250}})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 250
+        finally:
+            conn.close()
+
+    def test_honors_journal_size_limit_from_config(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(
+                monkeypatch, {"database": {"journal_size_limit": 10485760}}
+            )
+            apply_database_pragmas(conn, db_label="test.db")
+            assert (
+                conn.execute("PRAGMA journal_size_limit").fetchone()[0] == 10485760
+            )
+        finally:
+            conn.close()
+
+    def test_noop_when_database_section_missing(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            self._patch_cfg(monkeypatch, {})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        finally:
+            conn.close()
+
+    def test_never_touches_journal_mode(self, tmp_path, monkeypatch):
+        """journal_mode is owned by apply_wal_with_fallback — a database:
+        journal_mode entry must NOT cause a second, unguarded mode switch."""
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._patch_cfg(monkeypatch, {"database": {"journal_mode": "delete"}})
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        finally:
+            conn.close()
+
+    def test_ignores_non_integer_values(self, tmp_path, monkeypatch):
+        import sqlite3
+        from hermes_state import apply_database_pragmas
+
+        conn = sqlite3.connect(str(tmp_path / "pragmas.db"))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            before = conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
+            self._patch_cfg(
+                monkeypatch, {"database": {"wal_autocheckpoint": "lots"}}
+            )
+            apply_database_pragmas(conn, db_label="test.db")
+            assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == before
+        finally:
+            conn.close()

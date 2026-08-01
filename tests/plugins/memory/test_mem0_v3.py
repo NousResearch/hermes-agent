@@ -1,6 +1,7 @@
 """Tests for Mem0 v3 API — new tool names, paginated responses, update/delete tools."""
 
 import json
+import threading
 import time
 import pytest
 
@@ -186,19 +187,47 @@ class TestMem0Prefetch:
         assert len([c for c in backend.captured if c[0] == "search"]) == 1
 
     def test_slow_prefetch_returns_quickly(self, monkeypatch):
+        entered = threading.Event()
+        release = threading.Event()
+        search_returned = threading.Event()
+
         class SlowBackend(FakeBackend):
             def search(self, query, *, filters, top_k=10, rerank=True):
-                time.sleep(0.2)
-                return super().search(query, filters=filters, top_k=top_k, rerank=rerank)
+                entered.set()
+                try:
+                    release.wait(30)
+                    return super().search(
+                        query, filters=filters, top_k=top_k, rerank=rerank
+                    )
+                finally:
+                    search_returned.set()
 
         monkeypatch.setattr(mem0_plugin, "_PREFETCH_WAIT_SECS", 0.01)
         provider = self._make_provider(
             SlowBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
         )
-        started = time.monotonic()
+        # DETERMINISTIC non-blocking witness — replaces `assert elapsed < 0.1`.
+        #
+        # The old form slept 0.2s in the backend and asserted prefetch returned
+        # in under 0.1s. That makes the OS scheduler part of the assertion: on
+        # a loaded box thread startup alone can eat the 100ms budget, so the
+        # inequality flips with nothing wrong in the code under test. Observed
+        # failing in a full-directory run of tests/plugins/memory.
+        #
+        # The real contract is that prefetch gives up on the slow backend
+        # instead of waiting for it. Assert it directly: the backend search is
+        # STILL PARKED (release unset, so `search_returned` cannot be set). If
+        # prefetch ever waited for the backend, the search would have returned
+        # first and this fails. No wall-clock constant.
         assert provider.prefetch("where do I live?") == ""
-        assert time.monotonic() - started < 0.1
-        provider._prefetch_thread.join(timeout=1)
+        assert entered.wait(30), "prefetch never reached the backend"
+        assert not search_returned.is_set(), (
+            "prefetch blocked on the slow backend: the backend search had "
+            "already returned by the time prefetch did"
+        )
+
+        release.set()
+        provider._prefetch_thread.join(timeout=30)
         assert "lives in Berlin" in provider.prefetch("where do I live?")
 
 

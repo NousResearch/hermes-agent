@@ -292,11 +292,13 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
-    # Deprecated tool-progress env vars — replaced by display.tool_progress in
-    # config.yaml. Kept known here so reload and compatibility paths still
-    # handle them for existing users (gateway reads them as a back-compat fallback),
-    # without surfacing them in user-facing OPTIONAL_ENV_VARS listings.
-    "HERMES_TOOL_PROGRESS", "HERMES_TOOL_PROGRESS_MODE",
+    # HERMES_TOOL_PROGRESS_MODE is deprecated (replaced by display.tool_progress
+    # in config.yaml) but STILL READ at runtime by the gateway as a back-compat
+    # fallback, so it must stay known to reload/compat paths. The boolean
+    # HERMES_TOOL_PROGRESS variant is fully unsupported since the v12 config
+    # support floor retired its only consumer (the v3→4 migration): it is no
+    # longer listed here and doctor flags it as ignored.
+    "HERMES_TOOL_PROGRESS_MODE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -1157,7 +1159,7 @@ def _is_env_config_key(key: str) -> bool:
     ]
     return (
         key_upper in api_keys
-        or key_upper.endswith(('_API_KEY', '_TOKEN'))
+        or key_upper.endswith(('_API_KEY', '_TOKEN', '_SECRET'))
         or key_upper.startswith('TERMINAL_SSH')
     )
 
@@ -1676,7 +1678,9 @@ def get_custom_provider_extra_headers(
         entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
-        return normalize_extra_headers(entry.get("extra_headers"))
+        headers = normalize_extra_headers(entry.get("extra_headers"))
+        if headers:
+            return headers
     return {}
 
 
@@ -1779,6 +1783,25 @@ def _coerce_config_version(value: Any) -> int:
     return max(version, 0)
 
 
+def _raw_config_has_explicit_version() -> bool:
+    """True when config.yaml exists, parses, and carries a ``_config_version`` key.
+
+    Distinguishes an ANCIENT config (explicit old version → refused by the
+    v12 support floor) from a fresh minimal/hand-written/cloned config with
+    no version key at all (→ migrated + stamped normally). Missing or
+    unparseable files return False so they never trip the floor gate.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = fast_safe_load(f) or {}
+    except Exception:
+        return False
+    return isinstance(raw, dict) and "_config_version" in raw
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check the raw on-disk config schema version.
@@ -1832,6 +1855,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "smart_model_routing",   # written by the setup wizard (hermes_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (hermes_cli/setup.py)
     "known_plugin_toolsets", # written/read by hermes_cli/tools_config.py toolset-save flow
+    "known_builtin_toolsets",  # ditto — which builtin toolsets a platform's checklist has offered
     "session_reset",         # top-level form read by gateway/config.py + setup
     "group_sessions_per_user",   # top-level form bridged by gateway/config.py
     "thread_sessions_per_user",  # top-level form bridged by gateway/config.py
@@ -2139,15 +2163,51 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # Check config version
     current_ver, latest_ver = check_config_version()
 
-    # ── Versioned migration ladder (table-driven) ──
-    # The per-version steps live in hermes_cli.config_migrations as a
-    # (target_version, fn) registry; the driver applies every step whose
-    # target exceeds current_ver, in strict ascending order, preserving the
-    # original sequential if-block semantics byte-for-byte. Imported lazily
-    # to avoid a module-level import cycle (the steps call back into this
-    # module for read_raw_config/_persist_migration/etc. at call time).
-    from hermes_cli.config_migrations import run_migrations
-    run_migrations(current_ver, results, quiet)
+    # ── Auto-migration support floor (policy: v12, July 2026) ──
+    # A config with an EXPLICIT on-disk ``_config_version`` below the floor is
+    # NOT auto-migrated and NOT rewritten: we surface a clear, actionable
+    # message and leave the file byte-for-byte untouched. This matches the
+    # fail-safe posture for unparseable configs (warn on stderr, continue —
+    # load_config() deep-merges defaults at read time), so the CLI never
+    # crashes on an ancient config. The floor gate lives here in the wrapper
+    # (not in run_migrations) so the registry driver stays a pure mechanism
+    # that tests can exercise directly.
+    #
+    # A config with NO ``_config_version`` key at all is NOT floor-refused:
+    # that shape is a fresh minimal config (profile clones write bare keys;
+    # users hand-write two-line configs), not an ancient install. Those get
+    # the normal ladder (the retired <12 steps were no-ops for configs
+    # lacking the legacy keys they migrated) and a fresh version stamp —
+    # the historical behavior.
+    from hermes_cli.config_migrations import (
+        SUPPORT_FLOOR_VERSION,
+        run_migrations,
+        support_floor_message,
+    )
+
+    _explicit_version = _raw_config_has_explicit_version()
+    floor_refused = (
+        _explicit_version
+        and current_ver < SUPPORT_FLOOR_VERSION
+        and current_ver < latest_ver
+    )
+    if floor_refused:
+        msg = support_floor_message()
+        results["warnings"].append(msg)
+        # stderr so it is visible even on quiet startup paths, matching the
+        # corrupt-config warning posture in _warn_config_parse_failure().
+        sys.stderr.write(f"⚠ hermes config: {msg}\n")
+        if not quiet:
+            print(f"  ⚠ {msg}")
+    else:
+        # ── Versioned migration ladder (table-driven) ──
+        # The per-version steps live in hermes_cli.config_migrations as a
+        # (target_version, fn) registry; the driver applies every step whose
+        # target exceeds current_ver, in strict ascending order, preserving the
+        # original sequential if-block semantics byte-for-byte. Imported lazily
+        # to avoid a module-level import cycle (the steps call back into this
+        # module for read_raw_config/_persist_migration/etc. at call time).
+        run_migrations(current_ver, results, quiet)
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a
@@ -2201,7 +2261,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         # best-effort; never block migration on validation
         logger.debug("platform_toolsets validation skipped: %s", _ts_val_err)
 
-    if current_ver < latest_ver and not quiet:
+    if current_ver < latest_ver and not quiet and not floor_refused:
         print(f"Config version: {current_ver} → {latest_ver}")
 
     # Check for missing required env vars
@@ -2294,7 +2354,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     if missing_config:
         results["config_added"].extend(field["key"] for field in missing_config)
 
-    if current_ver < latest_ver:
+    if current_ver < latest_ver and not floor_refused:
         config = read_raw_config()
         config["_config_version"] = latest_ver
         _persist_migration(config)
@@ -3123,6 +3183,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
@@ -3136,6 +3197,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
     "docker_network": "TERMINAL_DOCKER_NETWORK",
     "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
+    "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
     "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
@@ -3171,20 +3233,29 @@ def apply_terminal_config_to_env(
     gives those child-process launch paths the same config bridge as classic
     CLI without importing ``cli.py`` and paying for its startup side effects.
 
-    When the user config contains a ``terminal`` section, config.yaml is
-    authoritative and overrides existing env values.  Otherwise defaults only
-    backfill missing env vars so exported/.env values keep working.
+    Explicit keys in the user config's ``terminal`` section are authoritative
+    and override their matching env values.  Merged defaults only backfill
+    missing env vars; they never replace unrelated exported/.env values.
     """
     target = os.environ if env is None else env
 
     raw_config = read_raw_config()
-    file_has_terminal_config = isinstance(raw_config.get("terminal"), dict)
+    raw_terminal_cfg = raw_config.get("terminal")
+    file_has_terminal_config = isinstance(raw_terminal_cfg, dict)
+    if not file_has_terminal_config:
+        raw_terminal_cfg = {}
     should_override = file_has_terminal_config if override is None else override
 
     cfg = config if config is not None else load_config_readonly()
     terminal_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
     if not isinstance(terminal_cfg, dict):
         return target
+
+    # A caller-supplied config is its own source of explicit keys.  For the
+    # normal merged-config path, only keys present in raw config.yaml may
+    # override existing env values; keys inherited from DEFAULT_CONFIG are
+    # backfill-only.
+    explicit_keys = terminal_cfg.keys() if config is not None else raw_terminal_cfg.keys()
 
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
@@ -3196,7 +3267,7 @@ def apply_terminal_config_to_env(
                 continue
             if isinstance(value, str):
                 value = os.path.expanduser(value)
-        if should_override or env_var not in target:
+        if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)
     return target
 
@@ -4257,6 +4328,9 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+    elif terminal.get('backend') == 'vercel_sandbox':
+        print(f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}")
+        print(f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -4719,8 +4793,12 @@ def set_config_value(key: str, value: str, force: bool = False):
         key: Dotted config path (e.g. ``terminal.backend``).
         value: String value (auto-coerced to bool/int/float when matching).
         force: When True, skip the unknown-key warning — useful for scripted
-            writes of keys the running version doesn't recognize yet. The CLI
-            exposes this via ``hermes config set --force``.
+            writes of keys the running version doesn't recognize yet — AND
+            authorize destructive replacement of a mapping section by a
+            scalar (e.g. ``--force model gpt-x`` replaces the whole ``model:``
+            mapping). Without --force, scalar writes over mapping sections are
+            refused (bare ``model`` is redirected to ``model.default``). The
+            CLI exposes this via ``hermes config set --force``.
     """
     if is_managed():
         managed_error("set configuration values")
@@ -4770,8 +4848,15 @@ def set_config_value(key: str, value: str, force: bool = False):
         try:
             with open(config_path, encoding="utf-8") as f:
                 user_config = fast_safe_load(f) or {}
-        except Exception:
-            user_config = {}
+        except Exception as exc:
+            print(
+                f"✗ Cannot parse {config_path}: {exc}\n"
+                f"  The file contains a YAML syntax error. Fix the error\n"
+                f"  in your config file first, then retry.\n"
+                f"  (hermes config edit will open it in your editor.)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -4793,6 +4878,73 @@ def set_config_value(key: str, value: str, force: bool = False):
             coerced_value = float(value)
 
     value = coerced_value
+    # Normalize a scalar ``model`` key before writing sub-keys so that
+    # ``hermes config set model.provider openai`` doesn't silently
+    # destroy the model id when ``model`` is a bare string shorthand
+    # (e.g. ``model: gpt-4o``).  Without this _set_nested replaces the
+    # scalar with an empty dict, dropping the model id permanently.
+    _model_key = key.strip().lower()
+    if _model_key.startswith("model."):
+        _model_val = user_config.get("model")
+        if isinstance(_model_val, str) and _model_val:
+            user_config["model"] = {"default": _model_val}
+    # Guard against #74995: a single-segment key that names an existing
+    # mapping would silently overwrite the entire section with a scalar
+    # (e.g. ``hermes config set model gpt-5.6-sol`` when model already
+    # contains default/provider/context_length).  Bare ``model`` is a
+    # documented shorthand — redirect to ``model.default`` and preserve
+    # siblings.  All other mapping sections are rejected unless --force.
+    if "." not in key:
+        _existing = user_config.get(key)
+        if isinstance(_existing, dict):
+            if key == "model":
+                if force:
+                    # --force: allow destructive section overwrite.
+                    print(
+                        f"⚠ Replacing entire 'model' section with a scalar "
+                        f"(discarding {len(_existing)} existing sub-key(s))"
+                    )
+                else:
+                    # Redirect bare-model shorthand to model.default while
+                    # keeping every sibling mapping key intact.
+                    key = "model.default"
+                    print(
+                        f"✓ Redirecting bare 'model' to 'model.default' "
+                        f"(preserving {len(_existing)} existing model sub-key(s))"
+                    )
+                    # value was already coerced above; proceed to _set_nested
+            elif not force:
+                _sub = [k for k in _existing if isinstance(k, str)]
+                print(
+                    f"✗ Cannot set '{key}' to a scalar — '{key}' is a "
+                    f"configuration section with {len(_sub)} sub-key(s).",
+                    file=sys.stderr,
+                )
+                if _sub:
+                    _sub_list = ", ".join(_sub[:8])
+                    print(f"  Sub-keys: {_sub_list}", file=sys.stderr)
+                    if len(_sub) > 8:
+                        print(
+                            f"  ... and {len(_sub) - 8} more",
+                            file=sys.stderr,
+                        )
+                print(
+                    "  Use a dotted path to set a specific leaf key:",
+                    file=sys.stderr,
+                )
+                print(
+                    f"    hermes config set {key}.<sub-key> <value>",
+                    file=sys.stderr,
+                )
+                print(
+                    "  Or use --force to replace the entire section:",
+                    file=sys.stderr,
+                )
+                print(
+                    f"    hermes config set --force {key} {value!r}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
@@ -4911,8 +5063,15 @@ def unset_config_value(key: str):
         try:
             with open(config_path, encoding="utf-8") as f:
                 user_config = fast_safe_load(f) or {}
-        except Exception:
-            user_config = {}
+        except Exception as exc:
+            print(
+                f"✗ Cannot parse {config_path}: {exc}\n"
+                f"  The file contains a YAML syntax error. Fix the error\n"
+                f"  in your config file first, then retry.\n"
+                f"  (hermes config edit will open it in your editor.)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     removed = _unset_nested(user_config, key)
 
@@ -4969,7 +5128,8 @@ def config_command(args):
             print("  hermes config set terminal.backend docker")
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             print()
-            print("  --force: skip the unknown-key notice for unrecognized keys")
+            print("  --force: skip the unknown-key notice for unrecognized keys,")
+            print("           and allow a scalar to replace a whole mapping section")
             sys.exit(1)
         set_config_value(key, value, force=force)
 

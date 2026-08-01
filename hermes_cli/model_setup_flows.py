@@ -26,6 +26,7 @@ import subprocess
 import urllib.parse
 
 from hermes_cli.config import clear_model_endpoint_credentials
+from hermes_cli.providers import custom_provider_slug
 
 
 # AWS cross-region inference profile prefixes. Any geo-prefixed profile only
@@ -253,6 +254,60 @@ def _print_moa_preset(name: str, preset: dict) -> None:
         print(f"    {idx}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
     print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+
+
+def _model_flow_ai_gateway(config, current_model=""):
+    """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
+    from hermes_constants import AI_GATEWAY_BASE_URL
+    from hermes_cli.main import _prompt_api_key
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value
+
+    # Route through _prompt_api_key so users can replace a stale/broken key
+    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand.
+    pconfig = PROVIDER_REGISTRY["ai-gateway"]
+    existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
+    if not existing_key:
+        print(
+            "Create API key here: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway&title=AI+Gateway"
+        )
+        print("Add a payment method to get $5 in free credits.")
+        print()
+    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="ai-gateway")
+    if abort:
+        return
+
+    from hermes_cli.models import ai_gateway_model_ids, get_pricing_for_provider
+
+    models_list = ai_gateway_model_ids(force_refresh=True)
+    pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
+
+    selected = _prompt_model_selection(
+        models_list, current_model=current_model, pricing=pricing
+    )
+    if selected:
+        _save_model_choice(selected)
+
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "ai-gateway"
+        model["base_url"] = AI_GATEWAY_BASE_URL
+        model["api_mode"] = "chat_completions"
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via Vercel AI Gateway)")
+    else:
+        print("No change.")
 
 
 def _model_flow_moa(config, current_model=""):
@@ -1582,7 +1637,7 @@ def _model_flow_named_custom(config, provider_info):
         model = {"default": model} if model else {}
         cfg["model"] = model
     if provider_key:
-        model["provider"] = "custom:" + provider_key.strip().lower().replace(" ", "-")
+        model["provider"] = custom_provider_slug(name, provider_key)
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:

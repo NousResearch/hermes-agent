@@ -44,6 +44,14 @@ def _reset_fuzzy_cache(monkeypatch):
     # Each test walks a fresh tmp dir; clear the cached listing so prior
     # roots can't leak through the TTL window.
     server._fuzzy_cache.clear()
+    # #70041: _launch_configured_cwd() reads the launch profile's config.yaml
+    # via _load_cfg(), which resolves through _hermes_home captured at module
+    # import time — before the per-test HERMES_HOME redirect applies. When the
+    # developer's real config sets terminal.cwd, _completion_cwd() returns that
+    # directory instead of the test's tmp_path (from monkeypatch.chdir). Patch
+    # it to None so _completion_cwd falls through to os.getcwd(), which
+    # monkeypatch.chdir controls.
+    monkeypatch.setattr(server, "_launch_configured_cwd", lambda: None)
     yield
     server._fuzzy_cache.clear()
 
@@ -230,5 +238,28 @@ def test_leading_slash_prefers_a_real_absolute_path(tmp_path, monkeypatch):
 
     # `/etc` exists on any POSIX box, so the absolute reading must hold.
     assert not any("decoy.conf" in t for t in texts), texts
+
+
+def test_completion_ignores_real_terminal_cwd(tmp_path, monkeypatch):
+    """#70041: _completion_cwd must not read the developer's real config.yaml
+    terminal.cwd when running under hermetic tests.
+
+    The autouse _reset_fuzzy_cache fixture patches _launch_configured_cwd
+    to None so _completion_cwd falls through to os.getcwd() (controlled
+    by monkeypatch.chdir). This test verifies the fixture holds: with the
+    patch in place, a configured terminal.cwd from the launch profile's
+    real config can never leak into completion resolution.
+    """
+    _fixture(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+
+    # _completion_cwd should resolve to tmp_path (via os.getcwd),
+    # not to any configured terminal.cwd from the real config.
+    resolved = server._completion_cwd({})
+    assert resolved == str(tmp_path), (
+        f"_completion_cwd resolved to {resolved} instead of {tmp_path} — "
+        f"the autouse fixture may not be patching _launch_configured_cwd"
+    )
 
 

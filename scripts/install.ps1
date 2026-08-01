@@ -22,6 +22,12 @@ param(
     # cloning the full default-branch history) and then `git checkout`s the
     # exact ref.  Precedence: Commit > Tag > Branch.
     [string]$Commit = "",
+    # Apply -Commit even when it would roll an existing install BACKWARDS.
+    # Without this the repository stage skips a pin that is already an ancestor
+    # of HEAD, so a stale baked-in BUILD_PIN_COMMIT can't downgrade a current
+    # checkout. Reproducible/CI installs that genuinely want an older SHA on an
+    # existing tree pass -ForceCommit.
+    [switch]$ForceCommit,
     [string]$Tag = "",
     [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
     [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
@@ -1505,8 +1511,32 @@ function Install-Repository {
                     # Make sure we have the commit locally (a tag-less commit
                     # SHA isn't always reachable from any one branch fetch).
                     git -c windows.appendAtomically=false fetch origin $Commit
-                    git -c windows.appendAtomically=false checkout --detach $Commit
-                    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                    # A commit pin must never move an existing install
+                    # BACKWARDS. hermes-setup.exe bakes its build-time commit
+                    # into the binary (BUILD_PIN_COMMIT) and passes it as
+                    # -Commit on every install-mode run -- including the retry
+                    # the desktop's "Update didn't finish" screen kicks off. An
+                    # installer built months ago would otherwise rewind a
+                    # current checkout to its build commit, leaving ancient
+                    # code against a current venv (npm workspaces and Python
+                    # deps that no longer match: the #74xxx report). Skip the
+                    # pin when the target is already an ancestor of HEAD; a
+                    # fresh clone has no such ancestry and pins normally.
+                    $skipRollback = $false
+                    if (-not $ForceCommit) {
+                        git -c windows.appendAtomically=false merge-base --is-ancestor $Commit HEAD 2>$null
+                        $isAncestor = ($LASTEXITCODE -eq 0)
+                        $pinnedSha = (& git -c windows.appendAtomically=false rev-parse "$Commit^{commit}" 2>$null)
+                        $headSha = (& git -c windows.appendAtomically=false rev-parse HEAD 2>$null)
+                        $skipRollback = $isAncestor -and ($pinnedSha -ne $headSha)
+                    }
+                    if ($skipRollback) {
+                        Write-Warn "Ignoring -Commit $Commit`: the checkout is already newer."
+                        Write-Warn "Pinning to it would roll this install back. Pass -ForceCommit to override."
+                    } else {
+                        git -c windows.appendAtomically=false checkout --detach $Commit
+                        if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (exit $LASTEXITCODE)" }
+                    }
                 } elseif ($Tag) {
                     git -c windows.appendAtomically=false fetch origin "refs/tags/${Tag}:refs/tags/${Tag}"
                     git -c windows.appendAtomically=false checkout --detach "refs/tags/$Tag"

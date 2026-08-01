@@ -241,6 +241,7 @@ declare global {
         write: (id: string, data: string) => Promise<boolean>
       }
       onClosePreviewRequested?: (callback: () => void) => () => void
+      onOpenFolderRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
       onDeepLink?: (
         callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
@@ -255,6 +256,8 @@ declare global {
       // reload. Wipe session lists (skeletons) and re-dial.
       onConnectionApplied?: (callback: () => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
+      getOnBattery?: () => Promise<boolean>
+      onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>

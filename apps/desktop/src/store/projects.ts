@@ -16,7 +16,15 @@ import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gatewa
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
+import {
+  $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
+  idsShareLineage,
+  sessionMatchesStoredId,
+  workspaceCwdForNewSession
+} from '@/store/session'
+import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -161,12 +169,49 @@ export function exitProjectScope(): void {
   $projectScope.set(ALL_PROJECTS)
 }
 
-// The cwd a NEW chat should start in. The "active project" is just an atom
-// ($projectScope) — so when you're inside a project, a new session (cmd-n, the
-// trunk "+") starts at that project's root (its primary repo = the default-branch
-// checkout) instead of inheriting whatever unrelated worktree the live cwd
-// drifted into. Outside a project it falls back to the plain default (detached),
-// so a bare new chat shows no branch.
+// A project's working root: its primary folder, else the first repo that has
+// one. Empty for the path-less Home bucket. (The sidebar's `projectTreeCwd` is
+// the same rule over the same tree — this is the store-side copy so the store
+// doesn't reach into the sidebar's React module.)
+const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
+  (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+
+// ⌘K "go to project": flip the sidebar into grouped mode and enter the project
+// — a pure scope switch, same as clicking the overview row (never spends main).
+// With `newSession` (⌘-select / ⌘-Enter) it also lands on a fresh session draft
+// anchored at the project root — stacked as a tab when main already holds a
+// chat (palette opens are opens-from-nowhere). A path-less project (the Home
+// bucket) gets a plain detached draft.
+export function goToProject(id: string, options?: { newSession?: boolean }): void {
+  setSidebarAgentsGrouped(true)
+  enterProject(id)
+
+  if (!options?.newSession) {
+    return
+  }
+
+  const cwd = projectRootCwd($projectTree.get().find(node => node.id === id))
+
+  if (cwd) {
+    requestStartWorkSession(cwd, undefined, { openTab: true })
+  } else {
+    requestFreshSession()
+  }
+}
+
+// The cwd a NEW chat should start in.
+//
+// Priority (first hit wins):
+//   1. Explicit sidebar project scope (drilled into a project / Home bucket)
+//   2. The FOCUSED session's workspace — so ⌘N / ⌘T from a chat that's already
+//      in a project/worktree stay there without requiring a sidebar drill-in
+//   3. Configured default project dir / remote remembered cwd (detached otherwise)
+//
+// The "active project" is just an atom ($projectScope) — so when you're inside
+// a project, a new session (cmd-n, the trunk "+") starts at that project's root
+// (its primary repo = the default-branch checkout). Outside a project it used
+// to fall straight to the plain default (detached), which dropped the workspace
+// of the chat you were looking at — that's the case (2) covers.
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
@@ -177,15 +222,63 @@ export function resolveNewSessionCwd(): string {
   }
 
   if (scope !== ALL_PROJECTS) {
-    const project = $projectTree.get().find(node => node.id === scope)
-    const cwd = (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+    const cwd = projectRootCwd($projectTree.get().find(node => node.id === scope))
 
     if (cwd) {
       return cwd
     }
   }
 
+  // Inherit the focused chat's workspace. ⌘N/⌘T from a session that already
+  // has a project/pwd should stay there — drilling into the sidebar project
+  // is the uncommon path, not the requirement.
+  const focusedCwd = focusedSessionWorkspaceCwd()
+
+  if (focusedCwd) {
+    return focusedCwd
+  }
+
   return workspaceCwdForNewSession()
+}
+
+/** Live workspace of the session the user is looking at (tile or primary). */
+function focusedSessionWorkspaceCwd(): string {
+  const focusedStoredId = $focusedStoredSessionId.get()
+  const state = $focusedSessionState.get()
+
+  // Prefer the live runtime slice when it belongs to the focused chat
+  // (agent can relocate mid-turn). Cold tabs / mid-switch lag fall through
+  // to the stored session row.
+  const stateCwd = state?.cwd?.trim() || ''
+  const stateStoredId = state?.storedSessionId?.trim() || ''
+
+  if (
+    stateCwd &&
+    (!focusedStoredId ||
+      !stateStoredId ||
+      stateStoredId === focusedStoredId ||
+      idsShareLineage(focusedStoredId, stateStoredId, $sessions.get()))
+  ) {
+    return stateCwd
+  }
+
+  if (focusedStoredId) {
+    const row = $sessions.get().find(s => sessionMatchesStoredId(s, focusedStoredId))
+    const rowCwd = row?.cwd?.trim() || ''
+
+    if (rowCwd) {
+      return rowCwd
+    }
+
+    // Focused a real session with no workspace → stay detached. Do NOT fall
+    // through to `$currentCwd` (it may still hold a remembered path from an
+    // earlier chat and would re-attach a project the user left).
+    return ''
+  }
+
+  // No focused stored session: primary draft. The composer atom is the draft's
+  // workspace target (set by startFreshSession / startSessionInWorkspace).
+  return $currentCwd.get().trim()
 }
 
 const underPath = (parent: string, child: string): boolean =>
@@ -997,6 +1090,8 @@ export async function switchBranchInRepo(repoPath: string, branch: string): Prom
 // effect even if the path repeats.
 export interface StartWorkSessionRequest {
   draft?: string
+  /** Stack the fresh session as a tab when main already holds a chat (palette/⌘O opens-from-nowhere). */
+  openTab?: boolean
   path: string
   token: number
 }
@@ -1016,7 +1111,7 @@ export function requestNewWorktree(): void {
 
 let startWorkToken = 0
 
-export function requestStartWorkSession(path: string, draft?: string): void {
+export function requestStartWorkSession(path: string, draft?: string, options?: { openTab?: boolean }): void {
   const target = path.trim()
 
   if (!target) {
@@ -1024,7 +1119,12 @@ export function requestStartWorkSession(path: string, draft?: string): void {
   }
 
   startWorkToken += 1
-  $startWorkSessionRequest.set({ draft: draft?.trim() || undefined, path: target, token: startWorkToken })
+  $startWorkSessionRequest.set({
+    draft: draft?.trim() || undefined,
+    openTab: options?.openTab || undefined,
+    path: target,
+    token: startWorkToken
+  })
 }
 
 export async function removeWorktreePath(
@@ -1067,4 +1167,49 @@ export async function pickProjectFolder(): Promise<null | string> {
   })
 
   return dir || null
+}
+
+// ⌘O / palette "Open folder…": open a folder AS a project, upserting. A folder
+// already covered by a project (explicit or auto) just enters it; anything else
+// becomes a new project named after the folder. Either way the sidebar scopes
+// to the project and a fresh session draft lands anchored at the folder — the
+// one-keystroke version of new project → enter → new session. Like goToProject,
+// this is an open-from-nowhere: an occupied main gets a stacked tab, not stolen.
+export async function openFolderAsProject(dir?: string): Promise<void> {
+  const target = (dir ?? (await pickProjectFolder()) ?? '').trim()
+
+  if (!target) {
+    return
+  }
+
+  // Refresh first so the membership check runs against live truth — a repo
+  // cloned since the last scan should enter its auto project, not double-create.
+  await refreshProjectTree()
+
+  const existing = projectIdForCwd(target)
+
+  if (existing) {
+    setSidebarAgentsGrouped(true)
+    enterProject(existing)
+  } else {
+    const name =
+      target
+        .replace(/[/\\]+$/, '')
+        .split(/[/\\]/)
+        .pop() || target
+
+    try {
+      const created = await createProject({ name, folders: [target], primaryPath: target, use: true })
+
+      if (created) {
+        enterProject(created.id)
+      }
+    } catch (err) {
+      // Stale backend (no projects.* RPC) or a failed write: still open the
+      // folder as a plain workspace session below — the project row can wait.
+      notify({ kind: 'warning', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  requestStartWorkSession(target, undefined, { openTab: true })
 }

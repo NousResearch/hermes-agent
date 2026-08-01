@@ -73,6 +73,25 @@ class TestAutoVoiceReplyFormat:
             voice_event, "hello", [], already_sent=True
         ) is True
 
+    def test_should_send_voice_reply_voice_only_still_requires_voice_input(self):
+        """Explicit voice_only must not widen to text input (#73508 regression).
+
+        Persisted voice_only mode is synced into the adapter as an explicit
+        auto-TTS opt-in, so adapter_auto_tts is True for this chat. The
+        chat-level mode stays authoritative: text input gets no voice reply,
+        voice input still does.
+        """
+        runner = _make_runner()
+        runner._voice_mode["telegram:123"] = "voice_only"
+        adapter = _make_adapter(Platform.TELEGRAM)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        event = _make_event(Platform.TELEGRAM, chat_id="123")
+
+        assert runner._should_send_voice_reply(event, "hello", []) is False
+
+        voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
+        assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
 
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):

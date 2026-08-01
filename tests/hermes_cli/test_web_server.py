@@ -191,16 +191,45 @@ class TestSessionTokenInjection:
     """
 
     def test_honors_injected_token(self, monkeypatch):
-        import importlib
         import hermes_cli.web_server as ws
 
+        original_app = ws.app
+        original_token = ws._SESSION_TOKEN
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        try:
-            importlib.reload(ws)
-            assert ws._SESSION_TOKEN == "desktop-seeded-token"
-        finally:
-            monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-            importlib.reload(ws)
+        assert ws._resolve_session_token() == "desktop-seeded-token"
+        # No module reload: the loaded app and its adopted token are untouched.
+        assert ws.app is original_app
+        assert ws._SESSION_TOKEN == original_token
+
+    def test_falls_back_to_random_token(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        with patch.object(
+            ws.secrets, "token_urlsafe", return_value="generated-token"
+        ) as token_urlsafe:
+            assert ws._resolve_session_token() == "generated-token"
+        token_urlsafe.assert_called_once_with(32)
+
+    def test_session_token_resolution_preserves_loaded_app_auth(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from starlette.testclient import TestClient
+
+        original_app = ws.app
+        original_header_name = ws._SESSION_HEADER_NAME
+        original_token = ws._SESSION_TOKEN
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
+        assert ws._resolve_session_token() == "desktop-seeded-token"
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        with patch.object(ws.secrets, "token_urlsafe", return_value="generated-token"):
+            assert ws._resolve_session_token() == "generated-token"
+
+        client = TestClient(original_app)
+        client.headers[original_header_name] = original_token
+        assert client.get("/api/__session_token_probe").status_code == 404
+        assert ws.app is original_app
+        assert ws._SESSION_HEADER_NAME == original_header_name
+        assert ws._SESSION_TOKEN == original_token
 
 
 # ---------------------------------------------------------------------------
@@ -1244,6 +1273,109 @@ class TestWebServerEndpoints:
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
 
+    def test_get_sessions_rejects_negative_limit(self):
+        """limit=-1 must be rejected (422), not passed through to SQLite as
+        LIMIT -1 (unbounded) — issue #74316."""
+        resp = self.client.get("/api/sessions?limit=-1")
+        assert resp.status_code == 422
+
+    def test_get_sessions_rejects_negative_offset(self):
+        resp = self.client.get("/api/sessions?offset=-1")
+        assert resp.status_code == 422
+
+    def test_get_sessions_positive_limit_still_works(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(5):
+                db.create_session(session_id=f"pos-limit-{i}", source="cli")
+                db.append_message(session_id=f"pos-limit-{i}", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=3&offset=0")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["limit"] == 3
+        assert len(payload["sessions"]) == 3
+
+    def test_profiles_sessions_rejects_negative_limit(self):
+        """Same guard on the cross-profile aggregate route — negative limit
+        previously bypassed the per-profile 500-row clamp entirely."""
+        resp = self.client.get("/api/profiles/sessions?limit=-1")
+        assert resp.status_code == 422
+
+    def test_profiles_sessions_rejects_negative_offset(self):
+        resp = self.client.get("/api/profiles/sessions?offset=-1")
+        assert resp.status_code == 422
+
+    def test_profiles_sessions_positive_limit_still_works(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(5):
+                db.create_session(session_id=f"pos-plimit-{i}", source="cli")
+                db.append_message(session_id=f"pos-plimit-{i}", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/profiles/sessions?limit=3&offset=0")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["limit"] == 3
+        assert len(payload["sessions"]) == 3
+
+    def test_get_session_messages_rejects_negative_limit(self):
+        """limit=-1 previously bypassed the documented 500-row clamp because
+        min(-1, 500) == -1, which SQLite treats as 'no limit'."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="neg-limit-messages", source="cli")
+            for i in range(60):
+                db.append_message(
+                    session_id="neg-limit-messages", role="user", content=f"msg {i}"
+                )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/neg-limit-messages/messages?limit=-1")
+        assert resp.status_code == 422
+
+    def test_get_session_messages_rejects_negative_offset(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="neg-offset-messages", source="cli")
+            db.append_message(session_id="neg-offset-messages", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/neg-offset-messages/messages?offset=-1")
+        assert resp.status_code == 422
+
+    def test_get_session_messages_limit_above_500_is_capped_not_rejected(self):
+        """A limit above the documented 500-row cap is silently clamped
+        (existing ``min(limit, 500)`` behaviour), not rejected — the request
+        still succeeds."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="many-messages", source="cli")
+            for i in range(60):
+                db.append_message(session_id="many-messages", role="user", content=f"msg {i}")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/many-messages/messages?limit=1000")
+        assert resp.status_code == 200
+        assert resp.json()["pagination"]["limit"] == 500
+
 
 
 
@@ -1258,6 +1390,20 @@ class TestWebServerEndpoints:
 class TestBuildSchemaFromConfig:
 
 
+    def test_overrides_applied(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        # terminal.backend should be a select with options
+        if "terminal.backend" in CONFIG_SCHEMA:
+            entry = CONFIG_SCHEMA["terminal.backend"]
+            assert entry["type"] == "select"
+            assert "options" in entry
+            assert "local" in entry["options"]
+            assert "vercel_sandbox" in entry["options"]
+        runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
+        assert runtime_entry["type"] == "select"
+        assert "node24" in runtime_entry["options"]
+        assert "python3.13" in runtime_entry["options"]
+        assert len(runtime_entry["options"]) >= 3
 
 
 

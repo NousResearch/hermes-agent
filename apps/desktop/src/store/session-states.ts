@@ -636,6 +636,42 @@ export function focusedSessionNeedsRoute(focused: 'main' | 'tile' | null, worksp
   return !focused || (focused === 'main' && workspaceIsPage)
 }
 
+/** The open tab that's still an empty "New session" draft, if there is one.
+ *  That tab is the one the user would have typed into, so an open-from-nowhere
+ *  spends it instead of stacking a second blank tab beside it. Most recent
+ *  wins; a tile whose runtime hasn't bound (or whose state hasn't published) is
+ *  unknown rather than empty, so it's left alone. */
+export function blankDraftTile(
+  tiles: readonly SessionTile[],
+  states: Record<string, ClientSessionState>
+): null | SessionTile {
+  return (
+    tiles.findLast(({ runtimeId }) => {
+      const state = runtimeId ? states[runtimeId] : undefined
+
+      return Boolean(state && !state.busy && state.messages.length === 0)
+    }) ?? null
+  )
+}
+
+/** Hand an open blank draft tab over to `storedSessionId`, keeping its slot.
+ *  False when there's no such tab, so the caller can fall back. The spent draft
+ *  is DISCARDED rather than closed: it never held a conversation, so ⌘⇧T
+ *  resurrecting it would just restore an empty tab. */
+export function reuseBlankDraftTile(storedSessionId: string): boolean {
+  const tile = blankDraftTile($sessionTiles.get(), $sessionStates.get())
+
+  if (!tile || tile.storedSessionId === storedSessionId) {
+    return false
+  }
+
+  discardSessionTile(tile.storedSessionId)
+  openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before)
+  revealTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`)
+
+  return true
+}
+
 // Closed-tab stack for ⌘⇧T reopen (in-memory) — keyed PER PROFILE like the
 // tiles themselves, so ⌘⇧T after a profile switch never resurrects the other
 // profile's session. The tile's placement is remembered so it returns in place.
@@ -666,8 +702,10 @@ export function discardSessionTile(storedSessionId: string) {
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
 }
 
-/** ⌘⇧T — reopen the most recently closed tab where it was. Skips ids that are
- *  live again (reopened, or now the primary). */
+/** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.
+ *  Adoption alone is silent (won't steal the active tab), so restore has to
+ *  front the pane explicitly. Skips ids that are live again (reopened / now
+ *  the primary). */
 export function reopenLastClosedTile(): void {
   const stack = closedStack()
 
@@ -680,6 +718,7 @@ export function reopenLastClosedTile(): void {
 
     if (!$sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
       openSessionTile(storedSessionId, tile.dir, tile.anchor, tile.before)
+      focusOpenSession(storedSessionId)
 
       return
     }
@@ -732,10 +771,26 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 export const selectionHomesToWorkspace = (selected: null | string, tiles: readonly SessionTile[]): boolean =>
   !(selected && tiles.some(t => t.storedSessionId === selected))
 
+// Cold-start restore is the one selection change that is NOT a navigation: the
+// route already pointed at the primary session before the window loaded, and
+// homing on it would front the workspace tab over the PERSISTED active tab —
+// then persist that clobber, so the tab you reloaded on never comes back
+// (⌘R always landing on main). use-route-resume arms this one-shot right
+// before dispatching the boot resume; the very next selection change skips
+// homing and the restored layout tree keeps its say.
+let selectionRestoreInFlight = false
+
+export function markSelectionRestore() {
+  selectionRestoreInFlight = true
+}
+
 // Homing also FRONTS the workspace tab: the resumed chat loads in the workspace
 // pane, so a zone parked on a tile tab must switch back or the click looks dead.
 $selectedStoredSessionId.listen(selected => {
-  if (!selectionHomesToWorkspace(selected, $sessionTiles.get())) {
+  const restoring = selectionRestoreInFlight
+  selectionRestoreInFlight = false
+
+  if (restoring || !selectionHomesToWorkspace(selected, $sessionTiles.get())) {
     return
   }
 

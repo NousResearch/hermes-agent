@@ -23,7 +23,7 @@ from typing import Any, Dict
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.command_manifest import build_relay_command_manifest
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
@@ -150,3 +150,190 @@ def test_event_from_wire_reply_to_absent_and_partial():
 # ── hello command manifest ───────────────────────────────────────────────
 
 
+
+
+# ── auto-thread routing feedback (send-result thread_id) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_captures_auto_thread_feedback():
+    """A send result carrying thread_id + auto_thread_name (the connector's
+    auto-thread egress policy routed the reply into a thread it created)
+    populates auto_thread_info_for_chat for the semantic-rename lane."""
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        stub.sent.append(action)
+        return {
+            "success": True,
+            "message_id": "m1",
+            "thread_id": "th-auto-1",
+            "auto_thread_name": "What is a duck",
+        }
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    result = await adapter.send("chan1", "quack")
+    assert result.success
+    assert adapter.auto_thread_info_for_chat("chan1") == (
+        "th-auto-1",
+        "What is a duck",
+    )
+    # Plain results (no auto-thread) leave no feedback for other chats.
+    assert adapter.auto_thread_info_for_chat("chan-other") is None
+
+
+@pytest.mark.asyncio
+async def test_send_without_thread_feedback_leaves_no_info():
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        return {"success": True, "message_id": "m2"}
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    await adapter.send("chan2", "hello")
+    assert adapter.auto_thread_info_for_chat("chan2") is None
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_feedback_is_bounded():
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        return {
+            "success": True,
+            "message_id": "m",
+            "thread_id": f"th-{action['chat_id']}",
+            "auto_thread_name": "n",
+        }
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    for i in range(300):
+        await adapter.send(f"c{i}", "x")
+    assert len(adapter._auto_thread_by_chat) <= 256
+    # Newest entries survive the bound.
+    assert adapter.auto_thread_info_for_chat("c299") == ("th-c299", "n")
+
+
+# ── title-turn rename: registration shape-gate + fire-time cache poll ────
+
+
+def _mk_runner_stub():
+    """Minimal object carrying the three GatewayRunner methods under test."""
+    import asyncio as _asyncio
+    from gateway.run import GatewayRunner
+
+    class _Stub:
+        _is_relay_discord_channel_lane = GatewayRunner._is_relay_discord_channel_lane
+        _relay_auto_thread_info = GatewayRunner._relay_auto_thread_info
+        _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
+        _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
+        _rename_discord_auto_thread_for_session_title = (
+            GatewayRunner._rename_discord_auto_thread_for_session_title
+        )
+
+        def __init__(self, adapter):
+            self.adapters = {Platform.RELAY: adapter}
+
+        def _adapter_for_source(self, source):
+            return self.adapters.get(Platform.RELAY)
+
+    return _Stub
+
+
+def _relay_channel_source():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="chan-parent",
+        chat_type="group",
+        thread_id=None,
+        delivered_via_upstream_relay=True,
+        auto_thread_created=False,
+        auto_thread_initial_name=None,
+    )
+
+
+def test_relay_channel_lane_shape_gate():
+    from types import SimpleNamespace
+    from gateway.config import Platform as P
+
+    stub = _mk_runner_stub()(adapter=None)
+    src = _relay_channel_source()
+    assert stub._is_relay_discord_channel_lane(src) is True
+    # thread events, DMs, and native (non-relay) events do not match
+    assert (
+        stub._is_relay_discord_channel_lane(
+            SimpleNamespace(**{**src.__dict__, "thread_id": "t1"})
+        )
+        is False
+    )
+    assert (
+        stub._is_relay_discord_channel_lane(
+            SimpleNamespace(**{**src.__dict__, "chat_type": "dm"})
+        )
+        is False
+    )
+    assert (
+        stub._is_relay_discord_channel_lane(
+            SimpleNamespace(**{**src.__dict__, "delivered_via_upstream_relay": False})
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_title_rename_polls_feedback_that_arrives_late():
+    """The auto-title races delivery: feedback lands AFTER the rename lane
+    starts. The lane must poll the adapter cache and still rename."""
+    import asyncio
+
+    adapter, stub_conn = _adapter()
+    renames: list = []
+
+    async def rename_thread(thread_id, name, *, only_if_current_name=None, parent_chat_id=None):
+        renames.append((thread_id, name, only_if_current_name))
+        return True
+
+    adapter.rename_thread = rename_thread  # type: ignore[method-assign]
+    runner = _mk_runner_stub()(adapter)
+    src = _relay_channel_source()
+
+    async def land_feedback_late():
+        await asyncio.sleep(0.7)  # past the first poll tick
+        adapter._auto_thread_by_chat["chan-parent"] = ("th-9", "Initial words")
+
+    task = asyncio.create_task(land_feedback_late())
+    await runner._rename_discord_auto_thread_for_session_title(
+        src, "sess1", "Debugging the flux capacitor"
+    )
+    await task
+    assert renames == [("th-9", "Debugging the flux capacitor", "Initial words")]
+
+
+@pytest.mark.asyncio
+async def test_title_rename_true_miss_noops(monkeypatch):
+    """No feedback ever arrives (connector didn't auto-thread): no rename."""
+    import gateway.run as run_mod
+
+    adapter, _ = _adapter()
+    renames: list = []
+
+    async def rename_thread(thread_id, name, **kw):
+        renames.append(thread_id)
+        return True
+
+    adapter.rename_thread = rename_thread  # type: ignore[method-assign]
+    runner = _mk_runner_stub()(adapter)
+    src = _relay_channel_source()
+    # Shrink the poll loop for test speed: 20 ticks of 0.5s -> patch sleep.
+    orig_sleep = run_mod.asyncio.sleep
+
+    async def fast_sleep(_s):
+        await orig_sleep(0)
+
+    monkeypatch.setattr(run_mod.asyncio, "sleep", fast_sleep)
+    await runner._rename_discord_auto_thread_for_session_title(
+        src, "sess1", "A title"
+    )
+    assert renames == []

@@ -46,6 +46,41 @@ class TestSplitPairingDirMigration:
         assert "ou_user" in migrated
 
 
+class TestProfileScopedDiscovery:
+    def test_list_approved_scopes_platform_discovery_to_profile_dir(self, tmp_path):
+        # A profile-scoped store must enumerate platforms from its own
+        # per-profile directory (self._dir), not the module-global PAIRING_DIR.
+        # Regression: _all_platforms iterated PAIRING_DIR while every per-file
+        # path helper routed through self._dir, so a profile store confirmed a
+        # user via is_approved() (reads self._dir) yet returned [] from
+        # list_approved() (scanned the empty global dir).
+        home = tmp_path / "home"
+        global_dir = tmp_path / "global-pairing"
+        global_dir.mkdir(parents=True)
+
+        # A profile's store anchors to the hermes ROOT, not the current
+        # HERMES_HOME — the current home may itself be a profile, and nesting
+        # profiles inside profiles is how a `-p work` CLI and its gateway end
+        # up reading different files. Patch that seam, not get_hermes_home.
+        with patch("gateway.pairing.PAIRING_DIR", global_dir), patch(
+            "gateway.pairing.get_default_hermes_root", return_value=home
+        ):
+            store = PairingStore(profile="alice")
+            # Scoped under the mocked root's profile dir, using the same
+            # consolidated layout a standalone `hermes -p alice` resolves —
+            # and provably distinct from the module-global PAIRING_DIR.
+            assert store._dir == home / "profiles" / "alice" / "platforms" / "pairing"
+            assert store._dir != global_dir
+            with store._lock:
+                store._approve_user("telegram", "tg-456", "Bob")
+
+            assert store.is_approved("telegram", "tg-456") is True
+            approved = store.list_approved()
+
+        assert [r["user_id"] for r in approved] == ["tg-456"]
+        assert approved[0]["platform"] == "telegram"
+
+
 # ---------------------------------------------------------------------------
 # _secure_write
 # ---------------------------------------------------------------------------
@@ -247,6 +282,76 @@ class TestApprovalFlow:
             store.approve_code("telegram", code)
             assert store.is_approved("telegram", "user1") is True
 
+    def test_approve_request_id_from_pending_list(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            bot_code = store.generate_code("telegram", "user1", "Alice")
+            pending = store.list_pending("telegram")
+            request_id = pending[0]["request_id"]
+
+            assert request_id
+            assert request_id != bot_code
+
+            result = store.approve_request("telegram", request_id.upper())
+            remaining = store.list_pending("telegram")
+
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
+        assert remaining == []
+
+    def test_approve_request_never_reveals_or_accepts_the_code_digest(self, tmp_path):
+        """`list_pending` exposes an approvable id and nothing derived from the code.
+
+        The pre-fix listing returned the code's hash prefix under a ``code``
+        key, which admin GUIs posted straight back to approve — it could never
+        match, because approval hashes its input and compares to that digest.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            bot_code = store.generate_code("telegram", "user1", "Alice")
+            entry = store.list_pending("telegram")[0]
+
+            digest = json.loads(
+                (tmp_path / "telegram-pending.json").read_text()
+            )[entry["request_id"]]["hash"]
+
+            assert set(entry) == {
+                "platform",
+                "request_id",
+                "user_id",
+                "user_name",
+                "age_minutes",
+            }
+            assert bot_code not in entry.values()
+            assert entry["request_id"] not in (digest, digest[:8])
+            # The digest prefix is not a credential on either grant path.
+            assert store.approve_code("telegram", digest[:8]) is None
+            assert store.approve_request("telegram", digest[:8]) is None
+
+    def test_stale_request_id_never_locks_out_the_code_path(self, tmp_path):
+        """Clicking Approve on an expired row is not a brute-force attempt.
+
+        Request ids only reach an admin already authenticated to this store, so
+        a miss means the row went stale — counting it toward the code lockout
+        let a handful of GUI clicks lock the operator out of `pairing approve`.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            stale_id = store.list_pending("telegram")[0]["request_id"]
+            assert store.approve_request("telegram", stale_id) is not None
+
+            # Re-click the now-approved row well past the lockout threshold.
+            for _ in range(MAX_FAILED_ATTEMPTS + 3):
+                assert store.approve_request("telegram", stale_id) is None
+
+            assert store._is_locked_out("telegram") is False
+            # And the code path is still usable for the next real request.
+            next_code = store.generate_code("telegram", "user2", "Bee")
+            assert store.approve_code("telegram", next_code) is not None
+            assert code != next_code
+
 
     def test_whatsapp_legacy_raw_jid_approval_survives_alias_flip(self, tmp_path, monkeypatch):
         mapping_dir = tmp_path / "whatsapp" / "session"
@@ -283,6 +388,30 @@ class TestApprovalFlow:
 
 class TestLockout:
 
+
+    def test_successful_approval_resets_failure_counter(self, tmp_path):
+        """A successful approval clears the brute-force streak, so isolated
+        typos across the gateway's lifetime don't accumulate into a spurious
+        lockout that rejects a valid code.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+
+            # One short of the lockout threshold — not locked out yet.
+            for _ in range(MAX_FAILED_ATTEMPTS - 1):
+                assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is False
+
+            # A legitimate approval must reset the accumulated failures.
+            code = store.generate_code("telegram", "user1", "Alice")
+            assert store.approve_code("telegram", code) is not None
+            limits = store._load_json(store._rate_limit_path())
+            assert limits.get("_failures:telegram", 0) == 0
+
+            # Because the streak was cleared, a single fresh typo afterwards
+            # must NOT trip the lockout (it would have with the stale count).
+            assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is False
 
     def test_lockout_blocks_code_approval(self, tmp_path):
         """Regression guard for #10195: lockout must also gate approve_code.
@@ -427,16 +556,94 @@ class TestUnreadablePairingFile:
 
 class TestProfileScopedStorage:
     """PairingStore(profile="<name>") should isolate per-profile whitelists
-    under <HERMES_HOME>/profiles/<name>/pairing/ so a multiplexing gateway
-    can keep each profile's allowlist separate.
+    under each profile's own Hermes home so a multiplexing gateway can keep
+    every profile's allowlist separate.
     """
 
+    def test_default_store_uses_global_dir(self, tmp_path, monkeypatch):
+        """PairingStore() (no profile) keeps the legacy global path so the
+        ``hermes pairing`` CLI continues to work without a profile context."""
+        from hermes_constants import get_hermes_home
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        # Re-import PAIRING_DIR (it's a module-level constant resolved at
+        # import time) so the test exercises the right path. We patch it
+        # rather than re-importing so the assertion is unambiguous.
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+        assert store.profile is None
+        assert store._dir == tmp_path
+        assert store._approved_path("weixin") == tmp_path / "weixin-approved.json"
+
+    def test_profile_store_uses_profiles_subdir(self, tmp_path, monkeypatch):
+        """Explicit profile stores use that profile's normal Hermes layout."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store = PairingStore(profile="yangyang")
+        assert store.profile == "yangyang"
+        expected = tmp_path / "profiles" / "yangyang" / "platforms" / "pairing"
+        assert store._dir == expected
+        assert store._approved_path("weixin") == expected / "weixin-approved.json"
+        # Auto-creates the directory
+        assert expected.is_dir()
+
+    def test_profile_store_matches_profile_cli_home(self, tmp_path, monkeypatch):
+        """Gateway and ``hermes -p`` must resolve the same pairing store."""
+        from hermes_constants import get_hermes_dir
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        profile_home = tmp_path / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+
+        gateway_store = PairingStore(profile="coder")
+        cli_dir = get_hermes_dir(
+            "platforms/pairing",
+            "pairing",
+            home=profile_home,
+        )
+
+        assert gateway_store._dir == cli_dir
+
+    def test_default_profile_store_is_global_store(self, tmp_path, monkeypatch):
+        """Multiplexing must not invent a ``profiles/default`` store."""
+        from hermes_constants import get_hermes_dir
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        expected = get_hermes_dir(
+            "platforms/pairing",
+            "pairing",
+            home=tmp_path,
+        )
+
+        with patch("gateway.pairing.PAIRING_DIR", expected):
+            assert PairingStore(profile="default")._dir == PairingStore()._dir
+
+    def test_profile_store_merges_split_pairing_layouts(
+        self, tmp_path, monkeypatch
+    ):
+        """Existing approvals survive either profile directory layout."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        profile_home = tmp_path / "profiles" / "coder"
+        legacy_dir = profile_home / "pairing"
+        consolidated_dir = profile_home / "platforms" / "pairing"
+        legacy_dir.mkdir(parents=True)
+        consolidated_dir.mkdir(parents=True)
+        (legacy_dir / "telegram-approved.json").write_text(
+            '{"legacy-user": {"user_name": "Legacy"}}',
+            encoding="utf-8",
+        )
+        (consolidated_dir / "telegram-approved.json").write_text(
+            '{"new-user": {"user_name": "New"}}',
+            encoding="utf-8",
+        )
+
+        store = PairingStore(profile="coder")
+
+        assert store.is_approved("telegram", "legacy-user")
+        assert store.is_approved("telegram", "new-user")
 
     def test_profile_approval_does_not_leak_to_global(self, tmp_path, monkeypatch):
         """Approving in a profile-scoped store must not appear in the global
         store — and vice versa. This is the whole point of the fix."""
-        from hermes_constants import get_hermes_home
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             global_store = PairingStore()
             profile_store = PairingStore(profile="yangyang")
@@ -455,15 +662,19 @@ class TestProfileScopedStorage:
     def test_profile_uses_distinct_rate_limit_file(self, tmp_path, monkeypatch):
         """Rate-limit state is per-profile, not shared globally — otherwise
         one profile's flood would lock out the other profile's users."""
-        from hermes_constants import get_hermes_home
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             global_store = PairingStore()
             profile_store = PairingStore(profile="yangyang")
 
         assert global_store._rate_limit_path() == tmp_path / "_rate_limits.json"
         assert profile_store._rate_limit_path() == (
-            tmp_path / "profiles" / "yangyang" / "pairing" / "_rate_limits.json"
+            tmp_path
+            / "profiles"
+            / "yangyang"
+            / "platforms"
+            / "pairing"
+            / "_rate_limits.json"
         )
 
 

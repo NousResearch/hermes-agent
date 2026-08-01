@@ -271,6 +271,22 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         server._sessions.pop("iso-sid", None)
 
 
+def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch):
+    class _Supervisor:
+        def submit_turn(self, _frame, *, on_complete=None):
+            session["attached_images"].append("/tmp/c.png")
+
+    session = _session(attached_images=[])
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
+
+    response = server._submit_prompt_to_compute_host(
+        "r1", "sid", session, "B", image_paths=["/tmp/b.png"]
+    )
+
+    assert response["result"]["status"] == "streaming"
+    assert session["attached_images"] == ["/tmp/c.png"]
+
+
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
     class _BrokenSupervisor:
         def submit_turn(self, frame, *, on_complete=None):
@@ -1998,7 +2014,14 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     # Sorted: ["kanban", "memory", "project"]. `kanban` is auto-recovered by
     # _get_platform_tools (a non-configurable platform toolset in hermes-cli's
     # universe); `project` is GUI-only, folded in by _load_enabled_toolsets.
-    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
+    # Toolsets inside their first release (_RECENTLY_SHIPPED_TOOLSETS) are
+    # back-filled onto saved lists that never offered them — allow those too.
+    from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
+
+    result = server._load_enabled_toolsets()
+    assert result is not None
+    assert {"kanban", "memory", "project"} <= set(result)
+    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -2019,7 +2042,12 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
+    from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
+
+    result = server._load_enabled_toolsets()
+    assert result is not None
+    assert {"kanban", "memory", "project"} <= set(result)
+    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -2405,7 +2433,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def get_ancestor_display_prefix(self, _sid):
             return []
 
-        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False, **_kwargs):
             captured.setdefault("history_calls", []).append((target, include_ancestors))
             return (
                 [
@@ -2475,7 +2503,7 @@ def test_live_visible_history_prefers_db_display_with_candidate():
 
     class DB:
         def get_messages_as_conversation(
-            self, key, include_ancestors=False, repair_alternation=False
+            self, key, include_ancestors=False, repair_alternation=False, **_kwargs
         ):
             assert key == "s1"
             assert include_ancestors is True
@@ -2539,7 +2567,7 @@ def test_live_visible_history_keeps_candidate_and_fresh_tail():
     ]
 
     class DB:
-        def get_messages_as_conversation(self, key, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, key, include_ancestors=False, repair_alternation=False, **_kwargs):
             return list(db_display)
 
     result = server._live_visible_history({"session_key": "s1"}, DB(), in_memory)
@@ -2777,7 +2805,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         def get_ancestor_display_prefix(self, _sid):
             return []
 
-        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False, **_kwargs):
             return [{"role": "user", "content": "hello"}]
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
@@ -2846,7 +2874,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         def get_ancestor_display_prefix(self, _sid):
             return []
 
-        def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False):
+        def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False, **_kwargs):
             return [{"role": "user", "content": "hello"}]
 
         def update_session_cwd(self, *_args):
@@ -6114,6 +6142,94 @@ def test_complete_slash_reasoning_includes_current_efforts_and_global_scope():
     assert {"max", "ultra", "--global"} <= values
 
 
+_SLASH_FILLER_COUNT = 60
+
+
+def _slash_skill_fixtures(monkeypatch):
+    """Stub a skill install big enough that a flat cap would truncate it."""
+    filler = {f"/filler-{i:03d}": 0 for i in range(_SLASH_FILLER_COUNT)}
+    usage = {"work": 297, "research": 84, "clean": 12}
+
+    monkeypatch.setattr(
+        server,
+        "_skill_usage_lookup",
+        lambda: (
+            lambda name: usage.get(name, 0),
+            lambda name: "bundled" if name.startswith("unused-") else "local",
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {
+            "/work": {"description": "Fresh worktree"},
+            "/research": {"description": "Look it up"},
+            "/clean": {"description": "Polish the diff"},
+            "/unused-bundled": {"description": "Shipped, never opened"},
+            **{cmd: {"description": "Filler"} for cmd in filler},
+        },
+    )
+    monkeypatch.setattr("agent.skill_bundles.get_skill_bundles", lambda: {})
+
+
+def _slash_completions(text: str) -> list[dict]:
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": text}}
+    )
+    return resp["result"]["items"]
+
+
+def test_complete_slash_offers_skills_alongside_commands(monkeypatch):
+    """A bare `/` must reach the skills, not just the registry.
+
+    The completer emits every registry command before the first skill, so one
+    flat cap spent every row on commands and no skill was reachable at all.
+    """
+    _slash_skill_fixtures(monkeypatch)
+
+    kinds = {item["kind"] for item in _slash_completions("/")}
+
+    assert kinds == {"command", "skill"}
+
+
+def test_complete_slash_ranks_skills_by_recorded_usage(monkeypatch):
+    """The skills someone actually invokes lead the ones they never opened."""
+    _slash_skill_fixtures(monkeypatch)
+
+    skills = [
+        item["text"].strip() for item in _slash_completions("/") if item["kind"] == "skill"
+    ]
+
+    assert skills[:3] == ["work", "research", "clean"]
+
+
+def test_complete_slash_prunes_unused_builtins_only_while_browsing(monkeypatch):
+    """A bare `/` is browsing and may prune; a typed query is a search.
+
+    A search that hides a match is broken, so the never-opened bundled skill
+    disappears from `/` and comes straight back the moment it is typed for.
+    """
+    _slash_skill_fixtures(monkeypatch)
+
+    browsing = {item["text"].strip() for item in _slash_completions("/")}
+    searching = {item["text"].strip() for item in _slash_completions("/unused")}
+
+    assert "unused-bundled" not in browsing
+    assert "unused-bundled" in searching
+
+
+def test_complete_slash_leaves_argument_stages_alone(monkeypatch):
+    """Ranking applies to the command token, never to a command's own args.
+
+    `/details c` completes that command's modes; a skill named /clean also
+    starts with a `c` and must not be offered as one of them.
+    """
+    _slash_skill_fixtures(monkeypatch)
+
+    items = _slash_completions("/details c")
+
+    assert [item["text"] for item in items] == ["collapsed", "cycle"]
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
@@ -7398,7 +7514,7 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
         def get_ancestor_display_prefix(self, _sid):
             return []
 
-        def get_messages_as_conversation(self, key, include_ancestors=True, repair_alternation=False):
+        def get_messages_as_conversation(self, key, include_ancestors=True, repair_alternation=False, **_kwargs):
             assert key == "session-key"
             assert include_ancestors is True
             return list(history_from_db)
@@ -8439,6 +8555,30 @@ def test_session_info_includes_session_title(monkeypatch):
     assert info["title"] == "Dashboard title"
 
 
+def test_session_info_reports_pending_model_switch(monkeypatch):
+    """A model queued mid-turn shows as the session's model in session.info, so
+    the end-of-turn settle doesn't blip the UI back to the still-live old model
+    before the switch applies at the next turn start."""
+    agent = types.SimpleNamespace(tools=[], model="old/model", provider="openai")
+    session = {
+        "session_key": "",
+        "history": [],
+        "pending_model_switch": {
+            "raw": "new/model --provider anthropic",
+            "display_model": "new/model",
+            "display_provider": "anthropic",
+        },
+    }
+
+    info = server._session_info(agent, session)
+    assert info["model"] == "new/model"
+    assert info["provider"] == "anthropic"
+
+    # With nothing queued the live agent model wins, as before.
+    session.pop("pending_model_switch")
+    assert server._session_info(agent, session)["model"] == "old/model"
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either
@@ -8997,6 +9137,7 @@ def test_interrupt_drops_queued_prompt_for_session():
         ),
         running=True,
         queued_prompt={"text": "next prompt", "transport": None},
+        queued_prompts=[{"text": "later prompt", "image_paths": ["/tmp/later.png"], "transport": None}],
         _run_thread=_LiveThread(),
     )
     server._sessions["sid"] = session
@@ -9009,6 +9150,7 @@ def test_interrupt_drops_queued_prompt_for_session():
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert calls["interrupted"] is True
         assert session.get("queued_prompt") is None
+        assert session.get("queued_prompts") is None
     finally:
         server._sessions.pop("sid", None)
 
@@ -9598,14 +9740,16 @@ def test_respond_unpacks_sid_tuple_correctly():
 # /model switch and other agent-mutating commands must reject while the
 # session is running.  agent.switch_model() mutates self.model, self.provider,
 # self.base_url, self.client etc. in place — the worker thread running
-# agent.run_conversation is reading those on every iteration.  Same class of
-# bug as the session.undo / session.compress mid-run silent-drop; same fix
-# pattern: reject with 4009 while running.
+# agent.run_conversation is reading those on every iteration.  So a mid-turn
+# config.set model must NOT switch in place; instead it queues the pick
+# (session["pending_model_switch"]) and _apply_pending_model_switch applies it
+# on the turn thread at the next turn start, where nothing is in flight.
 # ---------------------------------------------------------------------------
 
 
-def test_config_set_model_rejects_while_running(monkeypatch):
-    """/model via config.set must reject during an in-flight turn."""
+def test_config_set_model_defers_while_running(monkeypatch):
+    """/model via config.set queues the pick during an in-flight turn instead
+    of rejecting or racing the worker thread."""
     seen = {"called": False}
 
     def _fake_apply(sid, session, raw, **_kwargs):
@@ -9627,15 +9771,45 @@ def test_config_set_model_rejects_while_running(monkeypatch):
                 },
             }
         )
-        assert resp.get("error")
-        assert resp["error"]["code"] == 4009
-        assert "session busy" in resp["error"]["message"]
+        assert not resp.get("error")
+        result = resp["result"]
+        assert result["deferred"] is True
+        assert result["value"] == "anthropic/claude-sonnet-4.6"
         assert not seen["called"], (
-            "_apply_model_switch was called mid-turn — would race with "
-            "the worker thread reading agent.model / agent.client"
+            "_apply_model_switch ran mid-turn — would race the worker thread "
+            "reading agent.model / agent.client; it must defer to turn start"
         )
+        pending = server._sessions["sid"].get("pending_model_switch")
+        assert pending and pending["raw"] == "anthropic/claude-sonnet-4.6"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_apply_pending_model_switch_runs_queued_pick(monkeypatch):
+    """The queued pick is consumed once, on the turn thread, via
+    _apply_model_switch — and cleared so it can't re-fire next turn."""
+    calls = []
+
+    def _fake_apply(sid, session, raw, **kwargs):
+        calls.append(raw)
+        return {"value": raw, "warning": "", "confirm_required": False}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+
+    session = _session(running=False)
+    session["agent"] = object()
+    session["pending_model_switch"] = {
+        "raw": "anthropic/claude-sonnet-4.6",
+        "confirm_expensive_model": False,
+    }
+
+    server._apply_pending_model_switch("sid", session)
+    assert calls == ["anthropic/claude-sonnet-4.6"]
+    assert "pending_model_switch" not in session
+
+    # Idempotent: a second turn start with nothing queued is a no-op.
+    server._apply_pending_model_switch("sid", session)
+    assert calls == ["anthropic/claude-sonnet-4.6"]
 
 
 def test_config_set_model_allowed_when_idle(monkeypatch):
@@ -10041,6 +10215,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
+    own_key = resp["result"]["stored_session_id"]
     assert build_entered.wait(timeout=1.0), "deferred build did not start"
 
     # Wait until the (deferred) build thread has actually entered
@@ -10069,7 +10244,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
 
     # Give the build thread a moment to run through its finally.
     for _ in range(100):
-        if unregistered_keys:
+        if own_key in unregistered_keys:
             break
         import time
 
@@ -10080,12 +10255,15 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
         f"in slash.exec) — created_workers={created_workers}"
     )
     # Notify may be unregistered by both session.close (unconditional)
-    # and the orphan-cleanup path; the key guarantee is that the build
-    # thread does at least one unregister call (any prior close
-    # already popped the callback; the duplicate is a no-op).
-    assert len(unregistered_keys) >= 1, (
+    # and the orphan-cleanup path; the key guarantee is that THIS session's
+    # key gets unregistered (any prior close already popped the callback; the
+    # duplicate is a no-op). Match on our own key, not the global count: the
+    # registry is process-wide and a leaked _build thread from another
+    # session.create test can append a foreign key here and falsely satisfy
+    # a bare `>= 1`.
+    assert own_key in unregistered_keys, (
         f"orphan notify registration was not unregistered — "
-        f"unregistered_keys={unregistered_keys}"
+        f"{own_key} not in unregistered_keys={unregistered_keys}"
     )
 
 
@@ -10680,7 +10858,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
     seen: dict = {}
 
     class LaunchDB:
-        def get_messages_as_conversation(self, _key, include_ancestors=True):
+        def get_messages_as_conversation(self, _key, include_ancestors=True, **_kwargs):
             seen["launch"] = True
             return [{"role": "user", "content": "launch"}]
 
@@ -10688,7 +10866,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
         def __init__(self, db_path=None):
             seen["db_path"] = db_path
 
-        def get_messages_as_conversation(self, _key, include_ancestors=True):
+        def get_messages_as_conversation(self, _key, include_ancestors=True, **_kwargs):
             seen["profile"] = True
             return [{"role": "user", "content": "from-profile"}]
 

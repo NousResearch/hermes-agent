@@ -4,6 +4,10 @@ from pathlib import Path
 
 
 from gateway.config import Platform
+from gateway.kanban_watchers import (
+    _acquire_singleton_lock,
+    _release_singleton_lock,
+)
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -45,6 +49,9 @@ def _make_runner(adapter):
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._kanban_sub_fail_counts = {}
+    # Most tests model the default gateway after its dispatcher acquired the
+    # singleton lock. Tests for startup or non-owner gateways clear this.
+    runner._kanban_dispatcher_lock_handle = object()
     return runner
 
 
@@ -158,6 +165,105 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+
+
+def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(
+    tmp_path, monkeypatch,
+):
+    """A profile gateway delivers its events while another gateway dispatches."""
+    db_path = tmp_path / "cross-profile-notifier.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        foreign_tid = kb.create_task(
+            conn, title="default-owned", assignee="worker",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=foreign_tid,
+            platform="telegram",
+            chat_id="default-chat",
+            notifier_profile="default",
+        )
+        kb.complete_task(conn, foreign_tid, summary="default done")
+
+        owned_tid = kb.create_task(
+            conn, title="writer-owned", assignee="worker",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=owned_tid,
+            platform="telegram",
+            chat_id="writer-chat",
+            notifier_profile="writer",
+        )
+        kb.complete_task(conn, owned_tid, summary="writer done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "writer"
+    runner._kanban_dispatcher_lock_handle = None
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert [delivery["chat_id"] for delivery in adapter.sent] == ["writer-chat"]
+    assert owned_tid in adapter.sent[0]["text"]
+    assert len(_unseen_terminal_events_for(foreign_tid, "default-chat")) == 1
+
+
+def test_legacy_subscription_requires_confirmed_dispatcher_lock_owner(
+    tmp_path, monkeypatch,
+):
+    """Startup and lock-losing gateways cannot claim legacy notifications."""
+    db_path = tmp_path / "legacy-lock-owner.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="legacy", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="telegram",
+            chat_id="legacy-chat",
+        )
+        kb.complete_task(conn, task_id, summary="legacy done")
+    finally:
+        conn.close()
+
+    startup_adapter = RecordingAdapter()
+    startup_runner = _make_runner(startup_adapter)
+    startup_runner._kanban_dispatcher_lock_handle = None
+    asyncio.run(_run_one_notifier_tick(monkeypatch, startup_runner))
+    assert startup_adapter.sent == []
+    assert len(_unseen_terminal_events_for(task_id, "legacy-chat")) == 1
+
+    lock_path = tmp_path / ".dispatcher.lock"
+    winner_handle, winner_state = _acquire_singleton_lock(lock_path)
+    loser_handle, loser_state = _acquire_singleton_lock(lock_path)
+    try:
+        assert winner_state == "held"
+        assert loser_state == "contended"
+
+        loser_adapter = RecordingAdapter()
+        loser_runner = _make_runner(loser_adapter)
+        loser_runner._kanban_dispatcher_lock_handle = loser_handle
+        asyncio.run(_run_one_notifier_tick(monkeypatch, loser_runner))
+        assert loser_adapter.sent == []
+        assert len(_unseen_terminal_events_for(task_id, "legacy-chat")) == 1
+
+        winner_adapter = RecordingAdapter()
+        winner_runner = _make_runner(winner_adapter)
+        winner_runner._kanban_dispatcher_lock_handle = winner_handle
+        asyncio.run(_run_one_notifier_tick(monkeypatch, winner_runner))
+        assert [item["chat_id"] for item in winner_adapter.sent] == ["legacy-chat"]
+        assert task_id in winner_adapter.sent[0]["text"]
+    finally:
+        _release_singleton_lock(loser_handle)
+        _release_singleton_lock(winner_handle)
 
 
 class FailingAdapter:
@@ -347,8 +453,8 @@ def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch
     # unordered SELECT's scan order.
     original_list = kb.list_notify_subs
 
-    def bad_first(conn, task_id=None):
-        subs = original_list(conn, task_id)
+    def bad_first(conn, task_id=None, **kwargs):
+        subs = original_list(conn, task_id, **kwargs)
         return sorted(subs, key=lambda s: 0 if s["task_id"] == tid_bad else 1)
 
     monkeypatch.setattr(kb, "list_notify_subs", bad_first)

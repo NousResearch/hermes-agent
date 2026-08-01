@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import (
@@ -31,6 +32,7 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
+from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -56,6 +58,7 @@ _PROVIDER_ENV_HINTS = (
     "DEEPSEEK_API_KEY",
     "DASHSCOPE_API_KEY",
     "HF_TOKEN",
+    "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
@@ -242,7 +245,11 @@ _DEPRECATED_COMPRESSION_SUMMARY_KEYS: tuple[str, ...] = (
 # Deprecated env vars (checked in the .env file, not process env, so config→env
 # bridges like terminal.cwd → TERMINAL_CWD do not false-positive).
 _DEPRECATED_ENV_VARS: tuple[tuple[str, str], ...] = (
-    ("HERMES_TOOL_PROGRESS", "display.tool_progress in config.yaml"),
+    # HERMES_TOOL_PROGRESS is fully unsupported since the v12 config support
+    # floor removed its only consumer (the v3→4 migration) — it is silently
+    # ignored. HERMES_TOOL_PROGRESS_MODE is still read by the gateway as a
+    # back-compat fallback but remains deprecated.
+    ("HERMES_TOOL_PROGRESS", "display.tool_progress in config.yaml — ignored/unsupported since config floor v12"),
     ("HERMES_TOOL_PROGRESS_MODE", "display.tool_progress in config.yaml"),
     ("TERMINAL_CWD", "terminal.cwd in config.yaml"),
     ("MESSAGING_CWD", "terminal.cwd in config.yaml"),
@@ -600,6 +607,7 @@ def _build_apikey_providers_list() -> list:
         ("MiniMax",          ("MINIMAX_API_KEY",),                           "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         # MiniMax CN: /v1 endpoint does NOT support /models (returns 404).
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                        "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", False),
+        ("Vercel AI Gateway", ("AI_GATEWAY_API_KEY",),                       "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                          "https://api.kilo.ai/api/gateway/models", "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                      "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
         # OpenCode Go has no shared /models endpoint; skip the health check.
@@ -615,7 +623,7 @@ def _build_apikey_providers_list() -> list:
         "Arcee AI": "arcee", "GMI Cloud": "gmi", "DeepSeek": "deepseek",
         "Hugging Face": "huggingface", "NVIDIA NIM": "nvidia",
         "Alibaba/DashScope": "alibaba", "MiniMax": "minimax",
-        "MiniMax (China)": "minimax-cn",
+        "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
         "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
         "OpenCode Go": "opencode-go",
     }
@@ -972,11 +980,13 @@ def run_doctor(args):
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (
+                    custom_provider_aliases as _custom_provider_aliases,
                     normalize_provider as _normalize_catalog_provider,
                     resolve_provider_full as _resolve_provider_full,
                 )
             except Exception:
                 _compatible_custom_providers = None
+                _custom_provider_aliases = None
                 _normalize_catalog_provider = None
                 _resolve_provider_full = None
 
@@ -999,8 +1009,11 @@ def run_doctor(args):
                 if not isinstance(entry, dict):
                     continue
                 name = str(entry.get("name") or "").strip()
-                if name:
-                    known_providers.add("custom:" + name.lower().replace(" ", "-"))
+                provider_key = str(entry.get("provider_key") or "").strip()
+                if name and _custom_provider_aliases is not None:
+                    known_providers.update(
+                        _custom_provider_aliases(name, provider_key)
+                    )
 
             valid_provider_ids = set(known_providers)
             provider_ids_to_accept = {provider} if provider else set()
@@ -1060,6 +1073,7 @@ def run_doctor(args):
             providers_accepting_vendor_slugs = {
                 "openrouter",
                 "auto",
+                "ai-gateway",
                 "kilocode",
                 "opencode-zen",
                 "huggingface",
@@ -1805,6 +1819,68 @@ def run_doctor(args):
                 "Install daytona SDK: pip install daytona",
                 issues,
             )
+
+    # Vercel Sandbox (if using vercel_sandbox backend)
+    if terminal_env == "vercel_sandbox":
+        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
+        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
+            check_ok("Vercel runtime", f"({runtime})")
+        else:
+            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+            _fail_and_issue(
+                "Vercel runtime unsupported",
+                f"({runtime}; use {supported})",
+                f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}",
+                issues,
+            )
+
+        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
+        if disk in {"", "0", "51200"}:
+            check_ok("Vercel disk setting", "(uses platform default)")
+        else:
+            _fail_and_issue(
+                "Vercel custom disk unsupported",
+                "(reset terminal.container_disk to 51200)",
+                "Vercel Sandbox does not support custom container_disk; use the shared default 51200",
+                issues,
+            )
+
+        if importlib.util.find_spec("vercel") is not None:
+            check_ok("vercel SDK", "(installed)")
+        else:
+            _fail_and_issue(
+                "vercel SDK not installed",
+                "(pip install 'hermes-agent[vercel]')",
+                "Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'",
+                issues,
+            )
+
+        auth_status = describe_vercel_auth()
+        if auth_status.ok:
+            check_ok("Vercel auth", f"({auth_status.label})")
+        elif auth_status.label.startswith("partial"):
+            _fail_and_issue(
+                "Vercel auth incomplete",
+                f"({auth_status.label})",
+                "Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together",
+                issues,
+            )
+        else:
+            _fail_and_issue(
+                "Vercel auth not configured",
+                f"({auth_status.label})",
+                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID",
+                issues,
+            )
+        for line in auth_status.detail_lines:
+            check_info(f"Vercel auth {line}")
+
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
+        if persistent:
+            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
+        else:
+            check_info("Vercel persistence: ephemeral filesystem")
 
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):

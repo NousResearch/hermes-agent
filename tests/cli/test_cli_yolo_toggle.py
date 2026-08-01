@@ -40,6 +40,11 @@ SESSION_KEY = "test-cli-yolo-session"
 def _clear_approval_state(monkeypatch):
     """Clear the YOLO bypass + env var around every test so cases are independent."""
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    # The value is intentionally frozen at tools.approval import time. Local
+    # Hermes-driven test runs may inherit HERMES_YOLO_MODE=1 from the parent
+    # agent process, so make the default test state hermetic; the one test that
+    # covers startup-frozen YOLO explicitly patches it back to True.
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
     approval_module.clear_session(SESSION_KEY)
     approval_module.clear_session("default")
     yield

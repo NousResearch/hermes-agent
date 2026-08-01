@@ -47,6 +47,7 @@ import {
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
+import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
@@ -150,6 +151,7 @@ import {
   tokenNeedsRefresh
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
+import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
@@ -183,6 +185,7 @@ import {
   redactSecrets,
   SshConnection
 } from './ssh-connection'
+import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
@@ -198,7 +201,7 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { spawnUpdaterProcess } from './updater-process'
+import { resolveStagedUpdaterBinary, spawnUpdaterProcess } from './updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import {
@@ -421,18 +424,24 @@ if (IS_WINDOWS) {
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
-// Keep the renderer running at full speed while the window is in the background
-// or occluded. The chat transcript streams to screen through a bounded timer
-// flush; Chromium clamps timers for backgrounded/occluded renderers, so without
-// these the live answer stalls
-// whenever the window loses focus (switching to your editor mid-turn, detached
-// devtools, another window covering it) and only paints on refocus or refresh.
-// `backgroundThrottling: false` on the BrowserWindow covers the blurred case;
-// these process-level switches additionally stop Chromium from backgrounding or
-// occlusion-throttling the renderer. Must run before app `ready`.
+// Keep the renderer's PROCESS priority normal while its windows are hidden —
+// a deprioritized renderer streams a live answer visibly slower once the
+// window is minimized. This switch only affects scheduling priority; it does
+// not exempt timers from throttling and costs nothing at idle.
+//
+// The timer/rAF throttling story is deliberately NOT handled here anymore.
+// The old process-wide `disable-background-timer-throttling` /
+// `disable-backgrounding-occluded-windows` switches (plus a static
+// `backgroundThrottling: false` on every chat window) pinned every renderer's
+// `document.visibilityState` to 'visible' forever — which silently turned all
+// the renderer's visibility-gated backstop polls and clock ticks into
+// always-on timers. A completely idle, minimized Hermes burned ~20% CPU
+// around the clock. Throttling is now a runtime dial scoped to streaming:
+// see createStreamThrottle() — chat windows are unthrottled while any turn is
+// in flight (so a live answer keeps painting while blurred, occluded, or
+// minimized, exactly as before) and return to Chromium's default throttling
+// once the work settles.
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
-app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
-app.commandLine.appendSwitch('disable-background-timer-throttling')
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
@@ -672,7 +681,15 @@ const WINDOW_BUTTON_POSITION = {
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
+// The apple-touch PNG bakes in the macOS-style ~10% margin, which is correct
+// for the dock but renders visibly smaller than neighboring taskbar icons on
+// Windows, where icons are full-bleed. Windows prefers the full-bleed
+// assets/icon.ico (shipped to resources/ via extraResources) and only falls
+// back to the padded PNG if the ico is missing.
 const APP_ICON_PATHS = [
+  ...(IS_WINDOWS
+    ? [path.join(process.resourcesPath ?? '', 'icon.ico'), path.join(APP_ROOT, 'assets', 'icon.ico')]
+    : []),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
   path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
@@ -1091,6 +1108,14 @@ let bootstrapAbortController = null
 // repair can force the installer without destroying provenance about how the
 // install was created. Cleared once the reinstall is under way.
 let bootstrapRepairRequested = false
+// Counter for in-flight repair attempts. Reset on a clean boot completion
+// (see runBootstrap -> ensureRuntime resolve path). Each successive repair
+// in the same failure episode increments this; once it crosses
+// MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS the guard escalates from "soft restart"
+// to "hard reinstall" so a transient backend stall (issue #74874) stops
+// looping the user through a destructive venv reinstall.
+let bootstrapRepairAttempt = 0
+const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -2594,18 +2619,14 @@ let isQuittingForHandoff = false
 let quitPromptOpen = false
 let quitConfirmedWithActiveWork = false
 
-// Resolve the staged updater binary. The Tauri installer copies itself to
-// HERMES_HOME/hermes-setup.exe on a successful install (see
-// apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
-// ALL repo mutation — running `hermes update` + rebuilding the desktop — so
-// the desktop never touches its own bits while running. Returns null when the
-// updater isn't staged (e.g. a dev/source run that never went through the
-// installer); callers degrade gracefully.
+// Resolve the staged updater binary the desktop may hand an update to. On
+// Windows that binary owns ALL repo mutation — running `hermes update` +
+// rebuilding the desktop — so the desktop never touches its own bits while
+// running. macOS/Linux stage the same binary but deliberately do not use it;
+// see resolveStagedUpdaterBinary for the policy and for #74836. Returns null
+// whenever no hand-off applies; callers degrade gracefully.
 function resolveUpdaterBinary() {
-  const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
-  const candidate = path.join(HERMES_HOME, name)
-
-  return fileExists(candidate) ? candidate : null
+  return resolveStagedUpdaterBinary(HERMES_HOME, { fileExists, isWindows: IS_WINDOWS })
 }
 
 function repairMacUpdaterHelper(updater) {
@@ -2833,12 +2854,13 @@ async function applyUpdates(opts = {}) {
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
-      // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
-      // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
-      // there's no mandatory file locking here, so the desktop can drive the
-      // whole update itself: `hermes update` (backend) + `hermes desktop
-      // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
-      // with the freshly built one and relaunch.
+      // macOS/Linux: never hand off, staged hermes-setup or not — the resolver
+      // returns null there by policy. Unlike Windows (where a venv-shim file
+      // lock forces the quit→hand-off→rebuild dance), there's no mandatory file
+      // locking here, so the desktop can drive the whole update itself:
+      // `hermes update` (backend) + `hermes desktop --build-only` (OS-aware GUI
+      // rebuild), then swap the running .app bundle with the freshly built one
+      // and relaunch.
       return await applyUpdatesPosixInApp(opts)
     }
 
@@ -4032,6 +4054,7 @@ async function ensureRuntime(backend) {
     // The repair request has been honoured by reaching the installer; clear it
     // so a later boot isn't forced through bootstrap again.
     bootstrapRepairRequested = false
+    bootstrapRepairAttempt = 0
 
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
@@ -5155,6 +5178,20 @@ function sendClosePreviewRequested() {
   webContents.send('hermes:close-preview-requested')
 }
 
+function sendOpenFolderRequested() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const webContents = mainWindow.webContents
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:open-folder-requested')
+}
+
 // Tell the renderer the machine just woke. Sleep silently drops the
 // renderer's WebSocket to the local backend; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Hermes...".
@@ -5174,6 +5211,31 @@ function sendPowerResume() {
 
 let powerResumeRegistered = false
 
+// Mirror of powerMonitor's AC/battery state, broadcast to every window so
+// renderer backstop polls can slow down on battery (see store/power.ts).
+// `null` until the first powerMonitor read after app ready.
+let onBatteryPower: boolean | null = null
+
+// Renderer-side battery gating seeds from this and stays current via the
+// 'hermes:power-battery' push below.
+ipcMain.handle('hermes:power-battery:get', () => onBatteryPower === true)
+
+function broadcastBatteryState(next: boolean) {
+  if (onBatteryPower === next) {
+    return
+  }
+
+  onBatteryPower = next
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    const { webContents } = win
+
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('hermes:power-battery', next)
+    }
+  }
+}
+
 function registerPowerResumeListeners() {
   if (powerResumeRegistered) {
     return
@@ -5186,6 +5248,9 @@ function registerPowerResumeListeners() {
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('unlock-screen', sendPowerResume)
+    powerMonitor.on('on-battery', () => broadcastBatteryState(true))
+    powerMonitor.on('on-ac', () => broadcastBatteryState(false))
+    onBatteryPower = powerMonitor.isOnBatteryPower()
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.
@@ -5272,6 +5337,10 @@ function buildApplicationMenu() {
       // a menu accelerator would fight the rebind panel and (on macOS) be
       // swallowed before the renderer sees it. Here purely for discoverability.
       { click: () => createInstanceWindow(), label: 'New Window' },
+      // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
+      // (workspace.openFolder). Clicking runs the same open-folder-as-project
+      // flow through the renderer.
+      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
       { type: 'separator' },
       IS_MAC
         ? {
@@ -5624,8 +5693,12 @@ function installContextMenu(window) {
       }
     }
 
+    // Bare right-click on non-editable, non-selected, non-media content (a pane
+    // body, the sidebar, chrome): the renderer's own context menus own those
+    // surfaces, and anywhere without one shows nothing — not a lone, useless
+    // "Select All" from the native fallback.
     if (!template.length) {
-      template.push({ role: 'selectAll' })
+      return
     }
 
     Menu.buildFromTemplate(template).popup({ window })
@@ -6167,35 +6240,24 @@ function _nativeTokenStorePath() {
   return path.join(app.getPath('userData'), 'native-oauth-tokens.json')
 }
 
-function _readNativeTokenStore(): Record<string, any> {
-  try {
-    const raw = fs.readFileSync(_nativeTokenStorePath(), 'utf8')
-    const parsed = JSON.parse(raw)
-
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
+// The electron-coupled half of the token store: safeStorage encryption plus the
+// userData file. native-token-store.ts owns the serialization/parse round trip
+// so it can be tested without an Electron runtime.
+function _nativeTokenStoreIo(): NativeTokenStoreIo {
+  return {
+    encrypt: encryptDesktopSecret,
+    decrypt: decryptDesktopSecret,
+    readStoreText: () => fs.readFileSync(_nativeTokenStorePath(), 'utf8'),
+    writeStoreText: (text: string) => {
+      fs.mkdirSync(path.dirname(_nativeTokenStorePath()), { recursive: true })
+      fs.writeFileSync(_nativeTokenStorePath(), text, { mode: 0o600 })
+    },
+    rememberLog
   }
 }
 
 function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
-  const store = _readNativeTokenStore()
-
-  if (tokens) {
-    // Encrypt the whole token set as one blob so the refresh token never
-    // lands in plaintext on disk. Reuse the hardened encrypt helper.
-    const secret = encryptDesktopSecret(JSON.stringify(tokens))
-    store[baseUrl] = secret
-  } else {
-    delete store[baseUrl]
-  }
-
-  try {
-    fs.mkdirSync(path.dirname(_nativeTokenStorePath()), { recursive: true })
-    fs.writeFileSync(_nativeTokenStorePath(), JSON.stringify(store), { mode: 0o600 })
-  } catch (error) {
-    rememberLog(`[native-oauth] failed to persist tokens: ${(error as Error).message}`)
-  }
+  persistNativeTokenSet(baseUrl, tokens, _nativeTokenStoreIo())
 }
 
 function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
@@ -6205,27 +6267,13 @@ function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
     return cached
   }
 
-  const store = _readNativeTokenStore()
-  const secret = store[baseUrl]
+  const tokens = loadNativeTokenSet(baseUrl, _nativeTokenStoreIo())
 
-  if (!secret) {
-    return null
-  }
-
-  try {
-    const plaintext = decryptDesktopSecret(secret)
-
-    if (!plaintext) {
-      return null
-    }
-
-    const tokens = parseTokenResponse(JSON.parse(plaintext))
+  if (tokens) {
     _nativeTokens.set(baseUrl, tokens)
-
-    return tokens
-  } catch {
-    return null
   }
+
+  return tokens
 }
 
 function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
@@ -8517,6 +8565,13 @@ async function startHermes() {
       error: null
     })
 
+    // A successful boot (including a soft restart that the repair-guard
+    // chose over a hard reinstall, see #74874) means any in-flight repair
+    // attempt counter has been honoured — reset it so the next genuine
+    // failure starts fresh from attempt 1 instead of inheriting the
+    // accumulated count of the resolved episode.
+    bootstrapRepairAttempt = 0
+
     return {
       baseUrl,
       mode: 'local',
@@ -8675,6 +8730,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
   win.on('enter-full-screen', () => sendWindowStateChanged(true))
   win.on('leave-full-screen', () => sendWindowStateChanged(false))
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   loadWindowUrl(
@@ -8717,7 +8773,7 @@ function nextInstanceBounds() {
 }
 
 // Open a new full-chrome instance window. Mirrors createWindow()'s window
-// options (shared chatWindowWebPreferences keeps backgroundThrottling:false so a
+// options (shared chatWindowWebPreferences + streamThrottle registration so a
 // streamed answer never stalls in the background) but is a peer, not the
 // primary: it never overwrites the mainWindow global, doesn't start the backend
 // (the renderer's getConnection() joins the already-running one), and loads the
@@ -8758,6 +8814,7 @@ function createInstanceWindow() {
   win.on('enter-full-screen', () => sendWindowStateChanged(true, win))
   win.on('leave-full-screen', () => sendWindowStateChanged(false, win))
 
+  streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
   win.on('closed', () => {
@@ -9140,10 +9197,11 @@ function createWindow() {
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
     backgroundColor: getWindowBackgroundColor(),
-    // Shared with the secondary session windows (chatWindowWebPreferences) so
-    // both keep `backgroundThrottling: false` — the chat transcript uses a
-    // bounded timer flush that Chromium clamps for blurred windows, stalling
-    // the live answer until refocus. See session-windows.ts.
+    // Shared with the secondary session windows (chatWindowWebPreferences);
+    // stream-aware throttling is applied per-window via streamThrottle so a
+    // live answer keeps painting while the window is blurred or minimized,
+    // without pinning visibilityState to 'visible' at idle. See
+    // session-windows.ts and stream-throttle.ts.
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -9236,6 +9294,7 @@ function createWindow() {
     }
   })
 
+  streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
@@ -9594,9 +9653,41 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // transient backend errors on a perfectly healthy install, and deleting the
   // marker in that case stranded the app in first-run setup with no way back
   // (#72166). The explicit flag carries the intent instead.
-  rememberLog('[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure')
+  bootstrapRepairAttempt += 1
 
-  bootstrapRepairRequested = true
+  // Probe the live backend process so the guard can distinguish "venv is
+  // genuinely broken" (force reinstall) from "backend is just transiently
+  // stalled under GIL pressure" (#74874 — `event loop stalled` followed by
+  // `ws ready frame send failed`, then renderer keeps reporting dead).
+  const primaryProc = backendConnectionState.getProcess()
+
+  const primaryBackendAlive = Boolean(
+    primaryProc &&
+    (primaryProc as { exitCode?: number | null }).exitCode === null &&
+    (primaryProc as { signalCode?: string | null }).signalCode === null
+  )
+
+  const repairDecision = decideBootstrapRepair({
+    attempt: bootstrapRepairAttempt,
+    maxSoftAttempts: MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS,
+    primaryBackendAlive
+  })
+
+  rememberLog(
+    `[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure ` +
+      `(attempt=${repairDecision.attempt}/${MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS}, ` +
+      `primaryBackendAlive=${primaryBackendAlive}, ` +
+      `hardReinstall=${repairDecision.hardReinstall}): ${repairDecision.reason}`
+  )
+
+  // The guard may decide the install is healthy enough that a restart
+  // (without touching the venv) is the right answer. Translate that into
+  // the existing flag: if the guard said "soft restart", we skip the
+  // "bypass active runtime" path inside startHermes() and fall through
+  // to the normal restart branch, which just kills the current child
+  // and respawns it against the same venv. See #74874 — this is what
+  // breaks the infinite reinstall loop the user hit.
+  bootstrapRepairRequested = repairDecision.hardReinstall
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
@@ -10405,14 +10496,27 @@ ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWat
 // merged picture. Keyed by webContents id so a closed window stops counting.
 const activeWorkByWebContents = new Map<number, ActiveWork>()
 
+// The same merged picture drives background throttling: chat windows run
+// unthrottled while any turn is in flight (streaming must paint while hidden)
+// and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
+const streamThrottle = createStreamThrottle()
+
+function updateStreamThrottleFromActiveWork() {
+  streamThrottle.update(mergeActiveWork(activeWorkByWebContents.values()).count > 0)
+}
+
 ipcMain.on('hermes:active-work', (event, payload) => {
   const id = event.sender.id
 
   if (!activeWorkByWebContents.has(id)) {
-    event.sender.once('destroyed', () => activeWorkByWebContents.delete(id))
+    event.sender.once('destroyed', () => {
+      activeWorkByWebContents.delete(id)
+      updateStreamThrottleFromActiveWork()
+    })
   }
 
   activeWorkByWebContents.set(id, normalizeActiveWork(payload))
+  updateStreamThrottleFromActiveWork()
 })
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {

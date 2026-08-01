@@ -253,6 +253,69 @@ class TestPairingEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
+    def test_approve_pending_request_id(self):
+        from gateway.pairing import PairingStore
+
+        store = PairingStore()
+        bot_code = store.generate_code("telegram", "user1", "Alice")
+        data = self.client.get("/api/pairing").json()
+        request_id = data["pending"][0]["request_id"]
+
+        assert request_id
+        assert request_id != bot_code
+
+        r = self.client.post(
+            "/api/pairing/approve",
+            json={"platform": "telegram", "request_id": request_id},
+        )
+
+        assert r.status_code == 200
+        assert r.json()["user"]["user_id"] == "user1"
+        assert self.client.get("/api/pairing").json()["pending"] == []
+
+    def test_pairing_is_isolated_per_profile(self):
+        """A named profile's approvals must land in the store its own gateway reads.
+
+        The gateway keeps one PairingStore per served profile, so an approval
+        written to the global store grants access the running gateway never
+        consults — the user stays locked out with the dashboard showing them
+        as approved.
+        """
+        from gateway.pairing import PairingStore
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "profiles" / "work").mkdir(parents=True, exist_ok=True)
+        PairingStore().generate_code("telegram", "global-1", "GlobalGuy")
+        PairingStore(profile="work").generate_code("telegram", "work-1", "WorkGal")
+
+        listed = self.client.get("/api/pairing?profile=work").json()["pending"]
+        assert [row["user_id"] for row in listed] == ["work-1"]
+
+        r = self.client.post(
+            "/api/pairing/approve",
+            json={
+                "platform": "telegram",
+                "request_id": listed[0]["request_id"],
+                "profile": "work",
+            },
+        )
+        assert r.status_code == 200
+
+        # The grant is visible to the profile's own store — what the gateway reads.
+        assert PairingStore(profile="work").is_approved("telegram", "work-1") is True
+
+        # ...and it never leaked into the global store, whose own pending row
+        # is still waiting. (Asserted against this user rather than an empty
+        # list: the module-level PAIRING_DIR is bound at import, so the global
+        # store carries whatever earlier cases in this class approved.)
+        global_view = self.client.get("/api/pairing").json()
+        assert PairingStore().is_approved("telegram", "work-1") is False
+        assert "work-1" not in [row["user_id"] for row in global_view["approved"]]
+        assert "global-1" in [row["user_id"] for row in global_view["pending"]]
+
+    def test_unknown_profile_is_rejected(self):
+        assert self.client.get("/api/pairing?profile=ghost").status_code == 404
+
 
 class TestWebhookEndpoints:
     @pytest.fixture(autouse=True)

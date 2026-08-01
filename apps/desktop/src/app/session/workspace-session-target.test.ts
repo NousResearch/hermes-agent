@@ -9,7 +9,7 @@ import {
   setNewChatWorkspaceTarget
 } from '@/store/session'
 
-import { newSessionOpensTab, startWorkspaceSession } from './workspace-session-target'
+import { startWorkspaceSession } from './workspace-session-target'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -20,29 +20,6 @@ function deferred<T>() {
 
   return { promise, resolve }
 }
-
-/**
- * The sidebar "+" is a create affordance, not a discard one: with a chat
- * already loaded it must stack a tab (⌘T) rather than replace the surface
- * (⌘N), which would throw away a conversation that may still be mid-turn.
- */
-describe('newSessionOpensTab', () => {
-  it('opens a tab once a conversation is on screen', () => {
-    expect(newSessionOpensTab('runtime-a', 'stored-a')).toBe(true)
-  })
-
-  it('opens a tab for a live runtime whose stored id has not landed yet', () => {
-    expect(newSessionOpensTab('runtime-a', null)).toBe(true)
-  })
-
-  it('opens a tab for a selected session still resuming into a runtime', () => {
-    expect(newSessionOpensTab(null, 'stored-a')).toBe(true)
-  })
-
-  it('replaces the empty surface when nothing is open', () => {
-    expect(newSessionOpensTab(null, null)).toBe(false)
-  })
-})
 
 describe('startWorkspaceSession', () => {
   afterEach(() => {

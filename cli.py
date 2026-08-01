@@ -77,14 +77,16 @@ except (ImportError, AttributeError):
 
 try:
     from hermes_cli.pt_input_extras import (
+        install_cmd_backspace_alias,
         install_ctrl_enter_alias,
         install_ignored_terminal_sequences,
         install_shift_enter_alias,
     )
     install_shift_enter_alias()
     install_ctrl_enter_alias()
+    install_cmd_backspace_alias()
     install_ignored_terminal_sequences()
-    del install_shift_enter_alias, install_ctrl_enter_alias, install_ignored_terminal_sequences
+    del install_shift_enter_alias, install_ctrl_enter_alias, install_cmd_backspace_alias, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading
@@ -664,12 +666,13 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
+        # Container resource config (docker, singularity, modal, daytona, vercel_sandbox -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",
@@ -677,6 +680,7 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
         "docker_env": "TERMINAL_DOCKER_ENV",
         "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
+        "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "docker_network": "TERMINAL_DOCKER_NETWORK",
         "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
@@ -3234,10 +3238,12 @@ def _termux_example_image_path(filename: str = "cat.png") -> str:
         "/storage/emulated/0",
         "/storage/self/primary",
     ]
+    # Termux/Android roots are POSIX paths — join with literal forward
+    # slashes so the hint stays correct even when this renders on Windows.
     for root in candidates:
         if os.path.isdir(root):
-            return os.path.join(root, "Pictures", filename)
-    return os.path.join("~/storage/shared", "Pictures", filename)
+            return f"{root}/Pictures/{filename}"
+    return f"~/storage/shared/Pictures/{filename}"
 
 
 def _split_path_input(raw: str) -> tuple[str, str]:
@@ -3308,6 +3314,16 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
                 expanded = unquote(parsed.path or "")
                 if parsed.netloc and os.name == "nt":
                     expanded = f"//{parsed.netloc}{expanded}"
+                elif (
+                    os.name == "nt"
+                    and len(expanded) >= 3
+                    and expanded[0] == "/"
+                    and expanded[1].isalpha()
+                    and expanded[2] == ":"
+                ):
+                    # file:///C:/... parses to path "/C:/..." — drop the
+                    # leading slash so it resolves as a drive-letter path.
+                    expanded = expanded[1:]
         except Exception:
             expanded = token
     expanded = os.path.expandvars(os.path.expanduser(expanded))
@@ -4411,6 +4427,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif CLI_CONFIG["agent"].get("max_turns"):
             self.max_turns = CLI_CONFIG["agent"]["max_turns"]
         elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
+            # KEEP (evaluated for the v12 support-floor cleanup, July 2026):
+            # no versioned config migration ever rewrote root-level max_turns
+            # to agent.max_turns on disk — only load-time normalization
+            # (_normalize_max_turns_config) folds it, and configs read through
+            # other paths may bypass it. This fallback is therefore the only
+            # safety net for configs that still carry the root key.
             self.max_turns = CLI_CONFIG["max_turns"]
         elif os.getenv("HERMES_MAX_ITERATIONS"):
             try:
@@ -4654,6 +4676,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._pet_turn_error: bool = False
         self._attached_images: list[Path] = []
         self._image_counter = 0
+        # Ctrl+S prompt stash — park a half-written draft, send something
+        # else, bring the draft back.  Session-scoped and in-memory only:
+        # drafts routinely contain secrets, so nothing is written to disk.
+        from hermes_cli.prompt_stash import PromptStash as _PromptStash
+        self._prompt_stash = _PromptStash()
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
         self._active_session_lease = None
@@ -6069,6 +6096,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
 
+            # Stash indicator (📌 N) — appended after all width tiers so the
+            # user always knows a parked draft exists, even on narrow
+            # terminals.  Placed before the battery prepend so it stays at the
+            # right edge, and it is the first thing the width trim below drops
+            # if the bar genuinely cannot fit.
+            try:
+                stash_indicator = self._prompt_stash.indicator()
+            except Exception:
+                stash_indicator = ""
+            if stash_indicator:
+                # Insert before the trailing pad fragment so the bar keeps its
+                # one-cell right margin.
+                if frags and frags[-1] == ("class:status-bar", " "):
+                    frags[-1:-1] = [
+                        ("class:status-bar-dim", " · "),
+                        ("class:status-bar-strong", stash_indicator),
+                    ]
+                else:
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append(("class:status-bar-strong", stash_indicator))
+
             # Battery is the first status-bar element when enabled: prepend it
             # ahead of the leading ⚕ marker in whichever width tier ran above.
             if battery_label:
@@ -6086,6 +6134,85 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
+
+    @staticmethod
+    def _fmt_stash_age(stashed_at: float) -> str:
+        """Return human-readable age string for a stash entry."""
+        import time as _t
+        secs = int(_t.monotonic() - stashed_at)
+        if secs < 10:
+            return "just now"
+        if secs < 90:
+            return f"{secs}s ago"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} min ago"
+        return f"{mins // 60}h ago"
+
+    def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
+        """Return prompt_toolkit formatted_text fragments for the stash panel box.
+
+        Every horizontal measurement goes through ``_status_bar_display_width``
+        (prompt_toolkit's ``get_cwidth``) rather than ``len()``.  The header
+        contains 📌, which is one Python codepoint but two terminal cells; the
+        original PR chased that off-by-one through three successive
+        "subtract 1 from len()" commits.  Measuring in display cells fixes it
+        for real and keeps CJK previews from bleeding past the right border.
+        """
+        cw = self._status_bar_display_width
+        W = max(12, min(width - 4, 80))
+
+        n = len(stash_list)
+        hdr_prefix_str = f"╭─ 📌 Stash ({n} item{'s' if n != 1 else ''}) "
+        HDR_SUFFIX = " Ctrl+S ─╮"
+        FTR_PREFIX = "╰"
+        FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
+
+        # On narrow terminals the full hint text is wider than the box itself.
+        # Drop to compact affordances rather than letting the frame bleed past
+        # the right edge (which is what made the panel look broken).
+        if cw(hdr_prefix_str) + cw(HDR_SUFFIX) > W:
+            hdr_prefix_str = f"╭─ 📌 {n} "
+            HDR_SUFFIX = "─╮"
+        if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
+            FTR_SUFFIX = " ↑↓ ⏎ D Esc ─╯"
+        if cw(FTR_PREFIX) + cw(FTR_SUFFIX) > W:
+            FTR_SUFFIX = "─╯"
+
+        hdr_dashes = max(0, W - cw(hdr_prefix_str) - cw(HDR_SUFFIX))
+        ftr_dashes = max(0, W - cw(FTR_PREFIX) - cw(FTR_SUFFIX))
+
+        # Row inner width: W minus the two '│' border cells.
+        INNER = W - 2
+
+        frags: list = []
+
+        def line(text: str, style: str = "") -> None:
+            # Final guard: never emit a line wider than the box, whatever the
+            # label lengths worked out to.
+            frags.append((style, self._trim_status_bar_text(text, W) + "\n"))
+
+        line(f"{hdr_prefix_str}{'─' * hdr_dashes}{HDR_SUFFIX}", "class:subagent-border")
+
+        for i, item in enumerate(stash_list):
+            age = self._fmt_stash_age(item["stashed_at"])
+            # Row: " ► [N] {age:<10} {preview} "
+            prefix = f" {'►' if i == cursor else ' '} [{i + 1}] {age:<10} "
+            if cw(prefix) > INNER - 2:
+                prefix = f" {'►' if i == cursor else ' '} [{i + 1}] "
+            avail = max(0, INNER - cw(prefix) - 1)
+            preview = self._trim_status_bar_text(item.get("preview") or "", avail)
+            preview = preview + " " * max(0, avail - cw(preview))
+            row = self._trim_status_bar_text(f"│{prefix}{preview} │", W)
+            if i == cursor:
+                frags.append(("class:subagent-selected", row + "\n"))
+            else:
+                frags.append(("class:subagent-border", "│"))
+                frags.append(("class:subagent-sub", f"{prefix}{preview} "))
+                frags.append(("class:subagent-border", "│\n"))
+
+        line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
+        return frags
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -6902,6 +7029,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         app = getattr(self, "_app", None)
 
+        # `!<command>` shell mode, checked before slash dispatch — matches the
+        # Enter path in the input loop so an editor-saved bang command runs
+        # locally instead of being sent to the agent.
+        try:
+            if self.handle_bang_shell(text):
+                self._reset_input_buffer(buffer)
+                if app is not None:
+                    app.invalidate()
+                return
+        except Exception as exc:
+            _cprint(f"  {_DIM}Shell command failed: {exc}{_RST}")
+            self._reset_input_buffer(buffer)
+            if app is not None:
+                app.invalidate()
+            return
+
         # Slash commands: dispatch directly, same as the Enter handler's
         # _looks_like_slash_command branch.
         if _looks_like_slash_command(text):
@@ -7691,7 +7834,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 include_all_sources=False,
                 include_unnamed=True,
                 limit=limit,
-                exclude_sources=["tool"],
+                exclude_sources=["kanban", "tool"],
             )
         except Exception:
             return []
@@ -9452,6 +9595,37 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             return False
 
+    def _should_handle_background_command_inline(
+        self, text: str, has_images: bool = False
+    ) -> bool:
+        """Return True when /background should be dispatched while the agent runs.
+
+        Same queue problem /steer had. ``/background`` (``/bg``, ``/btw``)
+        exists to start independent work *without* waiting for the current
+        turn, but a slash command typed while the agent is busy goes into
+        ``_pending_input``, and ``process_loop`` is blocked inside
+        ``self.chat()`` for the whole run. The background task therefore only
+        starts once the foreground turn has finished, which is the one moment
+        it was not needed.
+
+        The command's own ``CommandDef`` already declares
+        ``busy_policy="dispatch"``; the gateway honours that, the classic CLI
+        never consulted it. Dispatching inline on the UI thread starts the
+        background session immediately and leaves the foreground turn running
+        untouched: no interrupt, no steer.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "background")
+        except Exception:
+            return False
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -9461,6 +9635,64 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _console_print(self, *args, **kwargs):
         """Print through the active command-safe console."""
         self._output_console().print(*args, **kwargs)
+
+    def handle_bang_shell(self, text: str) -> bool:
+        """Run a ``!<command>`` submission. Returns True when it was handled.
+
+        Dispatched from the input loop BEFORE slash-command routing and before
+        anything is queued for the agent, so a bang command never becomes a
+        turn: no user message, no assistant message, no tool result touches
+        ``self.conversation_history``. That is what makes ``!`` free — zero
+        tokens, and role alternation / prompt caching are untouched by
+        construction. The invariant is covered by
+        tests/cli/test_bang_shell_mode.py.
+
+        Returns False when the text is not a bang command or when bang mode is
+        disabled for this context (gateway/cron), letting the caller fall
+        through to normal routing.
+        """
+        from hermes_cli.bang_shell import (
+            USAGE_HINT,
+            bang_shell_enabled,
+            check_bang_approval,
+            is_bang_command,
+            parse_bang_command,
+            resolve_bang_cwd,
+            run_bang_command,
+        )
+
+        if not is_bang_command(text):
+            return False
+        if not bang_shell_enabled():
+            # Gateway / cron / API contexts: no composer, no human at a
+            # keyboard, and those users already have their own shells. Let the
+            # text route normally rather than becoming remote execution.
+            return False
+
+        command = parse_bang_command(text)
+        if not command:
+            # Bare `!` — show what the feature does instead of running an
+            # empty shell or sending "!" to the model.
+            self._console_print(f"[dim]{USAGE_HINT}[/]")
+            return True
+
+        approval = check_bang_approval(command)
+        if not approval.get("approved"):
+            message = approval.get("message") or (
+                f"Command denied: {approval.get('description', 'flagged as dangerous')}"
+            )
+            self._console_print(f"[bold red]{_escape(str(message))}[/]")
+            return True
+
+        cwd = resolve_bang_cwd(getattr(self, "session_id", None))
+        exit_code = run_bang_command(
+            command,
+            cwd=cwd,
+            writer=lambda line: self._console_print(_rich_text_from_ansi(line)),
+        )
+        if exit_code:
+            self._console_print(f"[dim]! exited {exit_code}[/]")
+        return True
 
     @staticmethod
     def _resolve_personality_prompt(value) -> str:
@@ -9965,6 +10197,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
+            payload = self._expand_paste_references(payload)
             if not payload:
                 _cprint("  Usage: /queue <prompt>")
             else:
@@ -10045,6 +10278,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_wake_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical == "indicator":
+            self._handle_indicator_command(cmd_original)
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
@@ -14557,6 +14792,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 spacer,
                 *self._get_extra_tui_widgets(),
                 getattr(self, "_pet_widget", None),
+                getattr(self, "_stash_panel_widget", None),
                 status_bar,
                 input_rule_top,
                 image_bar,
@@ -14997,13 +15233,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     event.app.invalidate()
                     return
 
+                # Same treatment for /background (/bg, /btw) while the agent is
+                # running.  Queuing it defeats the entire point of the command:
+                # process_loop is blocked inside self.chat(), so the background
+                # task would only start once the foreground turn it was meant to
+                # run alongside has already finished (#75221).  The foreground
+                # turn is left alone: no interrupt, no steer.
+                if self._should_handle_background_command_inline(
+                    text, has_images=has_images
+                ):
+                    self.process_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
+                    # Repaint for the same reason as the /steer branch above:
+                    # process_command() prints through patch_stdout and never
+                    # invalidates the app, so the submitted text can linger in
+                    # the input area looking unsent.
+                    event.app.invalidate()
+                    return
+
                 # Snapshot and clear attached images
                 images = list(self._attached_images)
                 self._attached_images.clear()
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and _looks_like_slash_command(text)):
+                # A bang command is treated like a slash command while the
+                # agent is busy: it must never be routed into steer/redirect
+                # (which would inject `!git status` into the model's context as
+                # a prompt). It queues and runs locally once the loop drains.
+                _is_local_dispatch = bool(text) and (
+                    _looks_like_slash_command(text) or text.strip().startswith("!")
+                )
+                if self._agent_running and not _is_local_dispatch:
                     _effective_mode = self.busy_input_mode
                     redirected = False
                     if _effective_mode == "steer":
@@ -15130,6 +15391,105 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         def handle_open_in_editor(event):
             """Ctrl+G (or Alt+G in VSCode/Cursor) opens the current draft in an external editor."""
             cli_ref._open_external_editor(event.current_buffer)
+
+        # --- Ctrl+S prompt stash -------------------------------------------
+        # Park a half-written draft, send something else, then bring the draft
+        # back.  Suppressed while a modal prompt owns the composer (sudo /
+        # secret / approval / clarify) so Ctrl+S can't stash a password.
+        _stash_filter = Condition(
+            lambda: not cli_ref._clarify_state
+            and not cli_ref._approval_state
+            and not cli_ref._sudo_state
+            and not cli_ref._secret_state
+            and not cli_ref._slash_confirm_state
+            and not cli_ref._model_picker_state
+        )
+        _stash_panel_filter = Condition(
+            lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))
+        )
+
+        def _restore_stash_payload(event, payload) -> None:
+            """Put a popped (text, images) payload back into the composer."""
+            if not payload:
+                return
+            text, images = payload
+            buf = event.app.current_buffer
+            buf.text = text
+            buf.cursor_position = len(text)
+            if images:
+                # Restore attachments the draft was carrying.  Extend rather
+                # than replace: the user may have attached something new since
+                # the stash was taken and silently dropping it would be data
+                # loss.
+                for img in images:
+                    if img not in cli_ref._attached_images:
+                        cli_ref._attached_images.append(img)
+
+        @kb.add('c-s', filter=_stash_filter)
+        def handle_prompt_stash(event):
+            """Ctrl+S: stash the current draft, or restore/browse a stashed one.
+
+            - Composer has content → push it onto the stash and clear the input.
+            - Composer empty, one stashed draft → pop it straight back.
+            - Composer empty, several stashed → open the browse panel.
+            - Browse panel open → close it.
+
+            Pushing onto a stack (rather than a single slot) is what makes
+            repeated Ctrl+S safe: a second stash never silently overwrites the
+            first, both stay reachable in the panel.
+            """
+            from hermes_cli.prompt_stash import (
+                ACTION_OPEN_PANEL,
+                ACTION_RESTORED,
+                ACTION_STASHED,
+                resolve_ctrl_s,
+            )
+
+            buf = event.app.current_buffer
+            action, payload = resolve_ctrl_s(
+                cli_ref._prompt_stash, buf.text, cli_ref._attached_images
+            )
+
+            if action == ACTION_STASHED:
+                # reset() (not `text = ""`) so completion state, selection, and
+                # the undo stack are cleared along with the text.
+                buf.reset()
+                cli_ref._attached_images.clear()
+            elif action == ACTION_RESTORED:
+                _restore_stash_payload(event, payload)
+            elif action == ACTION_OPEN_PANEL:
+                pass  # resolve_ctrl_s already flipped panel_open
+
+            event.app.invalidate()
+
+        @kb.add('up', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_up(event):
+            cli_ref._prompt_stash.move_cursor(-1)
+            event.app.invalidate()
+
+        @kb.add('down', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_down(event):
+            cli_ref._prompt_stash.move_cursor(1)
+            event.app.invalidate()
+
+        @kb.add('enter', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_restore(event):
+            """Enter in the browse panel restores the highlighted draft."""
+            payload = cli_ref._prompt_stash.restore_at_cursor()
+            _restore_stash_payload(event, payload)
+            event.app.invalidate()
+
+        @kb.add('d', filter=_stash_panel_filter, eager=True)
+        @kb.add('D', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_delete(event):
+            """D in the browse panel discards the highlighted draft."""
+            cli_ref._prompt_stash.delete_at_cursor()
+            event.app.invalidate()
+
+        @kb.add('escape', filter=_stash_panel_filter, eager=True)
+        def handle_stash_panel_close(event):
+            cli_ref._prompt_stash.close_panel()
+            event.app.invalidate()
 
         @kb.add('tab', eager=True)
         def handle_tab(event):
@@ -15571,6 +15931,32 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.invalidate()
                 return
 
+        @kb.add('escape', 'escape', filter=~_modal_prompt_active)
+        def handle_double_escape(event):
+            """Double ESC: discard the current draft and any attached images.
+
+            Matches Claude Code / Gemini CLI, where double-Esc is the
+            clear-the-composer gesture. It works while the agent is
+            streaming, which is the gap Ctrl+C leaves: Ctrl+C interrupts a
+            running turn and only clears the draft when idle, so mid-stream
+            there was no way to discard a half-typed prompt.
+
+            The draft is appended to history first, so Up recalls it — the
+            same undo affordance Claude Code provides, and the reason this
+            is safe to bind to a key pressed by reflex.
+
+            Single ESC is the prefix for Alt sequences (escape+enter,
+            escape+g, escape+v), so prompt_toolkit's escape-timeout keeps
+            those distinct from the double press. Modal prompts bind ESC
+            eagerly and are excluded here so cancel still wins.
+            """
+            buf = event.app.current_buffer
+            if not (buf.text or cli_ref._attached_images):
+                return
+            buf.reset(append_to_history=bool(buf.text))
+            cli_ref._attached_images.clear()
+            event.app.invalidate()
+
         @kb.add('c-z')
         def handle_ctrl_z(event):
             """Handle Ctrl+Z - suspend process to background (Unix only)."""
@@ -15970,6 +16356,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if cli_ref._voice_mode:
                 _label = cli_ref._voice_record_key_label()
                 return f"type or {_label} to record"
+            # Advertise a parked draft so the stash can never be silently
+            # forgotten — the composer itself tells you how to get it back.
+            _stash_hint = ""
+            try:
+                _stash_hint = cli_ref._prompt_stash.placeholder_hint()
+            except Exception:
+                _stash_hint = ""
+            if _stash_hint:
+                return _stash_hint
             return ""
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
@@ -16547,6 +16942,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ),
         )
 
+        # Stash browse panel — appears just above the status bar when the user
+        # presses Ctrl+S on an empty composer with 2+ stashed drafts.
+        def _get_stash_panel_display():
+            try:
+                _stash = cli_ref._prompt_stash
+                return cli_ref._render_stash_panel(
+                    _stash.panel_rows(),
+                    _stash.panel_cursor,
+                    cli_ref._get_tui_terminal_width(),
+                )
+            except Exception:
+                return []
+
+        self._stash_panel_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_stash_panel_display),
+                wrap_lines=False,
+            ),
+            filter=Condition(
+                lambda: cli_ref._prompt_stash.panel_open
+                and bool(len(cli_ref._prompt_stash))
+            ),
+        )
+
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
@@ -16843,6 +17262,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         and self._pending_resume_sessions
                         and isinstance(user_input, str)
                         and self._consume_pending_resume_selection(user_input)
+                    ):
+                        continue
+
+                    # `!<command>` shell mode — run it here and loop back to
+                    # idle. Checked BEFORE slash routing and before the chat
+                    # path so nothing enters conversation history and no model
+                    # turn is spent. See handle_bang_shell().
+                    if (
+                        not _file_drop
+                        and isinstance(user_input, str)
+                        and self.handle_bang_shell(user_input)
                     ):
                         continue
 
@@ -17696,6 +18126,10 @@ def main(
     
     # Handle single query mode
     if query or image:
+        # One-shot mode: no between-turns MCP late-binding refresh, so the
+        # agent must wait the full MCP cold-start bound before its first
+        # (and only) tool snapshot. See #51316.
+        cli._single_query_mode = True
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
         try:

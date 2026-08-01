@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.19.0"
+version = "0.19.1"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -122,7 +122,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.2.0",
+  "Pillow==12.3.0",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -160,8 +160,9 @@ fal = ["fal-client==0.13.1"]
 edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
+vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
@@ -226,7 +227,7 @@ pty = []
 # `request.url` can be bypassed. We pin a patched Starlette directly in every
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+mcp = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
@@ -237,7 +238,7 @@ teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1:
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -285,8 +286,15 @@ google = [
   # and packagers ship them without hitting runtime `pip install` paths that
   # fail in environments without pip (e.g. Nix-managed Python).
   "google-api-python-client==2.194.0",
+  "google-auth==2.55.1",
   "google-auth-oauthlib==1.3.1",
   "google-auth-httplib2==0.3.1",
+  # The Google SDKs permit older vulnerable transitives, so unlocked installs
+  # must carry the same fixed floors as uv.lock and the runtime installers:
+  # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS),
+  # pyasn1 0.6.4, google-auth 2.55.1.
+  "httplib2==0.32.0",
+  "pyasn1==0.6.4",
 ]
 youtube = [
   # Required by skills/media/youtube-content and
@@ -311,7 +319,7 @@ all = [
   #
   # Removed from [all] on 2026-05-12 (covered by lazy-install):
   #   anthropic, exa, firecrawl, parallel-web, fal, edge-tts,
-  #   modal, daytona, messaging (telegram/discord/slack),
+  #   modal, daytona, vercel, messaging (telegram/discord/slack),
   #   matrix, slack, honcho, voice (faster-whisper),
   #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
   #
@@ -334,7 +342,7 @@ all = [
 ]
 
 [build-system]
-requires = ["setuptools>=77.0,<83"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -342,10 +350,40 @@ hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
+[tool.uv]
+override-dependencies = [
+  # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.
+  # discord.py has updated pynacl to 1.6 on `main`, but has not yet published a patch release.
+  # so, we force-override this to pynacl 1.6. here.
+  # remove this when we update discord.py
+  "pynacl>=1.6,<1.7",
+]
+exclude-newer = "14 days"
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false }
+
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
 # sealed venv is missing hermes_constants, run_agent, etc.
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+py-modules = [
+  "run_agent",
+  "model_tools",
+  "toolsets",
+  "batch_runner",
+  "trajectory_compressor",
+  "toolset_distributions",
+  "cli",
+  "hermes_bootstrap",
+  "hermes_constants",
+  "hermes_state",
+  "hermes_state_common",
+  "hermes_state_portability",
+  "hermes_state_schema",
+  "hermes_state_search",
+  "hermes_time",
+  "hermes_logging",
+  "utils",
+  "mcp_serve",
+]
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
@@ -366,6 +404,8 @@ markers = [
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
+    "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
+    "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"

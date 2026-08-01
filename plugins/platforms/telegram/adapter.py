@@ -581,6 +581,13 @@ _POLLING_ERROR_TASK_STUCK_TIMEOUT = 300.0
 # A generation is not healthy until the dedicated getUpdates request returns
 # successfully. This exceeds a normal long-poll cycle for healthy idle bots.
 _POLLING_PROGRESS_TIMEOUT = 60.0
+# Telegram transcodes an uploaded video before it answers sendVideo, so the
+# wait for the response is unrelated to how fast the bytes went out and can
+# outlast the 20s read timeout the rest of the Bot API is tuned for. Only
+# media sends take this longer budget; ordinary calls keep the short one so a
+# dead request is still noticed quickly. Kept modest deliberately — this is
+# also how long a user waits to be told the attachment failed.
+_MEDIA_SEND_READ_TIMEOUT = 60.0
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
     "telegram_polling_generation", default=None
 )
@@ -1022,6 +1029,40 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         return any(os.getenv(key, "").strip() for key in keys)
 
+    def _should_pass_unauthorized_dm_for_pairing(self, source) -> bool:
+        """Return True when an unauthorized DM must still reach gateway pairing.
+
+        Early auth (#40863) rejects before event construction. That is correct
+        when unauthorized DMs are ignored, but it must not short-circuit the
+        gateway pairing handshake when ``unauthorized_dm_behavior`` resolves
+        to ``pair`` — including the case where an allowlist is set and the
+        operator explicitly opted back into pairing via a platform override
+        (resolution rule 1 in ``_get_unauthorized_dm_behavior``).
+        """
+        if source.chat_type != "dm":
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
+        if callable(behavior_fn):
+            try:
+                return (
+                    behavior_fn(
+                        Platform.TELEGRAM,
+                        profile=getattr(source, "profile", None),
+                    )
+                    == "pair"
+                )
+            except Exception:
+                logger.debug(
+                    "[Telegram] Failed to resolve unauthorized DM behavior; "
+                    "falling back to adapter-local override",
+                    exc_info=True,
+                )
+
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}
+        return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() == "pair"
+
     def _is_user_authorized_from_message(self, message: Message) -> bool:
         """Check if the sender of a Telegram message is authorized.
 
@@ -1031,6 +1072,8 @@ class TelegramAdapter(BasePlatformAdapter):
         transcript (fixes #40863). It only rejects when it can make the same
         context-aware decision the runner would make. Unknown DMs with no
         allowlist still pass through so the normal pairing flow can run.
+        Unknown DMs with an allowlist still pass through when pairing is the
+        effective unauthorized-DM behavior (explicit platform override).
         """
         source = self._source_from_message_for_auth(message)
         user_id = source.user_id
@@ -1042,6 +1085,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not user_id:
             return True
 
+        authorized: Optional[bool] = None
+
         # Adapter-level allow_from / group_allow_from: when set, they are the
         # sole authority.  Group chats use group_allow_from; DMs use allow_from.
         chat_type = source.chat_type or ""
@@ -1051,49 +1096,57 @@ class TelegramAdapter(BasePlatformAdapter):
             adapter_allow_from = self.config.extra.get("allow_from")
         if adapter_allow_from is not None:
             allowed = _coerce_allow_set(adapter_allow_from)
-            return user_id in allowed or "*" in allowed
+            authorized = user_id in allowed or "*" in allowed
 
         # Test/custom injection only. The class method named
         # _is_callback_user_authorized is for inline button callbacks and must
         # not be treated as a user-id-only shortcut for real messages — only
         # honor an instance-level override (set in tests).
-        callback_auth = self.__dict__.get("_is_callback_user_authorized")
-        if callable(callback_auth):
-            try:
-                return bool(
-                    callback_auth(
-                        user_id,
-                        chat_id=source.chat_id,
-                        chat_type=source.chat_type,
-                        thread_id=source.thread_id,
-                        user_name=source.user_name,
+        if authorized is None:
+            callback_auth = self.__dict__.get("_is_callback_user_authorized")
+            if callable(callback_auth):
+                try:
+                    authorized = bool(
+                        callback_auth(
+                            user_id,
+                            chat_id=source.chat_id,
+                            chat_type=source.chat_type,
+                            thread_id=source.thread_id,
+                            user_name=source.user_name,
+                        )
                     )
-                )
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if callable(auth_fn):
-            # Only make an early decision via the runner when an allowlist
-            # actually exists; otherwise unknown DMs must reach the pairing
-            # flow rather than being default-denied here.
-            if not self._telegram_auth_env_configured():
+        if authorized is None:
+            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+            auth_fn = getattr(runner, "_is_user_authorized", None)
+            if callable(auth_fn):
+                # Only make an early decision via the runner when an allowlist
+                # actually exists; otherwise unknown DMs must reach the pairing
+                # flow rather than being default-denied here.
+                if not self._telegram_auth_env_configured():
+                    return True
+                try:
+                    authorized = bool(auth_fn(source))
+                except Exception:
+                    logger.debug(
+                        "[Telegram] Falling back to env-only auth for user %s",
+                        user_id,
+                        exc_info=True,
+                    )
+
+        if authorized is None:
+            allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+            if not allowed_csv:
                 return True
-            try:
-                return bool(auth_fn(source))
-            except Exception:
-                logger.debug(
-                    "[Telegram] Falling back to env-only auth for user %s",
-                    user_id,
-                    exc_info=True,
-                )
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            authorized = "*" in allowed_ids or user_id in allowed_ids
 
-        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
-        if not allowed_csv:
+        if authorized:
             return True
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-        return "*" in allowed_ids or user_id in allowed_ids
+        # Unauthorized DM that the gateway would pair: forward so pairing can run.
+        return self._should_pass_unauthorized_dm_for_pairing(source)
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -3664,6 +3717,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+                # Not a duplicate of write_timeout: PTB routes any request
+                # carrying files to media_write_timeout instead, so the line
+                # above never applied to an upload and every upload was pinned
+                # to PTB's own 20s default. httpx budgets this per socket
+                # write rather than across the upload, so it is stall
+                # tolerance, not a size or bandwidth allowance — a slow but
+                # steady uplink never accumulates against it. 60s rides out
+                # the buffer stalls a congested link produces; going higher
+                # only lengthens how long a dead socket takes to report
+                # itself.
+                "media_write_timeout": 60.0,
             }
 
             # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
@@ -6803,6 +6867,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     "parse_mode": _cap_parse_mode,
                                     "reply_to_message_id": reply_to_id,
                                     "duration": _duration_secs,
+                                    "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                                     **voice_thread_kwargs,
                                     **self._notification_kwargs(metadata),
                                 },
@@ -6852,6 +6917,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
                             "duration": _duration_secs,
+                            "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
@@ -6990,6 +7056,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "chat_id": normalize_telegram_chat_id(chat_id),
                         "media": media,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7049,6 +7116,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "photo": image_file,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7146,6 +7214,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "filename": display_name,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7196,6 +7265,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "video": f,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7251,6 +7321,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "photo": image_url,
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
+                    "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                     **photo_thread_kwargs,
                     **self._notification_kwargs(metadata),
                 },
@@ -7293,6 +7364,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "photo": image_data,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                         **upload_thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },
@@ -7340,6 +7412,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "animation": animation_url,
                     "caption": caption[:1024] if caption else None,
                     "reply_to_message_id": reply_to_id,
+                    "read_timeout": _MEDIA_SEND_READ_TIMEOUT,
                     **animation_thread_kwargs,
                     **self._notification_kwargs(metadata),
                 },
@@ -8713,6 +8786,18 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
+        # Telegram clients split messages above 4096 chars into multiple
+        # updates.  A long command paste (e.g. ``/queue <huge prompt>``)
+        # arrives as a COMMAND chunk near the limit followed by plain TEXT
+        # continuation chunk(s).  Dispatching the command immediately would
+        # orphan the continuation, which then lands as a separate message and
+        # interrupts the running agent.  Route near-limit command chunks
+        # through the same text-batching pipeline so continuations merge in
+        # before dispatch; short commands (/stop, /approve, ...) keep the
+        # immediate path and are never delayed.
+        if len(event.text or "") >= self._SPLIT_THRESHOLD:
+            self._enqueue_text_event(event)
+            return
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

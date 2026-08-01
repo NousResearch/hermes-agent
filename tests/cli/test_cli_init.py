@@ -44,13 +44,28 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         "prompt_toolkit.formatted_text": MagicMock(),
         "prompt_toolkit.auto_suggest": MagicMock(),
     }
-    with patch.dict(sys.modules, prompt_toolkit_stubs), \
-         patch.dict("os.environ", clean_env, clear=False):
-        import cli as _cli_mod
-        _cli_mod = importlib.reload(_cli_mod)
-        with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
-             patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
-            return _cli_mod.HermesCLI(**kwargs)
+    try:
+        with patch.dict(sys.modules, prompt_toolkit_stubs), \
+             patch.dict("os.environ", clean_env, clear=False):
+            import cli as _cli_mod
+            _cli_mod = importlib.reload(_cli_mod)
+            with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
+                 patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
+                return _cli_mod.HermesCLI(**kwargs)
+    finally:
+        # The reload above re-executed cli.py while prompt_toolkit was stubbed
+        # with MagicMocks, permanently rebinding cli's module globals
+        # (``_pt_print``, ``_PT_ANSI``, …) to those mocks. ``patch.dict``
+        # restores ``sys.modules`` on exit, but NOT the names the reloaded
+        # module already bound — so ``sys.modules["cli"]`` is left with a
+        # mock ``_pt_print``, and ``cli._cprint`` then silently no-ops for
+        # every later test (one half of the order-dependent
+        # ``test_resume_quiet_stderr`` full-suite failure; the other half is
+        # the prompt_toolkit output cache reset in this dir's conftest).
+        # Reload once more with the real modules visible so cli's globals
+        # rebind cleanly.
+        import cli as _cli_restore
+        importlib.reload(_cli_restore)
 
 
 class TestMaxTurnsResolution:
@@ -398,7 +413,70 @@ class TestRootLevelProviderOverride:
 
         assert cfg["model"]["provider"] == "opencode-go"
 
+    def test_root_base_url_used_as_fallback_when_model_base_url_missing(self, tmp_path, monkeypatch):
+        """Legacy root-level base_url still populates model.base_url in the CLI loader."""
+        import yaml
 
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "base_url": "https://example.com/v1",
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["base_url"] == "https://example.com/v1"
+
+    def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
+        """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TERMINAL_VERCEL_RUNTIME", raising=False)
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "terminal": {
+                "backend": "vercel_sandbox",
+                "vercel_runtime": "python3.13",
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["vercel_runtime"] == "python3.13"
+        assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
+
+    def test_normalize_root_model_keys_moves_to_model(self):
+        """_normalize_root_model_keys migrates root keys into model section."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "provider": "opencode-go",
+            "base_url": "https://example.com/v1",
+            "model": {
+                "default": "some-model",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        # Root keys removed
+        assert "provider" not in result
+        assert "base_url" not in result
+        # Migrated into model section
+        assert result["model"]["provider"] == "opencode-go"
+        assert result["model"]["base_url"] == "https://example.com/v1"
 
     def test_normalize_root_model_keys_does_not_override_existing(self):
         """Existing model.provider is never overridden by root-level key."""

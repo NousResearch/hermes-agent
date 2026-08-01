@@ -246,9 +246,12 @@ class CLIAgentSetupMixin:
         if not self._ensure_runtime_credentials():
             return False
 
-        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+        from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
-        wait_for_mcp_discovery()
+        ensure_mcp_discovery_before_agent_build(
+            logger=logger,
+            single_query=getattr(self, "_single_query_mode", False),
+        )
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
@@ -458,7 +461,12 @@ class CLIAgentSetupMixin:
                     # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
-            ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
+            console = ChatConsole()
+            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_constants import partial_update_hint
+
+            for line in partial_update_hint(e):
+                console.print(line)
             return False
 
     def _preload_resumed_session(self) -> bool:

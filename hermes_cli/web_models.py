@@ -428,12 +428,15 @@ class MCPCatalogInstall(BaseModel):
 
 class PairingApprove(BaseModel):
     platform: str
-    code: str
+    code: str = ""
+    request_id: str = ""
+    profile: Optional[str] = None
 
 
 class PairingRevoke(BaseModel):
     platform: str
     user_id: str
+    profile: Optional[str] = None
 
 
 # --- from web_server.py (originally lines 13793-13804) ---

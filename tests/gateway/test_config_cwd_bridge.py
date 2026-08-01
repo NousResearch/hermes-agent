@@ -39,6 +39,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "cwd": "TERMINAL_CWD",
             "timeout": "TERMINAL_TIMEOUT",
             "home_mode": "TERMINAL_HOME_MODE",
+            "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
             "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
             "container_cpu": "TERMINAL_CONTAINER_CPU",
             "container_memory": "TERMINAL_CONTAINER_MEMORY",
@@ -214,3 +215,22 @@ class TestTildeExpansion:
         assert result["TERMINAL_CWD"] == "~"
 
 
+class TestVercelTerminalBridge:
+    def test_vercel_terminal_settings_bridge(self):
+        cfg = {
+            "terminal": {
+                "backend": "vercel_sandbox",
+                "vercel_runtime": "python3.13",
+                "container_persistent": True,
+                "container_cpu": 2,
+                "container_memory": 4096,
+                "container_disk": 51200,
+            }
+        }
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
+        assert result["TERMINAL_ENV"] == "vercel_sandbox"
+        assert result["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
+        assert result["TERMINAL_CONTAINER_PERSISTENT"] == "True"
+        assert result["TERMINAL_CONTAINER_CPU"] == "2"
+        assert result["TERMINAL_CONTAINER_MEMORY"] == "4096"
+        assert result["TERMINAL_CONTAINER_DISK"] == "51200"

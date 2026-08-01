@@ -225,6 +225,59 @@ class TestIsSatisfiedVersionAware:
         assert ld._is_satisfied(spec) is True
         assert ld.feature_missing("tool.trace_upload") == ()
 
+    @pytest.mark.parametrize(
+        ("feature", "installed_versions", "expected_repairs"),
+        [
+            (
+                "skill.google_workspace",
+                {
+                    "google-api-python-client": "2.194.0",
+                    "google-auth": "2.55.0",
+                    "google-auth-oauthlib": "1.3.1",
+                    "google-auth-httplib2": "0.3.1",
+                    "httplib2": "0.31.2",
+                    "pyasn1": "0.6.3",
+                },
+                (
+                    "google-auth==2.55.1",
+                    "httplib2==0.32.0",
+                    "pyasn1==0.6.4",
+                ),
+            ),
+            (
+                "provider.vertex",
+                {
+                    "google-auth": "2.55.1",
+                    "pyasn1": "0.6.3",
+                },
+                ("pyasn1==0.6.4",),
+            ),
+        ],
+    )
+    def test_google_features_repair_stale_transitives(
+        self,
+        monkeypatch,
+        feature,
+        installed_versions,
+        expected_repairs,
+    ):
+        self._fake_version(monkeypatch, installed_versions)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        installed = []
+
+        def fake_install(specs, **kwargs):
+            installed.extend(specs)
+            for spec in specs:
+                package, wanted = spec.split("==", 1)
+                installed_versions[package] = wanted
+            return ld._InstallResult(True, "ok", "")
+
+        monkeypatch.setattr(ld, "_venv_pip_install", fake_install)
+
+        ld.ensure(feature, prompt=False)
+
+        assert tuple(installed) == expected_repairs
+
 
 # ---------------------------------------------------------------------------
 # active_features + refresh_active_features (Piece A — hermes update wiring)

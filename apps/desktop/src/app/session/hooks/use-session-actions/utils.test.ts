@@ -4,6 +4,7 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $currentBranch, $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -62,6 +63,36 @@ describe('applyRuntimeInfo credential warnings', () => {
     applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
 
     expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+  })
+})
+
+describe('applyRuntimeInfo foreground scoping', () => {
+  beforeEach(() => {
+    setCurrentCwd('/main-repo')
+    setCurrentBranch('main')
+  })
+
+  afterEach(() => {
+    setCurrentCwd('')
+    setCurrentBranch('')
+  })
+
+  it('publishes a foreground runtime into the composer atoms', () => {
+    const patch = applyRuntimeInfo({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+
+    expect($currentCwd.get()).toBe('/main-repo/worktree')
+    expect($currentBranch.get()).toBe('bb/feature')
+    expect(patch).toMatchObject({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+  })
+
+  it('keeps a background runtime out of the composer atoms but still returns its patch', () => {
+    const patch = applyRuntimeInfo({ branch: 'bb/tile', cwd: '/other-worktree' }, { foreground: false })
+
+    // The main pane's rail must stay on its own tree.
+    expect($currentCwd.get()).toBe('/main-repo')
+    expect($currentBranch.get()).toBe('main')
+    // ...while the caller still gets everything it needs for its own session.
+    expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
   })
 })
 

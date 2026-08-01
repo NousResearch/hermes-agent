@@ -36,9 +36,47 @@ const debugEntry = (command: string, env: Record<string, string>) =>
     ? path.resolve(__dirname, './src/debug/dev-only.ts')
     : path.resolve(__dirname, './src/debug/dev-only.noop.ts')
 
+// The emoji picker (frimousse) fetches `<emojibaseUrl>/<locale>/data.json` at
+// runtime. Its default is a CDN; Electron must work offline, so serve the
+// bundled emojibase-data package at a stable local path instead — middleware
+// in dev, emitted assets in the build. Only the files a locale actually needs.
+const emojibaseDir =
+  real(path.resolve(__dirname, 'node_modules/emojibase-data')) ??
+  real(path.resolve(__dirname, '../../node_modules/emojibase-data'))
+
+const EMOJIBASE_PATH = /^[a-z-]+\/(data|messages|shortcodes\/emojibase)\.json$/
+
+const emojibaseAssets = () => ({
+  name: 'hermes:emojibase-assets',
+  configureServer(server: {
+    middlewares: { use: (route: string, handler: (req: any, res: any, next: () => void) => void) => void }
+  }) {
+    server.middlewares.use('/emojibase', (req, res, next) => {
+      const rel = (req.url ?? '').split('?')[0].replace(/^\/+/, '')
+      if (!emojibaseDir || !EMOJIBASE_PATH.test(rel)) return next()
+      fs.readFile(path.join(emojibaseDir, rel), (err: unknown, buf: Buffer) => {
+        if (err) return next()
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        res.end(buf)
+      })
+    })
+  },
+  generateBundle(this: { emitFile: (asset: { type: 'asset'; fileName: string; source: Uint8Array }) => void }) {
+    if (!emojibaseDir) return
+    for (const rel of ['en/data.json', 'en/messages.json', 'en/shortcodes/emojibase.json']) {
+      this.emitFile({
+        type: 'asset',
+        fileName: `emojibase/${rel}`,
+        source: fs.readFileSync(path.join(emojibaseDir, rel))
+      })
+    }
+  }
+})
+
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

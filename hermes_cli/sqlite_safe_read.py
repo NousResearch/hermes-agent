@@ -40,7 +40,7 @@ lifecycle**. ``_live_lock`` is therefore held across three critical sections,
 each of which spans the syscall *and* the registry mutation:
 
 * open + register (:func:`connect_tracked`)
-* unregister + close (:meth:`TrackedConnection.close`)
+* close + unregister (:meth:`TrackedConnection.close`)
 * check + ``open``/``read``/``close`` (:func:`read_header_bytes_preopen`)
 
 Without that, a thread could pass the "no live connection" check, a second
@@ -154,10 +154,14 @@ class _TrackingMixin:
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:
             path = getattr(self, "_hermes_tracked_path", None)
+            # Close first; untrack only once the descriptor is actually gone.
+            # Untracking before a failing close (e.g. cross-thread
+            # ProgrammingError) leaves the FD open while the byte-probe
+            # guard thinks nothing is live — see #75629.
+            super().close()  # type: ignore[misc]
             if path is not None:
                 self._hermes_tracked_path = None
                 untrack_connection(path)
-            super().close()  # type: ignore[misc]
 
 
 class TrackedConnection(_TrackingMixin, sqlite3.Connection):
@@ -169,9 +173,11 @@ class TrackedConnection(_TrackingMixin, sqlite3.Connection):
     method every close path must go through — keeps the registry from
     drifting upward and permanently disabling byte-probes.
 
-    The unregister and the real ``close()`` happen together under
+    The real ``close()`` and the unregister happen together under
     ``_live_lock`` so a concurrent probe can never observe "no live
-    connection" while this descriptor is still open.
+    connection" while this descriptor is still open. Unregister runs only
+    after ``close()`` succeeds; a raising close leaves the connection
+    tracked so the byte-probe guard keeps refusing.
 
     Note ``with conn:`` does NOT close a sqlite3 connection (it only commits or
     rolls back), so this hook is not fired spuriously by transaction scopes.

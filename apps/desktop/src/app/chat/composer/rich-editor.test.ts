@@ -35,6 +35,89 @@ describe('renderComposerContents', () => {
     expect(editor.textContent).toContain('<b>raw</b>')
     expect(composerPlainText(editor)).toBe('@file:`<img src=x onerror=alert(1)>` <b>raw</b>')
   })
+
+  it('hydrates a committed leading slash command back to its pill', () => {
+    // Text-hydration parity with @ refs: a re-render from serialized text
+    // (draft restore, undo, the trigger commit fallback) must not demote a
+    // committed no-arg command chip to plain text.
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '/some-skill @folder:`Desktop` ')
+
+    const pill = editor.querySelector('[data-slash-kind]')
+
+    expect(pill?.getAttribute('data-ref-text')).toBe('/some-skill')
+    expect(editor.querySelector('[data-ref-kind="folder"]')).not.toBeNull()
+    expect(composerPlainText(editor)).toBe('/some-skill @folder:`Desktop` ')
+  })
+
+  it('keeps a still-typed leading slash token as editable text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    // No trailing whitespace — not committed yet.
+    renderComposerContents(editor, '/some-skil')
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('/some-skil')
+  })
+
+  it('keeps an arg-taking command as text — its tail may be uncommitted prose', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+
+    renderComposerContents(editor, '/goal ship the redesign')
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('/goal ship the redesign')
+  })
+})
+
+describe('replaceBeforeCaret across split text nodes', () => {
+  it('replaces a token that Chromium fragmented into multiple text nodes', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+    editor.append(document.createTextNode('see @Desk'), document.createTextNode('top/'))
+
+    const caret = document.createRange()
+    caret.setStart(editor.lastChild!, 4)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    const fragment = document.createDocumentFragment()
+    fragment.append(refChipElement('folder', '`Desktop`'), document.createTextNode(' '))
+
+    // Token `@Desktop/` (9 chars) spans both text nodes.
+    expect(replaceBeforeCaret(editor, 9, fragment)).toBe(true)
+    expect(composerPlainText(editor)).toBe('see @folder:`Desktop` ')
+
+    editor.remove()
+  })
+
+  it('refuses when a chip interrupts the span — the token is not contiguous text', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+    editor.append(document.createTextNode('a'), refChipElement('file', '`x`'), document.createTextNode('bc'))
+
+    const caret = document.createRange()
+    caret.setStart(editor.lastChild!, 2)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    expect(replaceBeforeCaret(editor, 5, document.createDocumentFragment())).toBe(false)
+    expect(composerPlainText(editor)).toBe('a@file:`x`bc')
+
+    editor.remove()
+  })
 })
 
 describe('normalizeComposerEditorDom', () => {
@@ -144,6 +227,82 @@ describe('insertComposerContentsAtCaret', () => {
 
     expect(editor.querySelectorAll('[data-ref-kind="url"]').length).toBe(1)
     expect(composerPlainText(editor)).toBe('read @url:`https://example.dev/a` now')
+
+    editor.remove()
+  })
+
+  // A directive typed by hand chips; the same directive pasted has to chip too,
+  // or copy/pasting a prompt silently drops every command in it.
+  it('chips a pasted slash command, including one that ends the paste', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, '/some-skill')
+
+    expect(editor.querySelector('[data-slash-kind]')?.getAttribute('data-ref-text')).toBe('/some-skill')
+    // Committed pills carry the trailing space the typed path appends, so a
+    // later full re-render doesn't read the token as half-typed.
+    expect(composerPlainText(editor)).toBe('/some-skill ')
+
+    editor.remove()
+  })
+
+  it('chips a skill named mid-paste alongside a ref', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, 'clean @file:`a.ts` with /some-skill then ship')
+
+    expect(editor.querySelectorAll('[data-slash-kind]').length).toBe(1)
+    expect(editor.querySelectorAll('[data-ref-kind="file"]').length).toBe(1)
+    expect(composerPlainText(editor)).toBe('clean @file:`a.ts` with /some-skill then ship')
+
+    editor.remove()
+  })
+
+  it('leaves a pasted path alone — /usr/local is not a command', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, 'see /usr/local/bin and /goal ship it')
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('see /usr/local/bin and /goal ship it')
+
+    editor.remove()
+  })
+
+  it('does not chip a command pasted against a word — foo/clean is not a command', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = 'foo'
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, '/some-skill')
+
+    expect(editor.querySelector('[data-slash-kind]')).toBeNull()
+    expect(composerPlainText(editor)).toBe('foo/some-skill')
+
+    editor.remove()
+  })
+
+  it('chips a command pasted right after an existing chip', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.append(refChipElement('file', '`a.ts`'))
+    document.body.append(editor)
+    caretIn(editor)
+
+    insertComposerContentsAtCaret(editor, '/some-skill')
+
+    expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
 
     editor.remove()
   })

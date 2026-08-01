@@ -226,13 +226,29 @@ class LLMExecutionBlockedVerdict:
 
 def handle_llm_execution_blocked(
     agent: Any, *, blocked: Any, thinking_spinner: Any, messages: Any, conversation_history: Any,
-    api_call_count: Any,
+    api_call_count: Any, api_request_id: Any, api_start_time: Any, api_kwargs: Any,
+    retry_count: Any, max_retries: Any, effective_task_id: Any, turn_id: Any,
 ) -> LLMExecutionBlockedVerdict:
     """``LLMExecutionBlocked`` from ``llm_execution`` middleware: a governance/safety plugin
     intentionally prevented this call from reaching the provider — distinct from a provider or
     transport failure, so it bypasses ``handle_api_error`` classification and retries. Mirrors
     the interrupt-and-return shape: close any dangling tool sequence, persist, end the turn."""
+    from agent import relay_llm
+
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
+    # A middleware that called next_call() before raising may already have opened the deferred
+    # Relay logical call (``relay_llm.execute(..., defer_logical_completion=True)`` above);
+    # complete_logical_call is a no-op when none was opened, so call it unconditionally.
+    relay_llm.complete_logical_call(api_request_id, outcome="failed")
+    # pre_api_request already fired before middleware dispatch: emit the same terminal
+    # api_request_error hook the other early-exit error paths use, so observers never see a
+    # start event with no post/error counterpart.
+    agent._invoke_api_request_error_hook(
+        task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+        api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
+        error_type="LLMExecutionBlocked", error_message=blocked.reason, retry_count=retry_count,
+        max_retries=max_retries, retryable=False, reason=blocked.reason,
+    )
     _block_text = f"This request was blocked before reaching the model: {blocked.reason}"
     close_interrupted_tool_sequence(messages, _block_text)
     agent._persist_session(messages, conversation_history)

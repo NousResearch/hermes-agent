@@ -474,6 +474,7 @@ async def test_post_stream_html_src_bare_path_not_delivered(tmp_path, monkeypatc
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
 @pytest.mark.asyncio
 async def test_post_stream_file_url_windows_path_delivered(tmp_path, monkeypatch):
     """``file:///C:/...`` style Windows URI (three slashes + drive letter)
@@ -701,7 +702,6 @@ async def test_post_stream_dedup_http_exact_url(tmp_path, monkeypatch):
     assert len(images) == 1, f"expected 1 image (dedup), got {len(images)}: {images}"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
 # ---------------------------------------------------------------------------
 # New contract (#73771): explicit MEDIA:/file:// in a LATER turn is a deliberate
 # resend and must NOT be blocked by history-based dedup. The same file may be

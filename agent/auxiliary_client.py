@@ -8110,6 +8110,14 @@ def call_llm(
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
+        if task == "moa_aggregator":
+            # MoA's own facade owns the streaming contract. Routing this nested
+            # aggregator stream through Relay's generic stream manager can make
+            # Codex Responses adapters return a completed SimpleNamespace that
+            # the manager then tries to iterate (#55933). Return the provider
+            # call directly; the MoA facade converts a completed response into
+            # a one-chunk delta iterator at its boundary.
+            return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(
             client,
             kwargs,

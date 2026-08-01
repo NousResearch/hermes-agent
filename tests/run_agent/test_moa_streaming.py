@@ -90,6 +90,46 @@ def test_create_streams_aggregator_when_requested(monkeypatch, tmp_path):
     assert agg["tools"] is not None
 
 
+def test_create_wraps_completed_aggregator_response_as_delta_chunk(monkeypatch, tmp_path):
+    """When an aggregator adapter returns a completed response despite
+    stream=True (Codex Responses compatibility shape), MoA must return a
+    one-chunk delta iterator for the outer streaming accumulator instead of
+    the raw non-iterable response object (#55933).
+    """
+
+    completed = _response("aggregator acted")
+    completed.choices[0].message.tool_calls = [
+        SimpleNamespace(
+            id="call_1",
+            type="function",
+            function=SimpleNamespace(name="read_file", arguments='{"path":"x"}'),
+        )
+    ]
+
+    def on_call(kwargs):
+        if kwargs["task"] == "moa_aggregator":
+            return completed
+        return None
+
+    facade, calls = _facade(monkeypatch, tmp_path, on_call=on_call)
+    stream = facade.create(
+        messages=[{"role": "user", "content": "q"}],
+        tools=[],
+        stream=True,
+    )
+
+    chunk = next(iter(stream))
+    assert chunk.choices[0].delta.content == "aggregator acted"
+    assert chunk.choices[0].delta.tool_calls[0].index == 0
+    assert chunk.choices[0].delta.tool_calls[0].function.name == "read_file"
+    assert chunk.choices[0].finish_reason == "stop"
+    with pytest.raises(StopIteration):
+        next(stream)
+
+    agg = next(c for c in calls if c["task"] == "moa_aggregator")
+    assert agg["stream"] is True
+
+
 def test_create_non_stream_path_unchanged(monkeypatch, tmp_path):
     """Default (no stream): the aggregator call carries NO stream/stream_options
     keys, so the non-streaming path is byte-identical to before."""

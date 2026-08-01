@@ -14,6 +14,7 @@ import functools
 import hashlib
 import logging
 import os
+import queue
 import re
 import shlex
 import sys
@@ -2733,6 +2734,63 @@ def _get_smart_policy() -> str:
     return policy.strip()
 
 
+# Hard ceiling for the smart-approval auxiliary LLM call, independent of
+# whatever timeout agent.auxiliary_client resolves internally (default 30s
+# via auxiliary.approval.timeout / _DEFAULT_AUX_TIMEOUT). This call gates
+# EVERY flagged terminal command -- if its internal timeout is ever defeated
+# (observed in production: a terminal_tool.env.execute() call exhibited the
+# same class of bug -- an internal per-call deadline that didn't fire),
+# nothing downstream can notice, and the entire agent turn hangs forever
+# before the command it's gating ever runs. _smart_approve already treats
+# any exception as "escalate" (fail open to human/pattern-based approval),
+# so turning a wedged call into a raised exception here is safe and exactly
+# matches the existing error contract -- this just guarantees the exception
+# actually happens within a bounded time instead of never.
+_SMART_APPROVE_WATCHDOG_SECONDS = 45
+
+
+def _call_llm_with_watchdog(**kwargs):
+    """Run agent.auxiliary_client.call_llm on a daemon thread with a hard
+    wall-clock ceiling. See _SMART_APPROVE_WATCHDOG_SECONDS for rationale.
+
+    Plain daemon thread (not concurrent.futures.ThreadPoolExecutor): the
+    latter's non-daemon workers plus its atexit join-all-threads hook would
+    make a later, unrelated clean shutdown of the agent process hang too if
+    a call ever actually got abandoned.
+    """
+    from agent.auxiliary_client import call_llm
+
+    result_queue = queue.Queue(maxsize=1)
+
+    def _run():
+        try:
+            result_queue.put(("ok", call_llm(**kwargs)))
+        except BaseException as e:  # noqa: BLE001 - must forward any failure to the waiter
+            result_queue.put(("error", e))
+
+    worker = threading.Thread(
+        target=_run, name="smart-approve-watchdog", daemon=True,
+    )
+    worker.start()
+    try:
+        kind, payload = result_queue.get(timeout=_SMART_APPROVE_WATCHDOG_SECONDS)
+    except queue.Empty:
+        logger.warning(
+            "Smart approvals: call_llm() watchdog fired after %ds -- the "
+            "call never returned even though its own internal timeout "
+            "should have fired. Abandoning the worker thread and escalating.",
+            _SMART_APPROVE_WATCHDOG_SECONDS,
+        )
+        raise TimeoutError(
+            f"call_llm(task='approval') did not return within "
+            f"{_SMART_APPROVE_WATCHDOG_SECONDS}s -- watchdog aborted the wait"
+        ) from None
+
+    if kind == "error":
+        raise payload
+    return payload
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -2753,8 +2811,6 @@ def _smart_approve(command: str, description: str) -> str:
     (openai/codex#13860).
     """
     try:
-        from agent.auxiliary_client import call_llm
-
         # Strip shell comments to remove the easiest injection vector.
         sanitized_command = _strip_shell_comments(command)
 
@@ -2802,7 +2858,7 @@ def _smart_approve(command: str, description: str) -> str:
             "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
         )
 
-        response = call_llm(
+        response = _call_llm_with_watchdog(
             task="approval",
             messages=[
                 {"role": "system", "content": system_prompt},

@@ -21,6 +21,7 @@ import contextlib
 import io
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -48,6 +49,62 @@ def _env_float(name: str, default: float) -> float:
 _WATCHDOG_POLL_S = max(0.05, _env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
 _ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
+
+# Hard ceiling on HermesCLI(...) construction, which opens SessionDB (state.db)
+# and -- when resuming -- replays that session's history, all before this
+# worker can process a single command. Root-caused from a live incident: a
+# worker sat with zero progress for 17+ minutes at exactly this call, on a
+# profile whose state.db had grown to 150+MB. py-spy showed the main thread
+# blocked in native code with no deeper Python frames (consistent with a slow
+# SQLite operation, not a Python-level infinite loop), and this codebase has
+# a documented precedent of a large state.db causing multi-minute stalls
+# elsewhere (`hermes update`). SessionDB's own connection has only a 1s
+# *lock-wait* timeout -- nothing bounds how long schema init/integrity work
+# takes once it has the lock. Unlike the terminal-tool watchdogs, there is no
+# "gracefully continue" option here: if HermesCLI can't be built, this worker
+# cannot serve any command at all, so on timeout we fail loudly and exit
+# rather than sit invisibly frozen for the rest of the process's life (which
+# is what happened before this fix -- the UI just showed stale state forever
+# with no error, because nothing was left to report one).
+_CLI_INIT_WATCHDOG_S = max(10.0, _env_float("HERMES_SLASH_CLI_INIT_WATCHDOG_S", 120.0))
+
+
+def _build_cli_with_watchdog(model, session_key):
+    """Construct HermesCLI on a daemon thread with a hard wall-clock ceiling.
+
+    Plain daemon thread (not concurrent.futures.ThreadPoolExecutor): the
+    latter's non-daemon workers plus its atexit join-all-threads hook would
+    make this worker process itself refuse to exit promptly if construction
+    ever actually wedged -- defeating the point of failing loudly here.
+    """
+    result_queue = queue.Queue(maxsize=1)
+
+    def _run():
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                built = HermesCLI(model=model, compact=True, resume=session_key, verbose=False)
+            result_queue.put(("ok", built))
+        except BaseException as e:  # noqa: BLE001 - must forward any failure to the waiter
+            result_queue.put(("error", e))
+
+    threading.Thread(
+        target=_run, name="cli-init-watchdog", daemon=True,
+    ).start()
+    try:
+        kind, payload = result_queue.get(timeout=_CLI_INIT_WATCHDOG_S)
+    except queue.Empty:
+        print(
+            f"[slash-worker] FATAL: HermesCLI(resume={session_key!r}) did not "
+            f"return within {_CLI_INIT_WATCHDOG_S:.0f}s -- state.db is likely "
+            "very large or under heavy contention. Exiting so the gateway/UI "
+            "sees a clear failure instead of an invisible freeze.",
+            file=sys.stderr, flush=True,
+        )
+        os._exit(1)
+
+    if kind == "error":
+        raise payload
+    return payload
 
 
 def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
@@ -138,8 +195,7 @@ def main():
     _start_parent_death_watchdog(orig_ppid)
     _prepare_slash_worker_runtime()
 
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
+    cli = _build_cli_with_watchdog(args.model or None, args.session_key)
 
     # Spurious stdin-EOF recovery (same O_NONBLOCK shared file-description
     # issue as the gateway entry point — any child inheriting fd 0 can flip

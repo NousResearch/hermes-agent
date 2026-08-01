@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { profileSshOverride } from './connection-config'
 import {
   buildSpawnCommand,
   cleanupStale,
@@ -418,6 +419,50 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
   assert.equal(result.token, 'the-served-token')
   assert.equal(result.baseUrl, 'http://127.0.0.1:50001')
   assert.equal(result.tokenFingerprint, fingerprintToken('the-served-token'))
+})
+
+test('managed SSH maps a local scope to a different non-default remote profile', async () => {
+  const localScope = 'work'
+  const sshConfig = profileSshOverride(
+    {
+      profiles: {
+        [localScope]: {
+          mode: 'ssh',
+          host: 'remote-box',
+          remoteProfile: 'writer_2'
+        }
+      }
+    },
+    localScope
+  )
+
+  assert.equal(sshConfig?.remoteProfile, 'writer_2')
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '778\n'],
+    [/kill -0 778/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_BACKEND_READY port=52000\n']
+  ])
+
+  await connect(
+    connectDeps(ssh, {
+      profile: sshConfig?.remoteProfile,
+      adoptServedToken: async () => 'mapped-profile-token'
+    })
+  )
+
+  const spawn = ssh.calls.find(command => /setsid|nohup/.test(command)) || ''
+  assert.match(spawn, /--profile\b/)
+  assert.ok(spawn.includes('writer_2'))
+  assert.match(spawn, /serve\s+--isolated/)
+  assert.match(spawn, /\.hermes\/desktop-ssh\/[0-9a-f]{32}\/[0-9a-f]{16}\.token/)
+  assert.ok(!spawn.includes(' work'), 'the local Desktop scope must not become the remote profile')
 })
 
 test('connect() reuses a healthy dashboard when fingerprint + probe pass', async () => {

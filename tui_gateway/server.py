@@ -2516,7 +2516,14 @@ def _ensure_session_db_row(session: dict) -> None:
             # means the launch/default profile (matches run_agent's convention).
             profile_name=Path(profile_home).name if profile_home else None,
         )
-    except Exception:
+    except Exception as exc:
+        # Disk-full is not a soft failure: if we swallow it here, prompt.submit
+        # returns {"status":"streaming"} and the user's message vanishes with
+        # no toast. Re-raise so the submit handler can return a real RPC error.
+        from hermes_state import is_disk_full_error
+
+        if is_disk_full_error(exc):
+            raise
         logger.debug("failed to persist desktop session row", exc_info=True)
     finally:
         if close_db:
@@ -2559,7 +2566,11 @@ def _persist_branch_seed(session: dict) -> None:
                     timestamp=msg.get("timestamp"),
                 )
             session["_branch_seed_persisted"] = True
-        except Exception:
+        except Exception as exc:
+            from hermes_state import is_disk_full_error
+
+            if is_disk_full_error(exc):
+                raise
             logger.debug("branch seed persist failed", exc_info=True)
 
 

@@ -3529,20 +3529,50 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     git_cmd, _m().PROJECT_ROOT, f"origin/{branch}", "HEAD"
                 )
                 backup_ref = None
-                if local_only > 0:
-                    backup_ref = (
+                # local_only < 0 means the count itself failed (bad ref, git
+                # error). Treat "unknown" the same as "there is something" —
+                # the reset below is unrecoverable, so the only safe direction
+                # to fail is toward taking a backup we may not have needed.
+                if local_only != 0:
+                    candidate_ref = (
                         f"refs/hermes-update-backups/{branch}-"
                         f"{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                     )
-                    subprocess.run(
-                        git_cmd + ["update-ref", backup_ref, "HEAD"],
+                    backup_result = subprocess.run(
+                        git_cmd + ["update-ref", candidate_ref, "HEAD"],
                         cwd=_m().PROJECT_ROOT,
                         capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
                     )
-                    print(
-                        f"  ℹ Preserving {local_only} local commit(s) not on "
-                        f"origin/{branch} before resetting (backed up to {backup_ref})..."
-                    )
+                    if backup_result.returncode != 0:
+                        # Never claim a backup we do not have, and never run the
+                        # destructive reset without one.
+                        print(
+                            f"✗ Could not create backup ref {candidate_ref} for "
+                            f"local commits; refusing to reset --hard."
+                        )
+                        if (backup_result.stderr or "").strip():
+                            print(f"  {backup_result.stderr.strip()}")
+                        print(
+                            "  Your local commits are still intact. Resolve the ref "
+                            "error, or reconcile manually with:\n"
+                            f"    git rebase origin/{branch}"
+                        )
+                        sys.exit(1)
+                    backup_ref = candidate_ref
+                    if local_only > 0:
+                        print(
+                            f"  ℹ Preserving {local_only} local commit(s) not on "
+                            f"origin/{branch} before resetting (backed up to {backup_ref})..."
+                        )
+                    else:
+                        print(
+                            f"  ℹ Could not determine how many local commits are not on "
+                            f"origin/{branch}; backing up HEAD to {backup_ref} before "
+                            "resetting, to be safe..."
+                        )
 
                 print(
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
@@ -3574,19 +3604,32 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         text=True, encoding="utf-8", errors="replace",
                     )
                     if cherry_result.returncode == 0:
-                        print(
-                            f"  ✓ Reapplied {local_only} local commit(s) on top of the update."
-                        )
+                        # local_only is -1 when the earlier count failed; don't
+                        # render "-1 commit(s)" at the user in that case.
+                        if local_only > 0:
+                            print(
+                                f"  ✓ Reapplied {local_only} local commit(s) on top of the update."
+                            )
+                        else:
+                            print(
+                                "  ✓ Reapplied your local commit(s) on top of the update."
+                            )
                     else:
                         subprocess.run(
                             git_cmd + ["cherry-pick", "--abort"],
                             cwd=_m().PROJECT_ROOT,
                             capture_output=True,
                         )
-                        print(
-                            f"  ⚠ Could not automatically reapply your {local_only} local "
-                            "commit(s) — they conflict with the update."
-                        )
+                        if local_only > 0:
+                            print(
+                                f"  ⚠ Could not automatically reapply your {local_only} local "
+                                "commit(s) — they conflict with the update."
+                            )
+                        else:
+                            print(
+                                "  ⚠ Could not automatically reapply your local "
+                                "commit(s) — they conflict with the update."
+                            )
                         print(f"    Nothing is lost — they're saved at: {backup_ref}")
                         print(f"    Review them with: git log {backup_ref}")
                         print(

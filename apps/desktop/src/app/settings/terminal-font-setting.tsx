@@ -29,58 +29,64 @@ export function TerminalFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
   const { data: loadedConfig } = useHermesConfigRecord()
+  // draft === null ⇔ unseeded: nothing painted yet for this profile. The
+  // profile-switch handler resets it to null and records the config object
+  // it was looking at (`staleConfig`) — the seed effect refuses to re-seed
+  // from that same object, so the previous profile's cached record can't
+  // repopulate the field; the next profile's fetch (a new object) seeds it.
+  // `draft` itself is the seed marker (no ref mirroring, per the lint rule).
   const [draft, setDraft] = useState<string | null>(null)
+  const [staleConfig, setStaleConfig] = useState<HermesConfigRecord | null>(null)
   const [saveVersion, setSaveVersion] = useState(0)
-  const seededRef = useRef(false)
-  const latestConfigRef = useRef<HermesConfigRecord | null>(null)
-  const lastSavedRef = useRef('')
   const saveVersionRef = useRef(0)
 
+  // Lexically outside every useEffect so async save callbacks can cancel the
+  // in-flight version without assigning to a ref inside an effect body.
+  const cancelPendingSave = () => {
+    saveVersionRef.current = 0
+  }
+
   useEffect(() => {
-    if (!loadedConfig) {
-      return
-    }
-
-    latestConfigRef.current = loadedConfig
-
-    if (seededRef.current) {
+    if (!loadedConfig || draft !== null || loadedConfig === staleConfig) {
       return
     }
 
     const value = fontFamilyFromConfig(loadedConfig)
-    seededRef.current = true
-    lastSavedRef.current = value
     setDraft(value)
     setTerminalFontFamilyFromConfig(value)
-  }, [loadedConfig])
+  }, [draft, loadedConfig, staleConfig])
 
   useOnProfileSwitch(() => {
     saveVersionRef.current += 1
-    seededRef.current = false
-    latestConfigRef.current = null
-    lastSavedRef.current = ''
     setDraft(null)
+    setStaleConfig(loadedConfig ?? null)
     setSaveVersion(0)
     // Do not show the previous profile's font while the new profile loads.
     setTerminalFontFamilyFromConfig('')
   })
 
   useEffect(() => {
-    if (draft === null || saveVersion === 0) {
+    if (draft === null || saveVersion === 0 || !loadedConfig) {
       return
     }
 
     const version = saveVersion
     const value = normalizeTerminalFontFamily(draft)
 
+    // Already persisted (or a cache refresh confirmed it) — nothing to save.
+    // This also terminates the effect re-run after a successful save updates
+    // the shared config cache.
+    if (value === fontFamilyFromConfig(loadedConfig)) {
+      return
+    }
+
+    // The last successfully saved value IS what the shared config cache
+    // holds — successful saves write it back via setHermesConfigCache, so
+    // rollback re-derives from there instead of mirroring into a ref.
+    const rollback = fontFamilyFromConfig(loadedConfig)
+
     const timeout = window.setTimeout(() => {
-      const base = latestConfigRef.current
-
-      if (!base) {
-        return
-      }
-
-      const next = setNested(base, 'terminal.font_family', value)
+      const next = setNested(loadedConfig, 'terminal.font_family', value)
 
       void saveHermesConfig(next)
         .then(result => {
@@ -92,8 +98,6 @@ export function TerminalFontSetting() {
             return
           }
 
-          latestConfigRef.current = next
-          lastSavedRef.current = value
           setHermesConfigCache(next)
         })
         .catch(error => {
@@ -101,8 +105,7 @@ export function TerminalFontSetting() {
             return
           }
 
-          const rollback = lastSavedRef.current
-          saveVersionRef.current = 0
+          cancelPendingSave()
           setSaveVersion(0)
           setDraft(rollback)
           setTerminalFontFamilyFromConfig(rollback)
@@ -111,7 +114,7 @@ export function TerminalFontSetting() {
     }, AUTOSAVE_DELAY_MS)
 
     return () => window.clearTimeout(timeout)
-  }, [draft, saveVersion, t.settings.config.autosaveFailed])
+  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed])
 
   const update = (value: string) => {
     saveVersionRef.current += 1
@@ -154,7 +157,7 @@ export function TerminalFontSetting() {
             <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
               {copy.terminalFontPreview}
             </span>
-            <span>  ~/project  git:main  ❯</span>
+            <span>  ~/project  git:main  ❯</span>
           </div>
         </div>
       }

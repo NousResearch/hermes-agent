@@ -3228,6 +3228,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             key_env = str(config.get("key_env") or "").strip()
             fallback_key = os.getenv(key_env, "").strip() if key_env else ""
         fallback_base = str(config.get("base_url") or base_url).strip()
+        if fallback_base.startswith(":"):
+            fallback_base = "http://127.0.0.1" + fallback_base
+        elif fallback_base and "://" not in fallback_base:
+            fallback_base = "http://" + fallback_base
         fallback_headers = _get_ollama_native_headers(
             fallback_base, api_key=fallback_key
         )
@@ -5365,16 +5369,14 @@ def validate_requested_model(
         configured_ollama_base_url
         and not _same_ollama_native_root(ollama_base_url or "", configured_ollama_base_url)
     )
-    ollama_headers = (
-        headers
-        if headers is not None
-        else (
-            _get_ollama_request_headers()
-            if configured_headers_allowed
-            and str(provider or "").strip().lower() == "ollama"
-            else {}
+    if headers is not None:
+        ollama_headers = headers
+    elif configured_headers_allowed:
+        ollama_headers = _get_ollama_native_headers(
+            ollama_base_url, api_key=api_key
         )
-    )
+    else:
+        ollama_headers = {}
     if should_use_ollama_native_catalog(
         provider, ollama_base_url, headers=ollama_headers
     ):

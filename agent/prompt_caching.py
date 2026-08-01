@@ -21,7 +21,15 @@ class PromptCachePlan:
 
     messages: List[Dict[str, Any]]
     tools: List[Dict[str, Any]]
-    marker_count: int
+
+    @property
+    def marker_count(self) -> int:
+        """Wire-visible cache markers in this plan (computed on demand).
+
+        Only tests consume this; keeping it lazy avoids walking every
+        message part and tool schema on the per-request hot path.
+        """
+        return _count_cache_markers(self.messages, self.tools)
 
 
 def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = False) -> None:
@@ -309,11 +317,7 @@ def build_prompt_cache_plan(
             native_anthropic=native_anthropic,
             static_system_prefix=static_system_prefix,
         )
-        return PromptCachePlan(
-            messages=planned_messages,
-            tools=planned_tools,
-            marker_count=_count_cache_markers(planned_messages, planned_tools),
-        )
+        return PromptCachePlan(messages=planned_messages, tools=planned_tools)
 
     marker = _build_marker(cache_ttl)
     if (
@@ -338,11 +342,7 @@ def build_prompt_cache_plan(
     )[-2:]:
         _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
 
-    return PromptCachePlan(
-        messages=messages,
-        tools=planned_tools,
-        marker_count=_count_cache_markers(messages, planned_tools),
-    )
+    return PromptCachePlan(messages=messages, tools=planned_tools)
 
 
 def apply_anthropic_cache_control(

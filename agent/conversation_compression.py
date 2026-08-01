@@ -25,6 +25,28 @@ Three concerns live here:
 (``self._compress_context(...)``) keep working.  Tests that exercise
 these paths see no behavioural change.
 
+Thread-safety contract for extension points (#76354 review)
+------------------------------------------------------------
+
+When the host-level progress-aware timeout is enabled (the default:
+``compression.context_timeout_seconds > 0``), the WHOLE compression pass —
+including plugin/legacy **context engines** (``compress()`` /
+``on_session_start`` / boundary callbacks) and **memory providers**
+(``on_pre_compress`` / ``on_session_switch``) — runs on a pooled daemon
+thread, not the conversation thread. Extension authors must assume:
+
+* Calls may arrive on an arbitrary pooled thread; do not rely on
+  thread-affinity or ``threading.local`` state shared with the caller.
+* The input message list is a private deep snapshot owned by the worker;
+  engines MAY mutate it in place (legacy contract preserved), and that
+  mutation is invisible to the live conversation unless the pass commits.
+* Publication to caller-visible / durable state happens ONLY on an admitted
+  commit (:class:`CompressionCommitFence`); after a host timeout the still-
+  running engine's work is discarded.
+* Two compression passes never run concurrently for one session (durable
+  per-session lock), but passes for DIFFERENT sessions may run concurrently
+  on pool siblings — engine/provider instances shared across sessions must
+  be thread-safe or internally locked.
 """
 
 from __future__ import annotations

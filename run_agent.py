@@ -7123,9 +7123,11 @@ class AIAgent:
             if root:
                 token = set_conversation_context(root)
         try:
-            def _run(fence=None):
+            def _run(fence=None, target_messages=None):
                 return compress_context(
-                    self, messages, system_message,
+                    self,
+                    target_messages if target_messages is not None else messages,
+                    system_message,
                     approx_tokens=approx_tokens, task_id=task_id,
                     focus_topic=focus_topic,
                     force=force,
@@ -7143,6 +7145,31 @@ class AIAgent:
             idle_timeout, total_ceiling = resolve_context_compression_timeouts()
             if idle_timeout <= 0:
                 return _run(None)
+
+            def _snapshot_worker(fence=None):
+                # #76354 review F3: the pooled worker must NEVER share the
+                # caller's live transcript. Plugin/legacy context engines are
+                # allowed to mutate their input list in place; after a host
+                # timeout the worker stays alive, so a shared list would let
+                # a late engine rewrite the live conversation (roles,
+                # ordering, persisted content) behind the caller's back.
+                # Deep-snapshot here, on the worker thread, so the caller's
+                # list object is never touched by pooled code. Results are
+                # published to caller-visible state only via the returned
+                # value of an ADMITTED commit (the host discards results on
+                # timeout/cancel); durable SessionDB mutation is already
+                # gated behind the commit fence inside compress_context.
+                snapshot = copy.deepcopy(messages)
+                result_msgs, result_prompt = _run(
+                    fence, target_messages=snapshot
+                )
+                if result_msgs is snapshot:
+                    # No-op/abort path returned the snapshot unchanged: hand
+                    # back the caller's ORIGINAL list so identity-based
+                    # semantics (len/identity no-op detection, flush dedup
+                    # by id()) keep working.
+                    return messages, result_prompt
+                return result_msgs, result_prompt
 
             # Resolve the fallback prompt lazily on timeout only. Eager
             # rebuild here would raise before compress_context runs whenever
@@ -7225,7 +7252,7 @@ class AIAgent:
                     )
 
             result = run_compress_context_with_progress_timeout(
-                worker=_run,
+                worker=_snapshot_worker,
                 messages=messages,
                 system_prompt_fallback=_fallback_prompt,
                 idle_timeout_seconds=idle_timeout,

@@ -98,6 +98,31 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
 }
 
 /**
+ * Chromium resets file:// zoom to level 0 on hash-route navigation on macOS.
+ * Hermes Desktop uses hash routes, so ordinary actions such as Cmd+N emit
+ * `did-navigate-in-page` without a full load. Re-assert after both navigation
+ * shapes; subframe hash changes must not touch the chat window's UI scale.
+ */
+export function installZoomReassertOnNavigation(webContents, reassert) {
+  if (!webContents?.on) {
+    return
+  }
+
+  const reassertIfAlive = () => {
+    if (!webContents.isDestroyed?.()) {
+      reassert()
+    }
+  }
+
+  webContents.on('did-finish-load', reassertIfAlive)
+  webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+    if (isMainFrame) {
+      reassertIfAlive()
+    }
+  })
+}
+
+/**
  * Zoom-wiring decision per window kind. Chat windows (main + session) keep
  * global UI zoom; the pet overlay and the Quick Entry composer opt out because
  * they size their own OS window and inheriting zoom would crop/overflow them.

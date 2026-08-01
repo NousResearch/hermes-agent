@@ -141,6 +141,25 @@ def _text_values(content: Any) -> list[str]:
     return []
 
 
+def _is_text_only_part(part: Any) -> bool:
+    """Return whether a multipart value contains text and no opaque payload."""
+    return (
+        isinstance(part, dict)
+        and isinstance(part.get("text"), str)
+        and set(part).issubset({"type", "text"})
+    )
+
+
+def _non_text_omission_marker(max_bytes: int) -> dict[str, str]:
+    return {
+        "type": "text",
+        "text": (
+            "[Non-text tool-result part omitted: aggregate payload "
+            f"exceeded {max_bytes:,} bytes.]"
+        ),
+    }
+
+
 def _replace_text_values(content: Any, replacement: str) -> Any:
     """Replace aggregate list text once while preserving all non-text parts."""
     if isinstance(content, str):
@@ -218,6 +237,8 @@ def _non_text_payload_size(content: Any) -> int:
     """Return serialized bytes for opaque multipart parts only."""
     if _is_multimodal_envelope(content):
         return _non_text_payload_size(content["content"])
+    if isinstance(content, dict):
+        return _serialized_part_size(content)
     if not isinstance(content, list):
         return 0
     return sum(
@@ -225,7 +246,7 @@ def _non_text_payload_size(content: Any) -> int:
         for part in content
         if not (
             isinstance(part, str)
-            or (isinstance(part, dict) and isinstance(part.get("text"), str))
+            or _is_text_only_part(part)
         )
     )
 
@@ -247,6 +268,10 @@ def _bound_non_text_parts(
         if not omitted:
             return content, False
         return {**content, "content": bounded}, True
+    if isinstance(content, dict):
+        if _serialized_part_size(content) <= max_bytes:
+            return content, False
+        return [_non_text_omission_marker(max_bytes)], True
     if not isinstance(content, list):
         return content, False
 
@@ -254,9 +279,7 @@ def _bound_non_text_parts(
     omitted = False
     result = []
     for part in content:
-        if isinstance(part, str) or (
-            isinstance(part, dict) and isinstance(part.get("text"), str)
-        ):
+        if isinstance(part, str) or _is_text_only_part(part):
             result.append(part)
             continue
         size = _serialized_part_size(part)
@@ -265,15 +288,7 @@ def _bound_non_text_parts(
             used += size
             continue
         omitted = True
-        result.append(
-            {
-                "type": "text",
-                "text": (
-                    "[Non-text tool-result part omitted: aggregate payload "
-                    f"exceeded {max_bytes:,} bytes.]"
-                ),
-            }
-        )
+        result.append(_non_text_omission_marker(max_bytes))
     return result, omitted
 
 
@@ -433,7 +448,7 @@ def finalize_model_visible_tool_result(
         remote_path = None
         if tool_name != "read_file" and not already_persisted and env is not None:
             remote_path = (
-                f"{_resolve_storage_dir(env)}/{_safe_result_filename(tool_use_id)}"
+                f"{_resolve_storage_dir(env)}/{_unique_result_filename(tool_use_id)}"
             )
             try:
                 persisted = _write_to_sandbox(full_text, remote_path, env)
@@ -637,6 +652,13 @@ def _safe_result_filename(tool_use_id: str) -> str:
     return f"{safe_stem}.txt"
 
 
+def _unique_result_filename(tool_use_id: str) -> str:
+    """Return an unguessable per-write filename for a persisted result."""
+    safe_name = _safe_result_filename(tool_use_id)
+    safe_stem = safe_name.removesuffix(".txt")
+    return f"{safe_stem}_{uuid.uuid4().hex[:12]}.txt"
+
+
 def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
     """Truncate at last newline within max_chars. Returns (preview, has_more)."""
     if len(content) <= max_chars:
@@ -739,7 +761,7 @@ def maybe_persist_tool_result(
         return content
 
     storage_dir = _resolve_storage_dir(env)
-    remote_path = f"{storage_dir}/{_safe_result_filename(tool_use_id)}"
+    remote_path = f"{storage_dir}/{_unique_result_filename(tool_use_id)}"
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
     if env is not None:
@@ -909,7 +931,7 @@ def enforce_turn_budget(
                 tool_use_id=f"{tool_use_id}_turn_budget",
                 env=env,
                 config=config,
-                limit_tokens=DEFAULT_RESULT_TOKEN_LIMIT,
+                limit_tokens=min(DEFAULT_RESULT_TOKEN_LIMIT, target_size),
             )
             replacement = _replace_text_values(content, replacement_text)
 

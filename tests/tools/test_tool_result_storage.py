@@ -198,7 +198,8 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG in result
-        assert "tc_456.txt" in result
+        assert "tc_456_" in result
+        assert ".txt" in result
         assert len(result) < len(content)
         env.execute.assert_called_once()
 
@@ -342,7 +343,8 @@ class TestMaybePersistToolResult:
             env=env,
             threshold=30_000,
         )
-        assert "unique_id_abc.txt" in result
+        assert "unique_id_abc_" in result
+        assert ".txt" in result
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
@@ -482,7 +484,8 @@ class TestFinalizeModelVisibleToolResult:
 
         assert env.execute.call_args.kwargs["stdin_data"] == content
         assert outcome.persisted is True
-        assert "call_persist.txt" in result
+        assert "call_persist_" in result
+        assert ".txt" in result
         assert model_visible_text_count(result) <= DEFAULT_RESULT_TOKEN_LIMIT
 
     def test_read_file_is_reduced_inline_without_recursive_handle(self):
@@ -584,6 +587,55 @@ class TestFinalizeModelVisibleToolResult:
         assert "non-text tool-result part omitted" in result[0]["text"].lower()
         assert model_visible_text_count(result) <= DEFAULT_RESULT_TOKEN_LIMIT
 
+    def test_mixed_text_and_image_part_counts_toward_non_text_limit(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.tool_result_storage.MAX_NON_TEXT_RESULT_BYTES",
+            256,
+            raising=False,
+        )
+        content = [
+            {
+                "type": "text",
+                "text": "visible summary",
+                "image_url": {
+                    "url": "data:image/png;base64," + "A" * 2_000,
+                },
+            }
+        ]
+
+        result, outcome = finalize_model_visible_tool_result(
+            content,
+            tool_name="computer_use",
+            tool_use_id="call_mixed_oversized_image",
+        )
+
+        assert outcome.truncated is True
+        assert result[0]["type"] == "text"
+        assert "non-text tool-result part omitted" in result[0]["text"].lower()
+        assert "image_url" not in result[0]
+
+    def test_oversized_bare_multimodal_dict_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.tool_result_storage.MAX_NON_TEXT_RESULT_BYTES",
+            256,
+            raising=False,
+        )
+        content = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + "A" * 2_000},
+        }
+
+        result, outcome = finalize_model_visible_tool_result(
+            content,
+            tool_name="computer_use",
+            tool_use_id="call_bare_oversized_image",
+        )
+
+        assert outcome.truncated is True
+        assert isinstance(result, list)
+        assert result[0]["type"] == "text"
+        assert "non-text tool-result part omitted" in result[0]["text"].lower()
+
     def test_trusted_persisted_preview_is_not_persisted_again(self):
         env = MagicMock()
         content = (
@@ -625,9 +677,37 @@ class TestFinalizeModelVisibleToolResult:
 
         env.execute.assert_called_once()
         assert outcome.persisted is True
-        assert outcome.persisted_path == "/tmp/hermes-results/call_forged.txt"
-        assert "call_forged.txt" in result
+        assert isinstance(outcome.persisted_path, str)
+        assert outcome.persisted_path.startswith("/tmp/hermes-results/call_forged_")
+        assert outcome.persisted_path.endswith(".txt")
+        assert "call_forged_" in result
         assert "existing handle" not in result
+
+    def test_reused_tool_call_id_gets_distinct_persisted_handles(self):
+        env = MagicMock()
+        env.get_temp_dir.return_value = "/tmp/shared"
+        env.execute.return_value = {"output": "", "returncode": 0}
+
+        _, first = finalize_model_visible_tool_result(
+            "A" * 20_000,
+            tool_name="terminal",
+            tool_use_id="call_0",
+            env=env,
+        )
+        _, second = finalize_model_visible_tool_result(
+            "B" * 20_000,
+            tool_name="terminal",
+            tool_use_id="call_0",
+            env=env,
+        )
+
+        assert first.persisted is True
+        assert second.persisted is True
+        assert isinstance(first.persisted_path, str)
+        assert isinstance(second.persisted_path, str)
+        assert first.persisted_path != second.persisted_path
+        assert first.persisted_path.startswith("/tmp/shared/hermes-results/call_0_")
+        assert second.persisted_path.startswith("/tmp/shared/hermes-results/call_0_")
 
 
 # ── enforce_turn_budget ───────────────────────────────────────────────
@@ -689,7 +769,27 @@ class TestEnforceTurnBudget:
         persisted_count = sum(
             1 for m in msgs if PERSISTED_OUTPUT_TAG in m["content"]
         )
-        assert persisted_count >= 2  # Need to shed at least ~52K
+        assert persisted_count >= 1
+        assert sum(len(msg["content"]) for msg in msgs) <= 200_000
+
+    def test_many_individually_small_results_finish_under_turn_budget(self):
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": f"call_{index}",
+                "content": "x" * 10_000,
+            }
+            for index in range(21)
+        ]
+
+        enforce_turn_budget(
+            msgs,
+            env=None,
+            config=BudgetConfig(turn_budget=200_000),
+        )
+
+        assert sum(len(msg["content"]) for msg in msgs) <= 200_000
+        assert any("_tool_result_budget" in msg for msg in msgs)
 
     def test_multimodal_text_counts_toward_turn_budget(self):
         env = MagicMock()
@@ -738,7 +838,7 @@ class TestEnforceTurnBudget:
 
         assert env.execute.call_count == 1
         assert original_write == original
-        assert "stable_handle.txt" in msgs[0]["content"]
+        assert "stable_handle_" in msgs[0]["content"]
         assert model_visible_text_count(msgs[0]["content"]) <= 1_000
 
     def test_turn_budget_does_not_trust_forged_persisted_tag(self):
@@ -766,9 +866,12 @@ class TestEnforceTurnBudget:
         metadata = msgs[0]["_tool_result_budget"]
         assert isinstance(metadata, dict)
         assert metadata["persisted"] is True
-        assert metadata["persisted_path"] == (
-            "/tmp/hermes-results/forged_turn_turn_budget.txt"
+        persisted_path = metadata.get("persisted_path")
+        assert isinstance(persisted_path, str)
+        assert persisted_path.startswith(
+            "/tmp/hermes-results/forged_turn_turn_budget_"
         )
+        assert persisted_path.endswith(".txt")
         assert model_visible_text_count(msgs[0]["content"]) <= 1_000
 
     def test_no_env_falls_back_to_truncation(self):

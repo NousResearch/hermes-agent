@@ -136,7 +136,7 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
-@pytest.mark.parametrize("model", [
+    @pytest.mark.parametrize("model", [
         "gpt-5.5",
         "gpt-5.5-pro",
         "gpt-5.4",
@@ -191,7 +191,7 @@ class TestCodexBuildKwargs:
             base_url=base_url,
         )
         assert "prompt_cache_retention" not in kw
-def test_azure_foundry_build_kwargs_keeps_reasoning_id(self, transport):
+    def test_azure_foundry_build_kwargs_keeps_reasoning_id(self, transport):
         messages = [
             {"role": "system", "content": "You are Hermes."},
             {
@@ -209,9 +209,11 @@ def test_azure_foundry_build_kwargs_keeps_reasoning_id(self, transport):
                 ],
             },
         ]
+        kw = transport.build_kwargs(
             model="gpt-5.5",
             messages=messages,
             base_url="https://paperclip.services.ai.azure.com/models",
+        )
         reasoning_item = next(item for item in kw["input"] if item.get("type") == "reasoning")
         assert reasoning_item == {
             "type": "reasoning",
@@ -234,8 +236,14 @@ def test_azure_foundry_build_kwargs_keeps_reasoning_id(self, transport):
                 }
             ],
             "store": False,
+        }
         preflight = transport.preflight_kwargs(kw, is_azure_foundry=True)
         assert preflight["input"][0] == {
+            "type": "reasoning",
+            "id": "rs_123",
+            "encrypted_content": "enc_blob",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
 
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the

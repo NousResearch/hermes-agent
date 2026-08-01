@@ -28,6 +28,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -340,10 +341,21 @@ def sidecar_deps_installed() -> bool:
 
 
 def _coerce_float(value: Any, default: float) -> float:
+    """Coerce a probe interval/timeout, guarding against bad/non-finite values.
+
+    Both callers gate an ``> 0`` enabled check or feed an HTTP timeout, so
+    nan/inf (which parse via float() without raising -- YAML 1.1 even has
+    bare .nan/.inf literals) and negative values fall back to ``default``
+    instead of silently disabling the presence watchdog or producing a
+    permanently "inconclusive" probe.
+    """
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(parsed) or parsed < 0:
+        return default
+    return parsed
 
 
 def _coerce_int(value: Any, default: int) -> int:

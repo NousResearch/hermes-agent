@@ -651,6 +651,26 @@ class GatewayAuthorizationMixin:
                         profile=adapter_profile,
                     )
                 if effective_policy == "allowlist":
+                    # Trust allowlist intake only when the live adapter still
+                    # allowlists this sender. Pairing revoke can clear
+                    # WHATSAPP_ALLOWED_USERS while a construction-time
+                    # ``_allow_from`` snapshot would otherwise keep authorizing
+                    # until restart; re-check when the adapter exposes a DM
+                    # allowlist helper. Adapters without that helper keep the
+                    # historical "reached the gateway under allowlist policy"
+                    # rubber-stamp (#34515).
+                    if source.chat_type not in {"group", "forum", "channel"}:
+                        adapter = self._authorization_adapter(
+                            source.platform,
+                            profile=adapter_profile,
+                        )
+                        dm_check = (
+                            getattr(adapter, "_is_dm_allowed", None)
+                            if adapter is not None
+                            else None
+                        )
+                        if callable(dm_check):
+                            return bool(dm_check(user_id))
                     return True
             # Some adapters (e.g. Telegram) gate access via config.extra.allow_from /
             # group_allow_from at intake but do not override enforces_own_access_policy.

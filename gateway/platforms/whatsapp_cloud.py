@@ -385,11 +385,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             normalized.add(digits or entry)
         return normalized
 
+    def _dm_allowlist_env_keys(self) -> tuple[str, ...]:
+        """Cloud pairing mirrors WHATSAPP_CLOUD_ALLOWED_USERS (then legacy ALLOW_FROM)."""
+        return ("WHATSAPP_CLOUD_ALLOWED_USERS", "WHATSAPP_CLOUD_ALLOW_FROM")
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Allowlist check against the normalized bare wa_id."""
         if self._dm_policy == "allowlist":
             bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
-            return (bare or sender_id) in self._allow_from
+            allow_from = self._normalize_allow_ids(self._live_dm_allow_from())
+            return (bare or sender_id) in allow_from
         return super()._is_dm_allowed(sender_id)
 
     def _open_dm_opted_in(self) -> bool:

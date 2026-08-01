@@ -188,6 +188,11 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
     updater would pollute ``sys.modules`` and execute import-time side effects
     against the half-updated tree. Costs ~0.4s.
 
+    Uses the project venv's interpreter when there is one (matching
+    ``_venv_core_imports_healthy``): ``hermes update`` can be driven by a
+    different Python than the install's own, and probing the wrong
+    interpreter would test a tree the user never runs.
+
     Returns ``(ok, failing_module, error_message)``.
     """
     probe = (
@@ -203,8 +208,17 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
         "raise SystemExit(0)\n" % (_UPDATE_CRITICAL_MODULES,)
     )
     try:
+        interpreter = sys.executable
+        try:
+            bin_dir = "Scripts" if _m()._is_windows() else "bin"
+            python_name = "python.exe" if _m()._is_windows() else "python"
+            venv_python = Path(root) / "venv" / bin_dir / python_name
+            if venv_python.exists():
+                interpreter = str(venv_python)
+        except Exception:
+            pass  # fall back to the running interpreter
         result = subprocess.run(
-            [sys.executable, "-c", probe],
+            [interpreter, "-c", probe],
             cwd=str(root),
             capture_output=True,
             text=True,

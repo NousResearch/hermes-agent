@@ -1255,11 +1255,14 @@ AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 def venv_bin_dir(venv_dir) -> Path:
     """Directory holding a venv's executables (``Scripts`` / ``bin``).
 
-    Single source of truth for venv layout. This was open-coded in seven
-    places across four files using three different Windows predicates
-    (``platform.system()``, ``is_windows()``, ``_is_windows()``); each new
-    call site had to re-derive it, and #76091 shipped an eighth copy because
-    the correct behaviour lived 2400 lines away in another function.
+    Canonical helper for venv layout. This was open-coded in seven places
+    across four ``hermes_cli`` modules using three different Windows
+    predicates (``platform.system()``, ``is_windows()``, ``_is_windows()``);
+    each new call site had to re-derive it, and #76091 shipped an eighth copy
+    because the correct behaviour lived 2400 lines away in another function.
+    A few sites outside ``hermes_cli`` (``tools/code_execution_tool.py``,
+    ``agent/lsp/install.py``) still hand-roll it — convert them as they are
+    touched.
 
     The path is returned unconditionally — callers legitimately differ on
     whether a missing venv is an error, so existence checking stays with them.

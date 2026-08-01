@@ -1,0 +1,64 @@
+name: zalo-platform
+label: Zalo Bot
+kind: platform
+version: 1.0.0
+description: >
+  Zalo Bot Platform gateway adapter for Hermes Agent. Supports getUpdates
+  long polling or signed HTTPS webhooks, inbound text/images/stickers,
+  outbound text/images/stickers, typing indicators, and cron delivery.
+author: Richard Hojun Jang
+requires_env:
+  - name: ZALO_BOT_TOKEN
+    description: "Bot token from Zalo Bot Creator (Zalo Bot Platform, not the Official Account API)"
+    prompt: "Zalo Bot token"
+    url: "https://bot.zapps.me/docs/create-bot/"
+    password: true
+optional_env:
+  - name: ZALO_ALLOWED_USERS
+    description: "Comma-separated Zalo user IDs allowed to message the bot"
+    prompt: "Allowed Zalo user IDs (comma-separated)"
+    password: false
+  - name: ZALO_ALLOW_ALL_USERS
+    description: "Allow every Zalo user (development only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: ZALO_HOME_CHANNEL
+    description: "Default Zalo chat ID for cron and proactive delivery"
+    prompt: "Home chat ID"
+    password: false
+  - name: ZALO_HOME_CHANNEL_NAME
+    description: "Display name for the default Zalo home chat"
+    prompt: "Home chat display name"
+    password: false
+  - name: ZALO_CONNECTION_MODE
+    description: "Transport mode: polling (default) or webhook"
+    prompt: "Connection mode (polling/webhook)"
+    password: false
+  - name: ZALO_POLL_TIMEOUT
+    description: "getUpdates long-poll timeout in seconds (default: 30)"
+    prompt: "Polling timeout"
+    password: false
+  - name: ZALO_API_BASE
+    description: "Optional Zalo Bot API base override"
+    prompt: "Bot API base URL"
+    password: false
+  - name: ZALO_WEBHOOK_PUBLIC_URL
+    description: "Public HTTPS URL registered with setWebhook"
+    prompt: "Public webhook URL"
+    password: false
+  - name: ZALO_WEBHOOK_SECRET
+    description: "8-256 character X-Bot-Api-Secret-Token webhook secret"
+    prompt: "Webhook secret"
+    password: true
+  - name: ZALO_WEBHOOK_HOST
+    description: "Local webhook bind host (default: 0.0.0.0)"
+    prompt: "Webhook bind host"
+    password: false
+  - name: ZALO_WEBHOOK_PORT
+    description: "Local webhook port (default: 8790)"
+    prompt: "Webhook port"
+    password: false
+  - name: ZALO_WEBHOOK_PATH
+    description: "Local webhook path (defaults to the path in the public URL)"
+    prompt: "Webhook path"
+    password: false

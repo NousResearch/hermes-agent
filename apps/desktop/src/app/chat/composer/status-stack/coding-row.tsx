@@ -215,20 +215,25 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           // The base "where am I working" strip is part of the composer surface
           // itself, so it inherits the composer's width and clipped top radius.
           className="coding-status-bar min-h-7 rounded-t-[inherit] rounded-b-none border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 hover:bg-transparent"
-          // Static branch glyph — never the loading spinner. This row only renders
-          // once `status` exists, so a spinner here only ever fired on *refreshes*
-          // of an already-loaded repo (window focus, turn settle), reading as an
-          // annoying icon "blip" with no first-load value. Refreshes are silent.
-          leading={<Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />}
-          onActivate={onOpen}
         >
           <div className="flex min-w-0 flex-1 items-center gap-1">
-            <span
-              className="min-w-0 truncate text-xs font-normal text-muted-foreground/92 transition-colors group-hover/status-row:text-foreground/90"
+            {/* Only the branch identity opens the review pane — the strip itself
+                is not a button, so the dead space around it stays inert. Static
+                branch glyph, never the loading spinner: this row only renders
+                once `status` exists, so a spinner here only ever fired on
+                *refreshes* (window focus, turn settle), an icon "blip" with no
+                first-load value. Refreshes are silent. */}
+            <button
+              className="flex min-w-0 items-center gap-2 text-left"
+              onClick={onOpen}
               title={branchLabel}
+              type="button"
             >
-              {branchLabel}
-            </span>
+              <span className="flex size-3.5 shrink-0 items-center justify-center">
+                <Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />
+              </span>
+              <span className="min-w-0 truncate text-xs font-normal text-muted-foreground/92">{branchLabel}</span>
+            </button>
 
             {/* Branch actions kebab — same pattern as the session/worktree rows.
                 ALWAYS laid out; only its opacity flips on hover/focus/open, so
@@ -246,14 +251,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 <Button
                   aria-label={s.newBranch}
                   className="pointer-events-none size-4 shrink-0 text-muted-foreground/60 opacity-0 transition hover:text-foreground group-hover/status-row:pointer-events-auto group-hover/status-row:opacity-100 group-focus-within/status-row:pointer-events-auto group-focus-within/status-row:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:opacity-100"
-                  onClick={event => event.stopPropagation()}
-                  onKeyDown={event => {
-                    // The row's onActivate also fires on Enter/Space; keep it from
-                    // opening the review pane when the kebab is the focus target.
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.stopPropagation()
-                    }
-                  }}
                   size="icon-xs"
                   variant="ghost"
                 >
@@ -263,36 +260,36 @@ export const CodingStatusRow = memo(function CodingStatusRow({
             )}
           </div>
 
-          {(status.ahead > 0 || status.behind > 0) && (
-            <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
-              {status.ahead > 0 && (
-                <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
-                  <span aria-hidden>↑</span>
-                  {status.ahead}
+          {/* The other half of the hit target: the counts describe what's in the
+              review pane, so clicking them opens it. */}
+          {(status.ahead > 0 || status.behind > 0 || hasLineDelta || untrackedOnly) && (
+            <button className="ml-auto flex shrink-0 items-center gap-1.5" onClick={onOpen} type="button">
+              {(status.ahead > 0 || status.behind > 0) && (
+                <span className="flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
+                  {status.ahead > 0 && (
+                    <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
+                      <span aria-hidden>↑</span>
+                      {status.ahead}
+                    </span>
+                  )}
+                  {status.behind > 0 && (
+                    <span className="flex items-center gap-0.5" title={s.behind(status.behind)}>
+                      <span aria-hidden>↓</span>
+                      {status.behind}
+                    </span>
+                  )}
                 </span>
               )}
-              {status.behind > 0 && (
-                <span className="flex items-center gap-0.5" title={s.behind(status.behind)}>
-                  <span aria-hidden>↓</span>
-                  {status.behind}
-                </span>
-              )}
-            </span>
-          )}
 
-          {hasLineDelta ? (
-            <DiffCount
-              added={status.added}
-              className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
-              removed={status.removed}
-            />
-          ) : untrackedOnly ? (
-            <span
-              className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
-            >
-              {s.changed(status.untracked)}
-            </span>
-          ) : null}
+              {hasLineDelta ? (
+                <DiffCount added={status.added} className="text-[0.72rem] leading-4" removed={status.removed} />
+              ) : untrackedOnly ? (
+                <span className="shrink-0 text-[0.72rem] leading-4 text-amber-500/90">
+                  {s.changed(status.untracked)}
+                </span>
+              ) : null}
+            </button>
+          )}
         </StatusRow>
       </ActionsContextMenu>
 

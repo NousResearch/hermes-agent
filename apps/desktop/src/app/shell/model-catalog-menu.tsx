@@ -497,17 +497,14 @@ export function ModelCatalogMenu({
         </div>
       ) : null}
 
-      {footer ? (
-        <>
-          <DropdownMenuSeparator className="mx-0" />
-          {footer}
-        </>
-      ) : null}
-
       {/* Curation belongs to the catalog, not to one host: wherever you can
           pick a model you can say which models you want, and the shortlist is
-          the same everywhere because it's one stored preference. */}
+          the same everywhere because it's one stored preference. It shares the
+          host footer's group rather than opening a second one, so a host that
+          contributes rows (the composer's Refresh Models) keeps the single
+          trailing block it has always rendered. */}
       <DropdownMenuSeparator className="mx-0" />
+      {footer}
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}

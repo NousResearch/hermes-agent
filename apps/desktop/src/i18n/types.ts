@@ -174,6 +174,7 @@ export interface Translations {
     errors: {
       elevenLabsNeedsKey: string
       elevenLabsRejectedKey: string
+      diskFull: string
       gatewayAuthFailed: string
       methodNotAllowed: string
       microphonePermission: string

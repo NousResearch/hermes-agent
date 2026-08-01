@@ -16,6 +16,7 @@ Key design decisions:
 
 import asyncio
 import atexit
+import errno
 import json
 import logging
 import os
@@ -937,6 +938,36 @@ def is_malformed_db_error(exc: BaseException) -> bool:
     if not isinstance(exc, sqlite3.DatabaseError):
         return False
     return any(marker in str(exc).lower() for marker in _MALFORMED_SCHEMA_MARKERS)
+
+
+# Markers that mean the host filesystem cannot accept another write. Kept as
+# plain substrings so OSError, sqlite3.OperationalError, and wrapped RPC
+# error strings all match the same helper.
+_DISK_FULL_MARKERS = (
+    "no space left on device",
+    "not enough space",
+    "database or disk is full",  # SQLITE_FULL
+    "disk full",
+    "full disk",
+    "enospc",
+)
+
+
+def is_disk_full_error(exc: BaseException | str | None) -> bool:
+    """True when *exc* (or a stringified error) is a disk-full / ENOSPC failure.
+
+    Covers:
+      * ``OSError`` with ``errno.ENOSPC``
+      * SQLite ``OperationalError: database or disk is full`` (SQLITE_FULL)
+      * Plain English / errno strings that survive RPC wrapping
+    """
+    if exc is None:
+        return False
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
+        return True
+    text = exc if isinstance(exc, str) else str(exc)
+    lowered = text.lower()
+    return any(marker in lowered for marker in _DISK_FULL_MARKERS)
 
 
 def _claim_repair_attempt(db_path: Path) -> bool:

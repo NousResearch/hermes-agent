@@ -2727,9 +2727,7 @@ class TestPreLlmFeasibilityCheck:
         compressor._ineffective_compression_count = 1  # one prior real strike
         msgs = self._make_messages()
 
-        with patch("agent.context_compressor.call_llm") as mock_llm, \
-             patch.object(compressor, "_generate_summary") as mock_gen:
-            mock_llm.return_value = (None, None)
+        with patch.object(compressor, "_generate_summary") as mock_gen:
             # Middle section is tiny → feasibility skip fires
             compressor.compress(msgs, force=False)
 
@@ -2747,9 +2745,7 @@ class TestPreLlmFeasibilityCheck:
         compressor._last_summary_auth_failure = True  # stale from prior failure
         msgs = self._make_messages()
 
-        with patch("agent.context_compressor.call_llm") as mock_llm, \
-             patch.object(compressor, "_generate_summary") as mock_gen:
-            mock_llm.return_value = (None, None)
+        with patch.object(compressor, "_generate_summary") as mock_gen:
             result = compressor.compress(msgs, force=False)
 
         # Should NOT abort — should produce compressed output with fallback
@@ -2763,9 +2759,7 @@ class TestPreLlmFeasibilityCheck:
         compressor._last_summary_network_failure = True  # stale
         msgs = self._make_messages()
 
-        with patch("agent.context_compressor.call_llm") as mock_llm, \
-             patch.object(compressor, "_generate_summary") as mock_gen:
-            mock_llm.return_value = (None, None)
+        with patch.object(compressor, "_generate_summary") as mock_gen:
             result = compressor.compress(msgs, force=False)
 
         assert result is not None
@@ -2777,9 +2771,7 @@ class TestPreLlmFeasibilityCheck:
         compressor._ineffective_compression_count = 1
         msgs = self._make_messages()
 
-        with patch("agent.context_compressor.call_llm") as mock_llm, \
-             patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
-            mock_llm.return_value = (None, None)
+        with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
             compressor.compress(msgs, force=True)
 
         # _generate_summary MUST have been called despite tiny middle section
@@ -2791,9 +2783,7 @@ class TestPreLlmFeasibilityCheck:
         compressor._ineffective_compression_count = 0
         msgs = self._make_messages()
 
-        with patch("agent.context_compressor.call_llm") as mock_llm, \
-             patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
-            mock_llm.return_value = (None, None)
+        with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
             compressor.compress(msgs, force=False)
 
         mock_gen.assert_called_once()
@@ -2836,9 +2826,7 @@ class TestPreLlmFeasibilityCheck:
             msgs.append({"role": "user", "content": f"recent request {i}"})
             msgs.append({"role": "assistant", "content": "big result " + "x" * 20000})
 
-        with patch("agent.context_compressor.call_llm") as mock_llm, \
-             patch.object(compressor, "_generate_summary") as mock_gen:
-            mock_llm.return_value = (None, None)
+        with patch.object(compressor, "_generate_summary") as mock_gen:
             result = compressor.compress(msgs, force=False)
 
         mock_gen.assert_not_called()
@@ -2859,9 +2847,7 @@ class TestPreLlmFeasibilityCheck:
         msgs = self._make_messages()
 
         for _ in range(2):
-            with patch("agent.context_compressor.call_llm") as mock_llm, \
-                 patch.object(compressor, "_generate_summary") as mock_gen:
-                mock_llm.return_value = (None, None)
+            with patch.object(compressor, "_generate_summary") as mock_gen:
                 compressor.compress(list(msgs), force=False)
             mock_gen.assert_not_called()
             # Mirror the boundary wrapper's bookkeeping

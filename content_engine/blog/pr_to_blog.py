@@ -291,8 +291,9 @@ def generate_blog_post(pr: dict, repo: str, dry_run: bool = False) -> Optional[d
     print("  Generating draft...")
     draft = write_with_gate(plan, stream=BUILDER_STREAM, strict_review=False)
     if not draft:
-        print("  FAIL: generator returned None (gate fail or LLM dead)")
-        return None
+        reason = "draft_gate_or_generator_returned_none"
+        print(f"  FAIL: {reason}")
+        return {"error": reason}
 
     if dry_run:
         print("  DRY RUN: skipping illustration, assembly, staging")
@@ -497,9 +498,10 @@ def run(dry_run: bool = False, specific_pr: Optional[int] = None,
 
             # Generate blog post
             blog_result = generate_blog_post(pr, repo, dry_run=dry_run)
-            if not blog_result:
-                print("  FAIL: blog generation failed")
-                results["failed"].append({"repo": repo, "pr": pr_number, "error": "blog_failed"})
+            if not blog_result or blog_result.get("error"):
+                reason = (blog_result or {}).get("error", "blog_generation_returned_no_result")
+                print(f"  FAIL: blog generation failed: {reason}")
+                results["failed"].append({"repo": repo, "pr": pr_number, "error": reason})
                 continue
 
             slug = blog_result["slug"]
@@ -552,8 +554,12 @@ def main():
 
     results = run(dry_run=args.dry_run, specific_pr=args.pr, source_repo=args.repo)
 
-    # Exit non-zero if any failures
+    # A daily batch that staged at least one draft has made useful progress.
+    # Report failed PRs explicitly but reserve non-zero exit for total failure.
     if results["failed"]:
+        for item in results["failed"]:
+            print(f"  Failed PR {item['repo']}#{item['pr']}: {item['error']}")
+    if results["failed"] and not results["processed"]:
         sys.exit(1)
 
 

@@ -89,13 +89,19 @@ check_symlink_exists() {
 check_systemd_contains() {
     local service="$1" pattern="$2"
     local output
-    output=$(systemctl cat "$service" 2>/dev/null | grep -cF "$pattern" || echo "0")
-    if [ "$output" -gt 0 ] 2>/dev/null; then
+    output=$(systemctl cat "$service" 2>/dev/null)
+    # P15 moved gateways from the mutable primary checkout to the canonical
+    # candidate runtime.  Preserve the invariant (a KenseiAgent venv is used)
+    # without pinning a retired checkout path.
+    if [[ "$pattern" == "KenseiAgent/.venv" ]]; then
+        if grep -qE 'KenseiAgent(-p15-candidate)?/\.venv' <<<"$output"; then
+            return 0
+        fi
+    elif grep -qF "$pattern" <<<"$output"; then
         return 0
-    else
-        echo "    '$pattern' not found in $service ExecStart"
-        return 1
     fi
+    echo "    '$pattern' not found in $service ExecStart"
+    return 1
 }
 
 check_systemd_min() {

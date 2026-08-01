@@ -30,7 +30,13 @@ try:
     config_path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "config.yaml"
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
-    skills = set(cfg.get('skills', {}).get('enabled_skills', []))
+    configured = cfg.get('skills', {}).get('enabled_skills')
+    # Absent means the current schema uses implicit discovery: installed skills
+    # are effective unless a profile explicitly constrains them.  Only validate
+    # an explicit allow-list; treating absence as an empty list is false drift.
+    if configured is None:
+        sys.exit(0)
+    skills = set(configured)
     if len(skills) < MIN_SKILLS:
         print(f"[DRIFT] enabled_skills dropped to {len(skills)} (expected >= {MIN_SKILLS})")
         sys.exit(1)

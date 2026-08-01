@@ -21,6 +21,7 @@ def _make_adapter(
     allowed_chats=None,
     group_allowed_chats=None,
     guest_mode=None,
+    auto_allow_groups_from_trusted_adders=None,
     observe_unmentioned_group_messages=None,
     bot_username="hermes_bot",
 ):
@@ -63,6 +64,8 @@ def _make_adapter(
         extra["group_allowed_chats"] = []
     if guest_mode is not None:
         extra["guest_mode"] = guest_mode
+    if auto_allow_groups_from_trusted_adders is not None:
+        extra["auto_allow_groups_from_trusted_adders"] = auto_allow_groups_from_trusted_adders
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
 
@@ -70,6 +73,7 @@ def _make_adapter(
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="***", extra=extra)
     adapter._bot = SimpleNamespace(id=999, username=bot_username)
+    adapter._active_telegram_auto_authorized_groups = set()
     adapter._message_handler = AsyncMock()
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}
@@ -473,6 +477,74 @@ def test_group_messages_can_require_direct_trigger_via_config():
     # And commands still pass unconditionally when require_mention is disabled
     adapter_no_mention = _make_adapter(require_mention=False)
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
+
+
+def test_trusted_group_admission_denies_unregistered_group_for_allowed_sender():
+    adapter = _make_adapter(
+        require_mention=False,
+        group_allow_from=["111"],
+        auto_allow_groups_from_trusted_adders=True,
+    )
+    message = _group_message("hello")
+
+    assert adapter._is_user_authorized_from_message(message) is True
+    assert adapter._should_process_message(message) is False
+
+
+def test_trusted_group_admission_denies_guest_mention_from_unregistered_group():
+    text = "hello @hermes_bot"
+    adapter = _make_adapter(
+        require_mention=True,
+        guest_mode=True,
+        auto_allow_groups_from_trusted_adders=True,
+    )
+
+    assert adapter._should_process_message(
+        _group_message(text, entities=[_mention_entity(text)])
+    ) is False
+
+
+def test_explicit_group_admission_still_applies_mention_and_reply_gating():
+    text = "hello @hermes_bot"
+
+    for explicit_allowlist in (
+        {"allowed_chats": ["-100"]},
+        {"group_allowed_chats": ["-100"]},
+    ):
+        adapter = _make_adapter(
+            require_mention=True,
+            auto_allow_groups_from_trusted_adders=True,
+            **explicit_allowlist,
+        )
+
+        assert adapter._should_process_message(_group_message("hello")) is False
+        assert adapter._should_process_message(
+            _group_message(text, entities=[_mention_entity(text)])
+        ) is True
+        assert adapter._should_process_message(_group_message("reply", reply_to_bot=True)) is True
+
+
+def test_validated_dynamic_group_admission_still_applies_mention_gating(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "telegram-auto-authorized-groups.json").write_text(
+        json.dumps({"chat_ids": ["-100"]}),
+        encoding="utf-8",
+    )
+    adapter = _make_adapter(
+        require_mention=True,
+        auto_allow_groups_from_trusted_adders=True,
+    )
+    adapter._active_telegram_auto_authorized_groups.add("-100")
+    text = "hello @hermes_bot"
+
+    assert adapter._should_process_message(_group_message("hello")) is False
+    assert adapter._should_process_message(
+        _group_message(text, entities=[_mention_entity(text)])
+    ) is True
 
 
 def test_explicit_multi_bot_mentions_route_only_to_named_bots():

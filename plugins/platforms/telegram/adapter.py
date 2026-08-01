@@ -16,6 +16,8 @@ import logging
 import os
 import html as _html
 import re
+import stat
+import tempfile
 import threading
 import time
 from contextvars import ContextVar
@@ -226,6 +228,7 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
+        ChatMemberHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -244,6 +247,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    ChatMemberHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -262,6 +266,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
+from hermes_constants import get_hermes_home
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -288,7 +293,7 @@ from plugins.platforms.telegram.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
-from utils import atomic_replace, env_float, env_int
+from utils import env_float, env_int
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -385,7 +390,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, ChatMemberHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -404,6 +409,7 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
+            ChatMemberHandler as _CMH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -420,6 +426,7 @@ def check_telegram_requirements() -> bool:
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    ChatMemberHandler = _CMH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -615,6 +622,8 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
+    _AUTO_AUTHORIZED_GROUPS_FILENAME = "telegram-auto-authorized-groups.json"
+    _auto_authorized_groups_lock = threading.RLock()
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
     # finalize=True path.  Without this flag, stream_consumer._send_or_edit
@@ -677,8 +686,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
+        # Multiplex adapters are constructed inside their profile runtime scope
+        # but handle updates after that scope has exited.  Anchor durable state
+        # now so later ambient HERMES_HOME changes cannot cross profile bounds.
+        self._hermes_home: _Path = get_hermes_home()
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        # Durable grants are only candidates after restart. Bot API
+        # reconciliation repopulates this process-local validated set.
+        self._active_telegram_auto_authorized_groups: set[str] = set()
+        self._revoked_telegram_auto_authorized_groups: set[str] = set()
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -3501,6 +3518,8 @@ class TelegramAdapter(BasePlatformAdapter):
         DM topics — all off the connect path so a slow Bot API call cannot blow
         the gateway connect timeout (#46298). Every step is non-fatal."""
         try:
+            await self._reconcile_telegram_auto_authorized_groups()
+
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
@@ -3771,25 +3790,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
-            # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            self._register_handlers(self._app)
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -3903,24 +3904,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         old_app = self._app
                         self._app = builder.build()
                         self._bot = self._app.bot
-                        # Re-register handlers on the new app
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.TEXT & ~filters.COMMAND,
-                            self._handle_text_message
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.COMMAND,
-                            self._handle_command
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                            self._handle_location_message
-                        ))
-                        self._app.add_handler(TelegramMessageHandler(
-                            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                            self._handle_media_message
-                        ))
-                        self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+                        self._register_handlers(self._app)
                         # Best-effort discard the old app's resources
                         try:
                             await _shutdown_abandoned_app(old_app)
@@ -6199,6 +6183,30 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        # Inline buttons can mutate model, approval, clarify, and session state
+        # without passing through message admission. Apply the same strict chat
+        # boundary before dispatching any callback-specific behavior.
+        normalized_query_chat_type = str(query_chat_type or "").split(".")[-1].lower()
+        normalized_query_chat_id = str(query_chat_id or "").strip()
+        if self._telegram_auto_allow_groups_from_trusted_adders():
+            is_negative_chat_id = bool(
+                re.fullmatch(r"-\d+", normalized_query_chat_id)
+                and int(normalized_query_chat_id) < 0
+            )
+            if is_negative_chat_id and normalized_query_chat_type not in {
+                "group",
+                "supergroup",
+            }:
+                await query.answer(text="⛔ This group is not authorized.")
+                return
+        if normalized_query_chat_type in {"group", "supergroup"}:
+            if (
+                self._telegram_auto_allow_groups_from_trusted_adders()
+                and normalized_query_chat_id not in self._telegram_group_admission_chats()
+            ):
+                await query.answer(text="⛔ This group is not authorized.")
+                return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -7667,29 +7675,431 @@ class TelegramAdapter(BasePlatformAdapter):
         topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
         return f"{chat_id}:{topic_id}" in topics
 
+    def _register_handlers(self, app: Application) -> None:
+        """Register all Telegram update handlers on an Application instance."""
+        app.add_handler(TelegramMessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_text_message,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.COMMAND,
+            self._handle_command,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+            self._handle_location_message,
+        ))
+        app.add_handler(TelegramMessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE
+            | filters.Document.ALL | filters.Sticker.ALL,
+            self._handle_media_message,
+        ))
+        app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        app.add_handler(TelegramMessageHandler(
+            filters.StatusUpdate.MIGRATE,
+            self._handle_chat_migration,
+        ))
+        app.add_handler(ChatMemberHandler(
+            self._handle_my_chat_member,
+            chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER,
+        ))
+
+    @staticmethod
+    def _strict_telegram_user_ids(raw: object) -> set[int]:
+        """Parse trusted Telegram actor IDs, rejecting the whole malformed value."""
+        if not isinstance(raw, list):
+            return set()
+        parsed: set[int] = set()
+        for value in raw:
+            if isinstance(value, bool):
+                return set()
+            if isinstance(value, int):
+                user_id = value
+            elif isinstance(value, str) and value.strip().isdigit():
+                user_id = int(value.strip())
+            else:
+                return set()
+            if user_id <= 0:
+                return set()
+            parsed.add(user_id)
+        return parsed
+
+    def _telegram_auto_allow_groups_from_trusted_adders(self) -> bool:
+        """Return the strict opt-in flag; malformed values always disable it."""
+        configured = self.config.extra.get("auto_allow_groups_from_trusted_adders")
+        if isinstance(configured, bool):
+            return configured
+        if isinstance(configured, str):
+            normalized = configured.strip().lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "off", ""}:
+                return False
+        return False
+
+    def _telegram_trusted_group_adders(self) -> set[int]:
+        """Return trusted actor IDs from the config-only list."""
+        configured = self.config.extra.get("trusted_group_adders")
+        return self._strict_telegram_user_ids(configured)
+
+    def _telegram_auto_authorized_groups_path(self) -> _Path:
+        """Return the profile-local path used for non-secret enrollment state."""
+        # A few narrow unit fixtures instantiate with object.__new__; retaining
+        # dynamic resolution only for those incomplete objects keeps them safe
+        # without weakening real adapters' construction-time profile binding.
+        hermes_home = getattr(self, "_hermes_home", None)
+        if not isinstance(hermes_home, _Path):
+            hermes_home = get_hermes_home()
+        return hermes_home / "state" / self._AUTO_AUTHORIZED_GROUPS_FILENAME
+
+    @staticmethod
+    def _validated_auto_authorized_chat_ids(payload: object) -> Optional[set[str]]:
+        """Validate the complete persisted schema, returning None when malformed."""
+        if not isinstance(payload, dict) or set(payload) != {"chat_ids"}:
+            return None
+        raw_chat_ids = payload.get("chat_ids")
+        if not isinstance(raw_chat_ids, list):
+            return None
+        chat_ids: set[str] = set()
+        for value in raw_chat_ids:
+            if (
+                not isinstance(value, str)
+                or not re.fullmatch(r"-\d+", value)
+                or int(value) >= 0
+            ):
+                return None
+            chat_ids.add(value)
+        return chat_ids
+
+    def _load_telegram_auto_authorized_groups(self) -> tuple[set[str], bool]:
+        path = self._telegram_auto_authorized_groups_path()
+        try:
+            parent_stat = path.parent.lstat()
+        except FileNotFoundError:
+            return set(), True
+        except OSError:
+            return set(), False
+        if path.parent.is_symlink() or not stat.S_ISDIR(parent_stat.st_mode):
+            logger.warning("[%s] Ignoring unsafe Telegram group state directory", self.name)
+            return set(), False
+        try:
+            path_stat = path.lstat()
+        except FileNotFoundError:
+            return set(), True
+        except OSError:
+            return set(), False
+        if path.is_symlink() or not stat.S_ISREG(path_stat.st_mode):
+            logger.warning("[%s] Ignoring unsafe Telegram auto-authorized group state", self.name)
+            return set(), False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            logger.warning("[%s] Ignoring invalid Telegram auto-authorized group state", self.name)
+            return set(), False
+        chat_ids = self._validated_auto_authorized_chat_ids(payload)
+        if chat_ids is None:
+            logger.warning("[%s] Ignoring invalid Telegram auto-authorized group state", self.name)
+            return set(), False
+        return chat_ids, True
+
+    def _telegram_auto_authorized_groups(self) -> set[str]:
+        """Read persisted grant candidates, failing closed to an empty set."""
+        groups, valid = self._load_telegram_auto_authorized_groups()
+        return groups if valid else set()
+
+    def _active_telegram_auto_authorized_group_ids(self) -> set[str]:
+        """Return this adapter's currently Bot-API-validated dynamic grants."""
+        active = getattr(self, "_active_telegram_auto_authorized_groups", None)
+        return active if isinstance(active, set) else set()
+
+    def _revoked_telegram_auto_authorized_group_ids(self) -> set[str]:
+        """Return process-local revocations that durable state cannot override."""
+        revoked = getattr(self, "_revoked_telegram_auto_authorized_groups", None)
+        if not isinstance(revoked, set):
+            revoked = set()
+            self._revoked_telegram_auto_authorized_groups = revoked
+        return revoked
+
+    def _telegram_auto_authorized_group_event_active(self, source: Any) -> bool:
+        """Fail-closed signal for plugins consuming a validated dynamic grant."""
+        if not self._telegram_auto_allow_groups_from_trusted_adders():
+            return False
+        if getattr(source, "chat_type", None) != "group":
+            return False
+        chat_id = getattr(source, "chat_id", None)
+        if not isinstance(chat_id, str) or not re.fullmatch(r"-\d+", chat_id):
+            return False
+        if int(chat_id) >= 0:
+            return False
+        return chat_id in self._active_telegram_auto_authorized_group_ids()
+
+    @staticmethod
+    def _supports_posix_group_state_security() -> bool:
+        """Return whether chmod and directory fsync semantics are available."""
+        return os.name != "nt"
+
+    def _write_telegram_auto_authorized_groups(self, chat_ids: set[str]) -> None:
+        """Atomically persist only validated chat IDs with owner-only permissions."""
+        if self._validated_auto_authorized_chat_ids({"chat_ids": sorted(chat_ids)}) is None:
+            raise ValueError("invalid Telegram auto-authorized group state")
+        path = self._telegram_auto_authorized_groups_path()
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        parent_stat = path.parent.lstat()
+        if path.parent.is_symlink() or not stat.S_ISDIR(parent_stat.st_mode):
+            raise OSError("unsafe Telegram group state directory")
+        use_posix_security = self._supports_posix_group_state_security()
+        if use_posix_security:
+            os.chmod(path.parent, 0o700)
+        try:
+            path_stat = path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if path.is_symlink() or not stat.S_ISREG(path_stat.st_mode):
+                raise OSError("unsafe Telegram auto-authorized group state")
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                if use_posix_security:
+                    os.fchmod(handle.fileno(), 0o600)
+                json.dump({"chat_ids": sorted(chat_ids)}, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            if not stat.S_ISREG(os.lstat(tmp_path).st_mode):
+                raise OSError("unsafe Telegram group state temporary file")
+            os.replace(tmp_path, path)
+            if use_posix_security:
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _update_telegram_auto_authorized_group(self, chat_id: str, *, allowed: bool) -> bool:
+        with self._auto_authorized_groups_lock:
+            chat_ids, valid = self._load_telegram_auto_authorized_groups()
+            if not valid:
+                return False
+            updated = set(chat_ids)
+            if allowed:
+                updated.add(chat_id)
+            else:
+                updated.discard(chat_id)
+            if updated != chat_ids:
+                self._write_telegram_auto_authorized_groups(updated)
+            return True
+
+    async def _reconcile_telegram_auto_authorized_groups(self) -> None:
+        """Activate durable grants only while the bot is still an administrator."""
+        active = self._active_telegram_auto_authorized_group_ids()
+        with self._auto_authorized_groups_lock:
+            active.clear()
+            if not self._telegram_auto_allow_groups_from_trusted_adders():
+                return
+            chat_ids, valid = self._load_telegram_auto_authorized_groups()
+        bot = getattr(self, "_bot", None)
+        bot_id = getattr(bot, "id", None)
+        if not valid or isinstance(bot_id, bool) or not isinstance(bot_id, int):
+            return
+        for chat_id in sorted(chat_ids):
+            try:
+                member = await bot.get_chat_member(chat_id, bot_id)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Could not validate persisted Telegram group %s: %s",
+                    self.name,
+                    chat_id,
+                    _redact_telegram_error_text(exc),
+                )
+                continue
+            status = str(getattr(member, "status", "")).split(".")[-1].lower()
+            if status == "administrator":
+                # A demotion may have revoked the durable candidate while the
+                # Bot API check was in flight. Recheck and activate under the
+                # same lock as enrollment, revocation, and migration so the
+                # last operation always determines the live grant.
+                with self._auto_authorized_groups_lock:
+                    durable, durable_valid = self._load_telegram_auto_authorized_groups()
+                    revoked = self._revoked_telegram_auto_authorized_group_ids()
+                    if durable_valid and chat_id in durable and chat_id not in revoked:
+                        active.add(chat_id)
+
+    async def _handle_my_chat_member(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Enroll or revoke a group from a validated MY_CHAT_MEMBER transition."""
+        del context
+        membership = getattr(update, "my_chat_member", None)
+        chat = getattr(membership, "chat", None)
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        if chat_type not in {"group", "supergroup"}:
+            return
+
+        chat_id = str(getattr(chat, "id", ""))
+        if not re.fullmatch(r"-\d+", chat_id):
+            return
+        old_member = getattr(membership, "old_chat_member", None)
+        new_member = getattr(membership, "new_chat_member", None)
+        old_status = str(getattr(old_member, "status", "")).split(".")[-1].lower()
+        new_status = str(getattr(new_member, "status", "")).split(".")[-1].lower()
+        non_admin_statuses = {"member", "restricted", "left", "kicked"}
+
+        should_revoke = False
+        try:
+            with self._auto_authorized_groups_lock:
+                active = self._active_telegram_auto_authorized_group_ids()
+                if new_status in non_admin_statuses:
+                    should_revoke = True
+                elif new_status != "administrator":
+                    durable, durable_valid = self._load_telegram_auto_authorized_groups()
+                    should_revoke = chat_id in active or (
+                        durable_valid and chat_id in durable
+                    )
+                if should_revoke:
+                    self._revoked_telegram_auto_authorized_group_ids().add(chat_id)
+                    active.discard(chat_id)
+                    self._update_telegram_auto_authorized_group(chat_id, allowed=False)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Could not persist Telegram group revocation: %s",
+                self.name,
+                _redact_telegram_error_text(exc),
+            )
+        if should_revoke:
+            return
+        if old_status not in non_admin_statuses or new_status != "administrator":
+            return
+        bot_id = getattr(self._bot, "id", None)
+        target_id = getattr(getattr(new_member, "user", None), "id", None)
+        if isinstance(bot_id, bool) or not isinstance(bot_id, int) or target_id != bot_id:
+            return
+        if not self._telegram_auto_allow_groups_from_trusted_adders():
+            return
+
+        actor_id = getattr(getattr(membership, "from_user", None), "id", None)
+        if isinstance(actor_id, bool) or not isinstance(actor_id, int):
+            return
+        if actor_id not in self._telegram_trusted_group_adders():
+            return
+        try:
+            with self._auto_authorized_groups_lock:
+                persisted = self._update_telegram_auto_authorized_group(
+                    chat_id, allowed=True
+                )
+                if persisted:
+                    self._revoked_telegram_auto_authorized_group_ids().discard(chat_id)
+                    self._active_telegram_auto_authorized_group_ids().add(chat_id)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Could not persist Telegram group enrollment: %s",
+                self.name,
+                _redact_telegram_error_text(exc),
+            )
+            return
+
+    async def _handle_chat_migration(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Move only a durable dynamic grant when a basic group becomes a supergroup."""
+        del context
+        message = getattr(update, "effective_message", None)
+        chat = getattr(message, "chat", None)
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+        old_chat_id = str(getattr(chat, "id", ""))
+        new_chat_id = str(getattr(message, "migrate_to_chat_id", ""))
+        if (
+            chat_type != "group"
+            or not re.fullmatch(r"-\d+", old_chat_id)
+            or not re.fullmatch(r"-\d+", new_chat_id)
+            or int(old_chat_id) >= 0
+            or int(new_chat_id) >= 0
+        ):
+            return
+
+        active = self._active_telegram_auto_authorized_group_ids()
+        try:
+            with self._auto_authorized_groups_lock:
+                was_active = old_chat_id in active
+                revoked = self._revoked_telegram_auto_authorized_group_ids()
+                revoked.add(old_chat_id)
+                active.discard(old_chat_id)
+                chat_ids, valid = self._load_telegram_auto_authorized_groups()
+                if not valid or old_chat_id not in chat_ids:
+                    return
+                migrated = set(chat_ids)
+                migrated.discard(old_chat_id)
+                migrated.add(new_chat_id)
+                self._write_telegram_auto_authorized_groups(migrated)
+                revoked.discard(new_chat_id)
+                if was_active:
+                    active.add(new_chat_id)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Could not persist Telegram group migration: %s",
+                self.name,
+                _redact_telegram_error_text(exc),
+            )
+            return
+
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
         When non-empty, group messages from chats NOT in this set are
         silently ignored unless ``guest_mode`` is enabled and the bot is
         explicitly @mentioned.  DMs are never filtered.
-        Empty set means no restriction (fully backward compatible).
+        Empty set means no restriction unless trusted-adder mode is enabled;
+        that opt-in uses strict admission across both explicit chat lists and
+        persisted enrollments.
         """
         raw = self.config.extra.get("allowed_chats")
         if raw is None:
-            raw = os.getenv("TELEGRAM_ALLOWED_CHATS", "")
+            raw = (
+                ""
+                if self._telegram_auto_allow_groups_from_trusted_adders()
+                else os.getenv("TELEGRAM_ALLOWED_CHATS", "")
+            )
         if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+            configured = {str(part).strip() for part in raw if str(part).strip()}
+        else:
+            configured = {part.strip() for part in str(raw).split(",") if part.strip()}
+        if self._telegram_auto_allow_groups_from_trusted_adders():
+            configured |= self._active_telegram_auto_authorized_group_ids()
+        return configured
 
     def _telegram_group_allowed_chats(self) -> set[str]:
         """Return Telegram chats authorized at group scope."""
         raw = self.config.extra.get("group_allowed_chats")
         if raw is None:
-            raw = os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS", "")
+            raw = (
+                ""
+                if self._telegram_auto_allow_groups_from_trusted_adders()
+                else os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS", "")
+            )
         if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+            configured = {str(part).strip() for part in raw if str(part).strip()}
+        else:
+            configured = {part.strip() for part in str(raw).split(",") if part.strip()}
+        if self._telegram_auto_allow_groups_from_trusted_adders():
+            configured |= self._active_telegram_auto_authorized_group_ids()
+        return configured
+
+    def _telegram_group_admission_chats(self) -> set[str]:
+        """Return chats admitted while trusted-adder mode is enabled.
+
+        Either explicit chat allowlist is sufficient for backward-compatible
+        admission, and persisted administrator enrollment extends both.
+        """
+        return self._telegram_allowed_chats() | self._telegram_group_allowed_chats()
 
     def _telegram_observe_allowed_chats(self) -> set[str]:
         """Chats where observed group context may use a shared source.
@@ -8490,7 +8900,8 @@ class TelegramAdapter(BasePlatformAdapter):
         When ``allowed_chats`` is non-empty, it remains a hard gate except for
         the narrow ``guest_mode`` bypass: group/supergroup messages that
         explicitly @mention this bot. Replies and regex wake words do not bypass
-        ``allowed_chats``. When ``require_mention`` is enabled, slash commands are not given
+        ``allowed_chats``. Trusted-adder mode adds a stricter admission gate that
+        ``guest_mode`` cannot bypass. When ``require_mention`` is enabled, slash commands are not given
         special treatment — they must pass the same mention/reply checks
         as any other group message.  Users can still trigger commands via
         the Telegram bot menu (``/command@botname``) or by explicitly
@@ -8540,6 +8951,15 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
 
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
+
+        # Trusted-adder mode changes empty allowlist semantics from unrestricted
+        # to strict admission. This must run before guest_mode and sender gates:
+        # neither a direct mention nor an allowlisted sender can admit a new chat.
+        if (
+            self._telegram_auto_allow_groups_from_trusted_adders()
+            and chat_id_str not in self._telegram_group_admission_chats()
+        ):
             return False
 
         # Resolve guest-mode mention bypass once so _message_mentions_bot
@@ -9581,6 +10001,10 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
+        metadata: Dict[str, Any] = {}
+        if self._telegram_auto_authorized_group_event_active(source):
+            metadata["telegram_auto_authorized_group_active"] = True
+
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
@@ -9592,6 +10016,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            metadata=metadata,
             timestamp=message.date,
         )
 
@@ -9830,6 +10255,13 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["TELEGRAM_ALLOWED_CHATS"] = str(ac)
+    if "auto_allow_groups_from_trusted_adders" in telegram_cfg:
+        extras.setdefault(
+            "auto_allow_groups_from_trusted_adders",
+            telegram_cfg["auto_allow_groups_from_trusted_adders"],
+        )
+    if "trusted_group_adders" in telegram_cfg:
+        extras.setdefault("trusted_group_adders", telegram_cfg["trusted_group_adders"])
     allowed_topics = telegram_cfg.get("allowed_topics")
     if allowed_topics is not None and not os.getenv("TELEGRAM_ALLOWED_TOPICS"):
         if isinstance(allowed_topics, list):

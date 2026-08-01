@@ -1554,6 +1554,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["allowed_chats"] = platform_cfg["allowed_chats"]
                 if plat == Platform.TELEGRAM and "group_allowed_chats" in platform_cfg:
                     bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
+                if plat == Platform.TELEGRAM and "auto_allow_groups_from_trusted_adders" in platform_cfg:
+                    bridged["auto_allow_groups_from_trusted_adders"] = platform_cfg["auto_allow_groups_from_trusted_adders"]
+                if plat == Platform.TELEGRAM and "trusted_group_adders" in platform_cfg:
+                    bridged["trusted_group_adders"] = platform_cfg["trusted_group_adders"]
                 if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
                 if "free_response_channels" in platform_cfg:

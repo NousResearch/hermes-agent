@@ -137,6 +137,12 @@ EXT_MAP = {
     "mp4": "video/mp4",
 }
 
+# Detect markdown formatting — if absent, send as plain text (no title needed).
+_DINGTALK_MARKDOWN_RE = re.compile(
+    r"(^#{1,6}\s)|(^[\s]*[-*]\s)|(^[\s]*\d+\.\s)|(^[\s]*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    re.MULTILINE,
+)
+
 
 def check_dingtalk_requirements() -> bool:
     """Check if DingTalk dependencies are available and configured.
@@ -1036,10 +1042,20 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Normalize markdown for DingTalk
         normalized = self._normalize_markdown(content[: self.MAX_MESSAGE_LENGTH])
 
-        payload = {
-            "msgtype": "markdown",
-            "markdown": {"title": "Hermes", "text": normalized},
-        }
+        # If the content is plain text (no markdown), send as text type
+        # so DingTalk doesn't force a card title on it — same approach as Feishu.
+        if _DINGTALK_MARKDOWN_RE.search(normalized):
+            _first_line = (normalized.split('\n')[0] or "").strip()
+            _title = _first_line[:30] if _first_line else "消息"
+            payload = {
+                "msgtype": "markdown",
+                "markdown": {"title": _title, "text": normalized},
+            }
+        else:
+            payload = {
+                "msgtype": "text",
+                "text": {"content": normalized},
+            }
 
         try:
             resp = await self._http_client.post(

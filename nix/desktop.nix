@@ -26,7 +26,7 @@ let
     ];
   };
 
-  packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/apps/desktop/package.json"));
+  packageJson = builtins.fromJSON (builtins.readFile ../apps/desktop/package.json);
   version = packageJson.version;
 
   electronHeaders = pkgs.fetchurl {

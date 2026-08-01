@@ -13,11 +13,18 @@
   dependency-groups ? [ "all" ],
 }:
 let
-  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = pythonSrc; };
+  workspaceRoot = ./..;
+  workspace = uv2nix.lib.workspace.loadWorkspace { inherit workspaceRoot; };
   hacks = callPackage pyproject-nix.build.hacks { };
 
   overlay = workspace.mkPyprojectOverlay {
     sourcePreference = "wheel";
+  };
+
+  filteredSourceOverlay = _final: prev: {
+    hermes-agent = prev.hermes-agent.overrideAttrs (_old: {
+      src = pythonSrc;
+    });
   };
 
   isAarch64Darwin = stdenv.hostPlatform.system == "aarch64-darwin";
@@ -108,6 +115,7 @@ let
         lib.composeManyExtensions [
           pyproject-build-systems.overlays.default
           overlay
+          filteredSourceOverlay
           buildSystemOverrides
           pythonPackageOverrides
           # ``setup.py`` permits wheel/sdist creation only from the sealed
@@ -128,7 +136,6 @@ let
   # filtered pythonSrc (a cleanSourceWith set, not a path).  Filtering
   # buys nothing here anyway: the editable install reads from
   # $HERMES_PYTHON_SRC_ROOT at runtime.
-  workspaceRoot = ./..;
   editableWorkspace = uv2nix.lib.workspace.loadWorkspace { inherit workspaceRoot; };
   editableOverlay = editableWorkspace.mkEditablePyprojectOverlay {
     root = "$HERMES_PYTHON_SRC_ROOT"; # resolved at shellHook time

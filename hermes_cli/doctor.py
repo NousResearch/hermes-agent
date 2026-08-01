@@ -1597,6 +1597,14 @@ def run_doctor(args):
 
             if count is not None:
                 check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+            else:
+                # The file is known to exist (`state_db_path.exists()` above);
+                # only the count is unknown. Say so rather than silently
+                # dropping the row in the worst-case timeout path.
+                check_info(
+                    f"{_DHH}/state.db exists (session count not read — the "
+                    "health check timed out before it returned)"
+                )
 
             if _probe_timed_out:
                 # A deadline is NOT a corruption verdict: nothing is known

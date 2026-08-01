@@ -139,7 +139,20 @@ EXT_MAP = {
 
 # Detect markdown formatting — if absent, send as plain text (no title needed).
 _DINGTALK_MARKDOWN_RE = re.compile(
-    r"(^#{1,6}\s)|(^[\s]*[-*]\s)|(^[\s]*\d+\.\s)|(^[\s]*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    # Pipe table: any header line + separator line both starting with '|'.
+    r"(^\|.*\|\s*\n\|[-:|\s]+\|)"
+    r"|(^#{1,6}\s)"
+    r"|(^[\s]*[-*]\s)"
+    r"|(^[\s]*\d+\.\s)"
+    r"|(^[\s]*---+\s*$)"
+    r"|(```)"
+    r"|(`[^`\n]+`)"
+    r"|(\*\*[^*\n].+?\*\*)"
+    r"|(~~[^~\n].+?~~)"
+    r"|(<u>.+?</u>)"
+    r"|(\*[^*\n]+\*)"
+    r"|(\[[^\]]+\]\([^)]+\))"
+    r"|(^>\s)",
     re.MULTILINE,
 )
 

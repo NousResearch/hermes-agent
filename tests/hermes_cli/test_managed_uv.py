@@ -778,8 +778,9 @@ class TestPatchRetryOnVulnerableCandidate:
 
 
     def test_retry_is_bounded_by_max_retries_constant(self, tmp_path, monkeypatch):
-        """A very long patch list must not result in unbounded retries --
-        capped at _MAX_PATCH_RETRIES attempts."""
+        """A very long patch list must not result in unbounded retries -- capped at
+        _MAX_PATCH_RETRIES attempts.  After exhausting same-minor retries the
+        fallback tries the next minor line, which may succeed."""
         import hermes_cli.managed_uv as managed_uv
 
         install_calls = []
@@ -792,6 +793,7 @@ class TestPatchRetryOnVulnerableCandidate:
             return original_fake_run(cmd, **kwargs)
 
         from hermes_cli.sqlite_runtime import SQLiteRuntimeInfo
+
         current = SQLiteRuntimeInfo(
             executable=Path("/venv/bin/python"), base_prefix=Path("/venv"),
             python_version=(3, 11, 14), sqlite_version=(3, 50, 4),
@@ -810,7 +812,11 @@ class TestPatchRetryOnVulnerableCandidate:
         result = managed_uv._install_safe_python_generation(
             "uv", project_root=tmp_path, current=current
         )
-        assert result is None
+        # The same-minor retries are bounded, but the minor-line fallback
+        # (3.11 → 3.12) succeeds because the mock returns a fixed build.
+        assert result is not None, (
+            "Minor-line fallback should find a fixed 3.12 build"
+        )
         # 1 initial bare-minor attempt + at most _MAX_PATCH_RETRIES retries.
         assert managed_uv._MAX_PATCH_RETRIES <= 5, (
             "sanity: constant should stay small since each attempt is a "

@@ -514,6 +514,7 @@ def _attempt_install_generation(
     project_root: Path,
     python_root: Path,
     current: SQLiteRuntimeInfo,
+    allow_minor_upgrade: bool = False,
 ) -> tuple[Path, Path, SQLiteRuntimeInfo] | None:
     """One install+probe attempt for a specific version request (bare minor
     like "3.11", or an explicit patch like "3.11.15"). Each attempt gets its
@@ -593,7 +594,18 @@ def _attempt_install_generation(
         logger.warning("could not probe candidate Python runtime: %s", python)
         _remove_tree(generation, boundary=python_root)
         return None
-    if candidate.python_version[:2] != current.python_version[:2] or (
+    if allow_minor_upgrade:
+        # When falling forward to a higher minor line (e.g. 3.11 → 3.12),
+        # only reject downgrades — allow the minor to differ.
+        if candidate.python_version < current.python_version:
+            logger.warning(
+                "candidate Python downgraded from %s: %s",
+                ".".join(str(p) for p in current.python_version),
+                candidate.python_version,
+            )
+            _remove_tree(generation, boundary=python_root)
+            return None
+    elif candidate.python_version[:2] != current.python_version[:2] or (
         candidate.python_version < current.python_version
     ):
         logger.warning(
@@ -673,6 +685,45 @@ def _install_safe_python_generation(
         )
         if result is not None:
             return result
+
+    # All patches on the current minor line are vulnerable or rejected.
+    # Fall forward to the next supported minor (e.g. 3.11 → 3.12) so the
+    # user isn't stuck on every `hermes update` with no path to a fixed
+    # runtime (issue #76106).  The requires-python constraint
+    # (>=3.11,<3.14) and the downstream import smoke-test gate
+    # compatibility; we only need to stay inside that window.
+    cur_major, cur_minor = current.python_version[:2]
+    for next_minor in range(cur_minor + 1, 14):  # up to 3.13
+        next_request = f"{cur_major}.{next_minor}"
+        print(
+            f"  → No fixed {cur_major}.{cur_minor} build available; "
+            f"trying {next_request} as fallback..."
+        )
+        result = _attempt_install_generation(
+            uv_bin, next_request, project_root=project_root,
+            python_root=python_root, current=current,
+            allow_minor_upgrade=True,
+        )
+        if result is not None:
+            return result
+        # Also try explicit patches on this minor line
+        env_for_list = managed_python_env(project_root, install_dir=python_root)
+        fb_patches = _list_available_patches(
+            uv_bin, next_request, cwd=project_root, env=env_for_list
+        )
+        fb_attempts = 0
+        for version_tuple in fb_patches:
+            if fb_attempts >= _MAX_PATCH_RETRIES:
+                break
+            explicit = ".".join(str(p) for p in version_tuple)
+            fb_attempts += 1
+            result = _attempt_install_generation(
+                uv_bin, explicit, project_root=project_root,
+                python_root=python_root, current=current,
+                allow_minor_upgrade=True,
+            )
+            if result is not None:
+                return result
     return None
 
 

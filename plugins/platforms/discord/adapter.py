@@ -2943,6 +2943,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
+            embed = None
+            if isinstance(formatted, str) and "[EMBED]" in formatted:
+                formatted, embed = self._extract_embed(formatted)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
@@ -2966,6 +2969,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 try:
                     msg = await channel.send(
                         content=chunk,
+                        embed=(embed if i == 0 else None),
                         reference=chunk_reference,
                     )
                 except Exception as e:
@@ -2988,6 +2992,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         reference = None
                         msg = await channel.send(
                             content=chunk,
+                            embed=(embed if i == 0 else None),
                             reference=None,
                         )
                     else:
@@ -3232,7 +3237,18 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._last_overflow_preview.pop(_preview_key, None)
 
             try:
-                await msg.edit(content=formatted)
+                embed = None
+                edit_content = formatted
+                if "[EMBED]" in formatted:
+                    if finalize:
+                        # Final edit: replace the marker with the real embed.
+                        edit_content, embed = self._extract_embed(formatted)
+                    else:
+                        # Mid-stream: hide the raw JSON so the user doesn't
+                        # watch it type out — the finalize edit swaps it for
+                        # the finished embed.
+                        edit_content = "⏳ *rendering embed…*"
+                await msg.edit(content=edit_content, embed=embed)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
             except Exception as edit_err:
@@ -5197,6 +5213,47 @@ class DiscordAdapter(BasePlatformAdapter):
         if not content:
             return content
         return convert_table_to_bullets(content)
+
+    def _extract_embed(self, content: str):
+        """If content contains [EMBED]...[/EMBED] (JSON), build a discord.Embed.
+
+        Supported JSON keys: title, description, url, color (int or #hex),
+        footer, thumbnail, fields [{name, value, inline}].
+        Text before/after the marker is kept as the plain-message content.
+        Returns (remaining_content, embed_or_None).
+        """
+        try:
+            start = content.index("[EMBED]")
+            end = content.index("[/EMBED]", start)
+            block = content[start + 7:end].strip()
+            data = json.loads(block, strict=False)  # allow literal newlines inside strings
+            emb = discord.Embed() if discord is not None else None
+            if emb is None:
+                return content, None
+            if data.get("title"):
+                emb.title = data["title"]
+            if data.get("description"):
+                emb.description = data["description"]
+            if data.get("url"):
+                emb.url = data["url"]
+            if data.get("color"):
+                c = data["color"]
+                emb.color = c if isinstance(c, int) else int(str(c).lstrip("#"), 16)
+            if data.get("footer"):
+                f = data["footer"]
+                emb.set_footer(text=f if isinstance(f, str) else f.get("text", ""))
+            if data.get("thumbnail"):
+                emb.set_thumbnail(url=data["thumbnail"])
+            for f in data.get("fields", [])[:25]:
+                emb.add_field(
+                    name=f.get("name", "\u200B"),
+                    value=f.get("value", "\u200B"),
+                    inline=bool(f.get("inline", False)),
+                )
+            rest = (content[:start] + content[end + len("[/EMBED]"):]).strip()
+            return rest, emb
+        except Exception:
+            return content, None
 
     async def _run_simple_slash(
         self,

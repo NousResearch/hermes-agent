@@ -1039,7 +1039,7 @@ class TelegramAdapter(BasePlatformAdapter):
         operator explicitly opted back into pairing via a platform override
         (resolution rule 1 in ``_get_unauthorized_dm_behavior``).
         """
-        if (getattr(source, "chat_type", None) or "") != "dm":
+        if source.chat_type != "dm":
             return False
 
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
@@ -1146,9 +1146,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if authorized:
             return True
         # Unauthorized DM that the gateway would pair: forward so pairing can run.
-        if self._should_pass_unauthorized_dm_for_pairing(source):
-            return True
-        return False
+        return self._should_pass_unauthorized_dm_for_pairing(source)
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:

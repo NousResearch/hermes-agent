@@ -613,6 +613,14 @@ def _stage_replacement(src: str, dst: str) -> str:
     """
     staging = f"{dst}.hermes-update-staging"
     backup = f"{dst}.hermes-update-old"
+    # A previous run may have died between "move dst aside" and "move staging
+    # in" — leaving dst missing and the backup as the ONLY copy of that entry.
+    # Restore it before clearing leftovers: deleting the backup first and then
+    # failing to stage (disk exhaustion is likely right after writing a full
+    # staging copy) would leave a hole in the install with nothing to roll
+    # back to. The restore is a same-filesystem rename — instant and safe.
+    if not os.path.exists(dst) and os.path.exists(backup):
+        os.rename(backup, dst)
     for leftover in (staging, backup):
         if os.path.isdir(leftover):
             shutil.rmtree(leftover, ignore_errors=True)

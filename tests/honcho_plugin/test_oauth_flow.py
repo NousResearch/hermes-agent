@@ -275,6 +275,40 @@ def test_display_config_path_never_leaks_absolute_path():
     assert oauth_flow._display_config_path("/var/folders/tmp/honcho.json") == "honcho.json"
 
 
+def test_display_config_path_uses_forward_slashes_on_windows():
+    """The ~/-relative form must use forward slashes even when the underlying
+    Path type separates with backslashes.
+
+    Platform-independent by construction: _display_config_path does a
+    call-time ``from pathlib import Path``, so patching ``pathlib.Path`` with
+    a PureWindowsPath-based shim exercises real Windows path semantics on any
+    host. The old ``"~/" + str(p.relative_to(home))`` implementation returns
+    a backslash-separated ``~/AppData/Local/...`` (with backslashes) here —
+    mixed separators on the consent screen — so unlike the native-Path test
+    above, this one fails on the pre-fix code on POSIX CI too.
+
+    The patch is scoped and released BEFORE the asserts: pytest's own failure
+    reporting uses pathlib.Path, so asserting inside the patch would turn a
+    clean failure into an INTERNALERROR.
+    """
+    import pathlib
+    from unittest.mock import patch as _patch
+
+    class _WinPath(pathlib.PureWindowsPath):
+        @classmethod
+        def home(cls):
+            return cls("C:/Users/test")
+
+    with _patch.object(pathlib, "Path", _WinPath):
+        shown = oauth_flow._display_config_path(
+            "C:\\Users\\test\\AppData\\Local\\hermes\\honcho.json"
+        )
+        outside = oauth_flow._display_config_path("D:\\scratch\\honcho.json")
+
+    assert shown == "~/AppData/Local/hermes/honcho.json"
+    assert "\\" not in shown
+    # Outside home still degrades to the bare filename.
+    assert outside == "honcho.json"
 def test_cli_flow_stores_tokens_without_applying_config(tmp_path, fake_as):
     # apply_config=False (the CLI path): grant config must NOT touch settings.
     config_path = tmp_path / "honcho.json"

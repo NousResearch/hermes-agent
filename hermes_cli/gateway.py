@@ -2527,7 +2527,7 @@ def get_python_path() -> str:
     if venv is not None:
         from hermes_constants import venv_python_path
 
-        venv_python = venv_python_path(venv)
+        venv_python = venv_python_path(venv, windows=is_windows())
         if venv_python.exists():
             return str(venv_python)
     return sys.executable

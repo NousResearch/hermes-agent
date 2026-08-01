@@ -223,7 +223,9 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
     try:
         interpreter = sys.executable
         try:
-            venv_python = venv_python_path(Path(root) / "venv")
+            venv_python = venv_python_path(
+                Path(root) / "venv", windows=_m()._is_windows()
+            )
             if venv_python.exists():
                 interpreter = str(venv_python)
         except Exception:
@@ -2754,7 +2756,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     healthy so a probe failure can't force needless reinstalls.
     """
     venv_dir = _m().PROJECT_ROOT / "venv"
-    venv_python = venv_python_path(venv_dir)
+    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
     if not venv_python.exists():
         # No venv interpreter at all. In a dev checkout that's normal (the
         # dev may run hermes from any interpreter), so report healthy to
@@ -3840,7 +3842,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # repair after the old venv was moved aside) needs the venv
                 # recreated before dependencies can be installed into it.
                 venv_python_missing = not (
-                    venv_python_path(_m().PROJECT_ROOT / "venv")
+                    venv_python_path(
+                        _m().PROJECT_ROOT / "venv", windows=_m()._is_windows()
+                    )
                 ).exists()
                 if venv_python_missing and repair_uv:
                     print("→ Recreating virtual environment...")

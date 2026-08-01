@@ -32,17 +32,26 @@ One layering wrinkle: the Tauri updater holds this marker for its WHOLE run and
 then spawns ``hermes update`` as a child stage. Without a handoff the child
 sees its own parent's live marker and refuses — the GUI update deadlocks
 against itself on every attempt ("Hermes is still running", retry forever).
-The updater therefore exports :data:`HANDOFF_PID_ENV` naming its own pid, and
-``acquire`` treats a live holder matching that pid as the lock we are already
-running under. The env var alone grants nothing: the pid must also be the
-live marker owner, so a stale or forged value cannot bypass the lock.
+Two mechanisms recognize the orchestrating parent, and either suffices:
+
+* The updater exports :data:`HANDOFF_PID_ENV` naming its own pid, and
+  ``acquire`` treats a live holder matching that pid as the lock we are
+  already running under. The env var alone grants nothing: the pid must also
+  be the live marker owner, so a stale or forged value cannot bypass the lock.
+* A live holder that is a *process ancestor* of ours is likewise our own
+  orchestrator. This is the load-bearing path for the fleet: the staged
+  ``hermes-setup`` binary under ``~/.hermes`` is only refreshed by a full
+  installer run (``copy_self_to_hermes_home`` deliberately no-ops during
+  ``--update``), so every desktop whose staged updater predates the
+  HANDOFF_PID_ENV export runs an old parent against a new child. Without the
+  ancestry check those users get exit 2 ("Hermes is still running") on every
+  GUI update forever, with no Hermes process actually running.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,6 +137,29 @@ def _handoff_pid() -> int | None:
     return pid if pid > 0 else None
 
 
+def _is_ancestor_pid(pid: int) -> bool:
+    """True when ``pid`` is a live ancestor (parent chain) of this process.
+
+    The orchestrating updater spawns ``hermes update`` as a (grand)child, so a
+    live marker owned by one of our ancestors can only be the claim we are
+    already running under — an unrelated concurrent updater is never in our
+    parent chain. This heals the fleet of staged ``hermes-setup`` binaries
+    that predate the HANDOFF_PID_ENV export and can never send it.
+
+    Never includes our own pid, and any failure counts as "not an ancestor":
+    an unprovable ancestry must fall back to the normal refusal.
+    """
+    if pid <= 0:
+        return False
+    try:
+        import psutil
+
+        return any(parent.pid == pid for parent in psutil.Process().parents())
+    except Exception as exc:
+        logger.debug("Could not walk process ancestry for pid %s: %s", pid, exc)
+        return False
+
+
 @dataclass(frozen=True)
 class UpdateHolder:
     """A confirmed-live update currently holding the lock."""
@@ -200,87 +232,19 @@ class UpdateLock:
         self.acquired = False
         self.holder: UpdateHolder | None = None
 
-    def _ancestor_pids(self) -> set[int]:
-        """Return PIDs of this process's ancestor chain (Windows, best-effort).
-
-        The Tauri updater spawns ``hermes.exe`` (venv shim) → ``python.exe``,
-        so the marker owner (updater's PID) can be two levels up. Walk the
-        chain via ``wmic`` and return every ancestor PID we can find.
-        """
-        pids: set[int] = set()
-        if os.name != "nt":
-            return pids
-        try:
-            current = os.getpid()
-            for _ in range(4):  # up to great-grandparent
-                result = subprocess.run(
-                    [
-                        "wmic",
-                        "process",
-                        "where",
-                        f"processid={current}",
-                        "get",
-                        "parentprocessid",
-                        "/format:csv",
-                    ],
-                    capture_output=True,
-                    timeout=5,
-                )
-                # wmic on Chinese Windows outputs GBK (CP936); decode raw bytes
-                raw = result.stdout
-                if not raw:
-                    break
-                try:
-                    text = raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    try:
-                        text = raw.decode("gbk")
-                    except UnicodeDecodeError:
-                        text = raw.decode("utf-8", errors="replace")
-                lines = [l.strip() for l in text.splitlines() if l.strip()]
-                # CSV format: Node,ParentProcessId
-                # First line is header, second line is data
-                if len(lines) >= 2:
-                    cols = lines[1].split(",")
-                    if len(cols) >= 2:
-                        ppid_str = cols[1].strip().strip('"')
-                        if ppid_str.isdigit():
-                            ppid = int(ppid_str)
-                            if ppid <= 0 or ppid in pids:
-                                break
-                            pids.add(ppid)
-                            current = ppid
-                        else:
-                            break
-                    else:
-                        break
-                else:
-                    break
-            return pids
-        except Exception:
-            return pids
-
     def acquire(self) -> bool:
         """Claim the lock. Returns False (and sets ``holder``) if it's taken.
 
-        A live holder whose pid matches :data:`HANDOFF_PID_ENV` is our own
-        orchestrating parent (the Tauri updater spawning `hermes update` as a
-        stage): we run under ITS claim rather than refusing or re-writing the
-        marker, and ``release`` leaves the parent's marker untouched.
-
-        On Windows the env-var handoff sometimes fails (the venv shim's
-        subprocess may not inherit ``HERMES_UPDATE_HANDOFF_PID``).  As a
-        fallback we also check whether the marker's PID is in our own
-        ancestor chain — if the Tauri updater holds the lock and we are its
-        descendant (venv shim → python), it is our handoff partner.
+        A live holder whose pid matches :data:`HANDOFF_PID_ENV` — or is a
+        process ancestor of ours — is our own orchestrating parent (the Tauri
+        updater spawning `hermes update` as a stage): we run under ITS claim
+        rather than refusing or re-writing the marker, and ``release`` leaves
+        the parent's marker untouched. The ancestry path exists because staged
+        updaters older than the HANDOFF_PID_ENV export never send the env var.
         """
         existing = read_live_update(path=self.path)
         if existing is not None:
-            if existing.pid == _handoff_pid():
-                return True
-            # Windows fallback: env-var handoff sometimes fails; check
-            # if the marker owner is our parent/grandparent (the updater).
-            if os.name == "nt" and existing.pid in self._ancestor_pids():
+            if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
                 return True
             self.holder = existing
             return False

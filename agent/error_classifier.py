@@ -284,6 +284,16 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
     "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
     "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
+    # Vendors that reject the same oversized image without using the word
+    # "image".  MiniMax's Anthropic-compatible endpoint returns
+    # "media exceeds size limit: max 10485760 bytes (2013)" for a native
+    # image part above its 10 MB ceiling (#76039).  Matched on the "media"
+    # fragment to mirror "image exceeds" above and catch reworded variants.
+    # A non-image media rejection (audio/video) that lands here is safe: the
+    # shrink pass finds no image parts, returns False, and the caller
+    # surfaces the original error unchanged.
+    "media exceeds",
+    "media too large",
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
 ]

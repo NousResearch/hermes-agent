@@ -3,11 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped } from '@/store/layout'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
 import { applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
   $activeProjectId,
+  $projects,
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
@@ -28,8 +29,21 @@ import {
   refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
-  tombstoneSessions
+  tombstoneSessions,
+  fetchProjectSessions
 } from './projects'
+
+const projectScopeStorage = new Map<string, string>()
+
+Object.defineProperty(window, 'localStorage', {
+  configurable: true,
+  value: {
+    clear: () => projectScopeStorage.clear(),
+    getItem: (key: string) => projectScopeStorage.get(key) ?? null,
+    removeItem: (key: string) => projectScopeStorage.delete(key),
+    setItem: (key: string, value: string) => projectScopeStorage.set(key, value)
+  }
+})
 
 vi.mock('@/i18n', () => ({
   translateNow: (key: string) => key
@@ -78,6 +92,18 @@ const getHermesConfig = vi.mocked(hermes.getHermesConfig)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
 
+// Promise.withResolvers is ES2024; the renderer tsconfig targets ES2023, so use
+// the same local deferred helper as the other store/hook tests.
+function deferred<T>() {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 describe('project scope', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -109,6 +135,50 @@ describe('project scope', () => {
   it('persists the scope to localStorage', () => {
     enterProject('p_abc')
     expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe('p_abc')
+  })
+})
+
+describe('projects RPC profile forwarding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeGatewayProfile.set('default')
+    $activeProjectId.set(null)
+    $projectTree.set([])
+    setShowAllProfiles(false)
+  })
+
+  it('forwards the normalized active profile to project read RPCs', async () => {
+    const request = vi.fn(async () => ({ active_id: null, projects: [], scoped_session_ids: [] }))
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $activeGatewayProfile.set('  coder  ')
+
+    await refreshProjects()
+    await refreshProjectTree()
+    await fetchProjectSessions('p_123')
+
+    expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'coder' })
+    expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
+      profile: 'coder',
+      project_id: 'p_123'
+    })
+  })
+
+  it('skips project reads in the all-profiles view rather than forwarding its sentinel', async () => {
+    const request = vi.fn()
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    setShowAllProfiles(true)
+
+    await refreshProjects()
+    await refreshProjectTree()
+    await fetchProjectSessions('p_123')
+
+    expect(request).not.toHaveBeenCalled()
+    setShowAllProfiles(false)
   })
 })
 
@@ -350,6 +420,7 @@ describe('repository discovery policy', () => {
     expect(scanRepos).not.toHaveBeenCalled()
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
       discovery_policy: { enabled: false, exclude_paths: [], roots: [] },
+      profile: 'default',
       repos: []
     })
   })
@@ -385,6 +456,7 @@ describe('repository discovery policy', () => {
         exclude_paths: ['/work/vendor'],
         roots: ['/work']
       },
+      profile: 'default',
       repos: [{ label: 'repo', root: '/work/repo' }]
     })
   })
@@ -399,44 +471,141 @@ describe('repository discovery policy', () => {
     expect(scanRepos).not.toHaveBeenCalled()
     expect(getHermesConfig).not.toHaveBeenCalled()
   })
+
+  it('records repos under the profile the scan started with, not one focused mid-scan', async () => {
+    const { promise: scanResult, resolve: resolveScan } = deferred<Array<{ label: string; root: string }>>()
+    const { promise: scanStarted, resolve: markScanStarted } = deferred<void>()
+
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.tree'
+        ? {
+            active_id: null,
+            projects: [{ id: 'p_lured', label: 'Lured', path: null, repos: [], sessionCount: 0 }],
+            scoped_session_ids: []
+          }
+        : { accepted: true, repos: [] }
+    )
+
+    gatewayWith(request)
+    const scanRepos = vi.fn(() => {
+      markScanStarted()
+      return scanResult
+    })
+    desktopGit.mockReturnValue({ scanRepos } as never)
+    getHermesConfig.mockResolvedValue({
+      desktop: {
+        repo_scan_enabled: true,
+        repo_scan_exclude_paths: [],
+        repo_scan_roots: ['/work']
+      }
+    })
+    $activeGatewayProfile.set('launch')
+    $projectTree.set([])
+
+    const pending = scanAndRecordRepos()
+    await scanStarted
+    // The user switches profiles while the disk scan is still running.
+    $activeGatewayProfile.set('coder')
+    resolveScan([{ label: 'repo', root: '/work/repo' }])
+    await pending
+
+    // The write is pinned to the profile captured when the scan started …
+    expect(request).toHaveBeenCalledWith('projects.record_repos', {
+      discovery_policy: { enabled: true, exclude_paths: [], roots: ['/work'] },
+      profile: 'launch',
+      repos: [{ label: 'repo', root: '/work/repo' }]
+    })
+    // … never to the profile focused while it ran.
+    expect(request).not.toHaveBeenCalledWith('projects.record_repos', expect.objectContaining({ profile: 'coder' }))
+    // And the completion tree refresh must not publish under the new profile.
+    expect($projectTree.get()).toEqual([])
+  })
 })
 
-describe('project tree profile isolation', () => {
-  it('does not publish a late response from the previous profile', async () => {
-    let resolveA: ((value: unknown) => void) | undefined
+describe('project profile isolation', () => {
+  beforeEach(() => {
+    setShowAllProfiles(false)
+    $activeGatewayProfile.set('default')
+    $projects.set([])
+    $projectTree.set([])
+  })
 
-    const responseA = new Promise(resolve => {
-      resolveA = resolve
-    })
+  it('does not publish a late projects.list response from the previous profile', async () => {
+    const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
+    const request = vi.fn((_method: string, params: Record<string, unknown>) =>
+      params.profile === 'default'
+        ? defaultResponse
+        : Promise.resolve({
+            active_id: null,
+            projects: [{ id: 'profile-b', label: 'Profile B' }]
+          })
+    )
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
 
-    const gatewayA = { connectionState: 'open', request: vi.fn(() => responseA) }
-
-    const gatewayB = {
-      connectionState: 'open',
-      request: vi.fn().mockResolvedValue({
-        active_id: null,
-        projects: [{ id: 'profile-b', label: 'Profile B', path: null, repos: [], sessionCount: 0 }],
-        scoped_session_ids: []
-      })
-    }
-
-    let current = gatewayA
-    activeGateway.mockImplementation(() => current as never)
-    gatewayAtom.set(gatewayA as never)
-
-    const pendingA = refreshProjectTree()
-    current = gatewayB
+    const pendingDefault = refreshProjects()
     $activeGatewayProfile.set('profile-b')
-    gatewayAtom.set(gatewayB as never)
+    await refreshProjects()
+    resolveDefault({
+      active_id: null,
+      projects: [{ id: 'profile-a', label: 'Profile A' }]
+    })
+    await pendingDefault
+
+    expect($projects.get().map(project => project.id)).toEqual(['profile-b'])
+  })
+
+  it('does not publish a late projects.tree response from the previous profile', async () => {
+    const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
+    const request = vi.fn((_method: string, params: Record<string, unknown>) =>
+      params.profile === 'default'
+        ? defaultResponse
+        : Promise.resolve({
+            active_id: null,
+            projects: [{ id: 'profile-b', label: 'Profile B', path: null, repos: [], sessionCount: 0 }],
+            scoped_session_ids: []
+          })
+    )
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    const pendingDefault = refreshProjectTree()
+    $activeGatewayProfile.set('profile-b')
     await refreshProjectTree()
-    resolveA?.({
+    resolveDefault({
       active_id: null,
       projects: [{ id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }],
       scoped_session_ids: []
     })
-    await pendingA
+    await pendingDefault
 
     expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+  })
+
+  it('drops a late hydrated-project response from the previous profile', async () => {
+    const { promise: defaultResponse, resolve: resolveDefault } = deferred<unknown>()
+    const request = vi.fn((_method: string, params: Record<string, unknown>) =>
+      params.profile === 'default'
+        ? defaultResponse
+        : Promise.resolve({
+            project: { id: 'profile-b', label: 'Profile B', path: null, repos: [], sessionCount: 0 }
+          })
+    )
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    const pendingDefault = fetchProjectSessions('p_123')
+    $activeGatewayProfile.set('profile-b')
+    const profileB = await fetchProjectSessions('p_123')
+    resolveDefault({
+      project: { id: 'profile-a', label: 'Profile A', path: null, repos: [], sessionCount: 0 }
+    })
+
+    expect(profileB?.id).toBe('profile-b')
+    await expect(pendingDefault).resolves.toBeNull()
   })
 })
 

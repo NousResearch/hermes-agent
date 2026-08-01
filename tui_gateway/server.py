@@ -1289,6 +1289,26 @@ def _profile_scoped(handler):
     return wrapper
 
 
+@contextlib.contextmanager
+def _projects_profile_home(params: dict | None):
+    """Bind ``params['profile']``'s HERMES_HOME for profile-scoped projects RPCs.
+
+    Projects live in the profile's own ``projects.db`` (resolved through
+    ``get_hermes_home()``), so app-global remote mode — one backend serving every
+    profile — must bind the focused profile's home around the whole handler, not
+    just its session-db read. No-op for the launch profile.
+    """
+    home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+    if home is None:
+        yield None
+        return
+    token = set_hermes_home_override(home)
+    try:
+        yield home
+    finally:
+        reset_hermes_home_override(token)
+
+
 # Placeholder ``terminal.cwd`` values that don't name a real directory — the
 # gateway resolves these to the home dir at runtime, so they must NOT be treated
 # as an explicit workspace (mirrors gateway/run.py's config bridge).
@@ -10791,8 +10811,9 @@ def _projects_method(name: str):
             try:
                 from hermes_cli import projects_db as pdb
 
-                with pdb.connect_closing() as conn:
-                    return fn(rid, params, pdb, conn)
+                with _projects_profile_home(params):
+                    with pdb.connect_closing() as conn:
+                        return fn(rid, params, pdb, conn)
             except _NoProject:
                 return _err(rid, _E_NO_PROJECT, "no such project")
             except ValueError as e:
@@ -11135,7 +11156,7 @@ def _project_tree_row(r: dict) -> dict:
 
 
 def _project_tree_inputs(
-    db, session_limit: int, *, include_discovered: bool
+    db, session_limit: int, *, include_discovered: bool, params: dict | None = None
 ) -> tuple[list[dict], list[dict], list[dict], str | None]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
 
@@ -11161,28 +11182,31 @@ def _project_tree_inputs(
 
     from hermes_cli import projects_db as pdb
 
-    policy = _repo_discovery_policy()
-    policy_key = _repo_discovery_policy_key(policy)
-    with pdb.connect_closing() as conn:
-        if include_discovered:
-            pdb.reconcile_discovered_repos_policy(
-                conn,
-                policy_key,
-                preserve_unversioned=_repo_discovery_policy_is_default(policy),
+    # projects.db + the discovery policy are profile-local, so the whole read
+    # runs under the requested profile's home (app-global remote mode).
+    with _projects_profile_home(params):
+        policy = _repo_discovery_policy()
+        policy_key = _repo_discovery_policy_key(policy)
+        with pdb.connect_closing() as conn:
+            if include_discovered:
+                pdb.reconcile_discovered_repos_policy(
+                    conn,
+                    policy_key,
+                    preserve_unversioned=_repo_discovery_policy_is_default(policy),
+                )
+            projects = [p.to_dict() for p in pdb.list_projects(conn)]
+            active_id = pdb.get_active_id(conn)
+            # backfill stays off the hot tree path — grouping uses the live resolver.
+            discovered = (
+                _discover_repos_payload(
+                    db,
+                    conn=conn,
+                    backfill=False,
+                    include_cached=policy["enabled"],
+                )
+                if include_discovered
+                else []
             )
-        projects = [p.to_dict() for p in pdb.list_projects(conn)]
-        active_id = pdb.get_active_id(conn)
-        # backfill stays off the hot tree path — grouping uses the live resolver.
-        discovered = (
-            _discover_repos_payload(
-                db,
-                conn=conn,
-                backfill=False,
-                include_cached=policy["enabled"],
-            )
-            if include_discovered
-            else []
-        )
 
     return sessions, projects, discovered, active_id
 
@@ -11209,14 +11233,20 @@ def _dir_exists_cached(path: str) -> bool:
 
 
 def _build_project_tree(
-    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
+    db,
+    *,
+    preview_limit: int,
+    hydrate: bool,
+    session_limit: int,
+    include_discovered: bool,
+    params: dict | None = None,
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
 
     _DIR_EXISTS_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
-        db, session_limit, include_discovered=include_discovered
+        db, session_limit, include_discovered=include_discovered, params=params
     )
     tree = project_tree.build_tree(
         projects,

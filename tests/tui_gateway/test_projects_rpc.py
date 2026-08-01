@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 import tui_gateway.server as server
 
 
@@ -379,3 +382,250 @@ def test_nondefault_policy_rejects_stale_or_legacy_results(monkeypatch, tmp_path
     assert any(item["root"] == str(root) for item in accepted["repos"])
 
 
+# ── profile scoping (app-global remote mode) ───────────────────────────────
+#
+# One backend serves every local profile, so ``projects.*`` takes an optional
+# ``params['profile']`` naming the profile the desktop is focused on. The
+# handler binds THAT profile's HERMES_HOME (projects.db, config) and state.db
+# for the duration of the call. Omitted/unknown profile → the launch profile,
+# exactly as before.
+
+
+def _profile_dir(tmp_path: Path, name: str) -> Path:
+    home = tmp_path / "homes" / name
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def _bind_profiles(monkeypatch, tmp_path: Path, homes: dict[str, Path]) -> None:
+    """Resolve profile names to this test's throwaway homes.
+
+    Unmapped names resolve to a path that does not exist, which is how the
+    gateway detects "not a real profile on this host" and stays on launch.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_profile_dir",
+        lambda name: homes.get(name, tmp_path / "homes" / "missing" / name),
+    )
+
+
+def _create_project(home: Path, name: str, folder: Path, *, use: bool = False) -> dict:
+    """Create a project in ``home``'s projects.db via the real RPC."""
+    token = set_hermes_home_override(home)
+    try:
+        return _call(
+            "projects.create", {"name": name, "folders": [str(folder)], "use": use}
+        )["project"]
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _create_session(home: Path, session_id: str, cwd: Path) -> None:
+    """Seed one message-bearing session in ``home``'s state.db."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        db.create_session(session_id, "cli", cwd=str(cwd))
+        db.append_message(session_id, "user", f"hello from {session_id}")
+    finally:
+        db.close()
+
+
+@contextlib.contextmanager
+def _serving_launch_profile(launch_home: Path):
+    """Run the handlers as a backend launched under ``launch_home``."""
+    from hermes_state import SessionDB
+
+    token = set_hermes_home_override(launch_home)
+    prev_db, prev_error = server._db, server._db_error
+    server._db = SessionDB(db_path=launch_home / "state.db")
+    server._db_error = None
+    try:
+        yield
+    finally:
+        server._db.close()
+        server._db, server._db_error = prev_db, prev_error
+        reset_hermes_home_override(token)
+
+
+def _cached_repo_labels(home: Path) -> list[str]:
+    """Labels in ``home``'s discovered-repo cache, read straight off disk."""
+    from hermes_cli import projects_db as pdb
+
+    with pdb.connect_closing(home / "projects.db") as conn:
+        return sorted(str(entry.get("label") or "") for entry in pdb.list_discovered_repos(conn))
+
+
+def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_path):
+    """A ``profile`` param reads that profile's projects.db AND its state.db."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "launch-repo"
+    coder_repo = tmp_path / "repos" / "coder-repo"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    launch_project = _create_project(launch_home, "Launch", launch_repo, use=True)
+    coder_project = _create_project(coder_home, "Coder", coder_repo, use=True)
+    _create_session(launch_home, "launch-session", launch_repo)
+    _create_session(coder_home, "coder-session", coder_repo)
+
+    with _serving_launch_profile(launch_home):
+        launch_listing = _call("projects.list")
+        coder_listing = _call("projects.list", {"profile": "coder"})
+        launch_tree = _call("projects.tree")
+        coder_tree = _call("projects.tree", {"profile": "coder"})
+        coder_sessions = _call(
+            "projects.project_sessions",
+            {"profile": "coder", "project_id": coder_project["id"]},
+        )
+        # The override must not leak: the very next unscoped read is launch again.
+        launch_again = _call("projects.list")
+
+    assert [p["name"] for p in launch_listing["projects"]] == ["Launch"]
+    assert [p["name"] for p in coder_listing["projects"]] == ["Coder"]
+    assert launch_listing["active_id"] == launch_project["id"]
+    assert coder_listing["active_id"] == coder_project["id"]
+    assert launch_again == launch_listing
+
+    assert [p["label"] for p in launch_tree["projects"]] == ["Launch"]
+    assert [p["label"] for p in coder_tree["projects"]] == ["Coder"]
+    # Session counts prove the SESSION db was swapped too, not just projects.db.
+    assert launch_tree["projects"][0]["sessionCount"] == 1
+    assert coder_tree["projects"][0]["sessionCount"] == 1
+    assert launch_tree["scoped_session_ids"] == ["launch-session"]
+    assert coder_tree["scoped_session_ids"] == ["coder-session"]
+
+    assert coder_sessions["project"]["id"] == coder_project["id"]
+    assert coder_sessions["project"]["sessionCount"] == 1
+    lane = coder_sessions["project"]["repos"][0]["groups"][0]
+    assert [s["id"] for s in lane["sessions"]] == ["coder-session"]
+
+
+def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):
+    """``projects.tree`` on its own reads the requested profile's stores.
+
+    Split out from the combined read test deliberately: there the
+    ``projects.list`` assertion fires first, so a tree-only scoping regression
+    would never reach the tree assertions.
+    """
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "tree-launch"
+    coder_repo = tmp_path / "repos" / "tree-coder"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    _create_project(launch_home, "Launch", launch_repo, use=True)
+    _create_project(coder_home, "Coder", coder_repo, use=True)
+    _create_session(launch_home, "tree-launch-session", launch_repo)
+    _create_session(coder_home, "tree-coder-session", coder_repo)
+
+    with _serving_launch_profile(launch_home):
+        coder_tree = _call("projects.tree", {"profile": "coder"})
+        launch_tree = _call("projects.tree")
+
+    assert [p["label"] for p in coder_tree["projects"]] == ["Coder"]
+    assert coder_tree["scoped_session_ids"] == ["tree-coder-session"]
+    assert [p["label"] for p in launch_tree["projects"]] == ["Launch"]
+    assert launch_tree["scoped_session_ids"] == ["tree-launch-session"]
+
+
+def test_project_sessions_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):
+    """``projects.project_sessions`` on its own hydrates from the requested profile.
+
+    Same reason as the tree test: drill-in must be provably scoped by itself,
+    not behind an earlier ``projects.list`` assertion.
+    """
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "drill-launch"
+    coder_repo = tmp_path / "repos" / "drill-coder"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    launch_project = _create_project(launch_home, "Launch", launch_repo, use=True)
+    coder_project = _create_project(coder_home, "Coder", coder_repo, use=True)
+    _create_session(launch_home, "drill-launch-session", launch_repo)
+    _create_session(coder_home, "drill-coder-session", coder_repo)
+
+    with _serving_launch_profile(launch_home):
+        coder_drill = _call(
+            "projects.project_sessions",
+            {"profile": "coder", "project_id": coder_project["id"]},
+        )
+        launch_drill = _call(
+            "projects.project_sessions", {"project_id": launch_project["id"]}
+        )
+
+    # The coder project id is absent from launch's projects.db, so an unscoped
+    # handler answers None here instead of the hydrated project.
+    assert coder_drill["project"] is not None
+    assert coder_drill["project"]["id"] == coder_project["id"]
+    coder_lane = coder_drill["project"]["repos"][0]["groups"][0]
+    assert [s["id"] for s in coder_lane["sessions"]] == ["drill-coder-session"]
+
+    assert launch_drill["project"]["id"] == launch_project["id"]
+    launch_lane = launch_drill["project"]["repos"][0]["groups"][0]
+    assert [s["id"] for s in launch_lane["sessions"]] == ["drill-launch-session"]
+
+
+def test_record_repos_writes_to_the_requested_profiles_projects_db(monkeypatch, tmp_path):
+    """The scan cache is per-profile: a scoped write must not land on launch."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    launch_repo = tmp_path / "repos" / "launch-scan"
+    coder_repo = tmp_path / "repos" / "coder-scan"
+    launch_repo.mkdir(parents=True)
+    coder_repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    with _serving_launch_profile(launch_home):
+        _call("projects.record_repos", {"repos": [{"root": str(launch_repo), "label": "launch"}]})
+        _call(
+            "projects.record_repos",
+            {"profile": "coder", "repos": [{"root": str(coder_repo), "label": "coder"}]},
+        )
+
+        launch_repos = _call("projects.discover_repos")["repos"]
+        coder_repos = _call("projects.discover_repos", {"profile": "coder"})["repos"]
+
+    assert [repo["label"] for repo in launch_repos] == ["launch"]
+    assert [repo["label"] for repo in coder_repos] == ["coder"]
+    # ...and on disk, not merely in the response the same handler produced.
+    assert _cached_repo_labels(launch_home) == ["launch"]
+    assert _cached_repo_labels(coder_home) == ["coder"]
+
+
+def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_path):
+    """Omitted/blank/unknown profile is a no-op — the pre-scoping behavior."""
+    launch_home = _profile_dir(tmp_path, "launch")
+    coder_home = _profile_dir(tmp_path, "coder")
+    repo = tmp_path / "repos" / "launch-only"
+    repo.mkdir(parents=True)
+    _bind_profiles(monkeypatch, tmp_path, {"default": launch_home, "coder": coder_home})
+
+    with _serving_launch_profile(launch_home):
+        created = _call(
+            "projects.create", {"name": "Launch only", "folders": [str(repo)], "use": True}
+        )["project"]
+        _call("projects.record_repos", {"repos": [{"root": str(repo), "label": "only"}]})
+
+        omitted = _call("projects.list")
+        blank = _call("projects.list", {"profile": ""})
+        unknown = _call("projects.list", {"profile": "not-a-profile"})
+
+    assert [p["name"] for p in omitted["projects"]] == ["Launch only"]
+    assert blank == omitted
+    assert unknown == omitted
+    assert omitted["active_id"] == created["id"]
+
+    # Everything landed in the launch home — never in another profile, and never
+    # in the process-wide HERMES_HOME the override was masking.
+    assert _cached_repo_labels(launch_home) == ["only"]
+    assert not (coder_home / "projects.db").exists()
+    assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()

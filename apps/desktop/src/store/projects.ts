@@ -15,7 +15,7 @@ import { persistentAtom } from '@/lib/persisted'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
+import { $activeGatewayProfile, $profileScope, ALL_PROFILES, normalizeProfileKey, requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
@@ -331,6 +331,23 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
+function projectProfile(): null | string {
+  const profile = normalizeProfileKey($activeGatewayProfile.get())
+
+  return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
+}
+
+function projectParams(
+  params: Record<string, unknown> = {},
+  profile: null | string = projectProfile()
+): Record<string, unknown> {
+  if (!profile) {
+    throw new Error('Projects are unavailable while viewing all profiles')
+  }
+
+  return { ...params, profile }
+}
+
 async function gatewayRequestOn<T>(
   gateway: HermesGateway,
   method: string,
@@ -345,14 +362,19 @@ interface ActiveProjectsContext {
 }
 
 async function activeProjectsContext(): Promise<ActiveProjectsContext> {
-  const profile = $activeGatewayProfile.get() || 'default'
+  const profile = projectProfile()
+
+  if (!profile) {
+    throw new Error('Projects are unavailable while viewing all profiles')
+  }
+
   let gateway = activeGateway()
 
   if (!gateway || gateway.connectionState !== 'open') {
     gateway = await ensureActiveGatewayOpen()
   }
 
-  if (!gateway || gateway !== activeGateway() || profile !== ($activeGatewayProfile.get() || 'default')) {
+  if (!gateway || gateway !== activeGateway() || profile !== projectProfile()) {
     throw new Error('Active Hermes profile changed while connecting')
   }
 
@@ -366,12 +388,42 @@ function applyPayload(payload: ProjectsPayload): void {
 
 // Pull the full project list + active pointer. Best-effort: a failure (gateway
 // not up yet) leaves the cached atoms intact so the sidebar doesn't flicker.
+// Match the sessions rail's request-id guard: a response belongs to the profile
+// that was active when it was issued, never a profile selected while it ran.
+let projectsRefreshGeneration = 0
+
 export async function refreshProjects(): Promise<void> {
+  const generation = ++projectsRefreshGeneration
+
+  let context: ActiveProjectsContext | null = null
+
   try {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.list'))
+    context = await activeProjectsContext()
+    const payload = await gatewayRequestOn<ProjectsPayload>(
+      context.gateway,
+      'projects.list',
+      projectParams({}, context.profile)
+    )
+
+    if (
+      generation !== projectsRefreshGeneration ||
+      activeGateway() !== context.gateway ||
+      projectProfile() !== context.profile
+    ) {
+      return
+    }
+
+    applyPayload(payload)
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
+    if (
+      context &&
+      generation === projectsRefreshGeneration &&
+      activeGateway() === context.gateway &&
+      projectProfile() === context.profile
+    ) {
+      markProjectsRpcFailure(err)
+    }
     // Backend may not be ready; keep the last known list.
   }
 }
@@ -384,19 +436,25 @@ interface ProjectTreePayload {
 
 let projectTreeRefreshGeneration = 0
 
-async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
-  const generation = ++projectTreeRefreshGeneration
+async function refreshProjectTreeOn(context: ActiveProjectsContext, generation: number): Promise<void> {
+  const { gateway, profile } = context
 
   if (activeGateway() === gateway) {
     $projectTreeLoading.set(true)
   }
 
   try {
-    const res = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
-      preview_limit: 3
-    })
+    const res = await gatewayRequestOn<ProjectTreePayload>(
+      gateway,
+      'projects.tree',
+      projectParams({ preview_limit: 3 }, profile)
+    )
 
-    if (generation !== projectTreeRefreshGeneration || activeGateway() !== gateway) {
+    if (
+      generation !== projectTreeRefreshGeneration ||
+      activeGateway() !== gateway ||
+      projectProfile() !== profile
+    ) {
       return
     }
 
@@ -419,7 +477,7 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
 
     markProjectsRpcSuccess()
   } catch (err) {
-    if (activeGateway() === gateway) {
+    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway && projectProfile() === profile) {
       markProjectsRpcFailure(err)
     }
   } finally {
@@ -433,10 +491,15 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
 // cached tree intact so the sidebar doesn't flicker.
 export async function refreshProjectTree(): Promise<void> {
+  const generation = ++projectTreeRefreshGeneration
+
   try {
-    const { gateway } = await activeProjectsContext()
-    await refreshProjectTreeOn(gateway)
+    const context = await activeProjectsContext()
+    await refreshProjectTreeOn(context, generation)
   } catch {
+    if (generation === projectTreeRefreshGeneration) {
+      $projectTreeLoading.set(false)
+    }
     // Backend may not be ready; keep the last known tree.
   }
 }
@@ -444,11 +507,26 @@ export async function refreshProjectTree(): Promise<void> {
 // Fully hydrated lanes (repo -> lane -> session rows) for one project, fetched
 // when the user enters it. Same backend grouping as `projects.tree`, so ids and
 // membership match exactly.
+let projectSessionsRefreshGeneration = 0
+
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
+  const generation = ++projectSessionsRefreshGeneration
+
   try {
-    const res = await gatewayRequest<{ project: SidebarProjectTree | null }>('projects.project_sessions', {
-      project_id: projectId
-    })
+    const { gateway, profile } = await activeProjectsContext()
+    const res = await gatewayRequestOn<{ project: SidebarProjectTree | null }>(
+      gateway,
+      'projects.project_sessions',
+      projectParams({ project_id: projectId }, profile)
+    )
+
+    if (
+      generation !== projectSessionsRefreshGeneration ||
+      activeGateway() !== gateway ||
+      projectProfile() !== profile
+    ) {
+      return null
+    }
 
     return res.project ?? null
   } catch {
@@ -540,10 +618,17 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     state.runningSignature = signature
 
     if (!policy.enabled) {
-      await gatewayRequestOn(context.gateway, 'projects.record_repos', {
-        discovery_policy: policy,
-        repos: []
-      })
+      await gatewayRequestOn(
+        context.gateway,
+        'projects.record_repos',
+        projectParams(
+          {
+            discovery_policy: policy,
+            repos: []
+          },
+          context.profile
+        )
+      )
     } else {
       scanningGatewayGenerations.set(context.gateway, generation)
       syncReposScanning()
@@ -557,10 +642,17 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
         return
       }
 
-      await gatewayRequestOn(context.gateway, 'projects.record_repos', {
-        discovery_policy: policy,
-        repos
-      })
+      await gatewayRequestOn(
+        context.gateway,
+        'projects.record_repos',
+        projectParams(
+          {
+            discovery_policy: policy,
+            repos
+          },
+          context.profile
+        )
+      )
     }
 
     if (state.generation !== generation) {
@@ -568,7 +660,15 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     }
 
     state.completedSignature = signature
-    await refreshProjectTreeOn(context.gateway)
+
+    // Completion refresh: only when the focused profile still matches the one
+    // the scan was captured under. refreshProjectTree() re-derives the current
+    // context + generation, so the refresh is always attributed to the profile
+    // it actually reads — and skipping on mismatch keeps a stale scan from
+    // superseding the newly focused profile's own in-flight refresh.
+    if (activeGateway() === context.gateway && projectProfile() === context.profile) {
+      await refreshProjectTree()
+    }
   } catch {
     state.completedSignature = undefined
   } finally {
@@ -696,17 +796,20 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   let res: { project: ProjectInfo | null }
 
   try {
-    res = await gatewayRequest<{ project: ProjectInfo | null }>('projects.create', {
-      name: input.name,
-      folders: input.folders ?? [],
-      primary_path: input.primaryPath,
-      slug: input.slug,
-      description: input.description,
-      icon: input.icon,
-      color: input.color,
-      board_slug: input.boardSlug,
-      use: input.use ?? false
-    })
+    res = await gatewayRequest<{ project: ProjectInfo | null }>(
+      'projects.create',
+      projectParams({
+        name: input.name,
+        folders: input.folders ?? [],
+        primary_path: input.primaryPath,
+        slug: input.slug,
+        description: input.description,
+        icon: input.icon,
+        color: input.color,
+        board_slug: input.boardSlug,
+        use: input.use ?? false
+      })
+    )
   } catch (err) {
     if (isMissingRpcMethod(err)) {
       $projectsRpcAvailable.set(false)
@@ -779,12 +882,15 @@ export async function updateProject(
   // Backend treats null/undefined as "leave unchanged"; "" clears (stores NULL).
   // Map explicit null → "" so "no color"/"no icon" actually clear.
   await persistOrRollback(snap, () =>
-    gatewayRequest('projects.update', {
-      id,
-      ...patch,
-      ...(patch.color === null && { color: '' }),
-      ...(patch.icon === null && { icon: '' })
-    })
+    gatewayRequest(
+      'projects.update',
+      projectParams({
+        id,
+        ...patch,
+        ...(patch.color === null && { color: '' }),
+        ...(patch.icon === null && { icon: '' })
+      })
+    )
   )
 }
 
@@ -855,7 +961,10 @@ export async function addProjectFolder(
   }
 
   await persistOrRollback(snap, () =>
-    gatewayRequest('projects.add_folder', { id, path, label: opts.label, is_primary: opts.isPrimary ?? false })
+    gatewayRequest(
+      'projects.add_folder',
+      projectParams({ id, path, label: opts.label, is_primary: opts.isPrimary ?? false })
+    )
   )
   reconcileProjects()
 }
@@ -898,13 +1007,13 @@ export async function deleteProject(id: string): Promise<void> {
   }
 
   await persistOrRollback(snap, async () => {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.delete', { id }))
+    applyPayload(await gatewayRequest<ProjectsPayload>('projects.delete', projectParams({ id })))
   })
   void refreshProjectTree()
 }
 
 export async function setActiveProject(id: null | string): Promise<void> {
-  const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', { id })
+  const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', projectParams({ id }))
   $activeProjectId.set(res.active_id ?? null)
 }
 

@@ -1069,3 +1069,73 @@ class TestJobsJsonUtf8Bom:
         assert [j["id"] for j in loaded] == ["plainjob01"]
 
 
+
+
+class TestAdvanceNextRuns:
+    """Tests for advance_next_runs() — the batched due-set advance.
+
+    The scheduler's pre-dispatch loop advanced each due job individually:
+    N due jobs = N full load_jobs() + N full save_jobs() of the jobs file
+    (~110 ms at N=50, measured). The batch form does one load + at most
+    one save (~2 ms). Imported inside test bodies so the pre-fix tree
+    fails with a real test failure (ImportError), not a collection error.
+    """
+
+    def _make_due(self, tmp_cron_dir, n_recurring=3, n_oneshot=1):
+        rec = [create_job(prompt=f"rec {i}", schedule="every 1h")
+               for i in range(n_recurring)]
+        one = [create_job(prompt=f"one {i}", schedule="30m")
+               for i in range(n_oneshot)]
+        jobs = load_jobs()
+        old = (datetime.now() - timedelta(minutes=5)).isoformat()
+        for j in jobs:
+            j["next_run_at"] = old
+        save_jobs(jobs)
+        return [j["id"] for j in rec], [j["id"] for j in one]
+
+    def test_batch_advances_recurring_skips_oneshots(self, tmp_cron_dir):
+        from cron.jobs import advance_next_runs
+        rec_ids, one_ids = self._make_due(tmp_cron_dir)
+        advanced = advance_next_runs(rec_ids + one_ids)
+        assert advanced == len(rec_ids)
+        from cron.jobs import _ensure_aware, _hermes_now
+        for jid in rec_ids:
+            nxt = _ensure_aware(datetime.fromisoformat(get_job(jid)["next_run_at"]))
+            assert nxt > _hermes_now()
+        for jid in one_ids:
+            # one-shots keep their (past) next_run_at for restart retry
+            assert datetime.fromisoformat(get_job(jid)["next_run_at"]) < datetime.now()
+
+    def test_batch_single_load_and_save(self, tmp_cron_dir, monkeypatch):
+        """I/O pin: the whole due set costs one load + one save, not N+N.
+        Fails pre-fix (function absent) and would fail on any regression
+        back to per-job I/O."""
+        from cron.jobs import advance_next_runs
+        rec_ids, _ = self._make_due(tmp_cron_dir, n_recurring=10, n_oneshot=0)
+        import cron.jobs as cj
+        counts = {"load": 0, "save": 0}
+        real_load, real_save = cj.load_jobs, cj.save_jobs
+        monkeypatch.setattr(cj, "load_jobs", lambda *a, **k: (
+            counts.__setitem__("load", counts["load"] + 1), real_load(*a, **k))[1])
+        monkeypatch.setattr(cj, "save_jobs", lambda *a, **k: (
+            counts.__setitem__("save", counts["save"] + 1), real_save(*a, **k))[1])
+        advance_next_runs(rec_ids)
+        assert counts == {"load": 1, "save": 1}
+
+    def test_batch_no_save_when_nothing_advances(self, tmp_cron_dir, monkeypatch):
+        from cron.jobs import advance_next_runs
+        rec_ids, one_ids = self._make_due(tmp_cron_dir, n_recurring=0, n_oneshot=2)
+        import cron.jobs as cj
+        saves = [0]
+        real_save = cj.save_jobs
+        monkeypatch.setattr(cj, "save_jobs", lambda *a, **k: (
+            saves.__setitem__(0, saves[0] + 1), real_save(*a, **k))[1])
+        assert advance_next_runs(one_ids + ["missing-id"]) == 0
+        assert saves[0] == 0
+
+    def test_wrapper_semantics_unchanged(self, tmp_cron_dir):
+        """advance_next_run keeps its per-job contract over the batch."""
+        rec_ids, one_ids = self._make_due(tmp_cron_dir)
+        assert advance_next_run(rec_ids[0]) is True
+        assert advance_next_run(one_ids[0]) is False
+        assert advance_next_run("missing-id") is False

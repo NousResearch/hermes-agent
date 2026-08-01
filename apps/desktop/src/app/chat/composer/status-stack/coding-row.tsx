@@ -15,6 +15,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
 import { $newWorktreeRequest } from '@/store/projects'
@@ -236,6 +237,18 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 {branchLabel}
               </span>
             </button>
+
+            {/* Worktree path — plain muted text, not a chip. Always in the flex
+                so hover doesn't reflow the row; opacity alone reveals it.
+                `displayPath` collapses home → ~ (shell / VS Code convention). */}
+            {resolvedRepoPath && (
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[0.62rem] leading-4 text-muted-foreground/50 opacity-0 transition-opacity group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100"
+                data-slot="coding-status-cwd"
+              >
+                {displayPath(resolvedRepoPath)}
+              </span>
+            )}
 
             {/* Branch actions kebab — same pattern as the session/worktree rows.
                 ALWAYS laid out; only its opacity flips on hover/focus/open, so

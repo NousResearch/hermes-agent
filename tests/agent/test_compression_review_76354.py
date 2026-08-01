@@ -26,6 +26,7 @@ import time
 
 import pytest
 
+import agent.conversation_compression as cc
 from agent.conversation_compression import (
     CompressionCommitFence,
     run_compress_context_with_progress_timeout,
@@ -136,3 +137,102 @@ class TestF1CommitOverrunWhileHung:
         assert fence.commit_in_flight is True
         fence.finish_commit()
         assert fence.commit_in_flight is False
+
+
+class _KIOnFirstResultFuture:
+    """Future proxy raising on the host's first result() call."""
+
+    def __init__(self, inner, exc, gate=None):
+        self._inner = inner
+        self._exc = exc
+        self._raised = False
+        self._gate = gate
+
+    def result(self, timeout=None):
+        if not self._raised:
+            self._raised = True
+            if self._gate is not None:
+                # Ensure the pooled worker has genuinely STARTED before the
+                # host unwinds, so the test exercises "unwind with a live
+                # worker" rather than the queued-job skip path.
+                assert self._gate.wait(timeout=5)
+            raise self._exc
+        return self._inner.result(timeout=timeout)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class _InjectingExecutor:
+    def __init__(self, inner, exc, gate=None):
+        self._inner = inner
+        self._exc = exc
+        self._gate = gate
+
+    def submit(self, fn, *args, **kwargs):
+        return _KIOnFirstResultFuture(
+            self._inner.submit(fn, *args, **kwargs), self._exc, self._gate
+        )
+
+
+class TestF2HostUnwindRevokesAdmission:
+    @pytest.mark.parametrize(
+        "exc_type", [KeyboardInterrupt, RuntimeError], ids=["ki", "generic"]
+    )
+    def test_unwind_revokes_commit_admission_before_host_returns(
+        self, monkeypatch, exc_type
+    ):
+        """KI/exception while waiting → detached worker can never commit.
+
+        The worker is still blocked pre-commit when the host unwinds; the
+        assertions run BEFORE the worker is released.
+        """
+        original = [{"role": "user", "content": "keep"}]
+        started = threading.Event()
+        release = threading.Event()
+        fence_box = {}
+        commit_admitted = {}
+
+        def worker(fence: CompressionCommitFence):
+            fence_box["fence"] = fence
+            started.set()
+            assert release.wait(timeout=10)
+            commit_admitted["value"] = fence.begin_commit()
+            if commit_admitted["value"]:
+                fence.finish_commit()
+            return ([{"role": "assistant", "content": "late"}], "x")
+
+        real_executor = cc._get_compress_timeout_executor()
+        monkeypatch.setattr(
+            cc,
+            "_get_compress_timeout_executor",
+            lambda: _InjectingExecutor(real_executor, exc_type(), gate=started),
+        )
+
+        with pytest.raises(exc_type):
+            run_compress_context_with_progress_timeout(
+                worker=worker,
+                messages=original,
+                system_prompt_fallback="fallback",
+                idle_timeout_seconds=5.0,
+                total_ceiling_seconds=5.0,
+            )
+
+        # ── Host has unwound; worker is STILL blocked pre-commit ─────────
+        assert started.wait(timeout=2)
+        fence = fence_box["fence"]
+        assert not release.is_set()
+        assert fence.is_cancelled, (
+            "host unwind must revoke commit admission while the worker "
+            "is still running"
+        )
+        # Now release the worker and prove its commit was refused.
+        release.set()
+        deadline = time.time() + 5
+        while time.time() < deadline and "value" not in commit_admitted:
+            time.sleep(0.01)
+        assert commit_admitted.get("value") is False, (
+            "a worker surviving a host unwind must be denied the commit "
+            "boundary"
+        )
+        _drain_admission_slots()

@@ -979,6 +979,7 @@ export interface Translations {
     running: string
     failed: string
     done: string
+    verificationRequired: string
     streaming: string
     files: string
     moreFiles: (count: number) => string
@@ -2375,6 +2376,10 @@ export interface Translations {
       statusError: string
       statusRecovered: string
       statusDone: string
+      /** Delegated child produced output that nothing has verified yet. */
+      statusUnverified: string
+      /** Delegated child ran out of budget or was cut short mid-flight. */
+      statusPartial: string
       /** Over-budget / rejected memory write title — not "Saved to memory". */
       memoryWriteNoted: string
       actions: {

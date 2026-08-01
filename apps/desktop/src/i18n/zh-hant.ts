@@ -1049,6 +1049,7 @@ export const zhHant = defineLocale({
     running: '執行中',
     failed: '失敗',
     done: '完成',
+    verificationRequired: '需要驗證',
     streaming: '串流傳輸中',
     files: '檔案',
     moreFiles: count => `還有 ${count} 個檔案`,
@@ -2521,6 +2522,8 @@ export const zhHant = defineLocale({
       statusError: '錯誤',
       statusRecovered: '已復原',
       statusDone: '完成',
+      statusUnverified: '未驗證',
+      statusPartial: '部分完成',
       memoryWriteNoted: '已記下記憶寫入',
       actions: {
         read: '已讀取',

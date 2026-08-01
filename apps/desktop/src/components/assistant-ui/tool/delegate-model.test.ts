@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SubagentProgress } from '@/store/subagents'
 
-import { delegateGoals, delegateRowsFromCall, mergeDelegateRows } from './delegate-model'
+import { delegateGoals, delegateRowsFromCall, delegateRowTone, mergeDelegateRows } from './delegate-model'
 
 const subagent = (overrides: Partial<SubagentProgress>): SubagentProgress => ({
   filesRead: [],
@@ -55,6 +55,60 @@ describe('delegateRowsFromCall', () => {
 
   it('still lists a background dispatch whose goals only survive in the result', () => {
     expect(delegateRowsFromCall({}, { status: 'dispatched', goals: ['A', 'B'] }).map(r => r.goal)).toEqual(['A', 'B'])
+  })
+
+  it('carries the logical outcome through, apart from the lifecycle status', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }, { goal: 'B' }, { goal: 'C' }, { goal: 'D' }] },
+      {
+        results: [
+          { status: 'completed', outcome: 'unverified', summary: 'here is what I found' },
+          { status: 'completed', outcome: 'partial', summary: 'got halfway' },
+          { status: 'completed', outcome: 'failed', summary: '' },
+          { status: 'timeout', summary: 'ran out of time' }
+        ]
+      }
+    )
+
+    // Lifecycle is preserved verbatim — including words the old parser flattened.
+    expect(rows.map(r => r.status)).toEqual(['completed', 'completed', 'completed', 'timeout'])
+    expect(rows.map(r => r.outcome)).toEqual(['unverified', 'partial', 'failed', undefined])
+  })
+
+  it('drops an outcome word it does not recognize rather than trusting it', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { results: [{ status: 'completed', outcome: 'success', summary: 'trust me' }] }
+    )
+
+    expect(rows[0]!.outcome).toBeUndefined()
+    expect(delegateRowTone(rows[0]!)).toBe('unverified')
+  })
+})
+
+describe('delegateRowTone', () => {
+  it('never reads a completed lifecycle as a verified success', () => {
+    // The regression this exists for: `status: 'completed'` says the child's
+    // loop ended, not that the task was accepted. Every settled shape below is
+    // non-success, and none of them may render as done.
+    expect(delegateRowTone({ status: 'completed', outcome: 'unverified' })).toBe('unverified')
+    expect(delegateRowTone({ status: 'completed', outcome: 'partial' })).toBe('partial')
+    expect(delegateRowTone({ status: 'completed', outcome: 'unknown' })).toBe('unverified')
+    // An envelope too old to carry an outcome is unverified, not successful.
+    expect(delegateRowTone({ status: 'completed', outcome: undefined })).toBe('unverified')
+  })
+
+  it('reads every proven failure as failed, whichever side proves it', () => {
+    expect(delegateRowTone({ status: 'completed', outcome: 'failed' })).toBe('failed')
+    expect(delegateRowTone({ status: 'failed', outcome: undefined })).toBe('failed')
+    expect(delegateRowTone({ status: 'error', outcome: undefined })).toBe('failed')
+    expect(delegateRowTone({ status: 'timeout', outcome: undefined })).toBe('failed')
+  })
+
+  it('keeps live and parked rows out of the settled vocabulary', () => {
+    expect(delegateRowTone({ status: 'running', outcome: undefined })).toBe('live')
+    expect(delegateRowTone({ status: 'queued', outcome: undefined })).toBe('live')
+    expect(delegateRowTone({ status: 'dispatched', outcome: undefined })).toBe('parked')
   })
 })
 
@@ -114,6 +168,43 @@ describe('mergeDelegateRows', () => {
 
     expect(merged[0]!.goal).toBe('C')
     expect(merged[0]!.model).toBeUndefined()
+  })
+
+  it('does not let lifecycle-only live state erase a known non-success outcome', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { results: [{ status: 'completed', outcome: 'partial', summary: 'got halfway' }] },
+      'call-4'
+    )
+
+    // The store relays `subagent.complete` with a lifecycle status and no
+    // outcome of its own. Clobbering here would repaint a proven-partial row
+    // as merely unverified — the false green, one layer up.
+    const merged = mergeDelegateRows(
+      rows,
+      [subagent({ id: 'delegate-tool:call-4:0', goal: 'A', status: 'completed' })],
+      'call-4'
+    )
+
+    expect(merged[0]!.outcome).toBe('partial')
+    expect(delegateRowTone(merged[0]!)).toBe('partial')
+  })
+
+  it('lets live state that does carry an outcome win over the parsed one', () => {
+    const rows = delegateRowsFromCall(
+      { tasks: [{ goal: 'A' }] },
+      { results: [{ status: 'completed', outcome: 'unverified', summary: 'looked fine' }] },
+      'call-5'
+    )
+
+    const merged = mergeDelegateRows(
+      rows,
+      [subagent({ id: 'delegate-tool:call-5:0', goal: 'A', outcome: 'failed', status: 'completed' })],
+      'call-5'
+    )
+
+    expect(merged[0]!.outcome).toBe('failed')
+    expect(delegateRowTone(merged[0]!)).toBe('failed')
   })
 
   it('falls back to task order only when both sides agree on the shape', () => {

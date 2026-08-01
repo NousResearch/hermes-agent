@@ -19,6 +19,7 @@ export interface ActivityItem {
 }
 
 export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
+export type SubagentOutcome = 'failed' | 'partial' | 'unknown' | 'unverified'
 
 export interface SubagentProgress {
   apiCalls?: number
@@ -34,6 +35,7 @@ export interface SubagentProgress {
   iteration?: number
   model?: string
   notes: string[]
+  outcome?: SubagentOutcome
   outputTail?: SubagentOutputEntry[]
   outputTokens?: number
   parentId: null | string

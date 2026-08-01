@@ -27,6 +27,23 @@ describe('spawnHistoryStore status normalization', () => {
     expect(statuses).toEqual(['timeout', 'error'])
   })
 
+  it('preserves logical outcomes from disk snapshots', () => {
+    pushDiskSnapshot(
+      {
+        finished_at: 1_700_000_021,
+        label: 'outcome test',
+        session_id: 'sess-3',
+        started_at: 1_700_000_020,
+        subagents: [
+          { goal: 'interrupted failure', id: 'sa-failed', index: 0, outcome: 'failed', status: 'interrupted' }
+        ]
+      },
+      '/tmp/snap-outcome.json'
+    )
+
+    expect(getSpawnHistory()[0]?.subagents[0]?.outcome).toBe('failed')
+  })
+
   it('falls back unknown disk statuses to completed', () => {
     pushDiskSnapshot(
       {

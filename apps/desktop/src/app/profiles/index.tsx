@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { AlertTriangle, Save } from '@/lib/icons'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
@@ -258,8 +259,8 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
             {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
             {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
           </div>
-          <p className="mt-1 truncate font-mono text-[0.66rem] text-muted-foreground/55" title={profile.path}>
-            {profile.path}
+          <p className="mt-1 truncate font-mono text-[0.66rem] text-muted-foreground/55" title={displayPath(profile.path)}>
+            {displayPath(profile.path)}
           </p>
         </div>
 

@@ -13,6 +13,9 @@
  *    and as a rebindable (default-unbound) action in the keybind panel;
  *  - plugin-local `atom` + `useValue` — module state, leaf subscription;
  *  - `haptic` / `host.notify` / `Tip` / `cn` — the design language.
+ *
+ * Ships OFF by default (`defaultEnabled: false`): it inventories in
+ * Settings ▸ Plugins and registers nothing until the user flips the switch.
  */
 
 import {
@@ -69,6 +72,7 @@ function ClickCounter() {
 const plugin: HermesPlugin = {
   id: 'example',
   name: 'Example Plugin',
+  defaultEnabled: false,
   register(ctx) {
     // Persisted count: hydrate once, write through on every change.
     $clicks.set(ctx.storage.get('clicks', 0))

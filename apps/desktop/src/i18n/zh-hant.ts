@@ -1968,7 +1968,7 @@ export const zhHant = defineLocale({
       scopeLastTurn: '上一輪',
       commit: '提交',
       commitAndPush: '提交並推送',
-      commitPlaceholder: '訊息（⌘↵ 提交）',
+      commitPlaceholder: shortcut => `訊息（${shortcut} 提交）`,
       generateCommitMessage: '產生提交訊息',
       stopGenerating: '停止產生',
       createPr: '建立 PR',

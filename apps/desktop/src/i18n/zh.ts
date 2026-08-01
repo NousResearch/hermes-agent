@@ -2476,7 +2476,7 @@ export const zh: Translations = {
       scopeLastTurn: '上一轮',
       commit: '提交',
       commitAndPush: '提交并推送',
-      commitPlaceholder: '信息（⌘↵ 提交）',
+      commitPlaceholder: shortcut => `信息（${shortcut} 提交）`,
       generateCommitMessage: '生成提交信息',
       stopGenerating: '停止生成',
       createPr: '创建 PR',

@@ -1835,7 +1835,7 @@ export const ar = defineLocale({
       scopeLastTurn: 'آخر دور',
       commit: 'إيداع',
       commitAndPush: 'إيداع ودفع',
-      commitPlaceholder: 'رسالة (⌘↵ للإيداع)',
+      commitPlaceholder: shortcut => `رسالة (${shortcut} للإيداع)`,
       generateCommitMessage: 'توليد رسالة الإيداع',
       stopGenerating: 'إيقاف التوليد',
       createPr: 'إنشاء PR',

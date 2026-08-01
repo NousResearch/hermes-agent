@@ -2771,7 +2771,14 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Default fallback — 256K
+    # 9. Default fallback — log so small-context models (8K, 32K) don't
+    #    silently get 256K and cause hard-to-debug API failures.
+    logger.warning(
+        "Could not determine context length for model %r (base_url=%s) "
+        "— falling back to %s tokens. Set model.context_length in "
+        "config.yaml to override.",
+        model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
+    )
     return DEFAULT_FALLBACK_CONTEXT
 
 

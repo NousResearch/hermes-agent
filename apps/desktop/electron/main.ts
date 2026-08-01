@@ -681,7 +681,15 @@ const WINDOW_BUTTON_POSITION = {
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
+// The apple-touch PNG bakes in the macOS-style ~10% margin, which is correct
+// for the dock but renders visibly smaller than neighboring taskbar icons on
+// Windows, where icons are full-bleed. Windows prefers the full-bleed
+// assets/icon.ico (shipped to resources/ via extraResources) and only falls
+// back to the padded PNG if the ico is missing.
 const APP_ICON_PATHS = [
+  ...(IS_WINDOWS
+    ? [path.join(process.resourcesPath ?? '', 'icon.ico'), path.join(APP_ROOT, 'assets', 'icon.ico')]
+    : []),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
   path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')

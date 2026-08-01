@@ -392,6 +392,95 @@ class TestAgentExecution:
             task_id="session-123",
         )
 
+    @pytest.mark.asyncio
+    async def test_run_agent_sets_and_clears_process_ownership_markers(self, adapter):
+        """#76188 review: this surface runs its own agent lifecycle outside
+        TurnRunner, so it needs its own baseline snapshot/clear — verify the
+        markers _reap_disconnected_agent_processes() reads are actually
+        populated during the turn and cleared once it finishes."""
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        captured = {}
+
+        def _capture_markers(**_kwargs):
+            captured["task_id"] = mock_agent._gateway_turn_process_task_id
+            captured["baseline"] = mock_agent._gateway_turn_process_baseline
+            return {"final_response": "ok"}
+
+        mock_agent.run_conversation.side_effect = _capture_markers
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-456",
+                requested_model="MiniMax-M3",
+                requested_provider="minimax",
+                model_options={"reasoning": {"enabled": False}, "fast": False},
+            )
+
+        assert captured["task_id"] == "session-456"
+        assert isinstance(captured["baseline"], frozenset)
+        # Turn completed normally — markers must be cleared so a disconnect
+        # arriving after this point can't reap work this turn left running.
+        assert mock_agent._gateway_turn_process_task_id == ""
+        assert mock_agent._gateway_turn_process_baseline == frozenset()
+
+
+class TestDisconnectedAgentReap:
+    """#76188 review: SSE disconnect handlers must reap only the background
+    processes the disconnected turn created, and must no-op when no turn
+    ownership was ever recorded on the agent."""
+
+    def test_reaps_baseline_diff_for_owned_turn(self, monkeypatch):
+        from gateway.platforms.api_server import _reap_disconnected_agent_processes
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda task_id, baseline, *, source: calls.append(
+                (task_id, baseline, source)
+            )
+            or 1,
+        )
+        agent = types.SimpleNamespace(
+            _gateway_turn_process_task_id="session-abc",
+            _gateway_turn_process_baseline=frozenset({"proc-1"}),
+        )
+
+        _reap_disconnected_agent_processes(agent)
+
+        deadline = time.time() + 1.0
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls == [
+            ("session-abc", frozenset({"proc-1"}), "api_server_sse_disconnect")
+        ]
+
+    def test_noop_when_agent_has_no_ownership_markers(self, monkeypatch):
+        from gateway.platforms.api_server import _reap_disconnected_agent_processes
+        from tools.process_registry import process_registry
+
+        calls = []
+        monkeypatch.setattr(
+            process_registry,
+            "kill_started_since",
+            lambda *a, **k: calls.append(True),
+        )
+        agent = types.SimpleNamespace(
+            _gateway_turn_process_task_id="",
+            _gateway_turn_process_baseline=None,
+        )
+
+        _reap_disconnected_agent_processes(agent)
+
+        time.sleep(0.1)
+        assert calls == []
+
 
 class TestRunEventCallback:
 

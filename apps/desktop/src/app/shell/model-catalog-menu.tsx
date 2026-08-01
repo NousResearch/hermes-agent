@@ -26,11 +26,13 @@ import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import {
+  $visibleModels,
   collapseModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
   effectiveVisibleKeys,
   type ModelFamily,
-  modelVisibilityKey
+  modelVisibilityKey,
+  setModelVisibilityOpen
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
@@ -87,11 +89,11 @@ interface ModelCatalogMenuProps {
    *  Off for override surfaces, where a MoA preset isn't a worker model. */
   includeMoa?: boolean
   profile?: string
-  /** The user's STORED visible-model keys (null = never customized). Resolved
-   *  against the fetched catalog inside the menu — a caller can't resolve it
-   *  early against an unpopulated cache without hiding every row. Pass
-   *  `undefined` to skip visibility filtering entirely. */
-  visibleModels?: Set<string> | null
+  /** Session whose catalog to fetch. A live session's catalog can differ from
+   *  the profile-global one, and the app invalidates the SESSION-scoped query
+   *  key on model changes — a surface bound to a session must pass it or its
+   *  menu goes stale. Detached surfaces (per-task overrides) omit it. */
+  sessionId?: null | string
 }
 
 interface ProviderGroup {
@@ -112,7 +114,7 @@ export function ModelCatalogMenu({
   gateway,
   includeMoa = false,
   profile = 'default',
-  visibleModels
+  sessionId = null
 }: ModelCatalogMenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
@@ -120,13 +122,18 @@ export function ModelCatalogMenu({
   const [search, setSearch] = useState('')
   const collapsedProviders = useStoreCollapsed()
   const defaultEffort = useDefaultEffort()
+  // Which models the user curated in Edit Models. Read HERE rather than taken
+  // as a prop: it's one global preference, so every surface that shows a
+  // catalog must show the same shortlist. A per-caller opt-in is how the board
+  // and the composer would end up disagreeing about what "my models" means.
+  const visibleModels = useStore($visibleModels)
 
   const modelOptions = useQuery({
-    queryKey: modelOptionsQueryKey(profile, null),
+    queryKey: modelOptionsQueryKey(profile, sessionId),
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway })
+    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId })
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -157,7 +164,7 @@ export function ModelCatalogMenu({
   // provider list would otherwise resolve to an empty key set that reads as
   // "user hid everything" and blanks the menu on first open.
   const shownKeys = useMemo(
-    () => (visibleModels === undefined ? null : effectiveVisibleKeys(visibleModels, pickerProviders)),
+    () => effectiveVisibleKeys(visibleModels, pickerProviders),
     [visibleModels, pickerProviders]
   )
 
@@ -496,6 +503,18 @@ export function ModelCatalogMenu({
           {footer}
         </>
       ) : null}
+
+      {/* Curation belongs to the catalog, not to one host: wherever you can
+          pick a model you can say which models you want, and the shortlist is
+          the same everywhere because it's one stored preference. */}
+      <DropdownMenuSeparator className="mx-0" />
+      <DropdownMenuItem
+        className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+        onSelect={() => setModelVisibilityOpen(true)}
+      >
+        <Codicon name="settings-gear" size="0.75rem" />
+        {copy.editModels}
+      </DropdownMenuItem>
     </>
   )
 }

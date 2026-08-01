@@ -3707,6 +3707,30 @@ def install_from_quarantine(
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
 
     if install_dir.exists():
+        # Guard against silent data loss when the install target collides with
+        # an existing category bucket (a directory that holds other skills).
+        # This was reported as GitHub issue #75983: installing a skill with
+        # --name matching an existing category directory caused rmtree to wipe
+        # all sibling skills.  An existing skill installation (a directory that
+        # directly contains SKILL.md) is safe to overwrite — that path is
+        # already guarded by the lock-file check in do_install().  But a
+        # directory that contains *other* skill directories is a category bucket
+        # and must NOT be silently deleted.
+        if install_dir.is_dir() and not (install_dir / "SKILL.md").exists():
+            _skill_dirs_in = [
+                entry.name
+                for entry in install_dir.iterdir()
+                if entry.is_dir()
+                and not entry.name.startswith(".")
+                and any(entry.rglob("SKILL.md"))
+            ]
+            if _skill_dirs_in:
+                raise ValueError(
+                    f"Refusing to overwrite category directory '{install_dir}' "
+                    f"which contains {len(_skill_dirs_in)} skill(s): "
+                    f"{', '.join(sorted(_skill_dirs_in))}. "
+                    f"Use a different --name or install into a subcategory."
+                )
         shutil.rmtree(install_dir)
 
     # Warn (but don't block) if SKILL.md is very large

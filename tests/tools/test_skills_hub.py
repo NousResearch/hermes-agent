@@ -1157,6 +1157,153 @@ class TestInstallPathSafety:
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
 
+    def test_install_from_quarantine_rejects_category_bucket_overwrite(self, tmp_path):
+        """Installing a skill whose name matches an existing category directory
+        that contains other skills must NOT silently wipe that entire directory.
+
+        Regression test for GitHub issue #75983: ``hermes skills install … --name
+        research`` deleted the whole ``skills/research/`` category bucket,
+        destroying 16 unrelated skills.
+        """
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Simulate a user-created category bucket with multiple skills.
+        category = skills_dir / "research"
+        category.mkdir()
+        for skill in ("alpha", "bravo", "charlie"):
+            (category / skill).mkdir()
+            (category / skill / "SKILL.md").write_text(f"name: {skill}")
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: research\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="research",
+            files={"SKILL.md": "---\nname: research\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="research",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            with pytest.raises(ValueError, match="Refusing to overwrite category directory"):
+                hub.install_from_quarantine(
+                    q_dir, "research", "", bundle, scan_result,
+                )
+
+        # Verify the category bucket and its skills are intact.
+        assert (category / "alpha" / "SKILL.md").exists()
+        assert (category / "bravo" / "SKILL.md").exists()
+        assert (category / "charlie" / "SKILL.md").exists()
+
+    def test_install_from_quarantine_allows_existing_skill_overwrite(self, tmp_path):
+        """Installing over an existing skill directory (containing SKILL.md) is
+        still allowed — that scenario is already guarded by the lock-file check
+        in do_install()."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Existing skill directory with SKILL.md.
+        existing = skills_dir / "my-skill"
+        existing.mkdir()
+        (existing / "SKILL.md").write_text("old content")
+        (existing / "refs").mkdir()
+        (existing / "refs" / "guide.md").write_text("old guide")
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: my-skill\n---\nnew")
+        (q_dir / "refs").mkdir()
+        (q_dir / "refs" / "guide.md").write_text("new guide")
+
+        bundle = hub.SkillBundle(
+            name="my-skill",
+            files={"SKILL.md": "---\nname: my-skill\n---\nnew"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="my-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            installed = hub.install_from_quarantine(
+                q_dir, "my-skill", "", bundle, scan_result,
+            )
+
+        # The old directory was replaced by the new one.
+        assert installed.exists()
+        assert (installed / "SKILL.md").read_text().strip() == "---\nname: my-skill\n---\nnew"
+
+    def test_install_from_quarantine_allows_empty_category_dir(self, tmp_path):
+        """Installing into an existing but empty category directory is allowed
+        (no sibling skills to destroy)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        # Empty category directory (no skills inside).
+        category = skills_dir / "research"
+        category.mkdir()
+
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        quarantine_root.mkdir(parents=True)
+
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir()
+        (q_dir / "SKILL.md").write_text("---\nname: research\n---\n")
+
+        bundle = hub.SkillBundle(
+            name="research",
+            files={"SKILL.md": "---\nname: research\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="research",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root):
+            installed = hub.install_from_quarantine(
+                q_dir, "research", "", bundle, scan_result,
+            )
+
+        assert installed.exists()
+        assert (installed / "SKILL.md").exists()
+
 
 # ---------------------------------------------------------------------------
 # parallel_search_sources — overall_timeout must be honoured even when a

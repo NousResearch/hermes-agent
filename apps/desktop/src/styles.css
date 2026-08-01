@@ -1008,6 +1008,15 @@ button,
   user-select: none;
 }
 
+/* User bubbles are <button>s (click → edit), so the rule above would kill
+   drag-to-select and leave ⌘C with nothing to grab. Message text stays
+   selectable; chrome controls outside the bubble keep user-select: none. */
+[data-slot='aui_user-message-root'] button,
+[data-slot='aui_user-message-root'] [role='button'] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 img,
 picture,
 video,

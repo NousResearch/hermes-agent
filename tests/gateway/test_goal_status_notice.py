@@ -142,3 +142,29 @@ def test_queue_notice_formats_depth_consistently():
     assert runner._queue_notice(0) == "Queued for the next turn."
     assert runner._queue_notice(1) == "Queued for the next turn."
     assert runner._queue_notice(2) == "Queued for the next turn. (2 queued)"
+
+
+def test_depth_cap_notice_requires_durable_queued_followup():
+    """Do not claim a dropped pending string was queued at the depth cap."""
+    result = GatewayRunner._apply_queue_notice_if_followup_pending(
+        None,
+        response=None,
+        history=[],
+        queued_depth=0,
+    )
+
+    assert result == {"final_response": None, "messages": []}
+
+
+def test_depth_cap_notice_reports_real_queued_followups():
+    result = GatewayRunner._apply_queue_notice_if_followup_pending(
+        None,
+        response=None,
+        history=[],
+        queued_depth=2,
+    )
+
+    assert result == {
+        "final_response": "Queued for the next turn. (2 queued)",
+        "messages": [],
+    }

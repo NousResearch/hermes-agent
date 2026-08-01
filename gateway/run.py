@@ -7415,6 +7415,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
     @staticmethod
+    def _apply_queue_notice_if_followup_pending(
+        fallback_result: dict | None,
+        *,
+        response: Any,
+        history: list[dict],
+        queued_depth: int,
+    ) -> dict:
+        """Attach a queue notice only when a follow-up really survived.
+
+        The interrupt-depth cap can receive a pending string from an adapter that
+        has no durable pending slot and no ``queue_message`` implementation. In
+        that case ``queued_depth`` stays zero, so claiming "Queued for the next
+        turn" would be false; return the fallback result silently instead.
+        """
+        result = fallback_result or {"final_response": response, "messages": history}
+        if result.get("final_response") or queued_depth <= 0:
+            return result
+        result["final_response"] = GatewayRunner._queue_notice(queued_depth)
+        return result
+
+    @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
 
@@ -24424,18 +24445,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         adapter.queue_message(session_key, pending)
 
                     queued_depth = self._queue_depth(session_key, adapter=adapter)
-                    queued_notice = self._queue_notice(queued_depth)
-                    fallback_result = result_holder[0] or {"final_response": response, "messages": history}
+                    fallback_result = self._apply_queue_notice_if_followup_pending(
+                        result_holder[0],
+                        response=response,
+                        history=history,
+                        queued_depth=queued_depth,
+                    )
                     if fallback_result.get("final_response"):
                         return fallback_result
                     logger.info(
-                        "Interrupt depth cap queued follow-up for session %s (chat=%s depth=%d); "
-                        "returning queue notice instead of silence.",
+                        "Interrupt depth cap had no durable queue slot for session %s "
+                        "(chat=%s depth=%d); returning fallback result without a queue notice.",
                         session_key or "?",
                         getattr(source, "chat_id", "?"),
                         queued_depth,
                     )
-                    fallback_result["final_response"] = queued_notice
                     return fallback_result
 
                 was_interrupted = result.get("interrupted")

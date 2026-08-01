@@ -2692,23 +2692,45 @@ def _detect_active_update_ancestor() -> tuple[int, str, str] | None:
                 for index in range(len(argv) - width + 1)
             )
 
+        def _has_serve_command(args: list[str]) -> bool:
+            """Recognize Desktop's serve command after its profile selector."""
+            index = 0
+            while index < len(args):
+                part = args[index]
+                if part == "serve":
+                    return True
+                if part in {"--profile", "-p"}:
+                    if index + 1 >= len(args):
+                        return False
+                    index += 2
+                    continue
+                if part.startswith("--profile="):
+                    index += 1
+                    continue
+                return False
+            return False
+
+        backend_args = None
+        for index in range(len(argv) - 1):
+            if argv[index : index + 2] == ["-m", "hermes_cli.main"]:
+                backend_args = argv[index + 2 :]
+                break
+        if backend_args is None:
+            for index, part in enumerate(argv):
+                if part.endswith("/hermes_cli/main.py"):
+                    backend_args = argv[index + 1 :]
+                    break
+        if backend_args is None:
+            for index, part in enumerate(argv[:2]):
+                if Path(part).name in {"hermes", "hermes.exe"}:
+                    backend_args = argv[index + 1 :]
+                    break
+
         is_slash_worker = _has_sequence("-m", "tui_gateway.slash_worker") or any(
             part.endswith("/tui_gateway/slash_worker.py") for part in argv
         )
-        is_desktop_backend = (
-            _has_sequence("-m", "hermes_cli.main", "serve")
-            or any(
-                part.endswith("/hermes_cli/main.py")
-                and index + 1 < len(argv)
-                and argv[index + 1] == "serve"
-                for index, part in enumerate(argv)
-            )
-            or (
-                bool(argv)
-                and Path(argv[0]).name in {"hermes", "hermes.exe"}
-                and len(argv) > 1
-                and argv[1] == "serve"
-            )
+        is_desktop_backend = backend_args is not None and _has_serve_command(
+            backend_args
         )
         if not (is_slash_worker or is_desktop_backend):
             continue

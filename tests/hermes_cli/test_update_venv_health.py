@@ -35,13 +35,36 @@ def _fake_ancestor(pid: int, cmdline: list[str], name: str = "python.exe"):
 
 
 @pytest.mark.parametrize(
-    "cmdline",
+    "cmdline, expected_kind",
     [
-        ["python.exe", "-m", "tui_gateway.slash_worker", "--session-key", "abc"],
-        ["pythonw.exe", "-m", "hermes_cli.main", "serve", "--port", "9119"],
+        (
+            ["python.exe", "-m", "tui_gateway.slash_worker", "--session-key", "abc"],
+            "Desktop slash worker",
+        ),
+        (
+            ["pythonw.exe", "-m", "hermes_cli.main", "serve", "--port", "9119"],
+            "Desktop backend",
+        ),
+        (
+            [
+                "pythonw.exe",
+                "-m",
+                "hermes_cli.main",
+                "--profile",
+                "worker",
+                "serve",
+                "--port",
+                "9119",
+            ],
+            "Desktop backend",
+        ),
+        (
+            ["hermes.exe", "--profile", "worker", "serve", "--port", "9119"],
+            "Desktop backend",
+        ),
     ],
 )
-def test_detect_active_update_ancestor(cmdline):
+def test_detect_active_update_ancestor(cmdline, expected_kind):
     me = MagicMock()
     me.parents.return_value = [_fake_ancestor(555, cmdline)]
     fake_psutil = types.SimpleNamespace(Process=lambda: me)
@@ -49,11 +72,6 @@ def test_detect_active_update_ancestor(cmdline):
     with patch.dict(sys.modules, {"psutil": fake_psutil}):
         result = cli_main._detect_active_update_ancestor()
 
-    expected_kind = (
-        "Desktop slash worker"
-        if "tui_gateway.slash_worker" in cmdline
-        else "Desktop backend"
-    )
     assert result == (555, "python.exe", expected_kind)
 
 
@@ -63,6 +81,10 @@ def test_detect_active_update_ancestor_ignores_unrelated_parent():
         _fake_ancestor(
             555,
             ["python.exe", "script.py", "--note", "hermes_cli.main serve"],
+        ),
+        _fake_ancestor(
+            556,
+            ["hermes.exe", "--profile", "serve", "dashboard", "--no-open"],
         ),
     ]
     fake_psutil = types.SimpleNamespace(Process=lambda: me)

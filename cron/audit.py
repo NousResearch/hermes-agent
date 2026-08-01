@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -158,7 +159,10 @@ def read_audit_entries(
     if not path.exists():
         return []
 
-    entries: list[Dict[str, Any]] = []
+    # A deque bounds memory to `limit` entries while scanning: the log can be
+    # up to max_mb on disk, and holding every matching entry just to slice
+    # the tail would buffer nearly all of it for the common no-filter call.
+    entries: deque[Dict[str, Any]] = deque(maxlen=max(1, int(limit or 50)))
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
             text = line.strip()
@@ -173,7 +177,7 @@ def read_audit_entries(
             if action and entry.get("action") != action:
                 continue
             entries.append(entry)
-    return entries[-max(1, int(limit or 50)):]
+    return list(entries)
 
 
 def update_details(changes: Dict[str, Any]) -> Dict[str, Any]:
@@ -184,10 +188,23 @@ def removal_details(reason: str) -> Dict[str, Any]:
     return {"reason": reason}
 
 
+# Error strings come from str(exception) at the scheduler call sites and are
+# unbounded — a provider HTTP error can embed a whole response body. The audit
+# log is a compact receipt store (prompts are already length-redacted), so cap
+# them; the full text is still in the gateway log.
+_MAX_ERROR_CHARS = 500
+
+
+def _truncate_error(text: str) -> str:
+    if len(text) <= _MAX_ERROR_CHARS:
+        return text
+    return f"{text[:_MAX_ERROR_CHARS]}… <{len(text)} chars total>"
+
+
 def completion_details(success: bool, error: Optional[str] = None, delivery_error: Optional[str] = None) -> Dict[str, Any]:
     details: Dict[str, Any] = {"success": success}
     if error:
-        details["error"] = error
+        details["error"] = _truncate_error(str(error))
     if delivery_error:
-        details["delivery_error"] = delivery_error
+        details["delivery_error"] = _truncate_error(str(delivery_error))
     return details

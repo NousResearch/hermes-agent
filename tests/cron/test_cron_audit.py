@@ -201,3 +201,39 @@ def test_cron_audit_config_is_scoped_per_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(disabled_home))
     assert is_audit_enabled() is False
     assert audit_log_path() == disabled_home / "cron" / "audit.log"
+
+
+def test_cron_audit_truncates_oversized_error_strings(cron_audit_env):
+    """Errors come from str(exception) and are unbounded (a provider HTTP
+    error can embed a whole response body). The audit log is a compact
+    receipt store — prompts are already length-redacted — so error text is
+    capped and the full version stays in the gateway log."""
+    _enable_audit(cron_audit_env)
+
+    from cron.jobs import create_job, mark_job_run
+
+    job = create_job(prompt="x", schedule="every 1h", name="err job")
+    huge = "E" * 5000
+    mark_job_run(job["id"], success=False, error=huge)
+
+    entries = _read_audit_entries(cron_audit_env)
+    failed = [e for e in entries if e["action"] == "failed"]
+    assert len(failed) == 1
+    recorded = failed[0]["details"]["error"]
+    assert len(recorded) < 600
+    assert recorded.startswith("E" * 100)
+    assert "<5000 chars total>" in recorded
+
+
+def test_read_audit_entries_returns_bounded_tail(cron_audit_env):
+    _enable_audit(cron_audit_env)
+
+    from cron.audit import audit_event, read_audit_entries
+
+    for i in range(30):
+        audit_event(f"job{i}", f"name{i}", "created", {})
+
+    tail = read_audit_entries(limit=10)
+    assert len(tail) == 10
+    # Chronological order preserved, and it is the LAST 10.
+    assert [e["job_id"] for e in tail] == [f"job{i}" for i in range(20, 30)]

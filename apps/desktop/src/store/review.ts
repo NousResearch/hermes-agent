@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { revealTreePane } from '@/components/pane-shell/tree/store'
+import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
@@ -285,7 +285,12 @@ export function toggleReview(scopeCwd: null | string = null): void {
     return
   }
 
-  if ($reviewOpen.get()) {
+  // Ask the TREE, not `$reviewOpen`. The store stays true while the pane sits
+  // behind a sibling tab in the right column or inside a minimized zone, so a
+  // boolean flip spent the press re-asserting a value it already held and ⌘G
+  // read as a dead key. `revealReview` fronts and un-minimizes; only close when
+  // the diff is genuinely the thing on screen.
+  if (isPaneVisible(REVIEW_PANE_ID)) {
     closeReview()
   } else {
     revealReview(scopeCwd)

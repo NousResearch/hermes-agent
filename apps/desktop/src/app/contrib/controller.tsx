@@ -13,21 +13,20 @@ import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
   $layoutTree,
+  bindPaneVisibility,
   bindToolPaneCollapse,
   bindTreeSideVisibility,
   declareDefaultTree,
   dismissTreePane,
   dockPaneBeside,
-  isToolPaneVisible,
+  isPaneVisible,
   mirrorLayoutTree,
   paneRootSide,
   registerLayoutResetHandler,
   registerPaneCloser,
-  registerPaneOpener,
   resetLayoutTree,
   revealTreePane,
-  setTreePaneHidden,
-  toggleToolPane,
+  togglePaneVisible,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -55,7 +54,7 @@ import {
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
 import { $previewOpenRequest, $previewTabs, closeRightRail } from '@/store/preview'
-import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
+import { $reviewOpen, closeReview, openReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
@@ -472,27 +471,9 @@ registerLayoutResetHandler(stackSessionTilesIntoMain)
 // toggle mirrors the root row.
 // ---------------------------------------------------------------------------
 
-function bindPaneVisibility(
-  paneId: string,
-  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
-  close?: () => void,
-  open?: () => void
-) {
-  setTreePaneHidden(paneId, !$open.get())
-  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen))
-
-  // The tab menu's Close routes through the owning store (never dismissal),
-  // so the pane's toggle buttons stay truthful.
-  if (close) {
-    registerPaneCloser(paneId, close)
-  }
-
-  // The opener is the mirror: preset application (revealOnPreset) shows the
-  // pane through the same store, so the toggle stays truthful.
-  if (open) {
-    registerPaneOpener(paneId, open)
-  }
-}
+// HIDE-STYLE PANES (files, review, preview): the binding lives in the tree
+// store — bindPaneVisibility — alongside bindToolPaneCollapse, so both are
+// testable against the real function instead of a copy.
 
 // TOOL PANELS (terminal, logs): the binding lives in the tree store —
 // bindToolPaneCollapse — so the boot rule it encodes is testable against the
@@ -549,15 +530,25 @@ const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 // The tree pane's own presence tracks ⌘J directly, not just the column's
 // collapse — otherwise revealing a preview (which opens that shared column)
 // would drag the tree along with it. See revealPreview.
+//
+// Both get a CLOSER and an OPENER. The closer keeps ⌘J/⌘G truthful when the
+// pane is closed from the tab menu; the opener is its mirror, so bringing the
+// pane back through the tree (the toggle's reveal path, the rail, a preset)
+// writes the store too. Without the opener the boolean went stale the moment
+// anything but the toggle showed the pane — the divergence this whole change
+// is about.
 bindPaneVisibility(
   'files',
-  computed([$hasWorkspace, $fileBrowserOpen], (workspace, open) => workspace && open)
+  computed([$hasWorkspace, $fileBrowserOpen], (workspace, open) => workspace && open),
+  () => setFileBrowserOpen(false),
+  () => setFileBrowserOpen(true)
 )
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',
   computed([$reviewOpen, $hasWorkspace], (open, workspace) => open && workspace),
-  closeReview
+  closeReview,
+  openReview
 )
 // ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
 // hides; PTYs stay alive while collapsed (see PersistentTerminal).
@@ -593,8 +584,8 @@ registry.register(
     keywords: ['logs', 'agent log', 'tail', 'debug'],
     // On-screen, not the store's boolean: logs stacks with the terminal, and
     // behind its sibling's tab `$logsOpen` stays true while nothing is visible.
-    get: () => isToolPaneVisible('logs'),
-    set: () => toggleToolPane('logs')
+    get: () => isPaneVisible('logs'),
+    set: () => togglePaneVisible('logs')
   })
 )
 

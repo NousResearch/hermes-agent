@@ -1313,7 +1313,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // The deferred composition fallback is already committed text, so it
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
-      sendComposedText = (data) => forwardPtyData(data, false);
+      sendComposedText = (data) => {
+        forwardPtyData(data, false);
+        mobileReplacementInputUntilRef.current = 0;
+      };
       onDataDisposable = term.onData((data) => {
         compositionForwarder.noteTerminalData(data);
         forwardPtyData(data);

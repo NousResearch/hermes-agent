@@ -28,7 +28,7 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("keeps the fallback pending when xterm emits unrelated input", () => {
+  it("prefers xterm input in the grace window over the fallback", () => {
     vi.useFakeTimers();
     const send = vi.fn();
     const forwarder = createPtyCompositionForwarder(send);
@@ -37,7 +37,21 @@ describe("createPtyCompositionForwarder", () => {
     forwarder.noteTerminalData("x");
     vi.runAllTimers();
 
-    expect(send).toHaveBeenCalledExactlyOnceWith("ä");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("forwards a second composition after the first fallback completes", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("ä");
+    vi.runAllTimers();
+    forwarder.onCompositionEnd("ö");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenNthCalledWith(1, "ä");
+    expect(send).toHaveBeenNthCalledWith(2, "ö");
   });
 
   it("supersedes an earlier composition and cancels it on disposal", () => {

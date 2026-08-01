@@ -25,12 +25,13 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
         const committed = pending;
         clearPending();
         if (committed) send(committed);
-      }, 0);
+      }, 16);
     },
-    noteTerminalData(data: string) {
-      if (pending && data.startsWith(pending)) {
-        clearPending();
-      }
+    noteTerminalData(_data: string) {
+      // Any xterm input in the short grace window is its own composition
+      // delivery (possibly chunked or normalization-different), so prefer it
+      // over the fallback to avoid duplicate text.
+      if (pending) clearPending();
     },
     dispose: clearPending,
   };

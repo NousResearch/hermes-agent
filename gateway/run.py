@@ -16691,6 +16691,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             # successful compaction as a timeout.
                                             _compressed, _ = await _hyg_future
                                         else:
+                                            # #76354 F4: release the timed-out
+                                            # worker's durable lease via the
+                                            # holder-qualified hook so the next
+                                            # compressor can acquire the lock
+                                            # immediately (no ABA against a new
+                                            # holder — release is holder-scoped).
+                                            _hyg_commit_fence.release_cancelled_compression_lock()
                                             self._defer_agent_cleanup_until_future_done(
                                                 _hyg_future,
                                                 _hyg_agent,

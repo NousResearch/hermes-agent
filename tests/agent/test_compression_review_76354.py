@@ -236,3 +236,32 @@ class TestF2HostUnwindRevokesAdmission:
             "boundary"
         )
         _drain_admission_slots()
+
+
+class TestF4CooldownClearOrdering:
+    def test_cancelled_attempt_cannot_clear_failure_cooldown(self):
+        """Fence check ordered BEFORE cooldown-clear (review F4 ordering)."""
+        from agent.context_compressor import ContextCompressor
+
+        class _FakeCompressor:
+            _summary_failure_cooldown_until = 12345.0
+            _last_summary_error = "timeout"
+            _consecutive_timeout_failures = 2
+            _cooldown_persist_failed = False
+            _session_db = None
+            _session_id = ""
+            _compression_cancelled_check = staticmethod(lambda: True)
+
+        fake = _FakeCompressor()
+        ContextCompressor._clear_compression_failure_cooldown(fake)
+        assert fake._summary_failure_cooldown_until == 12345.0, (
+            "a cancelled attempt must NOT undo the host's timeout cooldown"
+        )
+        assert fake._consecutive_timeout_failures == 2
+
+        # Sabotage check: with the fence reporting NOT cancelled, the clear
+        # must proceed (proves the guard is the only thing blocking it).
+        fake2 = _FakeCompressor()
+        fake2._compression_cancelled_check = staticmethod(lambda: False)
+        ContextCompressor._clear_compression_failure_cooldown(fake2)
+        assert fake2._summary_failure_cooldown_until == 0.0

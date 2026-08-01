@@ -423,6 +423,7 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
 
 test('managed SSH maps a local scope to a different non-default remote profile', async () => {
   const localScope = 'work'
+
   const sshConfig = profileSshOverride(
     {
       profiles: {

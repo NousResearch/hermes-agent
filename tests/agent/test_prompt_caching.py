@@ -129,6 +129,33 @@ class TestPromptCachePlan:
         assert plan.marker_count == 2
         assert "cache_control" not in plan.messages[-1]
 
+    def test_static_prefix_equal_to_whole_prompt_emits_no_empty_block(self):
+        """Empty volatile suffix must not produce an empty text block.
+
+        Anthropic rejects text blocks whose ``text`` is empty; when the
+        stored system prompt IS the static prefix (no volatile tier), the
+        plan must mark it as one whole block instead of a two-part split
+        with a trailing ``{"type": "text", "text": ""}``.
+        """
+        messages = [
+            {"role": "system", "content": "stable prefix"},
+            {"role": "user", "content": "lookup"},
+        ]
+        plan = build_prompt_cache_plan(
+            messages,
+            _tool_heavy_native_tools(),
+            native_anthropic=True,
+            static_system_prefix="stable prefix",
+            direct_native_tool_cache=True,
+        )
+
+        system_content = plan.messages[0]["content"]
+        assert isinstance(system_content, list)
+        for part in system_content:
+            assert part.get("text"), "no empty text blocks on the wire"
+        assert any("cache_control" in part for part in system_content)
+        assert plan.tools[-1]["cache_control"] == MARKER
+
     def test_tool_strip_is_request_local(self):
         tools = _tool_heavy_native_tools()
         tools[-1]["cache_control"] = MARKER

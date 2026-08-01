@@ -99,12 +99,28 @@ def _apply_system_cache_markers(
     static_system_prefix: str | None,
     *,
     native_anthropic: bool,
+    mark_suffix: bool = True,
+    fallback_to_whole: bool = True,
 ) -> int:
-    """Mark the static system prefix and full prompt when they can be split.
+    """Mark the static system prefix (and optionally the full prompt).
 
     The system prompt remains one stored string. Splitting it only in the
     outgoing request keeps session persistence and non-Anthropic transports
     unchanged while making the stable prefix independently cacheable.
+
+    ``mark_suffix=False`` is the tool-cache-plan layout: only the static
+    prefix carries a marker, the volatile suffix rides unmarked (its
+    breakpoint budget is spent on the tools array instead).
+
+    ``fallback_to_whole=False`` skips marking entirely when the prefix
+    split is not possible (no prefix, mismatched prefix, non-string
+    content) instead of marking the whole message.
+
+    When the prompt IS exactly the static prefix (empty suffix), the whole
+    message is marked as a single block — never a two-part split with an
+    empty text block, which Anthropic rejects.
+
+    Returns the number of markers applied (0, 1, or 2).
     """
     content = message.get("content")
     if (
@@ -115,16 +131,26 @@ def _apply_system_cache_markers(
     ):
         suffix = content[len(static_system_prefix):]
         if suffix:
+            suffix_part: dict = {"type": "text", "text": suffix}
+            if mark_suffix:
+                suffix_part["cache_control"] = cache_marker
             message["content"] = [
                 {
                     "type": "text",
                     "text": static_system_prefix,
                     "cache_control": cache_marker,
                 },
-                {"type": "text", "text": suffix, "cache_control": cache_marker},
+                suffix_part,
             ]
-            return 2
+            return 2 if mark_suffix else 1
+        # Empty suffix: the stored prompt IS the static prefix. Mark it as
+        # one whole block — a [marked-prefix, ""] split would put an empty
+        # text block on the wire (HTTP 400 on native Anthropic).
+        _apply_cache_marker(message, cache_marker, native_anthropic=native_anthropic)
+        return 1
 
+    if not fallback_to_whole:
+        return 0
     _apply_cache_marker(message, cache_marker, native_anthropic=native_anthropic)
     return 1
 
@@ -262,29 +288,6 @@ def _completed_transaction_endpoint_indexes(
     return endpoints
 
 
-def _apply_static_prefix_marker(
-    messages: List[Dict[str, Any]],
-    cache_marker: Dict[str, str],
-    static_system_prefix: str | None,
-) -> None:
-    """Mark only the reusable static system prefix for a tool-cache plan."""
-    if not messages or not isinstance(static_system_prefix, str) or not static_system_prefix:
-        return
-    system = messages[0]
-    if not isinstance(system, dict):
-        return
-    content = system.get("content")
-    if system.get("role") != "system" or not isinstance(content, str):
-        return
-    if not content.startswith(static_system_prefix):
-        return
-    suffix = content[len(static_system_prefix):]
-    system["content"] = [
-        {"type": "text", "text": static_system_prefix, "cache_control": cache_marker},
-        {"type": "text", "text": suffix},
-    ]
-
-
 def build_prompt_cache_plan(
     api_messages: List[Dict[str, Any]],
     tools: List[Dict[str, Any]] | None,
@@ -313,7 +316,21 @@ def build_prompt_cache_plan(
         )
 
     marker = _build_marker(cache_ttl)
-    _apply_static_prefix_marker(messages, marker, static_system_prefix)
+    if (
+        messages
+        and isinstance(messages[0], dict)
+        and messages[0].get("role") == "system"
+    ):
+        # Tool-cache layout: only the static prefix carries a system-side
+        # marker; the volatile suffix's budget is spent on the tools array.
+        _apply_system_cache_markers(
+            messages[0],
+            marker,
+            static_system_prefix,
+            native_anthropic=True,
+            mark_suffix=False,
+            fallback_to_whole=False,
+        )
     planned_tools[-1]["cache_control"] = dict(marker)
     for endpoint in _completed_transaction_endpoint_indexes(
         messages,

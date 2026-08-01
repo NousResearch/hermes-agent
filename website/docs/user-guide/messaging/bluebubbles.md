@@ -99,7 +99,7 @@ iMessage → Messages.app → BlueBubbles Server → Webhook → Hermes
 Hermes → BlueBubbles REST API → Messages.app → iMessage
 ```
 
-- **Inbound:** BlueBubbles sends webhook events to a local listener when new messages arrive. No polling — instant delivery.
+- **Inbound:** BlueBubbles sends webhook events to a local listener when new messages arrive. No polling — instant delivery. Hermes keeps one exact `new-message` registration. If an older same-URL registration has a stale event set, Hermes migrates it with rollback and cancellation protection. Post-failure reconciliation does not delete an unexpected owner.
 - **Outbound:** Hermes sends messages via the BlueBubbles REST API.
 - **Media:** Images, voice messages, videos, and documents are supported in both directions. Inbound attachments are downloaded and cached locally for the agent to process.
 

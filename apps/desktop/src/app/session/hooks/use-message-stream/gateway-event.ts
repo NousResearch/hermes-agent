@@ -34,7 +34,7 @@ import {
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { notify } from '@/store/notifications'
+import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
@@ -1161,6 +1161,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
+        } else if (isDiskFullErrorMessage(errorMessage)) {
+          notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
         } else {
           // Toast globally, not just when the failing thread is focused: a
           // turn-ending error (e.g. out of funds) blocks every thread, so the

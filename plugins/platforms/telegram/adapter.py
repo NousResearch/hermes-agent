@@ -1029,6 +1029,40 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         return any(os.getenv(key, "").strip() for key in keys)
 
+    def _should_pass_unauthorized_dm_for_pairing(self, source) -> bool:
+        """Return True when an unauthorized DM must still reach gateway pairing.
+
+        Early auth (#40863) rejects before event construction. That is correct
+        when unauthorized DMs are ignored, but it must not short-circuit the
+        gateway pairing handshake when ``unauthorized_dm_behavior`` resolves
+        to ``pair`` — including the case where an allowlist is set and the
+        operator explicitly opted back into pairing via a platform override
+        (resolution rule 1 in ``_get_unauthorized_dm_behavior``).
+        """
+        if source.chat_type != "dm":
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        behavior_fn = getattr(runner, "_get_unauthorized_dm_behavior", None)
+        if callable(behavior_fn):
+            try:
+                return (
+                    behavior_fn(
+                        Platform.TELEGRAM,
+                        profile=getattr(source, "profile", None),
+                    )
+                    == "pair"
+                )
+            except Exception:
+                logger.debug(
+                    "[Telegram] Failed to resolve unauthorized DM behavior; "
+                    "falling back to adapter-local override",
+                    exc_info=True,
+                )
+
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}
+        return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() == "pair"
+
     def _is_user_authorized_from_message(self, message: Message) -> bool:
         """Check if the sender of a Telegram message is authorized.
 
@@ -1038,6 +1072,8 @@ class TelegramAdapter(BasePlatformAdapter):
         transcript (fixes #40863). It only rejects when it can make the same
         context-aware decision the runner would make. Unknown DMs with no
         allowlist still pass through so the normal pairing flow can run.
+        Unknown DMs with an allowlist still pass through when pairing is the
+        effective unauthorized-DM behavior (explicit platform override).
         """
         source = self._source_from_message_for_auth(message)
         user_id = source.user_id
@@ -1049,6 +1085,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not user_id:
             return True
 
+        authorized: Optional[bool] = None
+
         # Adapter-level allow_from / group_allow_from: when set, they are the
         # sole authority.  Group chats use group_allow_from; DMs use allow_from.
         chat_type = source.chat_type or ""
@@ -1058,49 +1096,57 @@ class TelegramAdapter(BasePlatformAdapter):
             adapter_allow_from = self.config.extra.get("allow_from")
         if adapter_allow_from is not None:
             allowed = _coerce_allow_set(adapter_allow_from)
-            return user_id in allowed or "*" in allowed
+            authorized = user_id in allowed or "*" in allowed
 
         # Test/custom injection only. The class method named
         # _is_callback_user_authorized is for inline button callbacks and must
         # not be treated as a user-id-only shortcut for real messages — only
         # honor an instance-level override (set in tests).
-        callback_auth = self.__dict__.get("_is_callback_user_authorized")
-        if callable(callback_auth):
-            try:
-                return bool(
-                    callback_auth(
-                        user_id,
-                        chat_id=source.chat_id,
-                        chat_type=source.chat_type,
-                        thread_id=source.thread_id,
-                        user_name=source.user_name,
+        if authorized is None:
+            callback_auth = self.__dict__.get("_is_callback_user_authorized")
+            if callable(callback_auth):
+                try:
+                    authorized = bool(
+                        callback_auth(
+                            user_id,
+                            chat_id=source.chat_id,
+                            chat_type=source.chat_type,
+                            thread_id=source.thread_id,
+                            user_name=source.user_name,
+                        )
                     )
-                )
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if callable(auth_fn):
-            # Only make an early decision via the runner when an allowlist
-            # actually exists; otherwise unknown DMs must reach the pairing
-            # flow rather than being default-denied here.
-            if not self._telegram_auth_env_configured():
+        if authorized is None:
+            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+            auth_fn = getattr(runner, "_is_user_authorized", None)
+            if callable(auth_fn):
+                # Only make an early decision via the runner when an allowlist
+                # actually exists; otherwise unknown DMs must reach the pairing
+                # flow rather than being default-denied here.
+                if not self._telegram_auth_env_configured():
+                    return True
+                try:
+                    authorized = bool(auth_fn(source))
+                except Exception:
+                    logger.debug(
+                        "[Telegram] Falling back to env-only auth for user %s",
+                        user_id,
+                        exc_info=True,
+                    )
+
+        if authorized is None:
+            allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+            if not allowed_csv:
                 return True
-            try:
-                return bool(auth_fn(source))
-            except Exception:
-                logger.debug(
-                    "[Telegram] Falling back to env-only auth for user %s",
-                    user_id,
-                    exc_info=True,
-                )
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            authorized = "*" in allowed_ids or user_id in allowed_ids
 
-        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
-        if not allowed_csv:
+        if authorized:
             return True
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-        return "*" in allowed_ids or user_id in allowed_ids
+        # Unauthorized DM that the gateway would pair: forward so pairing can run.
+        return self._should_pass_unauthorized_dm_for_pairing(source)
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:

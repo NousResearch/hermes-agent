@@ -2255,6 +2255,16 @@ def _root_for_ollama_native_api(base_url: str) -> str:
     return root
 
 
+def _normalize_openai_base_url(base_url: Optional[str]) -> str:
+    """Add a usable HTTP scheme without changing an OpenAI API path."""
+    value = str(base_url or "").strip()
+    if value.startswith(":"):
+        return "http://127.0.0.1" + value
+    if value and "://" not in value:
+        return "http://" + value
+    return value
+
+
 def _get_ollama_base_url() -> str:
     """Resolve the local Ollama-compatible endpoint URL.
 
@@ -3227,11 +3237,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if not fallback_key:
             key_env = str(config.get("key_env") or "").strip()
             fallback_key = os.getenv(key_env, "").strip() if key_env else ""
-        fallback_base = str(config.get("base_url") or base_url).strip()
-        if fallback_base.startswith(":"):
-            fallback_base = "http://127.0.0.1" + fallback_base
-        elif fallback_base and "://" not in fallback_base:
-            fallback_base = "http://" + fallback_base
+        fallback_base = _normalize_openai_base_url(
+            config.get("base_url") or base_url
+        )
         fallback_headers = _get_ollama_native_headers(
             fallback_base, api_key=fallback_key
         )
@@ -5370,11 +5378,14 @@ def validate_requested_model(
         and not _same_ollama_native_root(ollama_base_url or "", configured_ollama_base_url)
     )
     if headers is not None:
-        ollama_headers = headers
+        ollama_headers = {}
+        if configured_headers_allowed:
+            ollama_headers.update(
+                _get_ollama_native_headers(ollama_base_url, api_key=api_key)
+            )
+        ollama_headers.update(headers)
     elif configured_headers_allowed:
-        ollama_headers = _get_ollama_native_headers(
-            ollama_base_url, api_key=api_key
-        )
+        ollama_headers = _get_ollama_native_headers(ollama_base_url, api_key=api_key)
     else:
         ollama_headers = {}
     if should_use_ollama_native_catalog(
@@ -5388,7 +5399,7 @@ def validate_requested_model(
             # existing OpenAI-compatible catalog before accepting blindly.
             ollama_models = probe_api_models(
                 api_key,
-                ollama_base_url,
+                _normalize_openai_base_url(ollama_base_url),
                 request_headers=ollama_headers,
             ).get("models")
         if ollama_models is None:

@@ -222,21 +222,21 @@ def _fetch_picker_live_models(
     """Fetch live picker models while preserving explicit local Ollama lists."""
     from hermes_cli.models import (
         _get_ollama_native_headers,
+        _normalize_openai_base_url,
         fetch_api_models,
         fetch_ollama_local_models,
         should_use_ollama_native_catalog,
     )
 
-    resolved_headers = headers
-    if str(native_catalog_provider or "").strip().lower() == "ollama":
-        native_headers = _get_ollama_native_headers(api_url, api_key=api_key)
-        if headers:
-            native_headers.update(headers)
-        resolved_headers = native_headers or None
+    candidate_headers = _get_ollama_native_headers(api_url, api_key=api_key)
+    if headers:
+        candidate_headers.update(headers)
+    use_native = should_use_ollama_native_catalog(
+        native_catalog_provider, api_url, headers=candidate_headers or None
+    )
+    resolved_headers = candidate_headers or None if use_native else headers
 
-    if should_use_ollama_native_catalog(
-        native_catalog_provider, api_url, headers=resolved_headers
-    ):
+    if use_native:
         if preserve_native_models:
             return []
         native_models = fetch_ollama_local_models(
@@ -246,7 +246,9 @@ def _fetch_picker_live_models(
             return native_models
         # A failed native probe is not authoritative: retry the generic
         # OpenAI-compatible catalog before reporting no models.
-        return fetch_api_models(api_key, api_url, headers=resolved_headers)
+        return fetch_api_models(
+            api_key, _normalize_openai_base_url(api_url), headers=resolved_headers
+        )
     return fetch_api_models(api_key, api_url, headers=resolved_headers)
 
 

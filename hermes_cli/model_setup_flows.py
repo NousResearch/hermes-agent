@@ -1517,6 +1517,7 @@ def _model_flow_named_custom(config, provider_info):
         fetch_api_models,
         fetch_ollama_local_models,
         _get_ollama_native_headers,
+        _normalize_openai_base_url,
         should_use_ollama_native_catalog,
     )
 
@@ -1582,15 +1583,14 @@ def _model_flow_named_custom(config, provider_info):
             if provider_key.lower() == "ollama" or name.strip().lower() == "ollama"
             else "custom"
         )
-        native_headers = normalize_extra_headers(provider_info.get("extra_headers")) or {}
-        if native_catalog_provider == "ollama":
-            resolved_headers = _get_ollama_native_headers(base_url, api_key=api_key)
-            resolved_headers.update(native_headers)
-            native_headers = resolved_headers
-        native_headers_arg = native_headers or None
-        if should_use_ollama_native_catalog(
-            native_catalog_provider, base_url, headers=native_headers_arg
-        ):
+        extra_headers = normalize_extra_headers(provider_info.get("extra_headers")) or {}
+        candidate_headers = _get_ollama_native_headers(base_url, api_key=api_key)
+        candidate_headers.update(extra_headers)
+        use_native = should_use_ollama_native_catalog(
+            native_catalog_provider, base_url, headers=candidate_headers or None
+        )
+        native_headers_arg = candidate_headers or None if use_native else (extra_headers or None)
+        if use_native:
             # Match the slash-command picker guardrail: an explicit models:
             # list remains authoritative instead of being replaced by tags.
             if configured_models:
@@ -1605,7 +1605,10 @@ def _model_flow_named_custom(config, provider_info):
                     # A failed native probe is not authoritative; try the
                     # existing OpenAI-compatible catalog before manual entry.
                     models = fetch_api_models(
-                        api_key, base_url, headers=native_headers_arg, **fetch_kwargs
+                        api_key,
+                        _normalize_openai_base_url(base_url),
+                        headers=native_headers_arg,
+                        **fetch_kwargs,
                     )
         else:
             models = fetch_api_models(

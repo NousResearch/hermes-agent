@@ -1055,8 +1055,12 @@ class HermesACPAgent(acp.Agent):
         Cache safety: the rebuild only runs while the session is still
         pre-first-turn (no API call made yet → nothing cached to invalidate).
         Once the user has sent a message we leave the snapshot frozen rather
-        than break the cached prompt prefix mid-conversation; late tools then
-        require an explicit ``/reload-mcp`` (user-consented), exactly as today.
+        than break the cached prompt prefix mid-conversation; servers that land
+        later are picked up cache-safely by the between-turns prologue refresh
+        (``agent/turn_context.py``) at the next turn boundary.  The marginal
+        value of this pre-first-turn daemon is therefore freshness in the
+        window [session created → first message] — e.g. the "Available tools"
+        listing a client may request before the first prompt.
         No-op when discovery already finished, when the join times out, when the
         registry was unchanged, or when the session was closed while waiting.
         """

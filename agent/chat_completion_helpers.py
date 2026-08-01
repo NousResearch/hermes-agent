@@ -3979,7 +3979,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 "   To avoid this delay, set display.streaming: false "
                                 "in config.yaml\n"
                             )
-                        logger.info(
+                        logger.exception(
                             "Streaming failed before delivery: %s",
                             e,
                         )

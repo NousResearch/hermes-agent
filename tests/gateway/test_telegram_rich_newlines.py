@@ -167,3 +167,33 @@ class TestRichBlockConstructProtection:
         assert "RevenueOS answers:\n- point one\n- point two\n\n" in md
         assert "> An important quote  \n> second quote line\n\n" in md
         assert "### Next heading\nMore text." in md
+
+
+class TestOrderedListInterruptRule:
+    """Non-``1.`` numeric markers after prose are paragraph text, not lists.
+
+    CommonMark's interrupt rule: an ordered list can only interrupt a
+    paragraph when it starts with 1. ``Version history:\\n2024. Major
+    rewrite`` is prose and must KEEP its hard break — suppressing it
+    reintroduces the soft-wrap bug the normalizer exists to prevent.
+    """
+
+    def test_year_line_after_prose_keeps_hard_break(self, adapter):
+        content = "Version history:\n2024. Major rewrite"
+        md = adapter._rich_message_payload(content)["markdown"]
+        assert md == "Version history:  \n2024. Major rewrite"
+
+    def test_non_one_paren_marker_after_prose_keeps_hard_break(self, adapter):
+        content = "Note:\n2) second point only"
+        md = adapter._rich_message_payload(content)["markdown"]
+        assert md == "Note:  \n2) second point only"
+
+    def test_one_marker_after_prose_still_opens_list(self, adapter):
+        content = "Steps:\n1. first\n2. second"
+        md = adapter._rich_message_payload(content)["markdown"]
+        assert md == content  # 1. interrupts; 2. continues the open list
+
+    def test_non_one_marker_continuing_list_stays_bare(self, adapter):
+        content = "1. first\n2. second\n3. third"
+        md = adapter._rich_message_payload(content)["markdown"]
+        assert md == content  # every marker follows an ordered item

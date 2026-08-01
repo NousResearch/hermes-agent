@@ -539,7 +539,14 @@ _RICH_PROTECTED_REGION_RE = re.compile(
 # rich truncation stopping precisely at a heading and at a paragraph→list
 # boundary, both lines this function previously stamped with "  \n").
 _RICH_ATX_HEADING_LINE_RE = re.compile(r'^[ \t]{0,3}#{1,6}(?:[ \t]|$)')
-_RICH_LIST_ITEM_LINE_RE = re.compile(r'^[ \t]{0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t])')
+_RICH_BULLET_ITEM_LINE_RE = re.compile(r'^[ \t]{0,3}[-*+][ \t]')
+# Ordered-list markers follow CommonMark's paragraph-interrupt rule: after
+# prose, only a ``1.``/``1)`` marker opens a list — ``2024. Major rewrite`` is
+# paragraph text, NOT a block boundary, so it must keep its hard break. A
+# non-1 marker is a boundary only when the PREVIOUS line is itself an ordered
+# item (an existing list continuing: ``1. a\n2. b``).
+_RICH_ORDERED_ITEM_LINE_RE = re.compile(r'^[ \t]{0,3}\d{1,9}[.)][ \t]')
+_RICH_ORDERED_START_LINE_RE = re.compile(r'^[ \t]{0,3}1[.)][ \t]')
 _RICH_QUOTE_LINE_RE = re.compile(r'^[ \t]{0,3}>')
 
 
@@ -558,8 +565,11 @@ def _rich_normalize_linebreaks(text: str) -> str:
     - fenced code blocks and GFM pipe-table interiors (native rendering — a
       hard break in a row separator would corrupt the table);
     - newlines adjacent to block constructs: after an ATX heading line,
-      before a heading / list item / table / fenced code, and before a
-      blockquote opener when not already inside the quote.  Those newlines
+      before a heading / bullet item / table / fenced code, before an
+      ordered-list marker that actually opens or continues a list (per
+      CommonMark's interrupt rule ``2024. prose`` after a paragraph is
+      text, not a list), and before a blockquote opener when not already
+      inside the quote.  Those newlines
       are hard block boundaries already, so the marker adds nothing — and a
       trailing hard break welded onto a block opener is malformed Markdown
       that rich-message client renderers handle inconsistently (#69444).
@@ -589,7 +599,12 @@ def _rich_normalize_linebreaks(text: str) -> str:
         next_line = text[m.end():next_nl if next_nl != -1 else len(text)]
         if _RICH_ATX_HEADING_LINE_RE.match(cur_line):
             return m.group(0)
-        if _RICH_ATX_HEADING_LINE_RE.match(next_line) or _RICH_LIST_ITEM_LINE_RE.match(next_line):
+        if _RICH_ATX_HEADING_LINE_RE.match(next_line) or _RICH_BULLET_ITEM_LINE_RE.match(next_line):
+            return m.group(0)
+        if _RICH_ORDERED_ITEM_LINE_RE.match(next_line) and (
+            _RICH_ORDERED_START_LINE_RE.match(next_line)
+            or _RICH_ORDERED_ITEM_LINE_RE.match(cur_line)
+        ):
             return m.group(0)
         if _RICH_QUOTE_LINE_RE.match(next_line) and not _RICH_QUOTE_LINE_RE.match(cur_line):
             return m.group(0)

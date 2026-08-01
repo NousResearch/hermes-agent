@@ -70,6 +70,10 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: grab npm 12
+        run: |
+          npm i -g npm@12
+
       # --ignore-scripts: eslint only needs TS sources + eslint packages.
       - uses: ./.github/actions/retry
         with:

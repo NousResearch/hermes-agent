@@ -17,6 +17,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      - name: grab npm 12
+        run: |
+          npm i -g npm@12
+
       - uses: ./.github/actions/retry
         with:
           command: npm ci --ignore-scripts
@@ -63,6 +68,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      - name: grab npm 12
+        run: |
+          npm i -g npm@12
+
       - uses: ./.github/actions/retry
         with:
           command: npm ci

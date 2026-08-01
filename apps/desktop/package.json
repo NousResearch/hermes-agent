@@ -81,7 +81,7 @@
     "@icons-pack/react-simple-icons": "13.11.1",
     "@lezer/highlight": "1.2.3",
     "@nanostores/react": "1.1.0",
-    "@nous-research/ui": "0.16.0",
+    "@nous-research/ui": "0.18.2",
     "@streamdown/code": "1.1.1",
     "@tabler/icons-react": "3.44.0",
     "@tailwindcss/typography": "0.5.20",

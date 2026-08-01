@@ -22,12 +22,16 @@
     "@hermes/ink": "file:./packages/hermes-ink",
     "@hermes/shared": "file:../apps/shared",
     "@nanostores/react": "1.1.0",
-    "ink": "6.8.0",
     "ink-text-input": "6.0.0",
     "nanostores": "1.4.0",
     "react": "19.2.7",
     "undici": "6.27.0",
     "unicode-animations": "1.0.3"
+  },
+  "overrides": {
+    "ink-text-input": {
+      "ink": "npm:@hermes/ink@0.0.1"
+    }
   },
   "devDependencies": {
     "@types/node": "22.20.1",

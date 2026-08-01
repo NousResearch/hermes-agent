@@ -36,6 +36,10 @@ import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/sessio
 // "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them.
 const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+
+const isSidebarRecent = (session: SessionInfo) =>
+  !SIDEBAR_EXCLUDED_SOURCES.includes(normalizeSessionSource(session.source) ?? '')
+
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
@@ -187,18 +191,20 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // (the tombstone self-clears once projects.tree confirms the delete).
         const tombstones = $removedSessionIds.get()
 
-        const incoming = tombstones.size
-          ? recents.sessions.filter(
-              s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
-            )
-          : recents.sessions
+        const incoming = (
+          tombstones.size
+            ? recents.sessions.filter(
+                s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id))
+              )
+            : recents.sessions
+        ).filter(isSidebarRecent)
 
         // Signature-gate the swap (same pattern as cron/messaging): a refresh
         // that returns content-identical rows must keep the previous array
         // identity, or every sidebar memo keyed on $sessions recomputes and the
         // whole list re-renders once per turn/broadcast for nothing.
         setSessions(prev => {
-          const next = mergeSessionPage(prev, incoming, sessionsToKeep())
+          const next = mergeSessionPage(prev.filter(isSidebarRecent), incoming, sessionsToKeep())
 
           return sameCronSignature(prev, next) ? prev : next
         })
@@ -256,10 +262,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     })
 
     const keep = sessionsToKeep(key)
+    const incoming = result.sessions.filter(isSidebarRecent)
 
     setSessions(prev => [
       ...prev.filter(s => !inKey(s)),
-      ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
+      ...mergeSessionPage(
+        prev.filter(s => inKey(s) && isSidebarRecent(s)),
+        incoming,
+        keep
+      )
     ])
 
     // A full window back means the profile still has more on disk.

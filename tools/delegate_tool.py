@@ -3605,6 +3605,7 @@ def delegate_task(
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
+    result_delivery: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3656,14 +3657,22 @@ def delegate_task(
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
 
-    # Background (async) delegation now applies to BOTH single tasks and
-    # batches. A batch is dispatched as ONE async unit: the whole fan-out runs
-    # on the daemon executor, joins on every child (see _execute_and_aggregate
-    # / dispatch_async_delegation_batch), and pushes a SINGLE completion event
-    # carrying the consolidated per-task results. It re-enters the conversation
-    # as one message once ALL children finish — the chat is not blocked while
-    # they run.
+    # Background delegation applies to both single tasks and batches. A top-level
+    # call is one async execution/stall unit. result_delivery determines whether
+    # ready children surface at same-turn tool-result boundaries or are
+    # coalesced with every ready sibling at the next available turn boundary.
     background = is_truthy_value(background, default=False) if background is not None else False
+
+    # result_delivery controls how child results reach the parent:
+    #   'inject'      — ready evidence carried by a newly produced tool result
+    #                   before its append-only transcript commit.
+    #   'after_turn'  — legacy completion_queue path; surfaces as a new turn
+    #                   only after the current agent turn fully completes.
+    # Default is 'after_turn' for backward compatibility: old task_json entries
+    # that lack this field are treated as after_turn.
+    _delivery = str(result_delivery or "").strip().lower()
+    if _delivery not in {"inject", "after_turn"}:
+        _delivery = "after_turn"
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -3798,8 +3807,8 @@ def delegate_task(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
     if not live_deleg_id:
-        # Child-scoped durable rows and the optional live transcript must share
-        # one stable parent identity, even when transcript creation is disabled.
+        # Child-level durable delivery needs a stable id even when the optional
+        # live-transcript side channel could not be created.
         from tools.async_delegation import _new_delegation_id
 
         live_deleg_id = _new_delegation_id()
@@ -3906,8 +3915,8 @@ def delegate_task(
 
             publish_batch_child_completion(live_deleg_id, task_index, payload)
         except Exception:
-            # Batch finalization republishes all children idempotently as the
-            # durable safety net for callback/persistence failures.
+            # _push_batch_completion_event republishes all children
+            # idempotently as a durable safety net.
             logger.exception(
                 "Failed to publish ready child %s/%s",
                 live_deleg_id,
@@ -3919,10 +3928,9 @@ def delegate_task(
         fire subagent_stop hooks + cost rollup, and return the combined result
         dict. Used by BOTH the synchronous path and the background runner. In
         the background case this whole function runs on the daemon executor, so
-        the parent turn isn't blocked — but the batch still JOINS on itself
-        here (all children must finish) before producing ONE consolidated
-        results block. That is the contract: fan-out runs in the background,
-        waits on each other, and returns together.
+        the parent turn isn't blocked. Each child is published independently as
+        it becomes ready; this final aggregate is bookkeeping plus an idempotent
+        safety net for any child callback that failed before persistence.
         """
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
@@ -4108,12 +4116,10 @@ def delegate_task(
         return combined
 
     # ----- Background dispatch: run the WHOLE batch as one async unit -----
-    # When background is true, the entire fan-out runs on the daemon executor
-    # via a single async delegation. _execute_and_aggregate() joins on every
-    # child and produces ONE consolidated results block, which re-enters the
-    # conversation as a single message when ALL children finish. The chat is
-    # not blocked in the meantime. This is the contract: dispatch N subagents,
-    # keep chatting, get the combined summaries back together at the end.
+    # _execute_and_aggregate owns child execution and still returns one ordered
+    # bookkeeping aggregate. Its completion callback publishes each child
+    # immediately in both delivery modes; consumers choose current-turn inject
+    # versus next-turn ready-set coalescing.
     if background:
         from tools.async_delegation import dispatch_async_delegation_batch
         from tools.approval import get_current_session_key
@@ -4207,6 +4213,7 @@ def delegate_task(
             if _agent_session_id:
                 _session_key = _agent_session_id
         _parent_session_id = getattr(parent_agent, "session_id", None)
+        _parent_turn_id = str(getattr(parent_agent, "_active_turn_id", "") or "")
         _child_agents = [c for (_, _, c) in children]
 
         # Detach every child from the parent's interrupt-propagation list — the
@@ -4290,25 +4297,45 @@ def delegate_task(
             # returned delegation_id matches cache/delegation/live/<id>/.
             delegation_id=live_deleg_id,
             progress_fn=_batch_progress,
+            # Delivery mode: 'inject' (new tool-result carriers) or
+            # 'after_turn' (ready children coalesced at the next available turn
+            # boundary). Default 'after_turn' preserves compatibility with old
+            # task_json entries.
+            result_delivery=_delivery,
+            parent_turn_id=_parent_turn_id,
         )
 
         if dispatch.get("status") == "dispatched":
             n = len(_goals)
-            note = (
-                "Subagent is running in the background. You and the user can "
-                "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
-                if n == 1 else
-                f"{n} subagents are running in parallel in the background. You "
-                f"and the user can keep working; every result ready at the next "
-                f"turn boundary re-enters in one grouped message without waiting "
-                f"for slower siblings. Later results arrive in later grouped "
-                f"messages. Do not wait or poll — just continue."
-            )
+            if _delivery == "inject":
+                note = (
+                    "Subagent is running asynchronously. Keep working; each ready "
+                    "result can be carried by the next new tool result in this "
+                    "turn. A result that misses that carrier becomes a separate "
+                    "late-result turn. Never wait or poll."
+                    if n == 1 else
+                    f"{n} subagents are running asynchronously. Keep working; "
+                    "children ready at the next new tool-result boundary share "
+                    "that carrier without waiting for slower siblings. Late "
+                    "results become separate result turns. Never wait or poll."
+                )
+            else:
+                note = (
+                    "Subagent is running in the background. You and the user can "
+                    "keep working; its full result re-enters the conversation as a "
+                    "new message when it finishes. Do not wait or poll — just "
+                    "continue."
+                    if n == 1 else
+                    f"{n} subagents are running in parallel in the background. You "
+                    f"and the user can keep working; every result ready at the next "
+                    f"turn boundary re-enters in one grouped message without waiting "
+                    f"for slower siblings. Later results arrive in later grouped "
+                    f"messages. Do not wait or poll — just continue."
+                )
             payload = {
                 "status": "dispatched",
                 "mode": "background",
+                "result_delivery": _delivery,
                 "count": n,
                 "delegation_id": dispatch["delegation_id"],
                 "goals": _goals,
@@ -4647,9 +4674,8 @@ def _build_top_level_description() -> str:
         "you. Provide 'goal' for a single task or 'tasks' for a parallel batch "
         "(limits and nesting rules are in the parameter descriptions).\n\n"
         "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message "
-        "for a batch) re-enters the conversation on its own. Do NOT wait or "
-        "poll; continue other work.\n\n"
+        "transcript paths. Result timing follows the 'result_delivery' parameter. "
+        "Do NOT wait or poll; continue other work.\n\n"
         "LIVE ORCHESTRATION: while children run, this tool also controls "
         "them — action='list' (live children + ids), action='steer' "
         "(subagent_id + message, redirect without stopping), action='stop' "
@@ -4845,9 +4871,9 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "DEPRECATED / IGNORED. Top-level single and batch "
                     "delegations run in the background automatically — you do "
-                    "not need to (and cannot) opt in or out. A single result or "
-                    "consolidated batch result re-enters the conversation when "
-                    "the work finishes; just continue working in the meantime. "
+                    "not need to (and cannot) opt in or out. Ready results re-enter "
+                    "the conversation according to result_delivery; just continue "
+                    "working in the meantime. "
                     "Setting this has no effect; the parameter remains only for "
                     "backward compatibility."
                 ),
@@ -4882,6 +4908,25 @@ DELEGATE_TASK_SCHEMA = {
                     "and specific — the child sees it appended to its next "
                     "tool result mid-run (e.g. \"Stop exploring X; focus on Y "
                     "and return early results\")."
+                ),
+            },
+            "result_delivery": {
+                "type": "string",
+                "enum": ["inject", "after_turn"],
+                "default": "after_turn",
+                "description": (
+                    "How child results are delivered back to the parent context. "
+                    "'inject': use for auditors, reviewers, and dependent work "
+                    "whose result can affect the current turn; a result that is "
+                    "ready when a new tool batch completes is carried on that batch's "
+                    "last tool result before the next model request. Ready batch "
+                    "siblings share one carrier; results that miss the bounded tool "
+                    "boundary become separate late-result turns. "
+                    "'after_turn' (default): use for independent background work; "
+                    "at each available turn boundary, all currently ready children "
+                    "are grouped into one synthetic turn, while slower siblings "
+                    "arrive in later grouped turns. Running children are never "
+                    "waited on."
                 ),
             },
         },
@@ -4948,6 +4993,7 @@ registry.register(
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
+        result_delivery=args.get("result_delivery"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

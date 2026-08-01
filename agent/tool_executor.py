@@ -196,19 +196,85 @@ def _resolve_concurrent_tool_timeout() -> float | None:
     )
 
 
+def _completed_tool_batch_size(messages: list) -> int:
+    """Return the size of a complete, not-yet-checked tool-result tail."""
+
+    if not messages or not isinstance(messages[-1], dict):
+        return 0
+    tail = messages[-1]
+    if tail.get("role") != "tool" or tail.get("_external_input_boundary_checked"):
+        return 0
+
+    start = len(messages) - 1
+    while start >= 0 and isinstance(messages[start], dict) and messages[start].get("role") == "tool":
+        start -= 1
+    if start < 0:
+        return 0
+    assistant = messages[start]
+    if assistant.get("role") != "assistant" or not assistant.get("tool_calls"):
+        return 0
+
+    expected_ids: list[str] = []
+    for call in assistant.get("tool_calls") or []:
+        call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+        if call_id:
+            expected_ids.append(str(call_id))
+    actual_ids = [
+        str(message.get("tool_call_id") or "")
+        for message in messages[start + 1 :]
+        if isinstance(message, dict) and message.get("role") == "tool"
+    ]
+    if not expected_ids or len(actual_ids) != len(expected_ids):
+        return 0
+    if set(actual_ids) != set(expected_ids):
+        return 0
+    return len(actual_ids)
+
+
 def _flush_session_db_after_tool_progress(
     agent,
     messages: list,
     *,
     stage: str,
 ) -> bool:
-    """Flush tool-call progress before projecting it to any UI surface.
+    """Persist tool progress, carrying ready delegation evidence once per batch.
 
-    Tool execution can perform side effects that terminate or restart the
-    current Hermes process before the normal turn-end persistence path runs.
-    Flush the already-appended assistant/tool messages immediately so the
-    transcript survives destructive-but-valid tool calls.
+    The last result of a complete tool batch is the only same-turn carrier. It
+    is enriched before the batch's first durable commit, so history remains
+    append-only and every provider sees the ordinary assistant/tool role shape.
     """
+    completed_batch_size = _completed_tool_batch_size(messages)
+    if completed_batch_size:
+        messages[-1]["_external_input_boundary_checked"] = True
+        try:
+            from agent.delegation_inject import attach_ready_injects_to_tool_results
+
+            attach_ready_injects_to_tool_results(
+                agent,
+                messages,
+                num_tool_msgs=completed_batch_size,
+                turn_id=str(getattr(agent, "_active_turn_id", "") or ""),
+            )
+        except Exception as exc:
+            logger.warning("Delegation tool-boundary preparation failed: %s", exc)
+
+    def _release_unpersisted_carrier() -> None:
+        if not completed_batch_size:
+            return
+        try:
+            from agent.delegation_inject import release_pending_injects
+
+            release_pending_injects(
+                agent,
+                messages,
+                turn_id=str(getattr(agent, "_active_turn_id", "") or ""),
+            )
+        except Exception:
+            logger.warning(
+                "Could not release unpersisted delegation tool carrier",
+                exc_info=True,
+            )
+
     try:
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:
@@ -218,11 +284,21 @@ def _flush_session_db_after_tool_progress(
             # fall back to 'unknown' when nothing more specific is recorded.
             if getattr(agent, "_last_persistence_error_cause", None) is None:
                 agent._last_persistence_error_cause = "unknown"
+            _release_unpersisted_carrier()
+        elif completed_batch_size:
+            from agent.delegation_inject import acknowledge_pending_injects
+
+            acknowledge_pending_injects(
+                agent,
+                turn_id=str(getattr(agent, "_active_turn_id", "") or ""),
+            )
         return persisted
     except Exception as exc:
         agent._incremental_persistence_failed = True
         from hermes_state import classify_persistence_error
+
         agent._last_persistence_error_cause = classify_persistence_error(exc)
+        _release_unpersisted_carrier()
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
         return False
 

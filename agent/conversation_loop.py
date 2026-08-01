@@ -1869,6 +1869,10 @@ def run_conversation(
     active_system_prompt = _ctx.active_system_prompt
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
+    # Async child events bind to the exact foreground turn that dispatched
+    # them. This is identity exposure only; delivery still occurs exclusively
+    # at the tool boundary or after the turn.
+    agent._active_turn_id = turn_id
     current_turn_user_idx = _ctx.current_turn_user_idx
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context

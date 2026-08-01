@@ -26019,14 +26019,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     async_events = coalesce_ready_after_turn_events(async_events)
                     for evt in async_events:
                         self._enrich_async_delegation_routing(evt)
-                        # Delivery is next-turn by definition in this layer. A
-                        # live parent retains ownership; the watcher retries
-                        # after that turn reaches its idle boundary.
+                        # Busy-session routing is part of the same queue
+                        # reservation as dequeue/coalescing. Otherwise the active
+                        # conversation loop can observe a temporary-empty queue
+                        # and miss an inject that was already ready at its safe
+                        # boundary.
+                        _rd = str(
+                            evt.get("result_delivery") or "after_turn"
+                        ).strip().lower()
                         _route_key = str(evt.get("session_key") or "").strip()
+                        _event_turn_id = str(evt.get("parent_turn_id") or "")
                         _running_parent = getattr(self, "_running_agents", {}).get(
                             _route_key
                         )
-                        if _running_parent is not None:
+                        if _running_parent is _AGENT_PENDING_SENTINEL:
+                            _pr.completion_queue.put(evt)
+                            continue
+                        if _rd == "after_turn" and _running_parent is not None:
+                            _pr.completion_queue.put(evt)
+                            continue
+                        if (
+                            _rd == "inject"
+                            and _running_parent is not None
+                            and _event_turn_id
+                            and str(
+                                getattr(_running_parent, "_active_turn_id", "") or ""
+                            )
+                            == _event_turn_id
+                        ):
                             _pr.completion_queue.put(evt)
                             continue
                         idle_events.append(evt)

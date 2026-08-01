@@ -142,6 +142,20 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    # Common rollback boundary for tool-carried delegation evidence that never
+    # reached a normalized provider response. The helper restores only the
+    # current unsent carrier and releases its durable child claims; events then
+    # continue through the existing after-turn path.
+    try:
+        from agent.delegation_inject import release_pending_injects
+
+        release_pending_injects(agent, messages, turn_id=turn_id)
+    except Exception:
+        logger.debug(
+            "Failed to release unconsumed delegation result claims",
+            exc_info=True,
+        )
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0

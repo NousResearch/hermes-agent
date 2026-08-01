@@ -16166,6 +16166,123 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
+def test_busy_tui_poller_cannot_hide_inject_from_tool_boundary(monkeypatch):
+    """A dequeued/requeued TUI event remains atomic with its tool carrier."""
+    import queue as _queue_mod
+
+    import agent.delegation_inject as inject_mod
+    import tools.async_delegation as delegation_mod
+    import tools.process_registry as registry_mod
+    from tools.process_registry import process_registry
+
+    dequeued = threading.Event()
+    release_dequeue = threading.Event()
+    stop_poller = threading.Event()
+
+    class _PausedAfterDequeueQueue(_queue_mod.Queue):
+        def get(self, block=True, timeout=None):
+            event = super().get(block=block, timeout=timeout)
+            dequeued.set()
+            if not release_dequeue.wait(3):
+                raise TimeoutError("test did not release paused TUI dequeue")
+            stop_poller.set()
+            return event
+
+    isolated_queue = _PausedAfterDequeueQueue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(registry_mod, "format_process_notification", lambda _evt: "ready")
+    monkeypatch.setattr(registry_mod, "_format_async_delegation", lambda _evt: "ready")
+    monkeypatch.setattr(inject_mod, "ensure_pending_inject_heartbeat", lambda _agent: True)
+
+    claims = []
+
+    def _claim(event, owner):
+        claims.append((event["delivery_event_key"], owner))
+        return "claim-active-loop"
+
+    monkeypatch.setattr(delegation_mod, "claim_event_delivery", _claim)
+
+    turn_id = "turn-tui-inject"
+    sid = "sid-tui-inject"
+    agent = types.SimpleNamespace(
+        _active_turn_id=turn_id,
+        _iteration_calls_made=0,
+        max_iterations=1,
+        session_id="",
+    )
+    sess = _session(
+        agent=agent,
+        running=True,
+        session_key="session-tui-inject",
+    )
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-tui-inject",
+        "delivery_event_key": "task:0",
+        "result_delivery": "inject",
+        "parent_turn_id": turn_id,
+        "origin_ui_session_id": sid,
+        "session_key": "session-tui-inject",
+    }
+    isolated_queue.put(event)
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "tc", "function": {"name": "terminal"}}],
+        },
+        {"role": "tool", "tool_call_id": "tc", "content": "working"},
+    ]
+    drained = {}
+    drain_done = threading.Event()
+
+    def _drain():
+        drained["count"] = inject_mod.attach_ready_injects_to_tool_results(
+            agent, messages, 1, turn_id=turn_id
+        )
+        drain_done.set()
+
+    poller_thread = threading.Thread(
+        target=server._notification_poller_loop,
+        args=(stop_poller, sid, sess),
+    )
+    drain_thread = threading.Thread(target=_drain)
+
+    try:
+        poller_thread.start()
+        assert dequeued.wait(3), "TUI poller did not dequeue the inject event"
+        drain_thread.start()
+
+        # The active loop must wait for the poller's atomic route/requeue section;
+        # returning here would miss a ready same-turn result because the queue is
+        # temporarily empty.
+        assert not drain_done.wait(0.5)
+
+        release_dequeue.set()
+        poller_thread.join(3)
+        drain_thread.join(3)
+
+        assert not poller_thread.is_alive()
+        assert not drain_thread.is_alive()
+        assert drained == {"count": 1}
+        assert messages[-1]["role"] == "tool"
+        assert "ready" in messages[-1]["content"]
+        assert len(claims) == 1
+        assert claims[0][0] == "task:0"
+        assert claims[0][1].startswith("tool-boundary:")
+        assert isolated_queue.empty()
+    finally:
+        release_dequeue.set()
+        stop_poller.set()
+        poller_thread.join(3)
+        drain_thread.join(3)
+        server._sessions.pop(sid, None)
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
 def test_tui_claim_loss_does_not_leave_session_busy(monkeypatch):
     """A competing durable consumer cannot strand the TUI in running state."""
     import queue as _queue_mod

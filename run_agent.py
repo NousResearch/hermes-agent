@@ -7199,6 +7199,20 @@ class AIAgent:
                         "session, or check auxiliary.compression."
                     )
 
+            def _on_commit_overrun(waited, ceiling):
+                # Commit-phase ceiling breach: the SessionDB mutation is in
+                # flight and must complete (abandoning it mid-commit would
+                # diverge live messages from durable session state), so this
+                # only surfaces the overrun — it never cancels the commit.
+                emit = getattr(self, "_emit_warning", None)
+                if callable(emit):
+                    emit(
+                        "⚠ Context compression commit is taking unusually "
+                        f"long ({waited:.0f}s, ceiling {ceiling:.0f}s). "
+                        "Waiting for it to finish safely — if this persists, "
+                        "check SessionDB health (disk / lock contention)."
+                    )
+
             result = run_compress_context_with_progress_timeout(
                 worker=_run,
                 messages=messages,
@@ -7206,6 +7220,7 @@ class AIAgent:
                 idle_timeout_seconds=idle_timeout,
                 total_ceiling_seconds=total_ceiling,
                 on_timeout=_on_timeout,
+                on_commit_overrun=_on_commit_overrun,
             )
             # compress_context ran on a daemon pool worker thread; the session
             # id rotation updated hermes_logging._session_context (a

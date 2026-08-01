@@ -17,6 +17,7 @@ import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
+import { copyFilePath } from '@/store/file-actions'
 import { notifyError } from '@/store/notifications'
 import { $newWorktreeRequest } from '@/store/projects'
 
@@ -63,6 +64,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const { t } = useI18n()
   const s = t.statusStack.coding
   const p = t.sidebar.projects
+  const fileMenu = t.fileMenu
   const resolvedRepoPath = repoPath?.trim() || undefined
   // This surface's OWN worktree, always — never the primary's. The row used to
   // fall back to the global `$repoStatus` for a blank repoPath, which painted
@@ -238,16 +240,32 @@ export const CodingStatusRow = memo(function CodingStatusRow({
               </span>
             </button>
 
-            {/* Worktree path — plain muted text, not a chip. Always in the flex
-                so hover doesn't reflow the row; opacity alone reveals it.
-                `displayPath` collapses home → ~ (shell / VS Code convention). */}
+            {/* Worktree path + copy — plain muted text, not a chip. Always in the
+                flex so hover doesn't reflow the row; opacity alone reveals the
+                pair. `displayPath` collapses home → ~; copy still takes the
+                real absolute path. */}
             {resolvedRepoPath && (
-              <span
-                className="min-w-0 flex-1 truncate font-mono text-[0.62rem] leading-4 text-muted-foreground/50 opacity-0 transition-opacity group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100"
-                data-slot="coding-status-cwd"
-              >
-                {displayPath(resolvedRepoPath)}
-              </span>
+              <div className="flex min-w-0 flex-1 items-center gap-0.5 opacity-0 transition-opacity group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100">
+                <span
+                  className="min-w-0 flex-1 truncate font-mono text-[0.62rem] leading-4 text-muted-foreground/50"
+                  data-slot="coding-status-cwd"
+                >
+                  {displayPath(resolvedRepoPath)}
+                </span>
+                <Button
+                  aria-label={fileMenu.copyPath}
+                  className="pointer-events-none size-4 shrink-0 text-muted-foreground/50 hover:text-foreground group-hover/status-row:pointer-events-auto group-focus-within/status-row:pointer-events-auto"
+                  onClick={event => {
+                    event.stopPropagation()
+                    void copyFilePath(resolvedRepoPath)
+                  }}
+                  size="icon-xs"
+                  type="button"
+                  variant="ghost"
+                >
+                  <Codicon name="copy" size="0.7rem" />
+                </Button>
+              </div>
             )}
 
             {/* Branch actions kebab — same pattern as the session/worktree rows.

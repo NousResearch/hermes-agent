@@ -21,6 +21,24 @@ export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
 
+// Latched because opening a fresh session may remount the main composer before
+// it can start voice. Session-tile composers deliberately never consume this.
+export const $voiceConversationStartRequest = atom(0)
+let nextVoiceStartRequest = 0
+let handledVoiceStartRequest = 0
+
+export const requestVoiceConversationStart = (): void => $voiceConversationStartRequest.set(++nextVoiceStartRequest)
+
+export const takeVoiceConversationStart = (current: number): boolean => {
+  if (current <= handledVoiceStartRequest) {
+    return false
+  }
+
+  handledVoiceStartRequest = current
+
+  return true
+}
+
 // ---------------------------------------------------------------------------
 // Composer scopes — one live attachment set PER MOUNTED COMPOSER. The main
 // chat's scope wraps the module-level atom above (all existing readers keep

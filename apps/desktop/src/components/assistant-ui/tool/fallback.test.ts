@@ -1,42 +1,56 @@
 import { describe, expect, it } from 'vitest'
 
-import { isUnboundableTool, shouldBoundToolGroup, technicalTrace } from './fallback'
+import { isCardTool, splitRunItems, technicalTrace } from './fallback'
 
-describe('shouldBoundToolGroup', () => {
-  it('bounds long runs of ordinary tool calls', () => {
-    expect(shouldBoundToolGroup(3, false)).toBe(true)
-  })
-
-  it('leaves short runs unbounded', () => {
-    expect(shouldBoundToolGroup(2, false)).toBe(false)
-  })
-
-  it('never bounds a run holding an unboundable tool', () => {
-    expect(shouldBoundToolGroup(3, true)).toBe(false)
-  })
-})
-
-describe('isUnboundableTool', () => {
-  it('exempts clarify forms and generated images from the window', () => {
-    expect(isUnboundableTool('clarify')).toBe(true)
-    expect(isUnboundableTool('image_generate')).toBe(true)
-  })
-
-  // Everything ToolEntry renders carries `data-tool-row`, so the
-  // `:has([data-tool-row][data-tool-open])` rule in styles.css lifts the cap
-  // on its own. A diff row mounts open and frees the group immediately; a
-  // collapsed row has no body in the DOM to clip. Exempting these in JS
-  // instead vetoed grouping for the whole run — and since reads and edits are
-  // most of a coding session, runs of 19 calls never collapsed at all.
-  it('bounds the rows the CSS break-out already covers', () => {
-    for (const toolName of ['read_file', 'execute_code', 'edit_file', 'patch', 'write_file']) {
-      expect(isUnboundableTool(toolName)).toBe(false)
+describe('isCardTool', () => {
+  it('keeps what the user has to look at out of a summary', () => {
+    // A diff is the deliverable, a clarify is a question waiting on an answer,
+    // an image is the thing that was asked for. None of them survives being
+    // folded into "used 3 tools".
+    for (const toolName of ['clarify', 'image_generate', 'edit_file', 'patch', 'write_file']) {
+      expect(isCardTool(toolName)).toBe(true)
     }
   })
 
-  it('still bounds console output and other ordinary rows', () => {
-    expect(isUnboundableTool('terminal')).toBe(false)
-    expect(isUnboundableTool('web_search')).toBe(false)
+  it('treats reads, searches and commands as ephemeral activity', () => {
+    for (const toolName of ['read_file', 'search_files', 'terminal', 'execute_code', 'web_search']) {
+      expect(isCardTool(toolName)).toBe(false)
+    }
+  })
+})
+
+describe('splitRunItems', () => {
+  it('collapses a stretch of activity into one run', () => {
+    expect(splitRunItems(['read_file', 'search_files', 'terminal'])).toEqual([{ end: 2, kind: 'run', start: 0 }])
+  })
+
+  it('keeps a card at the point in the turn where it happened', () => {
+    // Read, edit, read has to stay in that order — a summary, the diff, then a
+    // second summary — rather than sorting the diffs to one end.
+    expect(splitRunItems(['read_file', 'patch', 'read_file', 'terminal'])).toEqual([
+      { end: 0, kind: 'run', start: 0 },
+      { index: 1, kind: 'card' },
+      { end: 3, kind: 'run', start: 2 }
+    ])
+  })
+
+  it('does not let adjacent cards merge into a run', () => {
+    expect(splitRunItems(['patch', 'write_file'])).toEqual([
+      { index: 0, kind: 'card' },
+      { index: 1, kind: 'card' }
+    ])
+  })
+
+  it('passes a part that is not a tool call through as its own card', () => {
+    expect(splitRunItems(['read_file', '', 'read_file'])).toEqual([
+      { end: 0, kind: 'run', start: 0 },
+      { index: 1, kind: 'card' },
+      { end: 2, kind: 'run', start: 2 }
+    ])
+  })
+
+  it('has nothing to split when the range is empty', () => {
+    expect(splitRunItems([])).toEqual([])
   })
 })
 

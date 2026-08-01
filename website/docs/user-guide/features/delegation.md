@@ -158,10 +158,13 @@ If omitted, subagents use the same model as the parent.
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
 Certain tools are blocked for subagents even when the parent has them:
-- `delegation` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+- `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
-- `code_execution` — children should reason step-by-step
+- `send_message` — no cross-platform side effects
+- `cronjob` — no scheduling more work in the parent's name
+
+Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 
 ## Max Iterations
 

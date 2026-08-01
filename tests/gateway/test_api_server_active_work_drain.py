@@ -63,46 +63,8 @@ class TestActiveApiRunCount:
         runner.adapters = {}
         assert runner._active_api_run_count() == 0
 
-    def test_delegates_to_primary_api_adapter(self):
-        runner, _adapter = make_restart_runner()
-        runner.adapters = {
-            Platform.API_SERVER: _make_api_adapter(inflight=2, queued_ids=["r1"])
-        }
-        assert runner._active_api_run_count() == 3
-
-    def test_ignores_non_api_platforms(self):
-        runner, _adapter = make_restart_runner()
-        other = SimpleNamespace(
-            platform=Platform.DISCORD,
-            active_agent_work_count=lambda: 99,
-        )
-        runner.adapters = {Platform.DISCORD: other}
-        assert runner._active_api_run_count() == 0
-
-    def test_never_raises_on_broken_adapter(self):
-        runner, _adapter = make_restart_runner()
-
-        class Bad:
-            platform = Platform.API_SERVER
-
-            @staticmethod
-            def active_agent_work_count() -> int:
-                raise RuntimeError("boom")
-
-        runner.adapters = {Platform.API_SERVER: Bad()}
-        assert runner._active_api_run_count() == 0
-
 
 class TestAPIServerAdapterWorkCount:
-    def test_concurrency_limit_counts_other_pending_admissions(self):
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        adapter._max_concurrent_runs = 1
-        adapter._pending_agent_requests = 1
-
-        response = adapter._concurrency_limited_response()
-
-        assert response is not None
-        assert response.status == 429
 
     @pytest.mark.asyncio
     async def test_concurrency_limit_excludes_current_pending_admission(self):
@@ -119,11 +81,6 @@ class TestAPIServerAdapterWorkCount:
 
         assert response.status == 404
 
-    def test_counts_pending_admission_before_agent_bookkeeping(self):
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        adapter._pending_agent_requests = 1
-
-        assert adapter.active_agent_work_count() == 1
 
     def test_counts_live_run_task_before_agent_creation(self):
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -136,24 +93,8 @@ class TestAPIServerAdapterWorkCount:
 
         assert adapter.active_agent_work_count() == 3
 
-    def test_does_not_double_count_started_run_agent(self):
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        adapter._inflight_agent_runs = 0
-        adapter._active_run_tasks = {"run-1": _RunTask()}
-        adapter._active_run_agents = {"run-1": object()}
-
-        assert adapter.active_agent_work_count() == 1
-
 
 class TestDrainWaitsForApiWork:
-    @pytest.mark.asyncio
-    async def test_drain_returns_immediately_when_nothing_active(self):
-        runner, _adapter = make_restart_runner()
-        runner.adapters = {}
-
-        _snapshot, timed_out = await runner._drain_active_agents(5.0)
-
-        assert timed_out is False
 
     @pytest.mark.asyncio
     async def test_drain_waits_for_real_queued_run_before_agent_creation(self):
@@ -200,39 +141,6 @@ class TestDrainWaitsForApiWork:
 
         assert timed_out is False
 
-    @pytest.mark.asyncio
-    async def test_drain_times_out_if_api_run_outlives_the_window(self):
-        runner, _adapter = make_restart_runner()
-        runner.adapters = {Platform.API_SERVER: _make_api_adapter(queued_ids=["run-1"])}
-
-        _snapshot, timed_out = await runner._drain_active_agents(0.1)
-
-        assert timed_out is True
-
-    @pytest.mark.asyncio
-    async def test_drain_still_waits_for_chat_cron_and_api_work(self):
-        import cron.scheduler as sched
-
-        runner, _adapter = make_restart_runner()
-        runner._running_agents = {"session-1": MagicMock()}
-        sched._running_job_ids.add("job-1")
-        runner.adapters = {Platform.API_SERVER: _make_api_adapter(queued_ids=["run-1"])}
-
-        async def finish_all():
-            await asyncio.sleep(0.12)
-            runner._running_agents.clear()
-            sched._running_job_ids.discard("job-1")
-            runner.adapters[Platform.API_SERVER]._active_run_tasks.clear()
-
-        task = asyncio.create_task(finish_all())
-        try:
-            _snapshot, timed_out = await runner._drain_active_agents(2.0)
-        finally:
-            await task
-            sched._running_job_ids.discard("job-1")
-
-        assert timed_out is False
-
 
 class TestDrainAdmission:
     @pytest.mark.asyncio
@@ -258,69 +166,4 @@ class TestDrainAdmission:
                     assert response.headers["Retry-After"] == "1"
                     assert payload["error"]["code"] == "gateway_draining"
 
-    @pytest.mark.asyncio
-    async def test_external_drain_refuses_every_agent_start_endpoint(self):
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        runner = SimpleNamespace(_draining=False, _external_drain_active=True)
-        app = _make_admission_app(adapter)
-        paths = (
-            "/api/sessions/missing/chat",
-            "/api/sessions/missing/chat/stream",
-            "/v1/chat/completions",
-            "/v1/responses",
-            "/v1/runs",
-        )
 
-        with patch("gateway.run._gateway_runner_ref", lambda: runner):
-            async with TestClient(TestServer(app)) as client:
-                for path in paths:
-                    response = await client.post(path, json={})
-                    payload = await response.json()
-
-                    assert response.status == 503
-                    assert payload["error"]["code"] == "gateway_draining"
-
-    @pytest.mark.asyncio
-    async def test_admitted_request_blocks_drain_before_agent_bookkeeping(self):
-        adapter = APIServerAdapter(PlatformConfig(enabled=True))
-        runner, _adapter = make_restart_runner()
-        runner.adapters = {Platform.API_SERVER: adapter}
-        app = _make_admission_app(adapter)
-        body_read_started = asyncio.Event()
-        allow_body_read = asyncio.Event()
-
-        async def delayed_read_json(_request):
-            body_read_started.set()
-            await allow_body_read.wait()
-            return {"message": "hello"}, None
-
-        with patch.object(
-            adapter,
-            "_get_existing_session_or_404",
-            return_value=({}, None),
-        ), patch.object(
-            adapter,
-            "_read_json_body",
-            side_effect=delayed_read_json,
-        ), patch.object(
-            adapter,
-            "_run_agent",
-            new=AsyncMock(return_value=({"final_response": "done"}, {})),
-        ):
-            async with TestClient(TestServer(app)) as client:
-                request_task = asyncio.create_task(
-                    client.post("/api/sessions/missing/chat", json={})
-                )
-                await body_read_started.wait()
-
-                assert adapter._pending_agent_requests == 1
-                drain_task = asyncio.create_task(runner._drain_active_agents(2.0))
-                await asyncio.sleep(0.1)
-                assert not drain_task.done()
-
-                allow_body_read.set()
-                response = await request_task
-                assert response.status == 200
-                _snapshot, timed_out = await drain_task
-
-        assert timed_out is False

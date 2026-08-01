@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import weakref
@@ -26,9 +27,18 @@ from utils import normalize_proxy_url
 logger = logging.getLogger(__name__)
 
 # Audio file extensions Hermes recognizes for native audio delivery.
-# Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
-# should_send_media_as_audio() below.
-_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
+# Keep Telegram's narrower attachment/voice sets below separate: formats such
+# as MPEG-2 Layer II are audio to Hermes but unsupported by sendAudio/sendVoice.
+_AUDIO_MIME_TYPES = {
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+    ".mp3": "audio/mpeg",
+    ".m2a": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/m4a",
+    ".flac": "audio/flac",
+}
+_AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either need to go through sendVoice (Opus/OGG) or must be
 # delivered as a regular document.
@@ -149,6 +159,32 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
             return is_voice
         return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
     return True
+
+
+def build_auto_tts_output_path(platform) -> str:
+    """Return a unique temp output path for gateway auto-TTS synthesis.
+
+    Platform-awareness lives HERE (the caller knows its platform), not in the
+    TTS tool's ``HERMES_SESSION_PLATFORM`` contextvar — that contextvar is
+    cleared by ``_clear_session_env`` before the post-handler auto-TTS block
+    in ``BasePlatformAdapter`` runs, so relying on it always produced MP3
+    (#57049, #36685). Platforms whose native voice bubbles require Ogg/Opus
+    (``tools.tts_tool.OPUS_VOICE_PLATFORMS`` — the single source of truth)
+    get an explicit ``.ogg`` path; the tool's central container repair
+    (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every
+    provider, including MP3-only backends like Edge TTS. Everything else
+    keeps the MP3 default.
+    """
+    from tools.tts_tool import OPUS_VOICE_PLATFORMS
+
+    ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
+    audio_path = os.path.join(
+        tempfile.gettempdir(),
+        "hermes_voice",
+        f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}",
+    )
+    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+    return audio_path
 
 
 def utf16_len(s: str) -> int:
@@ -516,6 +552,75 @@ from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 
+# ---------------------------------------------------------------------------
+# Streaming TTS format descriptor and handle (#60671)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AudioFormat:
+    """Declared PCM format for a streaming-TTS session.
+
+    All chunks delivered via ``write_streaming_tts`` must conform to this
+    format: raw little-endian PCM at the declared sample rate, channels,
+    and sample width.
+    """
+    sample_rate: int = 24000
+    channels: int = 1
+    sample_width: int = 2  # bytes per sample (int16 = 2)
+
+
+@dataclass
+class StreamingTTSHandle:
+    """Opaque handle returned by ``begin_streaming_tts``.
+
+    Adapters may subclass or extend this with platform-specific state
+    (track IDs, buffers, etc.).  The base fields are used by the consumer
+    for bookkeeping and cancellation.
+    """
+    chat_id: str = ""
+    audio_format: AudioFormat = field(default_factory=AudioFormat)
+    # Set to True after the first PCM chunk has been written (audible output
+    # has started).  The consumer uses this to decide whether a failure
+    # should fall back to whole-file TTS (not yet audible) or just end
+    # cleanly (already audible — don't replay from the beginning).
+    audible: bool = False
+    # Set to True by abort_streaming_tts; late chunks are dropped.
+    aborted: bool = False
+
+
+def streaming_tts_turn_key(session_key: str | None, turn_marker: Any = None, *, event: Any = None) -> str | None:
+    """Return a per-turn streaming-TTS suppression key.
+
+    The key is intentionally turn-scoped, not chat-scoped, so overlapping
+    turns in the same chat cannot suppress each other's fallback paths.
+    ``turn_marker`` is usually the gateway run generation; if that is absent
+    we fall back to the current event's message/update identifiers.
+    """
+    if not session_key:
+        return None
+    if turn_marker is None and event is not None:
+        turn_marker = getattr(event, "message_id", None) or getattr(event, "platform_update_id", None)
+    if turn_marker is None:
+        return None
+    return f"{session_key}:{turn_marker}"
+
+
+def streaming_tts_should_skip_whole_file(
+    completed_turns: set[str],
+    session_key: str | None,
+    turn_marker: Any = None,
+    *,
+    event: Any = None,
+) -> bool:
+    """Pure helper used by the auto-TTS suppression path.
+
+    Keeps the suppression decision turn-scoped and testable without
+    exercising the whole adapter method stack.
+    """
+    turn_key = streaming_tts_turn_key(session_key, turn_marker, event=event)
+    return bool(turn_key and turn_key in completed_turns)
+
+
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
@@ -626,8 +731,8 @@ def get_inbound_media_max_bytes() -> int:
     unreadable — falls back to the default.
     """
     try:
-        from hermes_cli.config import load_config as _load_config
-        cfg = _load_config()
+        from hermes_cli.config import load_config_readonly as _load_config
+        cfg = _load_config()  # read-only: .get() only, never mutated
     except Exception:
         return DEFAULT_INBOUND_MEDIA_MAX_BYTES
     gw = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
@@ -806,15 +911,15 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                 raise
 
 
-def cleanup_image_cache(max_age_hours: int = 24) -> int:
+def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
     """
-    Delete cached images older than *max_age_hours*.
+    Delete files in *cache_dir* older than *max_age_hours*.
 
-    Returns the number of files removed.
+    Shared implementation behind every ``cleanup_*_cache`` helper — one loop,
+    not N copies.  Returns the number of files removed.
     """
     import time
 
-    cache_dir = get_image_cache_dir()
     cutoff = time.time() - (max_age_hours * 3600)
     removed = 0
     for f in cache_dir.iterdir():
@@ -825,6 +930,15 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
             except OSError:
                 pass
     return removed
+
+
+def cleanup_image_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached images older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_image_cache_dir(), max_age_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -844,6 +958,18 @@ def get_audio_cache_dir() -> Path:
     return d
 
 
+def _sniff_audio_ext(data: bytes, fallback_ext: str) -> str:
+    """Prefer a container-matching extension when audio magic bytes are obvious.
+
+    Thin wrapper around the shared sniffer in ``tools.audio_container`` —
+    ONE module owns container detection for both the outbound TTS repair
+    (``tools/tts_tool.py``) and this inbound cache path.
+    """
+    from tools.audio_container import sniff_audio_ext
+
+    return sniff_audio_ext(data, fallback_ext)
+
+
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """
     Save raw audio bytes to the cache and return the absolute file path.
@@ -857,7 +983,8 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """
     validate_inbound_media_size(len(data), media_type="audio")
     cache_dir = get_audio_cache_dir()
-    filename = f"audio_{uuid.uuid4().hex[:12]}{ext}"
+    sniffed_ext = _sniff_audio_ext(data, ext)
+    filename = f"audio_{uuid.uuid4().hex[:12]}{sniffed_ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
@@ -926,6 +1053,15 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                 raise
 
 
+def cleanup_audio_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached audio files older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_audio_cache_dir(), max_age_hours)
+
+
 # ---------------------------------------------------------------------------
 # Video cache utilities
 #
@@ -961,6 +1097,15 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
     return str(filepath)
 
 
+def cleanup_video_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached videos older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_video_cache_dir(), max_age_hours)
+
+
 # ---------------------------------------------------------------------------
 # Document cache utilities
 #
@@ -970,6 +1115,23 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
+
+
+def get_screenshot_cache_dir() -> Path:
+    """Return the browser screenshot cache directory, creating it if needed."""
+    d = _resolve_cache_dir("SCREENSHOT_CACHE_DIR", "cache/screenshots", "browser_screenshots")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cleanup_screenshot_cache(max_age_hours: int = 24) -> int:
+    """
+    Delete cached browser screenshots older than *max_age_hours*.
+
+    Returns the number of files removed.
+    """
+    return _cleanup_cache_dir(get_screenshot_cache_dir(), max_age_hours)
+
 
 # Import-time defaults; _resolve_cache_dir compares against these to tell a
 # test monkeypatch from an unmodified constant.
@@ -1480,7 +1642,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Video (embed inline where supported)
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",
     # Audio (delivered as voice/audio where supported)
-    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".flac",
+    ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
     ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
     # Spreadsheets / data
@@ -1750,19 +1912,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 
     Returns the number of files removed.
     """
-    import time
-
-    cache_dir = get_document_cache_dir()
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            try:
-                f.unlink()
-                removed += 1
-            except OSError:
-                pass
-    return removed
+    return _cleanup_cache_dir(get_document_cache_dir(), max_age_hours)
 
 
 # ---------------------------------------------------------------------------
@@ -1838,7 +1988,7 @@ def cache_media_bytes(
         or default_kind == "image"
     )
     is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
-    is_audio = mime.startswith("audio/") or default_kind == "audio"
+    is_audio = mime.startswith("audio/") or ext in _AUDIO_EXTS or default_kind == "audio"
 
     if is_image:
         img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
@@ -1855,9 +2005,9 @@ def cache_media_bytes(
         return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
 
     if is_audio:
-        aud_ext = ext if ext in {".ogg", ".mp3", ".wav", ".m4a", ".opus", ".flac"} else ".ogg"
+        aud_ext = ext if ext in _AUDIO_EXTS else ".ogg"
         path = cache_audio_from_bytes(data, ext=aud_ext)
-        out_mime = mime if mime.startswith("audio/") else f"audio/{aud_ext.lstrip('.')}"
+        out_mime = mime if mime.startswith("audio/") else _AUDIO_MIME_TYPES[aud_ext]
         return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
 
     # Any other file type is cached and surfaced to the agent as a local path
@@ -2267,11 +2417,16 @@ def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
     ``_transcribe_pending_audio_event_once``); if the cached event gains new
     media after the cache was populated, the stale transcript must be
     discarded so the next transcription call picks up the merged attachments.
+
+    Only the *derived* transcription cache is dropped.  The echo ledger
+    (``_gateway_pending_stt_echoed``) records which transcripts were already
+    delivered to the user and must survive the merge: the re-run transcription
+    returns the earlier notes again, so clearing the ledger would echo them a
+    second time.
     """
     for attr in (
         "_gateway_pending_stt_text",
         "_gateway_pending_stt_transcripts",
-        "_gateway_pending_stt_echo_sent",
     ):
         if hasattr(event, attr):
             delattr(event, attr)
@@ -2673,6 +2828,11 @@ class BasePlatformAdapter(ABC):
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
+        # Per-turn streaming-TTS completion flag (#60671).  When the gateway
+        # streaming-TTS consumer successfully delivers audio, it adds the
+        # turn key here so the base adapter's whole-file auto-TTS path skips
+        # the duplicate.  Cleared after the turn completes.
+        self._streaming_tts_completed_turns: set[str] = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
@@ -3258,14 +3418,30 @@ class BasePlatformAdapter(ABC):
             return None
         if not transcript:
             return None
-        # Exclude the current turn's assistant message, which has already been
-        # persisted by the time we reach delivery but must not be treated as
-        # "history" for dedup purposes.
+        # Exclude the CURRENT TURN entirely — everything from the last user
+        # message onward. The agent persists rows as it produces them, so by
+        # delivery time the transcript already contains this turn's tool
+        # results and assistant reply. The old form dropped only the most
+        # recent assistant entry, which left THIS turn's tool results in
+        # "history": a text_to_speech result carrying media_tag then put its
+        # own path into the dedup set and delivery silently stripped the
+        # attachment (staging repro 2026-07-29 — `response_delivery_dropped`
+        # for a MEDIA-tag-only reply; user saw TTS produce no audio).
         history = list(transcript)
-        for msg in reversed(history):
-            if msg.get("role") == "assistant":
-                history.remove(msg)
+        last_user_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_idx = i
                 break
+        if last_user_idx is not None:
+            history = history[:last_user_idx]
+        else:
+            # No user row (unusual store shape): keep the old safe behavior of
+            # at least excluding the trailing assistant reply.
+            for msg in reversed(history):
+                if msg.get("role") == "assistant":
+                    history.remove(msg)
+                    break
         if not history:
             return None
         # Avoid circular import: gateway.run already imports this module.
@@ -3412,11 +3588,11 @@ class BasePlatformAdapter(ABC):
         auto-deletion.  Non-fatal if config is unreadable.
         """
         try:
-            from hermes_cli.config import load_config as _load_config
+            from hermes_cli.config import load_config_readonly as _load_config
         except Exception:
             return 0
         try:
-            cfg = _load_config()
+            cfg = _load_config()  # read-only: .get() only, never mutated
         except Exception:
             return 0
         display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
@@ -3461,6 +3637,91 @@ class BasePlatformAdapter(ABC):
             # path).  Close the coroutine cleanly so Python doesn't warn
             # about it never being awaited, then drop silently.
             coro.close()
+
+    # ── Shared interactive-prompt formatting cores ─────────────────────────
+    # Template attrs for ``_format_exec_approval``. Adapters override these to
+    # keep their historical, platform-specific wording byte-identical while
+    # sharing the assembly logic (header → fenced command preview → reason →
+    # optional smart-deny note).
+    _EA_HEADER: str = "⚠️ Command Approval Required\n\n"
+    _EA_CODE_OPEN: str = "```\n"
+    _EA_CODE_CLOSE: str = "\n```\n"
+    _EA_REASON_LABEL: str = "Reason: "
+    _EA_SMART_DENY_LINE: str = (
+        "\n\nSmart DENY: owner override applies to this one operation only."
+    )
+    _EA_CMD_BUDGET: int = 3000
+
+    @staticmethod
+    def _truncate_preview(text: str, budget: int, suffix: str = "...") -> str:
+        """Truncate ``text`` to ``budget`` chars, appending ``suffix`` when cut.
+
+        The shared ``x[:budget] + "..." if len(x) > budget else x`` idiom used
+        by every adapter's approval/confirm preview construction.
+        """
+        text = str(text or "")
+        return text[:budget] + suffix if len(text) > budget else text
+
+    def _ea_escape(self, text: str) -> str:
+        """Escape hook applied to the command preview and reason text.
+
+        Default is pass-through; HTML-mode platforms (Telegram) override.
+        """
+        return text
+
+    def _format_exec_approval(
+        self,
+        command: str,
+        description: str = "dangerous command",
+        smart_denied: bool = False,
+    ) -> str:
+        """Shared formatting core for exec-approval prompt text.
+
+        Assembles ``_EA_HEADER`` + fenced command preview (truncated to
+        ``_EA_CMD_BUDGET``) + ``_EA_REASON_LABEL`` + description, plus
+        ``_EA_SMART_DENY_LINE`` when ``smart_denied``. Button construction
+        stays platform-local; adapters with additional trailing instructions
+        (e.g. reaction legends) append them to this core.
+        """
+        cmd_preview = self._truncate_preview(str(command or ""), self._EA_CMD_BUDGET)
+        text = (
+            f"{self._EA_HEADER}"
+            f"{self._EA_CODE_OPEN}{self._ea_escape(cmd_preview)}{self._EA_CODE_CLOSE}"
+            f"{self._EA_REASON_LABEL}{self._ea_escape(description)}"
+        )
+        if smart_denied:
+            text += self._EA_SMART_DENY_LINE
+        return text
+
+    @staticmethod
+    def _format_choice_page(
+        options: list,
+        page: int,
+        per_page: int,
+    ) -> "tuple[list, Dict[str, Any]]":
+        """Shared pagination core for picker keyboards/menus.
+
+        Clamps ``page`` into range, slices ``options`` for that page and
+        returns ``(page_options, meta)`` where ``meta`` carries ``page``,
+        ``total_pages``, ``start``, ``end``, ``total`` and ``page_info`` —
+        the `` (N–M of T)`` suffix text (empty when everything fits on one
+        page). Option/button rendering stays platform-local.
+        """
+        total = len(options)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        start = page * per_page
+        end = min(start + per_page, total)
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        meta: Dict[str, Any] = {
+            "page": page,
+            "total_pages": total_pages,
+            "start": start,
+            "end": end,
+            "total": total,
+            "page_info": page_info,
+        }
+        return options[start:end], meta
 
     async def send_slash_confirm(
         self,
@@ -3809,11 +4070,21 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     def prepare_tts_text(self, text: str) -> str:
-        """Prepare text for TTS. Override to filter tool output, code, etc.
+        """Prepare a spoken script for TTS.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Auto-TTS should not feed raw chat Markdown, ``<think>`` reasoning
+        blocks, or compact symbols to the speech provider.  It should receive
+        a transcript-like script: reasoning blocks removed, headings and
+        bullets flattened into sentence pauses, and units like ``°C``
+        expanded to words such as ``degrees Celsius``.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            return prepare_spoken_text(text, max_chars=4000)
+        except Exception:
+            # Keep auto-TTS best-effort if the normalizer ever fails.
+            text = re.sub(r'<think[\s>].*?</think>', ' ', text, flags=re.DOTALL)
+            return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
 
     async def play_tts(
         self,
@@ -3828,6 +4099,89 @@ class BasePlatformAdapter(ABC):
         Default falls back to send_voice (shows audio player).
         """
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Streaming TTS adapter contract (#60671)
+    # ------------------------------------------------------------------
+    # Voice-capable adapters (LiveKit, Discord voice, …) override these to
+    # accept PCM audio chunks while the LLM is still generating.  The default
+    # implementations report "unsupported" so existing adapters are
+    # source-compatible and keep the whole-file auto-TTS fallback.
+
+    def supports_streaming_tts(self, chat_id: str, audio_format: AudioFormat) -> bool:
+        """Return True when this adapter can accept streaming PCM for *chat_id*.
+
+        Default: False (whole-file auto-TTS path remains).  Override to opt in.
+        """
+        return False
+
+    async def begin_streaming_tts(
+        self,
+        chat_id: str,
+        audio_format: AudioFormat,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[StreamingTTSHandle]:
+        """Open a streaming-audio session for *chat_id*.
+
+        Returns an opaque handle passed to subsequent ``write_streaming_tts``
+        / ``finish_streaming_tts`` / ``abort_streaming_tts`` calls, or
+        ``None`` to decline (caller falls back to whole-file TTS).
+        """
+        return None
+
+    async def write_streaming_tts(self, handle: StreamingTTSHandle, chunk: bytes) -> None:
+        """Write one PCM chunk to the adapter's outbound audio track."""
+        pass
+
+    async def finish_streaming_tts(self, handle: StreamingTTSHandle, *, interrupted: bool = False) -> None:
+        """Signal normal end of the audio stream."""
+        pass
+
+    async def abort_streaming_tts(self, handle: StreamingTTSHandle, error: Optional[str] = None) -> None:
+        """Abort the stream due to an error or cancellation.
+
+        Must be idempotent: late producer chunks after abort must be silently
+        dropped, not raise.  Restores adapter state to "not streaming".
+        """
+        pass
+
+    def _streaming_tts_turn_key(
+        self,
+        session_key: str | None,
+        turn_marker: Any = None,
+        *,
+        event: Any = None,
+    ) -> str | None:
+        return streaming_tts_turn_key(session_key, turn_marker, event=event)
+
+    def _mark_streaming_tts_completed_turn(
+        self,
+        session_key: str | None,
+        turn_marker: Any = None,
+        *,
+        event: Any = None,
+    ) -> None:
+        turn_key = self._streaming_tts_turn_key(session_key, turn_marker, event=event)
+        if turn_key is not None:
+            completed = getattr(self, "_streaming_tts_completed_turns", None)
+            if completed is None:
+                completed = set()
+                self._streaming_tts_completed_turns = completed
+            completed.add(turn_key)
+
+    def _streaming_tts_turn_completed(
+        self,
+        session_key: str | None,
+        turn_marker: Any = None,
+        *,
+        event: Any = None,
+    ) -> bool:
+        return streaming_tts_should_skip_whole_file(
+            getattr(self, "_streaming_tts_completed_turns", set()),
+            session_key,
+            turn_marker,
+            event=event,
+        )
 
     async def send_video(
         self,
@@ -3999,7 +4353,6 @@ class BasePlatformAdapter(ABC):
         ``MEDIA:`/path/to/file.png` ``) to avoid breaking path extraction.
         """
         chars = list(content)
-        n = len(chars)
 
         # Build list of (start, end) spans to mask
         spans: list = []
@@ -4138,6 +4491,15 @@ class BasePlatformAdapter(ABC):
         for match in media_pattern.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
+                # ``[[audio_as_voice]]`` is message-global, but it must only
+                # affect audio files. Tagging a non-audio file (image, video,
+                # document) as is_voice taints it: an image flagged is_voice is
+                # excluded from the embedded-photo batch and falls through to
+                # send_document, arriving as a file attachment instead of an
+                # inline photo. Gating on the extension lets one message carry
+                # an embedded image AND a voice bubble together.
+                ext = os.path.splitext(path)[1].lower()
+                is_voice = has_voice_tag and ext in _AUDIO_EXTS
                 try:
                     expanded = os.path.expanduser(path)
                 except (OSError, RuntimeError, ValueError):
@@ -4146,7 +4508,7 @@ class BasePlatformAdapter(ABC):
                     continue
                 if expanded not in seen_paths:
                     seen_paths.add(expanded)
-                    media.append((expanded, has_voice_tag))
+                    media.append((expanded, is_voice))
 
         for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
@@ -4157,7 +4519,8 @@ class BasePlatformAdapter(ABC):
                 continue
             safe = resolved[0]
             if safe not in seen_paths:
-                media.append((safe, has_voice_tag))
+                _safe_ext = os.path.splitext(safe)[1].lower()
+                media.append((safe, has_voice_tag and _safe_ext in _AUDIO_EXTS))
                 seen_paths.add(safe)
 
         # Remove the delivered MEDIA tags from the user-visible text. Mask a
@@ -4530,11 +4893,52 @@ class BasePlatformAdapter(ABC):
     # Subclasses override these to react to message processing events
     # (e.g. Discord adds 👀/✅/❌ reactions).
 
+    # Opt-in emoji set for the shared reaction-ack flow in
+    # ``on_processing_complete``. Adapters whose reaction primitives follow
+    # the ``_add_reaction(chat_id, message_id, emoji)`` /
+    # ``_remove_reaction(chat_id, message_id)`` shape can set these class
+    # attributes instead of overriding the hook. Left as ``None`` the hook
+    # stays a no-op (historical default).
+    _ACK_EMOJI: Optional[str] = None
+    _OK_EMOJI: Optional[str] = None
+    _FAIL_EMOJI: Optional[str] = None
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Hook called when background processing completes."""
+        """Hook called when background processing completes.
+
+        Default: shared reaction-ack flow — swap the in-progress reaction for
+        a final success/failure reaction. Runs only when the adapter opts in
+        by setting ``_OK_EMOJI`` / ``_FAIL_EMOJI`` class attributes AND
+        defines ``_add_reaction`` / ``_remove_reaction`` primitives taking
+        ``(chat_id, message_id[, emoji])``. Otherwise this is a no-op, as it
+        always was. Remove-then-add rather than a bare replace: deterministic
+        whether the platform replaces a sender's previous reaction or stacks
+        them. CANCELLED outcomes leave the message unreacted.
+        """
+        if self._OK_EMOJI is None and self._FAIL_EMOJI is None:
+            return
+        add: Any = getattr(self, "_add_reaction", None)
+        remove: Any = getattr(self, "_remove_reaction", None)
+        if not callable(add) or not callable(remove):
+            return
+        enabled = getattr(self, "_reactions_enabled", None)
+        if callable(enabled) and not enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not chat_id or not message_id:
+            return
+        await remove(chat_id, message_id)
+        if outcome == ProcessingOutcome.SUCCESS:
+            if self._OK_EMOJI:
+                await add(chat_id, message_id, self._OK_EMOJI)
+        elif outcome == ProcessingOutcome.FAILURE:
+            if self._FAIL_EMOJI:
+                await add(chat_id, message_id, self._FAIL_EMOJI)
+        # CANCELLED: leave the message unreacted.
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
@@ -5174,14 +5578,18 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            from hermes_cli.commands import should_bypass_active_session
+            from hermes_cli.commands import (
+                is_interrupt_then_dispatch,
+                should_bypass_active_session,
+            )
 
             if should_bypass_active_session(cmd):
                 # /stop, /new, /reset must cancel the in-flight adapter task
                 # and preserve ordering of queued follow-ups.  Route those
                 # through the dedicated handoff path that serializes
                 # cancellation + runner response + pending drain.
-                if cmd in {"stop", "new", "reset"}:
+                # (Registry-derived: busy_policy == "interrupt_then_dispatch".)
+                if cmd and is_interrupt_then_dispatch(cmd):
                     self._discard_text_debounce(session_key)
                     try:
                         await self._dispatch_active_session_command(event, session_key, cmd)
@@ -5451,17 +5859,15 @@ class BasePlatformAdapter(ABC):
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
 
-                # Deduplicate against media already delivered in prior turns.
-                # The model may echo a previous MEDIA: tag or bare file path in
-                # a later response; without this guard the same file is sent
-                # repeatedly.
+                # Do NOT deduplicate MEDIA tags against prior turns here.
+                # The auto-append path in GatewayRunner._run_agent_inner already
+                # deduplicates auto-appended tags via _collect_auto_append_media_tags
+                # with history_media_paths, so this filter would only catch explicit
+                # MEDIA tags the model deliberately included in its response — which
+                # must be preserved (user asked to resend an image, the model echoed
+                # a path intentionally, etc.).  Bare-file-path dedup still applies
+                # to local_files below via the same _history_media_paths set.
                 _history_media_paths = self._history_media_paths_for_session(session_key)
-                if _history_media_paths:
-                    media_files = [
-                        (path, is_voice)
-                        for path, is_voice in media_files
-                        if path not in _history_media_paths
-                    ]
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -5482,6 +5888,15 @@ class BasePlatformAdapter(ABC):
                     local_files, text_content = self.extract_local_files(text_content)
                     local_files = self.filter_local_delivery_paths(local_files)
                     if _history_media_paths:
+                        _suppressed = [p for p in local_files if p in _history_media_paths]
+                        if _suppressed:
+                            # Log the suppression (#73771) — silent drops here
+                            # cost operators hours of log-diving.
+                            logger.info(
+                                "[%s] Suppressing %d bare local file path(s) already "
+                                "delivered in this session: %s",
+                                self.name, len(_suppressed), _suppressed,
+                            )
                         local_files = [p for p in local_files if p not in _history_media_paths]
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
@@ -5514,11 +5929,19 @@ class BasePlatformAdapter(ABC):
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
+                # Skip when streaming TTS already delivered audio for this turn
+                # (#60671) — the gateway streaming-TTS consumer sets the flag.
                 _tts_path = None
+                _tts_requested_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
-                        and not media_files):
+                        and not media_files
+                        and not self._streaming_tts_turn_completed(
+                            session_key,
+                            getattr(interrupt_event, "_hermes_run_generation", None),
+                            event=event,
+                        )):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
@@ -5526,18 +5949,37 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            # Pass an explicit platform-aware output path: the
+                            # HERMES_SESSION_PLATFORM contextvar the tool would
+                            # otherwise consult is already cleared by the time
+                            # this post-handler block runs, which silently
+                            # produced MP3 (audio attachment, not a native
+                            # voice bubble) on Opus platforms (#57049, #36685).
+                            _tts_requested_path = build_auto_tts_output_path(
+                                self.platform
+                            )
                             tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                                text_to_speech_tool,
+                                text=speech_text,
+                                output_path=_tts_requested_path,
                             )
                             tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
+                            if tts_data.get("success", True):
+                                _tts_path = tts_data.get("file_path") or _tts_requested_path
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
+                _tts_cleanup_paths = {_tts_requested_path, _tts_path} - {None}
                 if _tts_path and Path(_tts_path).exists():
                     try:
+                        # Caption eligibility and payload stay on the ORIGINAL
+                        # reply text. The spoken script is for synthesis only:
+                        # normalization can shrink a long reply below the
+                        # 1024-char caption limit, and captioning that spoken
+                        # form would suppress the full formatted reply the
+                        # user is meant to receive as a separate message.
                         telegram_tts_caption = None
                         if (
                             self.platform == Platform.TELEGRAM
@@ -5555,8 +5997,15 @@ class BasePlatformAdapter(ABC):
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
                     finally:
+                        for _cleanup_path in _tts_cleanup_paths:
+                            try:
+                                os.remove(_cleanup_path)
+                            except OSError:
+                                pass
+                elif _tts_cleanup_paths:
+                    for _cleanup_path in _tts_cleanup_paths:
                         try:
-                            os.remove(_tts_path)
+                            os.remove(_cleanup_path)
                         except OSError:
                             pass
 
@@ -5808,6 +6257,15 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            # Clean up the per-turn streaming-TTS flag (#60671).
+            self._streaming_tts_completed_turns.discard(
+                self._streaming_tts_turn_key(
+                    session_key,
+                    getattr(interrupt_event, "_hermes_run_generation", None),
+                    event=event,
+                )
+                or ""
+            )
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
@@ -6073,6 +6531,12 @@ class BasePlatformAdapter(ABC):
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
         self._session_tasks.clear()
+        # Flush pending messages to disk before clearing (#72680).
+        try:
+            from gateway.shutdown_flush import flush_pending_to_file
+            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+        except Exception:
+            pass
         self._pending_messages.clear()
         self._active_sessions.clear()
         for state in list(self._text_debounce_store().values()):

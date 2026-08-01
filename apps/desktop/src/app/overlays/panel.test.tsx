@@ -15,15 +15,14 @@ describe('PanelRowMenu', () => {
     cleanup()
   })
 
-  it('opens its actions menu when the trigger has a tooltip', async () => {
+  it('opens its actions menu from the kebab without a tooltip', async () => {
     const onSelect = vi.fn()
 
     render(<PanelRowMenu items={[{ label: 'Rename', onSelect }]} />)
 
     const trigger = screen.getByRole('button', { name: 'Actions' })
 
-    fireEvent.pointerMove(trigger, { pointerType: 'mouse' })
-    expect((await screen.findByRole('tooltip')).textContent).toContain('Actions')
+    expect(trigger.closest('[data-slot="tooltip-trigger"]')).toBeNull()
 
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename' }))

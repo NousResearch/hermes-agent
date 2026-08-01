@@ -296,19 +296,15 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
 
 
 def _retry_after_seconds(headers: Any) -> Optional[int]:
-    """Parse a ``Retry-After`` header (integer seconds) — None if absent/bad."""
-    if headers is None:
-        return None
-    try:
-        raw = headers.get("Retry-After")
-    except Exception:
-        raw = None
-    if raw is None:
-        return None
-    try:
-        return int(str(raw).strip())
-    except (TypeError, ValueError):
-        return None
+    """Parse a ``Retry-After`` header (integer seconds) — None if absent/bad.
+
+    Thin wrapper around :func:`agent.retry_utils.parse_retry_after_seconds`
+    (the shared parser also handles HTTP-date forms and clamps negatives).
+    """
+    from agent.retry_utils import parse_retry_after_seconds
+
+    seconds = parse_retry_after_seconds(headers)
+    return None if seconds is None else int(seconds)
 
 
 def _raise_for_error(

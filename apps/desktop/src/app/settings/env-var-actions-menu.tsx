@@ -1,25 +1,20 @@
 import type * as React from 'react'
 
+import {
+  type ActionItemSpec,
+  ActionsContextMenu,
+  ActionsMenu,
+  type MenuKit,
+  renderActionItem
+} from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { ExternalLink, Eye, EyeOff, KeyRound, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-interface EnvVarActionsMenuProps extends Pick<
-  React.ComponentProps<typeof DropdownMenuContent>,
-  'align' | 'sideOffset'
-> {
-  children: React.ReactNode
+interface EnvVarActions {
   clearDisabled?: boolean
   docsUrl?: string | null
   isRevealed?: boolean
@@ -35,21 +30,19 @@ interface EnvVarActionsMenuProps extends Pick<
   showReveal?: boolean
 }
 
-export function EnvVarActionsMenu({
-  align = 'end',
-  children,
+// The shared action rows, rendered identically by the kebab dropdown and the
+// row's right-click menu so the two never drift.
+function useEnvVarItems({
   clearDisabled = false,
   docsUrl,
   isRevealed = false,
   isSet,
-  label,
   onClear,
   onEdit,
   onManageKeys,
   onReveal,
-  showReveal = true,
-  sideOffset = 6
-}: EnvVarActionsMenuProps) {
+  showReveal = true
+}: EnvVarActions) {
   const { t } = useI18n()
   const copy = t.settings.envActions
   const hasClear = isSet && onClear
@@ -57,97 +50,130 @@ export function EnvVarActionsMenu({
   const hasManageKeys = isSet && onManageKeys
   const hasDocs = Boolean(docsUrl?.trim())
 
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent align={align} aria-label={copy.actionsFor(label)} className="w-44" sideOffset={sideOffset}>
-        {hasDocs && (
-          <DropdownMenuItem
-            onSelect={event => {
-              event.preventDefault()
-              triggerHaptic('selection')
-              window.open(docsUrl!, '_blank', 'noopener,noreferrer')
-            }}
-          >
-            <ExternalLink className="size-3.5" />
-            <span>{copy.docs}</span>
-          </DropdownMenuItem>
-        )}
+  return (kit: MenuKit) => {
+    const rows: ActionItemSpec[] = []
 
-        {hasReveal && (
-          <DropdownMenuItem
-            onSelect={() => {
-              triggerHaptic('selection')
-              onReveal()
-            }}
-          >
-            {isRevealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-            <span>{isRevealed ? copy.hideValue : copy.revealValue}</span>
-          </DropdownMenuItem>
-        )}
+    if (hasDocs) {
+      rows.push({
+        iconNode: <ExternalLink className="size-3.5" />,
+        key: 'docs',
+        label: copy.docs,
+        onSelect: event => {
+          event.preventDefault()
+          triggerHaptic('selection')
+          window.open(docsUrl!, '_blank', 'noopener,noreferrer')
+        }
+      })
+    }
 
-        <DropdownMenuItem
-          onSelect={() => {
-            triggerHaptic('selection')
-            onEdit()
-          }}
-        >
-          <Codicon name="edit" size="0.875rem" />
-          <span>{isSet ? copy.replace : copy.set}</span>
-        </DropdownMenuItem>
+    if (hasReveal) {
+      rows.push({
+        iconNode: isRevealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />,
+        key: 'reveal',
+        label: isRevealed ? copy.hideValue : copy.revealValue,
+        onSelect: () => {
+          triggerHaptic('selection')
+          onReveal()
+        }
+      })
+    }
 
-        {hasManageKeys && (
-          <DropdownMenuItem
-            onSelect={() => {
-              triggerHaptic('selection')
-              onManageKeys()
-            }}
-          >
-            <KeyRound className="size-3.5" />
-            <span>{copy.manageInKeys}</span>
-          </DropdownMenuItem>
-        )}
+    rows.push({
+      icon: 'edit',
+      key: 'edit',
+      label: isSet ? copy.replace : copy.set,
+      onSelect: () => {
+        triggerHaptic('selection')
+        onEdit()
+      }
+    })
 
+    if (hasManageKeys) {
+      rows.push({
+        iconNode: <KeyRound className="size-3.5" />,
+        key: 'manage-keys',
+        label: copy.manageInKeys,
+        onSelect: () => {
+          triggerHaptic('selection')
+          onManageKeys()
+        }
+      })
+    }
+
+    return (
+      <>
+        {rows.map(row => renderActionItem(kit, row))}
         {hasClear && (
           <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              disabled={clearDisabled}
-              onSelect={() => {
+            <kit.Separator />
+            {renderActionItem(kit, {
+              disabled: clearDisabled,
+              iconNode: <Trash2 className="size-3.5" />,
+              key: 'clear',
+              label: copy.clear,
+              onSelect: () => {
                 triggerHaptic('warning')
                 onClear()
-              }}
-              variant="destructive"
-            >
-              <Trash2 className="size-3.5" />
-              <span>{copy.clear}</span>
-            </DropdownMenuItem>
+              },
+              variant: 'destructive'
+            })}
           </>
         )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </>
+    )
+  }
+}
+
+interface EnvVarActionsMenuProps
+  extends EnvVarActions, Pick<React.ComponentProps<typeof ActionsMenu>, 'align' | 'sideOffset'> {
+  children: React.ReactNode
+}
+
+export function EnvVarActionsMenu({ align = 'end', children, sideOffset = 6, ...actions }: EnvVarActionsMenuProps) {
+  const { t } = useI18n()
+  const copy = t.settings.envActions
+  const items = useEnvVarItems(actions)
+
+  return (
+    <ActionsMenu align={align} ariaLabel={copy.actions} contentClassName="w-44" items={items} sideOffset={sideOffset}>
+      {children}
+    </ActionsMenu>
   )
 }
 
-interface EnvVarActionsTriggerProps extends Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'> {
-  label: string
+interface EnvVarContextMenuProps extends EnvVarActions {
+  children: React.ReactNode
 }
 
-export function EnvVarActionsTrigger({ className, label, ...props }: EnvVarActionsTriggerProps) {
+/** Wrap an env-var row so right-clicking it opens the same menu as its kebab. */
+export function EnvVarContextMenu({ children, ...actions }: EnvVarContextMenuProps) {
+  const { t } = useI18n()
+  const copy = t.settings.envActions
+  const items = useEnvVarItems(actions)
+
+  return (
+    <ActionsContextMenu ariaLabel={copy.actions} contentClassName="w-44" items={items}>
+      {children}
+    </ActionsContextMenu>
+  )
+}
+
+export function EnvVarActionsTrigger({
+  className,
+  ...props
+}: Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'>) {
   const { t } = useI18n()
   const copy = t.settings.envActions
 
   return (
-    <Tip label={copy.credentialActions}>
-      <Button
-        aria-label={copy.actionsFor(label)}
-        className={cn('text-muted-foreground hover:text-foreground', className)}
-        size="icon-sm"
-        variant="ghost"
-        {...props}
-      >
-        <Codicon name="ellipsis" size="0.875rem" />
-      </Button>
-    </Tip>
+    <Button
+      aria-label={copy.actions}
+      className={cn('text-muted-foreground hover:text-foreground', className)}
+      size="icon-sm"
+      variant="ghost"
+      {...props}
+    >
+      <Codicon name="ellipsis" size="0.875rem" />
+    </Button>
   )
 }

@@ -213,8 +213,12 @@ async def preprocess_context_references_async(
             f"@ context injection warning: {injected_tokens} tokens exceeds the 25% soft limit ({soft_limit})."
         )
 
-    stripped = _remove_reference_tokens(message, refs)
-    final = stripped
+    # Leave the `@file:`/`@folder:` tokens where the user typed them. The token
+    # IS the reference, not scaffolding around it: clients render each one as an
+    # inline chip, so stripping them left a sentence with a hole in it ("review
+    # and ship") and made the desktop re-derive the refs from the attached block
+    # to show them as a detached list above the prose.
+    final = message
     if warnings:
         final = f"{final}\n\n--- Context Warnings ---\n" + "\n".join(f"- {warning}" for warning in warnings)
     if blocks:
@@ -471,19 +475,6 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
         )
 
     return _strip_reference_wrappers(value), None, None
-
-
-def _remove_reference_tokens(message: str, refs: list[ContextReference]) -> str:
-    pieces: list[str] = []
-    cursor = 0
-    for ref in refs:
-        pieces.append(message[cursor:ref.start])
-        cursor = ref.end
-    pieces.append(message[cursor:])
-    text = "".join(pieces)
-    text = re.sub(r"\s{2,}", " ", text)
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
-    return text.strip()
 
 
 def _is_binary_file(path: Path) -> bool:

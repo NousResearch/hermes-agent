@@ -57,6 +57,7 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 | `first-token` | backend | Enter → first assistant token painted (TTFT) | (new) |
 | `submit` | backend | Enter → cleared → user msg painted, scroll jump | measure-submit, measure-jump |
 | `session-switch` | backend | route → first-paint → settle | profile-session-switch |
+| `session-load` | backend | how far a session's transcript moves after first paint | (new) |
 | `profile-switch` | backend | rail click → sidebar settled | measure-profile-switch |
 
 `ci` + `cold` scenarios need no backend/credits and are gated against

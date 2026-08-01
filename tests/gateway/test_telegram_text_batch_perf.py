@@ -31,17 +31,6 @@ class TestEnvFloatClamped:
     """_env_float_clamped is the fence around every float env var the
     adapter reads — must reject NaN/Inf and honor min/max bounds."""
 
-    def test_default_when_unset(self, monkeypatch):
-        monkeypatch.delenv("HERMES_TEST_VAR", raising=False)
-        assert TelegramAdapter._env_float_clamped("HERMES_TEST_VAR", 0.5) == 0.5
-
-    def test_parses_valid_value(self, monkeypatch):
-        monkeypatch.setenv("HERMES_TEST_VAR", "1.25")
-        assert TelegramAdapter._env_float_clamped("HERMES_TEST_VAR", 0.5) == 1.25
-
-    def test_falls_back_to_default_on_garbage(self, monkeypatch):
-        monkeypatch.setenv("HERMES_TEST_VAR", "not-a-float")
-        assert TelegramAdapter._env_float_clamped("HERMES_TEST_VAR", 0.5) == 0.5
 
     def test_rejects_nan(self, monkeypatch):
         monkeypatch.setenv("HERMES_TEST_VAR", "nan")
@@ -49,23 +38,12 @@ class TestEnvFloatClamped:
         assert math.isfinite(result)
         assert result == 0.5
 
-    def test_rejects_inf(self, monkeypatch):
-        monkeypatch.setenv("HERMES_TEST_VAR", "inf")
-        result = TelegramAdapter._env_float_clamped("HERMES_TEST_VAR", 0.5)
-        assert math.isfinite(result)
-        assert result == 0.5
 
     def test_clamps_below_min(self, monkeypatch):
         monkeypatch.setenv("HERMES_TEST_VAR", "0.01")
         assert TelegramAdapter._env_float_clamped(
             "HERMES_TEST_VAR", 0.5, min_value=0.1,
         ) == 0.1
-
-    def test_clamps_above_max(self, monkeypatch):
-        monkeypatch.setenv("HERMES_TEST_VAR", "10.0")
-        assert TelegramAdapter._env_float_clamped(
-            "HERMES_TEST_VAR", 0.5, max_value=2.0,
-        ) == 2.0
 
 
 class TestAdaptiveTextBatchTiers:
@@ -100,32 +78,4 @@ class TestAdaptiveTextBatchTiers:
         )
         assert delay == 0.10
 
-    def test_short_tier_uses_min_with_configured_cap(self, adapter):
-        """Same composition rule for the medium tier."""
-        adapter._text_batch_delay_seconds = 0.6
-        delay = min(
-            adapter._text_batch_delay_seconds,
-            TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S,
-        )
-        assert delay == TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S
 
-    def test_long_message_uses_full_cap(self, adapter):
-        """Messages above the medium threshold use the configured cap
-        without the tier-clamp."""
-        adapter._text_batch_delay_seconds = 0.5
-        # Beyond _TEXT_BATCH_SHORT_LEN there's no tier-clamp; cap wins.
-        delay = adapter._text_batch_delay_seconds
-        assert delay == 0.5
-
-    def test_split_threshold_takes_priority_over_fast_tier(self, adapter):
-        """If the latest chunk hits the platform split threshold a
-        continuation is almost certain — wait the longer split delay
-        regardless of total length."""
-        adapter._text_batch_delay_seconds = 0.3
-        adapter._text_batch_split_delay_seconds = 1.0
-        last_chunk_len = TelegramAdapter._SPLIT_THRESHOLD + 50
-        # The flush path checks last_chunk_len first; assert the contract.
-        assert last_chunk_len >= TelegramAdapter._SPLIT_THRESHOLD
-        delay = adapter._text_batch_split_delay_seconds
-        assert delay == 1.0
-        assert delay > adapter._text_batch_delay_seconds

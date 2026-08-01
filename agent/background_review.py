@@ -70,8 +70,8 @@ def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
         "routed": False,
     }
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
     except Exception:
         return parent
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
@@ -284,6 +284,15 @@ _SKILL_REVIEW_PROMPT = (
     "  • One-off task narratives. A user asking 'summarize today's "
     "market' or 'analyze this PR' is not a class of work that warrants "
     "a skill.\n\n"
+    "  • Unresolved failures: if the session ended WITHOUT actually "
+    "finding a working method — you tried several things, none worked, "
+    "and told the user to check manually — do NOT write those attempts "
+    "up as a 'reliable workflow' or 'recommended approach'. That presents "
+    "an untested sequence of failures as validated guidance a future "
+    "session will trust and repeat. Either say 'Nothing to save', or, "
+    "only if you are independently confident of a real working alternative "
+    "(not something you are merely guessing might work), capture ONLY that "
+    "alternative — never the dead ends, and never dressed up as best practice.\n\n"
     "If a tool failed because of setup state, capture the FIX (install "
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
@@ -377,6 +386,15 @@ _COMBINED_REVIEW_PROMPT = (
     "  • One-off task narratives. A user asking 'summarize today's "
     "market' or 'analyze this PR' is not a class of work that warrants "
     "a skill.\n\n"
+    "  • Unresolved failures: if the session ended WITHOUT actually "
+    "finding a working method — you tried several things, none worked, "
+    "and told the user to check manually — do NOT write those attempts "
+    "up as a 'reliable workflow' or 'recommended approach'. That presents "
+    "an untested sequence of failures as validated guidance a future "
+    "session will trust and repeat. Either say 'Nothing to save', or, "
+    "only if you are independently confident of a real working alternative "
+    "(not something you are merely guessing might work), capture ONLY that "
+    "alternative — never the dead ends, and never dressed up as best practice.\n\n"
     "If a tool failed because of setup state, capture the FIX (install "
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "

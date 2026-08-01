@@ -414,7 +414,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | 直接从网站的 `/.well-known/skills/index.json` 提供的 skills。使用站点或文档 URL 搜索。 |
 | `url` | `https://sharethis.chat/SKILL.md` | 指向 `SKILL.md` 及其明确引用的支持文件的直接 HTTP(S) URL。名称解析顺序：frontmatter → URL slug → 交互式提示 → `--name` 标志。 |
 | `github` | `openai/skills/k8s` | 直接从 GitHub 仓库/路径安装以及基于 GitHub 的自定义 tap。 |
-| `clawhub`、`lobehub`、`browse-sh`、`claude-marketplace` | 来源特定标识符 | 社区或市场集成。 |
+| `clawhub`、`lobehub`、`browse-sh` | 来源特定标识符 | 社区或市场集成。 |
 
 ### 集成的 hub 和注册表
 
@@ -488,17 +488,7 @@ hermes skills tap add myorg/skills-repo
 - 站点：[clawhub.ai](https://clawhub.ai/)
 - Hermes 来源 id：`clawhub`
 
-#### 6. Claude 市场式仓库（`claude-marketplace`）
-
-Hermes 支持发布 Claude 兼容插件/市场清单的市场仓库。
-
-已知集成来源包括：
-- [anthropics/skills](https://github.com/anthropics/skills)
-- [aiskillstore/marketplace](https://github.com/aiskillstore/marketplace)
-
-Hermes 来源 id：`claude-marketplace`
-
-#### 7. LobeHub（`lobehub`）
+#### 6. LobeHub（`lobehub`）
 
 Hermes 可以从 LobeHub 的公共目录中搜索并将 agent 条目转换为可安装的 Hermes skills。
 
@@ -507,7 +497,7 @@ Hermes 可以从 LobeHub 的公共目录中搜索并将 agent 条目转换为可
 - 后端仓库：[lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes 来源 id：`lobehub`
 
-#### 8. browse.sh（`browse-sh`）
+#### 7. browse.sh（`browse-sh`）
 
 Hermes 与 [browse.sh](https://browse.sh) 集成，这是 Browserbase 的目录，包含 200+ 个针对特定站点的浏览器自动化 SKILL.md 文件（Airbnb、Amazon、arXiv、12306.cn、Etsy、Xero 等）。每个 skill 描述如何端到端驱动一个网站，适合与 Hermes 的浏览器工具以及你已安装的任何浏览器自动化 skills 配合使用。
 
@@ -524,7 +514,7 @@ hermes skills install browse-sh/airbnb.com/search-listings-ddgioa
 
 标识符使用 `browse-sh/<hostname>/<task-id>` 的形式，与 browse.sh 目录公开的 slug 匹配。内容通过每个 skill 的详情端点（`/api/skills/<slug>` → `skillMdUrl`）解析，而不是通过目录的 GitHub `sourceUrl`。
 
-#### 9. 直接 URL（`url`）
+#### 8. 直接 URL（`url`）
 
 直接从任何 HTTP(S) URL 安装 `SKILL.md`——当作者在自己的站点上托管 skill 时非常有用（无 hub 列表，无需输入 GitHub 路径）。Hermes 还会获取其中明确引用且位于 `references/`、`templates/`、`scripts/`、`assets/` 和 `examples/` 下的文件，然后扫描并安装完整捆绑包。
 

@@ -1,6 +1,22 @@
 # Hermes Agent CLI Configuration
-# Copy this file to cli-config.yaml and customize as needed.
-# This file configures the CLI behavior. Environment variables in .env take precedence.
+# Copy settings from this example into ~/.hermes/config.yaml, or use
+# `hermes config set <section.key> <value>` to update the active profile.
+# This file configures CLI behavior; only documented secret environment
+# variables in .env take precedence over their corresponding settings.
+
+# =============================================================================
+# Database Configuration
+# =============================================================================
+# WAL is the normal default. Hermes automatically falls back to DELETE when
+# SQLite reports that WAL is incompatible with the filesystem. Set this to
+# "delete" explicitly for deployments whose backing filesystem is not WAL
+# crash-safe, such as Linux containers bind-mounted through macOS virtiofs,
+# NFS, or SMB. Hermes will not live-downgrade a database already open in WAL.
+database:
+  journal_mode: "wal"  # Supported values: "wal", "delete"
+  # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
+  # wal_autocheckpoint: 1000     # pages between automatic checkpoints
+  # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
 
 # =============================================================================
 # Model Configuration
@@ -30,6 +46,7 @@ model:
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "deepinfra"    - DeepInfra (requires: DEEPINFRA_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
+  #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
@@ -1109,11 +1126,21 @@ platform_toolsets:
 #
 # tts:
 #   provider: "gemini"
+#   speed: 1.0              # global speed multiplier (provider-specific overrides this)
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#   xai:
+#     voice_id: "eve"       # built-in or custom voice ID from xAI Console
+#     language: "en"        # BCP-47 code ("en", "pt-BR") or "auto"
+#     speed: 1.0            # 0.7-1.5 playback speed
+#     auto_speech_tags: false  # insert expressive audio tags via LLM rewrite
+#     text_normalization: false  # normalize numbers/abbreviations/symbols
+#     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
+#     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
+#     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)
@@ -1127,8 +1154,20 @@ stt:
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+    # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
+    # --- Anti-hallucination hardening (whisper decodes junk from silence without these) ---
+    # vad: true                # Silero VAD filter (default on) — silence never reaches whisper.
+    #                          # Set false to restore raw behavior (e.g. transcribing music/ambient audio).
+    # vad_min_silence_ms: 500  # min silence (ms) that splits speech chunks when vad is on
+    # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
+    # logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+  language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
+  # groq:
+  #   model: "whisper-large-v3-turbo"
+  #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
   openai:
-    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
+    language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
   # deepinfra:
@@ -1457,6 +1496,22 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+
+
+# =============================================================================
+# Telemetry
+# =============================================================================
+# Shared metrics are disabled by default. When enabled, Hermes writes only
+# allowlisted aggregate counters and immutable JSON
+# packages under $HERMES_HOME/telemetry/shared_metrics; it does not upload them.
+# Packages include a random profile-scoped ID that stays stable until this
+# directory is deleted. It is not derived from hardware, account, or host data.
+# Successfully exported local history is retained for 30 days; pending deltas
+# are retained until they can be exported.
+# This profile-owned choice is not overridden by managed-scope configuration.
+telemetry:
+  shared_metrics:
+    enabled: false
 
 
 # =============================================================================

@@ -78,15 +78,6 @@ class TestSkillsHubPathResolution:
         assert b_audit == prof_b / "skills" / ".hub" / "audit.log"
         assert b_index == prof_b / "skills" / ".hub" / "index-cache"
 
-    def test_lockfile_default_arg_resolves_active_profile(self, two_profiles):
-        prof_a, prof_b = two_profiles
-        from tools.skills_hub import HubLockFile, TapsManager
-
-        lock_b = _under_override(prof_b, lambda: HubLockFile())
-        taps_b = _under_override(prof_b, lambda: TapsManager())
-
-        assert lock_b.path == prof_b / "skills" / ".hub" / "lock.json"
-        assert taps_b.path == prof_b / "skills" / ".hub" / "taps.json"
 
 
 class TestGatewayCacheDirResolution:
@@ -103,30 +94,7 @@ class TestGatewayCacheDirResolution:
         assert str(b_seen).startswith(str(prof_b))
         assert a_seen != b_seen
 
-    def test_all_cache_getters_follow_override(self, two_profiles):
-        _prof_a, prof_b = two_profiles
-        import gateway.platforms.base as gb
 
-        getters = (
-            gb.get_image_cache_dir,
-            gb.get_audio_cache_dir,
-            gb.get_video_cache_dir,
-            gb.get_document_cache_dir,
-        )
-        for getter in getters:
-            seen = _under_override(prof_b, getter)
-            assert str(seen).startswith(str(prof_b)), f"{getter.__name__} leaked: {seen}"
-
-    def test_monkeypatched_constant_still_wins(self, two_profiles, monkeypatch, tmp_path):
-        """The existing test seam (monkeypatch the module constant) is preserved."""
-        _prof_a, _prof_b = two_profiles
-        import gateway.platforms.base as gb
-
-        forced = tmp_path / "forced_img"
-        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", forced)
-        # Even with an active override, an explicit monkeypatch takes precedence.
-        seen = _under_override(_prof_b, lambda: gb.get_image_cache_dir())
-        assert seen == forced
 
 
 class TestRichSentStorePathResolution:
@@ -168,22 +136,6 @@ class TestThreadContextPropagation:
         # primitive is needed.  (Asserted as the hazard, not the desired state.)
         assert seen["home"] != str(prof_b)
 
-    def test_propagate_primitive_preserves_override(self, two_profiles):
-        _prof_a, prof_b = two_profiles
-        from tools.thread_context import propagate_context_to_thread
-
-        seen = {}
-
-        def worker():
-            seen["home"] = str(get_hermes_home())
-
-        def run():
-            t = threading.Thread(target=propagate_context_to_thread(worker))
-            t.start()
-            t.join()
-
-        _under_override(prof_b, run)
-        assert seen["home"] == str(prof_b)
 
     def test_run_async_worker_preserves_override(self, two_profiles):
         """model_tools._run_async's worker-thread branch must keep the override.

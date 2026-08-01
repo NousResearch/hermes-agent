@@ -1,15 +1,18 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
-import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 
+import { writeClipboardText } from '@/components/ui/copy-button'
+import { triggerHaptic } from '@/lib/haptics'
 import { useTheme } from '@/themes/context'
 
 import { registerAgentTerminalWriter } from './agent-terminal-stream'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
-import { resolveSurfaceColor, terminalTheme } from './selection'
+import { mirrorSelection, terminalClipboardIntent } from './clipboard'
+import { terminalLinkHandler, terminalWebLinksAddon } from './links'
+import { isMacPlatform, resolveSurfaceColor, terminalTheme } from './selection'
 
 // Read-only terminal for an agent background process: a write-only xterm (no PTY,
 // no input) fed live by the backend output stream, keyed by process id. Shares
@@ -23,9 +26,13 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
 
   const surfaceTheme = () => {
     const ansi = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
-    const surface = resolveSurfaceColor('#ffffff')
+    const base = terminalTheme(renderedMode, ansi)
+    // Fall back to the palette's own background, not white — a hardcoded
+    // '#ffffff' flashes a white slab in dark mode whenever the probe can't read
+    // the token (pre-paint mount). Same contract as the user terminal.
+    const surface = resolveSurfaceColor(base.background ?? '#ffffff')
 
-    return { ...terminalTheme(renderedMode, ansi), background: surface, cursorAccent: surface }
+    return { ...base, background: surface, cursorAccent: surface }
   }
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -48,6 +55,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       fontWeightBold: 'bold',
       letterSpacing: 0,
       lineHeight: 1.12,
+      linkHandler: terminalLinkHandler,
       minimumContrastRatio: 4.5,
       scrollback: 1000,
       theme: surfaceTheme()
@@ -56,10 +64,34 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.loadAddon(new Unicode11Addon())
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
     term.open(host)
     termRef.current = term
+
+    // Read-only mirror, but the output is exactly what people want to copy.
+    // No paste path: this terminal has no PTY to paste into.
+    const selectionDisposable = term.onSelectionChange(() => mirrorSelection(host, term.getSelection()))
+
+    term.attachCustomKeyEventHandler(event => {
+      const intent = terminalClipboardIntent(event, {
+        hasSelection: Boolean(term.getSelection()),
+        isMac: isMacPlatform()
+      })
+
+      if (intent !== 'copy') {
+        return true
+      }
+
+      event.preventDefault()
+      void writeClipboardText(term.getSelection()).catch(() => {
+        // Clipboard unavailable — leave the selection so the user can retry.
+      })
+      term.clearSelection()
+      triggerHaptic('selection')
+
+      return false
+    })
 
     fitRef.current = () => {
       if (host.clientWidth > 0 && host.clientHeight > 0) {
@@ -94,6 +126,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     return () => {
       unregister()
       unregisterReader()
+      selectionDisposable.dispose()
       observer.disconnect()
       term.dispose()
       termRef.current = null

@@ -339,6 +339,12 @@ def finalize_turn(
                 # otherwise ``/resume`` reloads ``content=""`` and the bug
                 # resurfaces cross-session.
                 _tail.pop("_db_persisted", None)
+                # The bounded flush-scan cursor (run_agent.py) skips the
+                # identity-matched prefix of its previous snapshot on the
+                # assumption that no live dict loses the marker in place —
+                # this pop is the one place that does. Invalidate it so the
+                # filled row is re-examined instead of skipped.
+                agent._db_flush_scan_prefix = None
 
         # The model has completed its request, so replace API-local
         # voice/model/skill guidance with the clean user input before writing the
@@ -349,6 +355,58 @@ def finalize_turn(
         _apply_override = getattr(agent, "_apply_persist_user_message_override", None)
         if callable(_apply_override):
             _apply_override(messages)
+
+        # ── Post-turn micro-compaction ────────────────────────────
+        # After the assistant response is finalized but before the session is
+        # persisted, run micro-compaction to absorb the oldest uncompacted
+        # exchange into the rolling summary.  This amortizes compression
+        # across turns rather than batching it into one big pause.
+        if not interrupted and not failed:
+            try:
+                _compressor = getattr(agent, "context_compressor", None)
+                # Strict `is True` + isinstance gates: plugin context engines
+                # (and MagicMock compressors in tests) satisfy getattr/duck
+                # checks with truthy auto-attributes — a bare truthiness check
+                # here called _micro_compact on a mock and spliced its (empty-
+                # iterating) return value over the transcript, wiping it.
+                if (
+                    _compressor
+                    and getattr(_compressor, '_micro_compact_enabled', False) is True
+                    and callable(getattr(_compressor, '_micro_compact', None))
+                    and final_response
+                    # Persistence-isolated agents (background review fork)
+                    # must not micro-compact: the pass burns a real aux-LLM
+                    # call on a throwaway replay transcript, and if the
+                    # compressor ever holds a session_db binding it would
+                    # archive_and_compact the CANONICAL session rows — the
+                    # exact write class _persist_disabled exists to stop.
+                    and not getattr(agent, "_persist_disabled", False)
+                ):
+                    _before = len(messages)
+                    _compacted = _compressor._micro_compact(messages)
+                    # Micro-compaction defrag rewrites the newest MICRO
+                    # marker's content and pops _db_persisted from the live
+                    # dict in place — the sibling of the pop site above. The
+                    # compressor has no agent reference, so it raises a flag
+                    # for us to invalidate the bounded flush-scan cursor;
+                    # otherwise the rewritten marker row is identity-skipped
+                    # and the stale summary persists to state.db.
+                    if getattr(
+                        _compressor, "_flush_scan_cursor_invalidated", False
+                    ):
+                        _compressor._flush_scan_cursor_invalidated = False
+                        agent._db_flush_scan_prefix = None
+                    if isinstance(_compacted, list) and _compacted:
+                        messages[:] = _compacted
+                    _after = len(messages)
+                    if _before != _after:
+                        logger.info(
+                            "Micro-compaction: %d -> %d messages",
+                            _before, _after,
+                        )
+            except Exception as _mc_err:
+                logger.info("Micro-compaction failed: %s", _mc_err)
+
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")
@@ -488,7 +546,7 @@ def finalize_turn(
     # First hook to return a string wins; None/empty return leaves text unchanged.
     if final_response and not interrupted:
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _transform_results = _invoke_hook(
                 "transform_llm_output",
                 response_text=final_response,
@@ -510,7 +568,7 @@ def finalize_turn(
     # to an external memory system).
     if final_response and not interrupted:
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _invoke_hook(
                 "post_llm_call",
                 session_id=agent.session_id,
@@ -607,6 +665,13 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    # Persistence failures already set failed=True + an explanation in
+    # final_response; also stamp `error` so gateway surfaces status="error"
+    # (and desktop can toast disk-full) instead of a quiet complete frame.
+    if failed and str(_turn_exit_reason) == "session_persistence_failed":
+        result["error"] = final_response or (
+            "session storage could not be written — free disk space and try again"
+        )
     # Surface any post-loop cleanup failures so the caller can distinguish a
     # clean turn from one whose trajectory/session/resource teardown raised
     # (the response is still returned either way — #8049).
@@ -669,14 +734,16 @@ def finalize_turn(
     # Fired at the very end of every run_conversation call.
     # Plugins can use this for cleanup, flushing buffers, etc.
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "on_session_end",
             session_id=agent.session_id,
             task_id=effective_task_id,
             turn_id=turn_id,
             completed=completed,
+            failed=failed,
             interrupted=interrupted,
+            turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
         )

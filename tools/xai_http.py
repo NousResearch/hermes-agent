@@ -97,6 +97,16 @@ def hermes_xai_user_agent() -> str:
     return f"Hermes-Agent/{__version__}"
 
 
+def hermes_xai_default_headers() -> Dict[str, str]:
+    """Default headers for OpenAI-SDK and raw HTTP clients talking to xAI.
+
+    Replaces the OpenAI Python SDK's identifying ``User-Agent: OpenAI/Python …``
+    so chat/completions and Responses traffic is attributed as Hermes Agent,
+    matching the direct HTTP integrations (search, TTS, STT, image, video).
+    """
+    return {"User-Agent": hermes_xai_user_agent()}
+
+
 def _load_config_section(section_name: str) -> Dict[str, Any]:
     """Return a top-level Hermes config section as a dict, or empty."""
     try:
@@ -301,7 +311,12 @@ def resolve_xai_http_credentials(
     except Exception:
         pass
 
-    api_key = str(get_env_value("XAI_API_KEY") or "").strip()
+    try:
+        from tools.tool_backend_helpers import resolve_provider_secret
+
+        api_key = resolve_provider_secret("XAI_API_KEY", "xai", env_getter=get_env_value)
+    except ImportError:  # pragma: no cover — helpers are in-repo
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
     base_url = str(get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1").strip().rstrip("/")
     return {
         "provider": "xai",

@@ -1011,3 +1011,140 @@ class TestCrossProcessInvalidationDefersCleanup:
         assert "telegram:s1" not in runner._agent_cache
         runner._cleanup_agent_resources.assert_not_called()
 
+
+
+class TestHonchoCacheBustingMemo:
+    """The Honcho identity memo is keyed by stat identity, not just mtime.
+
+    Regression coverage for the coarse-mtime rewrite case: on filesystems
+    with coarse mtime granularity, an edit to honcho.json can land inside
+    one mtime tick, and a key of (path, mtime_ns) alone would keep serving
+    the previously parsed identity config. Keying on st_size as well —
+    which comes from the same stat() call, at zero added I/O — catches any
+    such rewrite that changes the file's size.
+
+    The equal-size/equal-mtime edge is deliberately OUT of the guarantee
+    (see the maintainer resolution on #46385, which declined content
+    hashing on this hot path); a test below pins that documented tradeoff
+    so a future "fix" that silently adds per-lookup I/O shows up here.
+    """
+
+    @staticmethod
+    def _fake_path(stat_results):
+        """A path-like whose stat() pops from a queue of fake results."""
+        from types import SimpleNamespace
+
+        results = list(stat_results)
+
+        class _FakePath:
+            def stat(self):
+                r = results.pop(0) if len(results) > 1 else results[0]
+                if isinstance(r, Exception):
+                    raise r
+                return r
+
+            def __str__(self):
+                return "/fake/honcho.json"
+
+        _FakePath.make = staticmethod(
+            lambda m, s: SimpleNamespace(st_mtime_ns=m, st_size=s)
+        )
+        return _FakePath()
+
+    def _extract_with(self, monkeypatch, path, configs):
+        """Run the extractor with a fake path and a queue of parsed configs."""
+        from types import SimpleNamespace
+
+        from gateway.run import GatewayRunner
+
+        parses = []
+        queue = list(configs)
+
+        def _fake_from_global_config(config_path=None):
+            cfg = queue.pop(0) if len(queue) > 1 else queue[0]
+            parses.append(cfg)
+            return SimpleNamespace(
+                peer_name=cfg,
+                ai_peer=None,
+                pin_peer_name=False,
+                runtime_peer_prefix=None,
+                user_peer_aliases={},
+            )
+
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.resolve_config_path", lambda: path
+        )
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            staticmethod(_fake_from_global_config),
+        )
+        return GatewayRunner._extract_honcho_cache_busting_config, parses
+
+    @pytest.fixture(autouse=True)
+    def _reset_memo(self):
+        from gateway.run import GatewayRunner
+
+        GatewayRunner._HONCHO_CACHE_BUSTING_MEMO = {}
+        yield
+        GatewayRunner._HONCHO_CACHE_BUSTING_MEMO = {}
+
+    def test_same_mtime_different_size_invalidates(self, monkeypatch):
+        """The fix: a rewrite inside one mtime tick that changes st_size
+        must re-parse instead of serving the stale identity."""
+        from types import SimpleNamespace
+
+        path = self._fake_path([
+            SimpleNamespace(st_mtime_ns=1000, st_size=50),
+            SimpleNamespace(st_mtime_ns=1000, st_size=61),
+        ])
+        extract, parses = self._extract_with(monkeypatch, path, ["alice", "bob"])
+
+        first = extract()
+        second = extract()
+
+        assert first["honcho.peer_name"] == "alice"
+        assert second["honcho.peer_name"] == "bob", (
+            "same-mtime size-changing rewrite served the stale memo entry"
+        )
+        assert len(parses) == 2
+
+    def test_identical_stat_reuses_memo_without_reparsing(self, monkeypatch):
+        """The memo's whole purpose: identical stat identity == no re-parse."""
+        from types import SimpleNamespace
+
+        path = self._fake_path([SimpleNamespace(st_mtime_ns=1000, st_size=50)])
+        extract, parses = self._extract_with(monkeypatch, path, ["alice"])
+
+        extract()
+        extract()
+        extract()
+
+        assert len(parses) == 1, "memo hit should not re-read honcho.json"
+
+    def test_equal_size_equal_mtime_rewrite_is_documented_stale(self, monkeypatch):
+        """Pins the narrowed guarantee from #46385: an equal-size rewrite
+        inside one mtime tick reuses the memo (one stale generation, by
+        design). If this test starts failing because the second call
+        re-parsed, someone added per-lookup I/O to the hot path — that is
+        the change the maintainers declined, so it should be deliberate."""
+        from types import SimpleNamespace
+
+        path = self._fake_path([SimpleNamespace(st_mtime_ns=1000, st_size=50)])
+        extract, parses = self._extract_with(monkeypatch, path, ["alice", "bob"])
+
+        first = extract()
+        second = extract()
+
+        assert first["honcho.peer_name"] == "alice"
+        assert second["honcho.peer_name"] == "alice"
+        assert len(parses) == 1
+
+    def test_stat_failure_still_returns_config(self, monkeypatch):
+        """OSError on stat() falls back to a None-keyed memo entry rather
+        than failing the extraction."""
+        path = self._fake_path([OSError("gone")])
+        extract, parses = self._extract_with(monkeypatch, path, ["alice"])
+
+        result = extract()
+
+        assert result["honcho.peer_name"] == "alice"

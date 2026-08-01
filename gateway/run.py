@@ -21472,7 +21472,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         "honcho.runtime_peer_prefix",
         "honcho.user_peer_aliases",
     )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None, int | None], dict[str, Any]] = {}
 
     @classmethod
     def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
@@ -21480,16 +21480,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @classmethod
     def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime."""
+        """Extract Honcho identity keys, memoized by honcho.json stat identity.
+
+        The memo key is ``(path, st_mtime_ns, st_size)`` — both fields come
+        from the single ``stat()`` call the memo already makes, so a rewrite
+        that lands inside one mtime tick on a coarse-mtime filesystem is
+        still detected whenever it changes the file's size, at zero added
+        I/O on this hot path (it feeds the per-turn agent-cache signature).
+
+        Deliberately NOT content-hashed: an equal-size rewrite inside one
+        mtime tick can still reuse stale parsed state for one cache
+        generation. That edge is vanishingly rare and its worst outcome is
+        one stale generation until the next change; hashing the file on
+        every lookup would defeat the memo's no-I/O purpose. See the
+        maintainer resolution on #46385, which declined content hashing and
+        identified ``st_size`` as the right-shaped discriminator.
+        """
         try:
             from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
 
             path = resolve_config_path()
             try:
-                mtime_ns = path.stat().st_mtime_ns
+                st = path.stat()
+                mtime_ns = st.st_mtime_ns
+                size = st.st_size
             except OSError:
                 mtime_ns = None
-            memo_key = (str(path), mtime_ns)
+                size = None
+            memo_key = (str(path), mtime_ns, size)
             cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
             if cached is not None:
                 return dict(cached)

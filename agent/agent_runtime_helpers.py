@@ -1878,6 +1878,30 @@ def prompt_caching_disabled_from_config() -> bool:
     return str(ttl).lower() in ("off", "false", "disabled", "no", "none")
 
 
+def blank_cache_policy_stub(cache_disabled: Optional[bool] = None):
+    """Build the destination-identity-blank stub for ``anthropic_prompt_cache_policy``.
+
+    Single sanctioned constructor for that stub. Callers that resolve cache
+    policy against a destination identified out-of-band (not a live
+    ``AIAgent``) must go through here so ``_cache_disabled`` is never left
+    off a hand-rolled ``SimpleNamespace`` (#76085).
+
+    When ``cache_disabled`` is omitted, falls back to the global config so
+    stub paths without an agent snapshot still honor an operator disable.
+    """
+    from types import SimpleNamespace
+
+    if cache_disabled is None:
+        cache_disabled = prompt_caching_disabled_from_config()
+    return SimpleNamespace(
+        provider="",
+        base_url="",
+        api_mode="",
+        model="",
+        _cache_disabled=bool(cache_disabled),
+    )
+
+
 def plan_cache_sections_for_destination(
     messages: list,
     tools: Optional[list],
@@ -1905,23 +1929,13 @@ def plan_cache_sections_for_destination(
     consulted so MoA/auxiliary paths cannot re-enable markers after the
     user turned caching off (#76085).
     """
-    from types import SimpleNamespace
-
     from agent.prompt_caching import (
         build_prompt_cache_plan,
         strip_anthropic_cache_control,
         strip_anthropic_tool_cache_control,
     )
 
-    if cache_disabled is None:
-        cache_disabled = prompt_caching_disabled_from_config()
-    stub = SimpleNamespace(
-        provider="",
-        base_url="",
-        api_mode="",
-        model="",
-        _cache_disabled=bool(cache_disabled),
-    )
+    stub = blank_cache_policy_stub(cache_disabled)
     should_cache, native_layout = anthropic_prompt_cache_policy(
         stub,
         provider=provider,
@@ -3931,6 +3945,7 @@ __all__ = [
     "extract_reasoning",
     "dump_api_request_debug",
     "prompt_caching_disabled_from_config",
+    "blank_cache_policy_stub",
     "plan_cache_sections_for_destination",
     "anthropic_prompt_cache_policy",
     "create_openai_client",

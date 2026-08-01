@@ -15701,7 +15701,7 @@ def test_session_delete_unknown_profile_active_key_fails_closed(monkeypatch, tmp
     assert resp["error"]["message"] == _C2_MSG.format(name="beta")
 
 
-@pytest.mark.parametrize("bad", [123, {"a": 1}, ["x"], True])
+@pytest.mark.parametrize("bad", [123, {"a": 1}, ["x"], True, False, 0])
 def test_non_string_profile_rejected_as_invalid_params(monkeypatch, tmp_path, bad):
     """A non-string profile value must be rejected cleanly (-32602), never
     escape as AttributeError from the ``.strip()`` idiom — on stdio that
@@ -15731,6 +15731,23 @@ def test_null_profile_still_uses_launch(monkeypatch, tmp_path):
         {"id": "t2", "method": "session.list", "params": {"profile": None}}
     )
     assert resp.get("error", {}).get("code") != -32602
+
+
+def test_profile_home_regular_file_is_not_a_profile(monkeypatch, tmp_path):
+    """A stray regular FILE at profiles/<name> is not a profile home
+    (profile_exists requires a directory). Treating it as known would pass
+    validation and then send config/cwd lookups down their launch-profile
+    fallbacks — e.g. complete.path would answer with a launch-scope listing
+    instead of 4028."""
+    _root, profiles_root = _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
+    (profiles_root / "beta").write_text("not a profile dir", encoding="utf-8")
+    with pytest.raises(server._UnknownProfileError):
+        server._profile_home("beta")
+    resp = server.handle_request(
+        {"id": "f1", "method": "complete.path", "params": {"word": "x", "profile": "beta"}}
+    )
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == _C2_MSG.format(name="beta")
 
 
 def test_profile_home_unstatable_name_fails_closed(monkeypatch, tmp_path):

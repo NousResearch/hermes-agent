@@ -1296,12 +1296,15 @@ def _profile_home(profile: str | None) -> Path | None:
         # Already the launch profile? No override needed.
         if home.resolve() == Path(_hermes_home).resolve():
             return None
-        # The resolve/exists calls stay inside the try: a name the filesystem
+        # The resolve/is_dir calls stay inside the try: a name the filesystem
         # cannot even stat (e.g. an embedded NUL raises ValueError) is an
         # unknown profile, not a server error — it must fail closed as 4028,
         # never escape as a generic exception (the stdio entry loop has no
-        # dispatch backstop).
-        if (home / "state.db").exists() or home.exists():
+        # dispatch backstop). Known-ness requires a DIRECTORY, matching
+        # hermes_cli.profiles.profile_exists — a stray regular file at
+        # ``profiles/<name>`` is not a profile home, and treating it as one
+        # would send config/cwd lookups down their launch-profile fallbacks.
+        if home.is_dir():
             return home
     except _UnknownProfileError:
         raise
@@ -1824,10 +1827,11 @@ def handle_request(req: dict) -> dict | None:
         return fn(rid, params)
     except _UnknownProfileError as exc:
         # Fail closed: a request that names a profile absent on this host must
-        # never be served from the launch profile's home/state.db. 4028 is the
-        # dedicated code (4025 collides with handoff.request). The message
-        # echoes only the client-supplied string, never local profile names or
-        # host paths.
+        # never be served from the launch profile's home/state.db. Code 4028
+        # (4025 collides with handoff.request; 4028 is shared with other
+        # request-refused errors — clients read the message, not the code).
+        # The message echoes only the client-supplied string, never local
+        # profile names or host paths.
         return _err(rid, 4028, f"requested profile {exc.profile!r} is not available on this host")
 
 

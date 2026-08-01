@@ -111,7 +111,7 @@ def test_happy_path_uses_one_strict_bounded_call(monkeypatch):
         "type": "object",
         "properties": {
             "cleaned_text": {"type": "string"},
-            "confidence": {"type": "number"},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         },
         "required": ["cleaned_text", "confidence"],
         "additionalProperties": False,
@@ -159,6 +159,8 @@ def test_low_confidence_returns_raw(monkeypatch):
         '{"cleaned_text":"Hello.","confidence":0.99,"extra":true}',
         '{"cleaned_text":"","confidence":0.99}',
         '{"cleaned_text":"Hello.","confidence":"high"}',
+        '{"cleaned_text":"Hello.","confidence":-0.1}',
+        '{"cleaned_text":"Hello.","confidence":1.1}',
     ],
 )
 def test_invalid_json_or_schema_returns_raw(monkeypatch, payload):
@@ -174,6 +176,30 @@ def test_invalid_json_or_schema_returns_raw(monkeypatch, payload):
     assert result.applied is False
     assert result.reason == "invalid_output"
     assert result.confidence is None
+
+
+@pytest.mark.parametrize("threshold", [-0.1, 1.1, float("nan"), float("inf")])
+def test_invalid_confidence_threshold_returns_raw_without_provider_call(
+    monkeypatch, threshold
+):
+    provider_calls = []
+
+    def unexpected(*args, **kwargs):
+        provider_calls.append((args, kwargs))
+        raise AssertionError("provider must not be resolved for invalid config")
+
+    monkeypatch.setattr(
+        "tools.transcript_cleanup.resolve_provider_client", unexpected
+    )
+
+    result = cleanup_transcript(
+        "hello", "", _config(minimum_confidence=threshold)
+    )
+
+    assert result.text == "hello"
+    assert result.applied is False
+    assert result.reason == "error"
+    assert provider_calls == []
 
 
 def test_provider_unavailable_returns_raw(monkeypatch):

@@ -29,7 +29,7 @@ _RESPONSE_FORMAT = {
             "type": "object",
             "properties": {
                 "cleaned_text": {"type": "string"},
-                "confidence": {"type": "number"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             },
             "required": ["cleaned_text", "confidence"],
             "additionalProperties": False,
@@ -88,7 +88,7 @@ def _parse_output(content: object) -> Optional[tuple[str, float]]:
         return None
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
         return None
-    if not math.isfinite(confidence):
+    if not math.isfinite(confidence) or not 0 <= confidence <= 1:
         return None
     return cleaned_text, float(confidence)
 
@@ -109,6 +109,13 @@ def cleanup_transcript(
         return _result(raw_transcript, provider, model, started_at, "disabled")
     if not raw_transcript.strip():
         return _result(raw_transcript, provider, model, started_at, "blank")
+
+    try:
+        threshold = float(cleanup_config.get("minimum_confidence", 0.90))
+    except (TypeError, ValueError):
+        return _result(raw_transcript, provider, model, started_at, "error")
+    if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+        return _result(raw_transcript, provider, model, started_at, "error")
 
     try:
         client, resolved_model = resolve_provider_client(provider, model=model)
@@ -155,10 +162,6 @@ def cleanup_transcript(
         )
 
     cleaned_text, confidence = parsed
-    try:
-        threshold = float(cleanup_config.get("minimum_confidence", 0.90))
-    except (TypeError, ValueError):
-        return _result(raw_transcript, provider, call_model, started_at, "error")
     if confidence < threshold:
         return _result(
             raw_transcript,

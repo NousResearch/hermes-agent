@@ -10526,7 +10526,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 pass
 
             # ── pre_agent_dispatch plugin hook ────────────────────────
-            from hermes_cli.plugins import dispatch_pre_agent as _dispatch_pre_agent
+            from hermes_cli.plugins import (
+                dispatch_pre_agent as _dispatch_pre_agent,
+                persist_routed_turn as _persist_routed_turn,
+            )
 
             _hook_message = prompt if isinstance(prompt, str) else str(prompt)
             _hook_result = _dispatch_pre_agent(
@@ -10558,6 +10561,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     "messages": list(history) + [_user_msg, _assistant_msg],
                     "interrupted": False,
                 }
+                # Persist the synthetic turn to SessionDB so routed
+                # responses survive restarts (same durability as normal
+                # agent turns).
+                try:
+                    _persist_routed_turn(
+                        session_key=session.get("session_key", ""),
+                        user_message=_hook_message,
+                        route_response=_final_text,
+                    )
+                except Exception:
+                    pass  # fail-open — response already delivered
             else:
                 if _hook_action == "rewrite":
                     run_message = _hook_result.get("text", run_message)

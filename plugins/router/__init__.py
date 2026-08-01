@@ -37,6 +37,7 @@ Configuration (in config.yaml):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -399,23 +400,50 @@ def route_to_orchestrator(
 
 
 # ── Session-level classification cache ────────────────────────────────
+# Cache key is session_key + SHA-256 of message content so that
+# alternating simple/complex messages within the same session are each
+# classified independently (instead of the first classification dominating
+# the whole session via a session_key-only key).
 _classification_cache: dict[str, tuple[float, dict]] = {}
 _CACHE_TTL = 300  # seconds
+_MAX_CACHE_SIZE = 1000  # entries — evict oldest (FIFO) when exceeded
 
 
-def _get_cached_classification(session_key: str) -> dict | None:
-    """Get a cached classification for a session, if still valid."""
-    if session_key in _classification_cache:
-        timestamp, result = _classification_cache[session_key]
+def _make_cache_key(session_key: str, message: str) -> str:
+    """Build a message-content-aware cache key."""
+    msg_hash = hashlib.sha256(message.encode()).hexdigest()[:16]
+    return f"{session_key}:{msg_hash}"
+
+
+def _get_cached_classification(
+    session_key: str, message: str
+) -> dict | None:
+    """Get a cached classification for (session_key, message), if still valid."""
+    key = _make_cache_key(session_key, message)
+    if key in _classification_cache:
+        timestamp, result = _classification_cache[key]
         if time.time() - timestamp < _CACHE_TTL:
             return result
-        del _classification_cache[session_key]
+        del _classification_cache[key]
     return None
 
 
-def _cache_classification(session_key: str, result: dict) -> None:
-    """Cache a classification result for a session."""
-    _classification_cache[session_key] = (time.time(), result)
+def _cache_classification(
+    session_key: str, message: str, result: dict
+) -> None:
+    """Cache a classification result for (session_key, message).
+
+    Evicts the oldest entry (FIFO) when the cache exceeds ``_MAX_CACHE_SIZE``
+    to prevent unbounded growth in long-running sessions with many unique
+    messages.
+    """
+    key = _make_cache_key(session_key, message)
+    _classification_cache[key] = (time.time(), result)
+    # Evict oldest entry if over the limit
+    if len(_classification_cache) > _MAX_CACHE_SIZE:
+        # Dict maintains insertion order (Python 3.7+); first key is oldest
+        oldest_key = next(iter(_classification_cache))
+        del _classification_cache[oldest_key]
 
 
 # ── Hook callback ─────────────────────────────────────────────────────
@@ -443,7 +471,7 @@ def _on_pre_agent_dispatch(**kwargs: Any) -> dict | None:
 
     # Check cache
     if session_key:
-        cached = _get_cached_classification(session_key)
+        cached = _get_cached_classification(session_key, message)
         if cached is not None:
             if cached.get("classification") == "complex":
                 logger.info(
@@ -455,7 +483,7 @@ def _on_pre_agent_dispatch(**kwargs: Any) -> dict | None:
             # Classify
             result = classify(message, router_cfg)
             if session_key:
-                _cache_classification(session_key, result)
+                _cache_classification(session_key, message, result)
 
             if result.get("classification") != "complex":
                 return None

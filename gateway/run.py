@@ -21399,7 +21399,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
 
                 # ── pre_agent_dispatch plugin hook ──────────────────
-                from hermes_cli.plugins import dispatch_pre_agent as _dispatch_pre_agent
+                from hermes_cli.plugins import (
+                    dispatch_pre_agent as _dispatch_pre_agent,
+                    persist_routed_turn as _persist_routed_turn,
+                )
 
                 _hook_msg = (
                     message if isinstance(message, str)
@@ -21427,15 +21430,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "interrupted": False,
                     }
                 elif _hook_action == "route":
+                    _route_response = _hook_result.get("result", "")
                     result = {
-                        "final_response": _hook_result.get("result", ""),
+                        "final_response": _route_response,
                         "messages": list(agent_history) + [
                             {"role": "user", "content": _hook_msg},
                             {"role": "assistant",
-                             "content": _hook_result.get("result", "")},
+                             "content": _route_response},
                         ],
                         "interrupted": False,
                     }
+                    # Persist the synthetic turn to SessionDB so routed
+                    # responses survive restarts (same durability as normal
+                    # agent turns).
+                    try:
+                        _persist_routed_turn(
+                            session_key=session_key or "",
+                            user_message=_hook_msg,
+                            route_response=_route_response,
+                            gateway=self,
+                            source=source,
+                        )
+                    except Exception:
+                        pass  # fail-open — response already delivered
                 else:
                     if _hook_action == "rewrite":
                         _api_run_message = _hook_result.get("text", _api_run_message)

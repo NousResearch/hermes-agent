@@ -2547,3 +2547,122 @@ def dispatch_pre_agent(
         logger.warning("pre_agent_dispatch hook failed, falling back to local agent")
         logger.debug("pre_agent_dispatch hook traceback:", exc_info=True)
         return {"action": "allow"}
+
+
+# ── Shared helper: persist routed turns ────────────────────────────────
+
+def persist_routed_turn(
+    session_key: str,
+    user_message: str,
+    route_response: str,
+    gateway=None,
+    source=None,
+) -> None:
+    """Persist a synthetic user/assistant pair from a route action to SessionDB.
+
+    When the ``pre_agent_dispatch`` hook produces a ``route`` action, the
+    caller constructs a synthetic turn (user message + orchestrator response)
+    that bypasses the normal agent pipeline.  Without explicit persistence,
+    this turn is invisible to ``state.db`` — it survives in in-memory history
+    only and is lost on restart.
+
+    This helper resolves ``session_key`` → ``session_id`` via the sessions
+    table and writes both messages through ``SessionDB.append_message``.
+
+    The function is **fail-open**: every error is caught and logged at DEBUG
+    level but never propagated, because a persistence failure must not block
+    the user's response (which has already been delivered).
+
+    *Dynamic API detection*: discovers the ``SessionDB`` instance via
+    ``hasattr`` on the gateway object (``gateway.session_db``), then falls
+    back to ``tui_gateway.server._get_db()``, so it works in both gateway
+    and TUI call sites without a hard import.
+
+    Silent skip on empty ``session_key``.
+    """
+    if not session_key:
+        return
+
+    __logger = logging.getLogger(__name__)
+
+    try:
+        # ── Discover SessionDB instance ──────────────────────────────
+        session_db = None
+
+        # Try gateway's session_db attribute first
+        if gateway is not None:
+            session_db = getattr(gateway, "session_db", None)
+
+        # Fallback: TUI's global _get_db()
+        if session_db is None:
+            try:
+                from tui_gateway.server import _get_db  # type: ignore[import-not-found]
+
+                session_db = _get_db()
+            except Exception:
+                pass
+
+        if session_db is None:
+            __logger.debug(
+                "persist_routed_turn: no SessionDB found — skipping persistence"
+            )
+            return
+
+        # ── Resolve session_key → session_id ────────────────────────
+        session_id: str | None = None
+        conn = getattr(session_db, "_conn", None)
+        lock = getattr(session_db, "_lock", None)
+
+        if conn is not None:
+            if lock is not None:
+                with lock:
+                    row = conn.execute(
+                        "SELECT id FROM sessions WHERE session_key = ?",
+                        (session_key,),
+                    ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id FROM sessions WHERE session_key = ?",
+                    (session_key,),
+                ).fetchone()
+
+            if row is not None:
+                try:
+                    session_id = row["id"]
+                except (TypeError, KeyError):
+                    # Fallback for non-Row row_factory
+                    session_id = row[0]
+
+        if not session_id:
+            __logger.debug(
+                "persist_routed_turn: no session_id for key=%r — skipping",
+                session_key,
+            )
+            return
+
+        # ── Append messages ─────────────────────────────────────────
+        import time as _time
+
+        _now = _time.time()
+        _append = session_db.append_message
+
+        # User message
+        _append(
+            session_id=session_id,
+            role="user",
+            content=user_message,
+            timestamp=_now,
+        )
+        # Assistant (orchestrator) response
+        _append(
+            session_id=session_id,
+            role="assistant",
+            content=route_response,
+            timestamp=_now + 0.001,  # ensure ordering
+        )
+
+    except Exception:
+        __logger.debug(
+            "persist_routed_turn: failed — continuing (fail-open)",
+            exc_info=True,
+        )

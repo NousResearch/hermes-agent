@@ -275,37 +275,107 @@ class TestClassificationCache:
         mod = _mod()
         # Clear cache so we start fresh
         mod._classification_cache.clear()
-        assert mod._get_cached_classification("session-1") is None
+        assert mod._get_cached_classification("session-1", "hello") is None
 
     def test_cache_hit_within_ttl(self):
         mod = _mod()
         mod._classification_cache.clear()
-        mod._cache_classification("session-1", {"classification": "complex"})
-        result = mod._get_cached_classification("session-1")
+        mod._cache_classification(
+            "session-1", "hello", {"classification": "complex"}
+        )
+        result = mod._get_cached_classification("session-1", "hello")
         assert result == {"classification": "complex"}
 
-    def test_cache_expired_after_ttl(self, monkeypatch):
+    def test_cache_expired_after_ttl(self):
         mod = _mod()
         mod._classification_cache.clear()
         # Cache with a timestamp far in the past
-        mod._classification_cache["session-old"] = (
+        old_key = mod._make_cache_key("session-old", "old msg")
+        mod._classification_cache[old_key] = (
             0,  # epoch 0
             {"classification": "complex"},
         )
-        result = mod._get_cached_classification("session-old")
+        result = mod._get_cached_classification("session-old", "old msg")
         assert result is None
         # Expired entry should be cleaned up
-        assert "session-old" not in mod._classification_cache
+        assert old_key not in mod._classification_cache
 
     def test_cache_different_sessions_independent(self):
         mod = _mod()
         mod._classification_cache.clear()
-        mod._cache_classification("session-a", {"classification": "simple"})
-        mod._cache_classification("session-b", {"classification": "complex"})
-        assert mod._get_cached_classification("session-a") == \
+        mod._cache_classification(
+            "session-a", "msg-a", {"classification": "simple"}
+        )
+        mod._cache_classification(
+            "session-b", "msg-b", {"classification": "complex"}
+        )
+        assert mod._get_cached_classification("session-a", "msg-a") == \
             {"classification": "simple"}
-        assert mod._get_cached_classification("session-b") == \
+        assert mod._get_cached_classification("session-b", "msg-b") == \
             {"classification": "complex"}
+
+    def test_cache_key_includes_message_content(self):
+        """Same session, different messages → different cache entries."""
+        mod = _mod()
+        mod._classification_cache.clear()
+        mod._cache_classification(
+            "session-1", "simple greeting",
+            {"classification": "simple"},
+        )
+        mod._cache_classification(
+            "session-1", "complex code review",
+            {"classification": "complex"},
+        )
+        assert mod._get_cached_classification(
+            "session-1", "simple greeting"
+        ) == {"classification": "simple"}
+        assert mod._get_cached_classification(
+            "session-1", "complex code review"
+        ) == {"classification": "complex"}
+
+    def test_alternating_turn_independent_classification(self):
+        """Regression: alternating simple/complex messages must each get their
+        own classification — the first message must NOT dominate the session.
+
+        This is the bug teknium1 identified: the old session_key-only cache
+        caused a complex→complex cache hit for a subsequent simple message.
+        """
+        mod = _mod()
+        mod._classification_cache.clear()
+
+        # Turn 1: complex message → classify + cache as complex
+        with mock.patch.object(
+            mod, "_load_router_config",
+            return_value={"enabled": True},
+        ), mock.patch.object(
+            mod, "classify",
+            return_value={"classification": "complex",
+                          "confidence": 0.9, "reason": "test"},
+        ):
+            with mock.patch.object(
+                mod, "route_to_orchestrator",
+                return_value="orchestrator response",
+            ):
+                result1 = mod._on_pre_agent_dispatch(
+                    message="debug the deployment pipeline",
+                    session_key="sess-abc",
+                )
+            # Complex message → route action returned
+            assert result1 is not None
+            assert result1["action"] == "route"
+
+            # Turn 2: classify simple message "hello" — must NOT hit
+            # the cached "complex" from turn 1
+            with mock.patch.object(
+                mod, "classify",
+                return_value={"classification": "simple",
+                              "confidence": 0.8, "reason": "greeting"},
+            ):
+                result2 = mod._on_pre_agent_dispatch(
+                    message="hello",
+                    session_key="sess-abc",
+                )
+            assert result2 is None  # simple → no routing
 
 
 # ── Classify (without LLM) ───────────────────────────────────────────
@@ -417,7 +487,9 @@ class TestOnPreAgentDispatch:
         """Cached 'simple' classification → no routing, returns None."""
         mod = _mod()
         mod._classification_cache.clear()
-        mod._cache_classification("sess", {"classification": "simple"})
+        mod._cache_classification(
+            "sess", "hello", {"classification": "simple"}
+        )
         with mock.patch.object(mod, "_load_router_config",
                                return_value={"enabled": True}):
             result = mod._on_pre_agent_dispatch(
@@ -430,7 +502,9 @@ class TestOnPreAgentDispatch:
         """Cached 'complex' classification → routes."""
         mod = _mod()
         mod._classification_cache.clear()
-        mod._cache_classification("sess", {"classification": "complex"})
+        mod._cache_classification(
+            "sess", "complex task", {"classification": "complex"}
+        )
         with mock.patch.object(mod, "_load_router_config",
                                return_value={
                                    "enabled": True,
@@ -469,7 +543,9 @@ class TestOnPreAgentDispatch:
         """When stream_callback is provided, 'streamed' is True."""
         mod = _mod()
         mod._classification_cache.clear()
-        mod._cache_classification("sess", {"classification": "complex"})
+        mod._cache_classification(
+            "sess", "complex task", {"classification": "complex"}
+        )
 
         def _noop(text: str) -> None:
             pass
@@ -494,7 +570,9 @@ class TestOnPreAgentDispatch:
         """When no stream_callback, 'streamed' is False."""
         mod = _mod()
         mod._classification_cache.clear()
-        mod._cache_classification("sess", {"classification": "complex"})
+        mod._cache_classification(
+            "sess", "complex task", {"classification": "complex"}
+        )
         with mock.patch.object(mod, "_load_router_config",
                                return_value={
                                    "enabled": True,

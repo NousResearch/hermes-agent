@@ -390,6 +390,7 @@ def register(ctx):
 | [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
+| [`pre_agent_dispatch`](#pre_agent_dispatch) | Agent about to process a user message, after gateway auth | `{"action": "skip" \| "route" \| "rewrite" \| "allow", ...}` to intercept, reroute, or transform |
 | [`pre_approval_request`](#pre_approval_request) | An approval decision is requested, including smart-mode auto decisions | ignored |
 | [`post_approval_response`](#post_approval_response) | An approval decision is made (or a prompt times out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
@@ -1058,6 +1059,71 @@ def register(ctx):
 
 ---
 
+---
+
+### `pre_agent_dispatch`
+
+Fires **once per user message** after the gateway has authenticated and resolved the session, but before the agent begins processing. This is the interception point for task-classification plugins (e.g. the router plugin that classifies messages as simple or complex and optionally routes complex tasks to a more powerful model).
+
+Unlike `pre_gateway_dispatch`, which runs at the gateway ingress, `pre_agent_dispatch` runs after the session is fully resolved — the agent instance exists, the session key is known, and the full conversation history is available.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    message: str,
+    session_key: str = "",
+    source=None,
+    gateway=None,
+    history: list | None = None,
+    stream_callback=None,
+    **kwargs,
+):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `message` | `str` | The user's message text. |
+| `session_key` | `str` | The session routing key (e.g. `"telegram:12345:67890"`). Empty if no session is active. |
+| `source` | `SessionSource` or `None` | The platform-specific source descriptor (has `.cwd`, `.platform`, etc.). |
+| `gateway` | `GatewayRunner` or `None` | The active gateway runner (TUI/gateway). Plugins may use `gateway.session_db` for persistence. |
+| `history` | `list[dict]` or `None` | The current conversation history as a list of `{"role": ..., "content": ...}` dicts. |
+| `stream_callback` | `callable` or `None` | A callback for incremental output streaming. Call with a single `str` argument to show progress. |
+
+**Fires:** In `hermes_cli/plugins.py`, inside `dispatch_pre_agent()`. Both the TUI server and gateway call this function before `agent.run_conversation()`. Callbacks registered via `ctx.register_hook("pre_agent_dispatch", ...)` in plugins or via shell hooks in `config.yaml`.
+
+**Return value:** `None` or a dict. The first recognized action dict across all registered hooks wins; remaining results are ignored. Exceptions are caught and logged — unrecognised actions and failures fall through to normal dispatch.
+
+| Return | Effect |
+|--------|--------|
+| `{"action": "skip"}` | Drop the message silently. No agent run, no reply. |
+| `{"action": "route", "result": str}` | Bypass the agent entirely. `result` is delivered as the final response. Used by the router plugin to return orchestrator output. |
+| `{"action": "rewrite", "text": str}` | Replace the user message with `text`, then continue normal agent dispatch. |
+| `{"action": "allow"}` / `None` | Normal dispatch — the agent processes the message as usual. |
+
+**Use cases:** Task-complexity classification (route to cheaper or more powerful models dynamically); message rewriting before agent processing; platform-specific message filtering; injecting context or instructions before the agent sees the message.
+
+**Example — simple complexity classifier (the router plugin pattern):**
+
+```python
+def classify_and_route(message, session_key, history, stream_callback, **kwargs):
+    # Call your classification logic
+    if is_simple(message):
+        return None  # allow normal dispatch
+    # Route to orchestrator
+    from plugins.router import route_to_orchestrator
+    response = route_to_orchestrator(
+        user_message=message,
+        history=history,
+        stream_callback=stream_callback,
+    )
+    return {"action": "route", "result": response}
+
+def register(ctx):
+    ctx.register_hook("pre_agent_dispatch", classify_and_route)
+```
+
+**Persistence note:** When a hook returns a `route` action, the caller constructs a synthetic user/assistant pair in the in-memory history. Callers SHOULD also call `persist_routed_turn()` from `hermes_cli.plugins` to durably record this turn in `state.db` so it survives session restarts. The built-in router plugin's call sites (TUI server and gateway) already do this.
 ### `pre_approval_request`
 
 Fires before an approval decision is requested. It covers prompted surfaces—interactive CLI, Ink TUI, gateway platforms, and ACP clients—and `approvals.mode=smart` decisions made without a human prompt (`surface="smart"`). In smart mode, the hook runs before the auxiliary LLM is called.

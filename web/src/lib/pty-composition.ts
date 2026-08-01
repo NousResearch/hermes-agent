@@ -19,7 +19,10 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   return {
     onCompositionEnd(data: string | null) {
       if (!data) return;
+      // Preserve rapid consecutive commits instead of discarding the first.
+      const previous = pending;
       clearPending();
+      if (previous) send(previous);
       pending = data;
       timer = setTimeout(() => {
         const committed = pending;
@@ -27,11 +30,10 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
         if (committed) send(committed);
       }, 16);
     },
-    noteTerminalData() {
-      // Any xterm input in the short grace window is its own composition
-      // delivery (possibly chunked or normalization-different), so prefer it
-      // over the fallback to avoid duplicate text.
-      if (pending) clearPending();
+    noteTerminalData(data: string) {
+      // A non-protocol xterm input in the short grace window is its own
+      // composition delivery (possibly chunked or normalization-different).
+      if (pending && !data.startsWith("\x1b")) clearPending();
     },
     dispose: clearPending,
   };

@@ -1316,7 +1316,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       sendComposedText = (data) => forwardPtyData(data, false);
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
-          compositionForwarder.noteTerminalData();
+          compositionForwarder.noteTerminalData(data);
         }
         forwardPtyData(data);
       });

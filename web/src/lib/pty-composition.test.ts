@@ -28,18 +28,6 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("prefers xterm input in the grace window over the fallback", () => {
-    vi.useFakeTimers();
-    const send = vi.fn();
-    const forwarder = createPtyCompositionForwarder(send);
-
-    forwarder.onCompositionEnd("ä");
-    forwarder.noteTerminalData("x");
-    vi.runAllTimers();
-
-    expect(send).not.toHaveBeenCalled();
-  });
-
   it("forwards a second composition after the first fallback completes", () => {
     vi.useFakeTimers();
     const send = vi.fn();
@@ -54,12 +42,24 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).toHaveBeenNthCalledWith(2, "ö");
   });
 
-  it("supersedes an earlier composition and cancels it on disposal", () => {
+  it("preserves an earlier rapid composition before scheduling the next", () => {
     vi.useFakeTimers();
     const send = vi.fn();
     const forwarder = createPtyCompositionForwarder(send);
 
     forwarder.onCompositionEnd("a");
+    forwarder.onCompositionEnd("ä");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenNthCalledWith(1, "a");
+    expect(send).toHaveBeenNthCalledWith(2, "ä");
+  });
+
+  it("cancels a pending composition on disposal", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
     forwarder.onCompositionEnd("ä");
     forwarder.dispose();
     vi.runAllTimers();

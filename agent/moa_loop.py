@@ -2230,8 +2230,24 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
         except Exception:
             pass
 
+    resolved_preset = preset_name
+    if resolved_preset is None and getattr(agent, "provider", None) == "moa":
+        resolved_preset = getattr(agent, "model", None)
+
+    resolved_preset = str(resolved_preset or "default")
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        moa_cfg = normalize_moa_config(load_config().get("moa") or {})
+        presets = moa_cfg.get("presets") or {}
+        if resolved_preset not in presets:
+            resolved_preset = moa_cfg.get("default_preset") or "default"
+    except Exception:
+        resolved_preset = "default"
+
     return MoAClient(
-        str(preset_name or getattr(agent, "model", None) or "default"),
+        resolved_preset,
         reference_callback=_moa_reference_relay,
         # Thread the agent through so the reference fan-out wait can be
         # aborted on a user interrupt (see _run_references_parallel).

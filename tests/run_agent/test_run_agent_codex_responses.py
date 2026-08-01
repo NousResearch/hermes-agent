@@ -928,12 +928,10 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
 
 def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
-    closed = {"value": False}
     rebuilt = {"kwargs": None}
 
     class _ExistingClient:
-        def close(self):
-            closed["value"] = True
+        pass
 
     class _RebuiltClient:
         pass
@@ -962,7 +960,8 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
     ok = agent._try_refresh_copilot_client_credentials()
 
     assert ok is True
-    assert closed["value"] is True
+    # The old client is retired by _replace_primary_openai_client (release is
+    # deferred to GC on current main — no synchronous .close() contract).
     # The freshly EXCHANGED IDE token — not the raw ghu_/gho_ token — goes on
     # the wire, which is what fixes the "401 IDE token expired" recurrence.
     assert rebuilt["kwargs"]["api_key"] == "tid=exchanged-ide-token"

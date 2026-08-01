@@ -194,6 +194,24 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     agent._stream_needs_break = True
 
 
+def _is_copilot_provider(agent: Any) -> bool:
+    """Delegate to ``AIAgent._is_copilot_provider`` (single owner of the check).
+
+    ``agent.provider`` is not always the normalized ``copilot`` slug —
+    ``/model`` and profile configs can leave the alias ``github-copilot`` (or
+    ``github``) in place, and a bare ``provider == "copilot"`` gate silently
+    skips credential recovery for those spellings.
+    """
+    try:
+        return bool(agent._is_copilot_provider())
+    except Exception:
+        return (getattr(agent, "provider", "") or "").strip().lower() in {
+            "copilot",
+            "github-copilot",
+            "github",
+        }
+
+
 def _is_stale_copilot_credential_error(status_code: Optional[int], error_message: str) -> bool:
     """Detect a Copilot 400 that is really a STALE / DEGRADED credential.
 
@@ -3889,7 +3907,7 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
                     print(f"{agent.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
                 if (
-                    agent.provider == "copilot"
+                    _is_copilot_provider(agent)
                     and status_code == 401
                     and not _retry.copilot_auth_retry_attempted
                 ):
@@ -4907,7 +4925,7 @@ def run_conversation(
                     # unavailable model. Copilot-scoped so other providers'
                     # real 400s are untouched.
                     if (
-                        agent.provider == "copilot"
+                        _is_copilot_provider(agent)
                         and not _retry.copilot_stale_cred_retry_attempted
                         and _is_stale_copilot_credential_error(
                             status_code, str(getattr(api_error, "message", "") or api_error)

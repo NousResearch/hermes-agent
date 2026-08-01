@@ -317,6 +317,27 @@ def _token_fingerprint(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
 
 
+def _read_jwt_store(path: Path) -> Optional[dict]:
+    """Bounded read of the on-disk JWT store → dict, or None if unusable.
+
+    Single chokepoint for every read of the persisted store (load, eviction,
+    save-merge). A well-formed store is a few KB; a file over the 1 MiB cap or
+    with non-dict content is treated as unusable so a corrupt/oversized file
+    can't balloon memory or get rewritten back out.
+    """
+    try:
+        if path.stat().st_size > _JWT_DISK_MAX_BYTES:
+            logger.debug(
+                "Persisted Copilot JWT store exceeds %d bytes; ignoring", _JWT_DISK_MAX_BYTES
+            )
+            return None
+        loaded = json.loads(path.read_text())
+        return loaded if isinstance(loaded, dict) else None
+    except Exception as exc:
+        logger.debug("Failed to read persisted Copilot JWT store: %s", exc)
+        return None
+
+
 def evict_cached_exchanged_token(raw_token: str) -> None:
     """Drop any cached exchanged JWT for ``raw_token`` (in-process + on-disk).
 
@@ -335,8 +356,8 @@ def evict_cached_exchanged_token(raw_token: str) -> None:
     if not path or not path.exists():
         return
     try:
-        store = json.loads(path.read_text())
-        if isinstance(store, dict) and fp in store:
+        store = _read_jwt_store(path)
+        if store is not None and fp in store:
             del store[fp]
             tmp = path.with_suffix(path.suffix + ".tmp")
             tmp.write_text(json.dumps(store))
@@ -365,14 +386,10 @@ def _load_jwt_from_disk(fp: str) -> Optional[tuple[str, float, Optional[str]]]:
         return None
     try:
         # Bound the read: this file is a small JSON map of fingerprint → token.
-        # A well-formed store is a few KB; cap at 1 MiB so a corrupt/oversized
-        # file can't balloon memory (mirrors the auth JSON read bound). A file
-        # over the cap is treated as unusable — the caller re-exchanges.
-        if path.stat().st_size > _JWT_DISK_MAX_BYTES:
-            logger.debug("Persisted Copilot JWT store exceeds %d bytes; ignoring", _JWT_DISK_MAX_BYTES)
-            return None
-        store = json.loads(path.read_text())
-        entry = store.get(fp) if isinstance(store, dict) else None
+        # An oversized/corrupt store is treated as unusable — the caller
+        # re-exchanges (bound shared with eviction/save via _read_jwt_store).
+        store = _read_jwt_store(path)
+        entry = store.get(fp) if store is not None else None
         if not isinstance(entry, dict):
             return None
         api_token = entry.get("api_token", "")
@@ -395,12 +412,7 @@ def _save_jwt_to_disk(
     try:
         store: dict = {}
         if path.exists():
-            try:
-                loaded = json.loads(path.read_text())
-                if isinstance(loaded, dict):
-                    store = loaded
-            except Exception:
-                store = {}
+            store = _read_jwt_store(path) or {}
         now = time.time()
         store = {
             k: v

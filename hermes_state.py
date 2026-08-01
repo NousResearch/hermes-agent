@@ -2405,6 +2405,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # Set on the first compression-busy collision so the short wait is
         # measured from then, not from the start of the write.
         compression_deadline: Optional[float] = None
+
+        # Transient engine-level error observed on contended WAL appends
+        # (dual gateway/agent writers; FTS5 trigram sync holds the write
+        # lock). The identical write succeeds standalone, so it is
+        # retryable like locked/busy. The exception CLASS varies with the
+        # SQLite build — some surface it as InterfaceError, which lives
+        # OUTSIDE DatabaseError and escaped the retry net entirely on
+        # attempt 0 — so the check is message-scoped, not class-scoped.
+        def _is_no_more_rows(exc: sqlite3.Error) -> bool:
+            return "no more rows available" in str(exc).lower()
+
         while True:
             try:
                 with self._lock:
@@ -2460,9 +2471,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "a large WAL checkpoint, or an older pre-update "
                         "process; the database itself is healthy)"
                     ) from exc
-                # Non-lock error — propagate.
+                if _is_no_more_rows(exc) and _sleep_before_retry():
+                    continue
+                # Non-lock error or patience exhausted — propagate.
                 raise
             except sqlite3.DatabaseError as exc:
+                if _is_no_more_rows(exc) and _sleep_before_retry():
+                    continue
                 # Corrupt FTS shadow tables make every write raise the
                 # malformed/corrupt error class through the FTS sync triggers
                 # while the canonical messages table is intact. The gateway
@@ -2475,6 +2490,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if not self._try_runtime_fts_rebuild(exc):
                     raise
                 continue
+            except sqlite3.Error as exc:
+                # Catch-all for builds that surface 'no more rows available'
+                # as InterfaceError (a sibling of DatabaseError, not a
+                # subclass) or another sqlite3.Error class outside the two
+                # handlers above. Message-scoped: anything else propagates
+                # untouched.
+                if _is_no_more_rows(exc) and _sleep_before_retry():
+                    continue
+                raise
 
     def _sleep_before_write_retry(
         self, deadline: float, patience_s: float

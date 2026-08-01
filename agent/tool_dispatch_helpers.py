@@ -57,8 +57,17 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "web_search",
 })
 
+# Filesystem tools whose parallel admission is decided by path overlap.
+# Readers may share a subtree with other readers; a writer conflicts with
+# ANY overlapping reservation (reader or writer). This is what keeps a
+# batched ``search_files``/``read_file`` from observing pre-mutation file
+# state when the model batches it alongside the ``patch``/``write_file``
+# it depends on (the classic same-block write→read race).
+_PATH_SCOPED_READERS = frozenset({"read_file", "search_files"})
+_PATH_SCOPED_WRITERS = frozenset({"write_file", "patch"})
+
 # File tools can run concurrently when they target independent paths.
-_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
+_PATH_SCOPED_TOOLS = _PATH_SCOPED_READERS | _PATH_SCOPED_WRITERS
 
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
@@ -116,10 +125,16 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
 
     * ``_NEVER_PARALLEL_TOOLS`` (interactive tools) → barrier.
     * Unparseable / non-dict arguments → barrier.
-    * Path-scoped tools (``read_file``/``write_file``/``patch``) join a
-      parallel run only when their target path does not overlap another
-      path already reserved in the same run; an overlap closes the run so
-      the conflicting call starts a NEW run after the first completes.
+    * Path-scoped tools (``read_file``/``search_files``/``write_file``/
+      ``patch``) join a parallel run only when their target path does not
+      CONFLICT with a path already reserved in the same run.  Reservations
+      carry a reader/writer role: reader↔reader overlap is harmless (two
+      reads of the same file commute) and stays parallel; any overlap
+      involving a writer closes the run so the conflicting call starts a
+      NEW run after the first completes.  ``search_files`` reserves its
+      search root (default ``.``) as a reader — a search batched after a
+      write into the searched subtree is ordered behind that write instead
+      of racing it.
     * Anything not in ``_PARALLEL_SAFE_TOOLS`` and not an opted-in MCP
       tool → barrier.
 
@@ -129,7 +144,8 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
     """
     segments: list[list] = []  # [kind, calls] pairs, normalized to tuples on return
     current: list = []
-    reserved_paths: list[Path] = []
+    # (canonical_path, is_writer) reservations for the current parallel run.
+    reserved_paths: list[tuple[Path, bool]] = []
 
     def _close_parallel() -> None:
         nonlocal current, reserved_paths
@@ -177,11 +193,18 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             if scoped_path is None:
                 _add_sequential(tool_call)
                 continue
-            if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
+            is_writer = tool_name in _PATH_SCOPED_WRITERS
+            if any(
+                (is_writer or existing_is_writer)
+                and _paths_overlap(scoped_path, existing)
+                for existing, existing_is_writer in reserved_paths
+            ):
                 # Same-subtree conflict inside this run: close it so this
                 # call starts a fresh run AFTER the conflicting one lands.
+                # Reader↔reader overlap never conflicts — concurrent reads
+                # of the same subtree commute.
                 _close_parallel()
-            reserved_paths.append(scoped_path)
+            reserved_paths.append((scoped_path, is_writer))
             current.append(tool_call)
             continue
 
@@ -250,6 +273,12 @@ def _extract_parallel_scope_path(
 
     raw_path = function_args.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
+        # ``search_files`` defaults its search root to the cwd when
+        # ``path`` is omitted — reserve that root rather than falling
+        # back to a sequential barrier (returning None here would demote
+        # every bare search to a barrier and destroy read parallelism).
+        if tool_name == "search_files":
+            return _canonical_path(".", execution_cwd)
         return None
 
     return _canonical_path(raw_path, execution_cwd)
@@ -634,6 +663,8 @@ __all__ = [
     "_NEVER_PARALLEL_TOOLS",
     "_PARALLEL_SAFE_TOOLS",
     "_PATH_SCOPED_TOOLS",
+    "_PATH_SCOPED_READERS",
+    "_PATH_SCOPED_WRITERS",
     "_DESTRUCTIVE_PATTERNS",
     "_REDIRECT_OVERWRITE",
     "_is_destructive_command",

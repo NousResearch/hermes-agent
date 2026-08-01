@@ -7270,6 +7270,22 @@ class AIAgent:
                 set_session_context(self.session_id)
             except Exception:
                 pass
+            # #76354 review F5: the worker thread also rebound the session
+            # ContextVar inside its own (copied) context, which the caller
+            # never sees — and get_session_env() prefers an already-bound
+            # ContextVar over os.environ. Rebind in the CALLER's context so
+            # post-compression tools/subprocesses on this thread resolve
+            # HERMES_SESSION_ID to the child id after an out-of-place
+            # rotation (idempotent when no rotation happened).
+            try:
+                from gateway.session_context import set_current_session_id
+                if self.session_id:
+                    set_current_session_id(self.session_id)
+            except Exception:
+                logger.debug(
+                    "post-compression session ContextVar rebind failed",
+                    exc_info=True,
+                )
             return result
         finally:
             # Restore whatever the caller had, so a compaction never leaks its

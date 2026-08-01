@@ -2889,10 +2889,10 @@ def looks_like_codex_intermediate_ack(
         return False
     if not _ACK_FUTURE_RE.search(assistant_text):
         return False
+
     if not any(marker in assistant_text for marker in _ACK_ACTION_MARKERS):
         return False
-    # Opted-in (all-api_mode) path: future-ack + action verb + no prior tool call suffices.
-    if not require_workspace:
+    # Opted-in (all-api_mode) path: future-ack + action verb + no prior tool call suffices.    if not require_workspace:
         return True
     # ``user_message`` may be a multi-part content list (vision via the OpenAI-compat server); a
     # list survives ``or ""`` and ``.strip()`` raises, so flatten first.

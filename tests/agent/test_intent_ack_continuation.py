@@ -111,6 +111,35 @@ def test_all_path_drops_workspace_requirement():
 # ── detector: guardrails that hold regardless of workspace ───────────────────
 
 
+# ── detector: progress narration patterns (issue #74604) ────────────────────
+
+NARRATION_USER = "What is the full analysis of the dataset?"
+NARRATION_ACK = "I am now compiling the complete answer."
+
+
+def test_progress_narration_detected_as_intermediate_ack():
+    """Issue #74604: 'I am now compiling the complete answer.' is a progress
+    narration that should trigger a continuation, not end the turn. The
+    detector must catch 'i am now' + 'compiling' as a future-ack + action.
+    """
+    a = _agent(True, "chat_completions")
+    msgs = [{"role": "user", "content": NARRATION_USER}]
+    assert looks_like_codex_intermediate_ack(
+        a, NARRATION_USER, NARRATION_ACK, msgs, require_workspace=False
+    )
+
+
+def test_progress_narration_with_generating():
+    """'I'm currently generating the report.' should also be caught."""
+    a = _agent(True, "chat_completions")
+    msgs = [{"role": "user", "content": "Create the report"}]
+    assert looks_like_codex_intermediate_ack(
+        a, "Create the report",
+        "I'm currently generating the report.",
+        msgs, require_workspace=False,
+    )
+
+
 
 
 

@@ -259,10 +259,9 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
 
 
 
-# Bloque de tests para anadir al final de
-# tests/agent/test_gemini_native_adapter.py del repo hermes-agent.
-# Estilo copiado del fichero destino: funciones sueltas, import dentro,
-# docstring explicando el porque.
+# ---------------------------------------------------------------------------
+# Parallel function call slot tests
+# ---------------------------------------------------------------------------
 
 
 def _fc_event(*calls):
@@ -283,7 +282,7 @@ def _fc_event(*calls):
 
 def _accumulate(events):
     """Replay events through translate_stream_event the way the streaming loop
-    in run_agent.py does, and return {index: concatenated arguments}."""
+    in ``_stream_completion`` does, and return {index: concatenated arguments}."""
     from agent.gemini_native_adapter import translate_stream_event
 
     tool_call_indices: dict = {}
@@ -366,6 +365,35 @@ def test_identical_resend_is_still_deduplicated_into_one_slot():
 
     assert len(acc) == 1, acc
     assert acc[0] == '{"query": "A"}'
+
+
+def test_resend_of_the_second_call_reuses_its_collision_created_slot():
+    """A slot opened by the collision must stay reachable. Replaying ``[A, B,
+    B]``, the resent B starts its lookup from the shared key, whose arguments
+    are A's, so it has to be matched against the slot B already opened instead
+    of opening a third one and duplicating the call."""
+    import json
+
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices: dict = {}
+    deltas = []
+    for event in [
+        _fc_event(("web_search", {"query": "A"})),
+        _fc_event(("web_search", {"query": "B"})),
+        _fc_event(("web_search", {"query": "B"})),
+    ]:
+        for chunk in translate_stream_event(
+            event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+        ):
+            deltas.append(chunk.choices[0].delta.tool_calls[0])
+
+    assert len(tool_call_indices) == 2, tool_call_indices
+    assert [d.index for d in deltas] == [0, 1, 1]
+    # The resend carries no new arguments and keeps the id of the call it repeats.
+    assert deltas[2].function.arguments == ""
+    assert deltas[2].id == deltas[1].id
+    assert [json.loads(d.function.arguments)["query"] for d in deltas[:2]] == ["A", "B"]
 
 
 def test_partial_json_arguments_keep_accumulating_in_one_slot():

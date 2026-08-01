@@ -715,6 +715,24 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
                 yield payload
 
 
+def _tool_call_slot_accepts(slot: Dict[str, Any], args_str: str) -> bool:
+    """Whether ``args_str`` belongs to an existing streaming tool call slot.
+
+    A continuation extends the arguments already accumulated in the slot and a
+    resend repeats them verbatim, so both are prefix matches. A slot still
+    holding half-sent JSON is mid-stream and keeps whatever follows it.
+    Anything else arriving after a complete JSON object is a different call.
+    """
+    previous = str(slot.get("last_arguments") or "")
+    if not previous or args_str.startswith(previous):
+        return True
+    try:
+        json.loads(previous)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return True
+    return False
+
+
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     if not candidates:
@@ -748,22 +766,22 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 sort_keys=True,
             )
             slot = tool_call_indices.get(call_key)
-            if slot is not None:
+            if slot is not None and not _tool_call_slot_accepts(slot, args_str):
                 # ``part_index`` restarts at 0 on every stream event, so two
                 # *different* calls to the same tool arriving in separate
                 # events collide on one slot and their arguments get
-                # concatenated into unparseable JSON. A continuation always
-                # extends what we already have; anything else that follows a
-                # complete JSON object is a new call and needs its own slot.
-                _prev = str(slot.get("last_arguments") or "")
-                if _prev and not args_str.startswith(_prev):
-                    try:
-                        json.loads(_prev)
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        pass
-                    else:
-                        call_key = f"{call_key}#{len(tool_call_indices)}"
-                        slot = tool_call_indices.get(call_key)
+                # concatenated into unparseable JSON. Each call gets its own
+                # slot, and the slots opened that way stay reachable, so a
+                # later continuation or resend still lands on the one it
+                # opened instead of allocating yet another.
+                slot = None
+                for previous_key, previous_slot in tool_call_indices.items():
+                    if previous_key.startswith(f"{call_key}#") and _tool_call_slot_accepts(previous_slot, args_str):
+                        call_key = previous_key
+                        slot = previous_slot
+                        break
+                if slot is None:
+                    call_key = f"{call_key}#{len(tool_call_indices)}"
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),

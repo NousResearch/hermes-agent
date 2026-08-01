@@ -28,6 +28,18 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("forwards a pending composition after unrelated terminal data", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("ä");
+    forwarder.noteTerminalData("x");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenCalledExactlyOnceWith("ä");
+  });
+
   it("forwards a second composition after the first fallback completes", () => {
     vi.useFakeTimers();
     const send = vi.fn();

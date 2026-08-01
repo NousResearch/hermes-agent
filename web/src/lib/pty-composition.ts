@@ -31,9 +31,8 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
       }, 16);
     },
     noteTerminalData(data: string) {
-      // A non-protocol xterm input in the short grace window is its own
-      // composition delivery (possibly chunked or normalization-different).
-      if (pending && !data.startsWith("\x1b")) clearPending();
+      // xterm delivers the committed text before any following terminal input.
+      if (pending && !data.startsWith("\x1b") && data.startsWith(pending)) clearPending();
     },
     dispose: clearPending,
   };

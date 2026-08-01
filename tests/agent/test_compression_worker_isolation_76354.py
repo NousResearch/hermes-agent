@@ -56,6 +56,13 @@ def _build_agent_with_db(db: SessionDB, session_id: str, **compressor_kwargs):
     compressor._last_compression_made_progress = True
     compressor._last_summary_fallback_used = False
     agent.context_compressor = compressor
+    # The compressor is a stub — the one-time compression-model feasibility
+    # probe would resolve a REAL auxiliary provider (credential pools, live
+    # token exchange) before the engine runs. In hermetic CI there are no
+    # credentials, so the probe aborts compression before the stub engine
+    # ever starts and every blocked-state assertion goes vacuous. These
+    # tests exercise isolation/fencing, never aux-model feasibility.
+    agent._compression_feasibility_checked = True
     return agent
 
 

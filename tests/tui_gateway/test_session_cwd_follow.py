@@ -118,6 +118,52 @@ def test_a_deleted_directory_is_not_a_move(session, repo_with_worktree, tmp_path
     assert session["cwd"] == str(repo)
 
 
+def test_an_unrelated_repo_is_not_a_move(session, repo_with_worktree, tmp_path):
+    """Git workspace A visiting unrelated git repo B is a visit, not a re-home.
+
+    Only checkouts sharing the same common .git dir (the shape `git worktree
+    add` produces) count as a relocation; `cd ~/other-project && git log`
+    must not re-anchor the chat onto the foreign repo.
+    """
+    repo, _ = repo_with_worktree
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-b", "main")
+    _git(other, "config", "user.email", "t@example.com")
+    _git(other, "config", "user.name", "t")
+    (other / "x.txt").write_text("x\n", encoding="utf-8")
+    _git(other, "add", ".")
+    _git(other, "commit", "-m", "init")
+    terminal_tool.record_session_cwd(session["session_key"], str(other))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_an_explicit_workspace_is_never_overridden(session, repo_with_worktree):
+    """A user-chosen cwd must survive even a legitimate same-repo worktree move."""
+    repo, worktree = repo_with_worktree
+    session["explicit_cwd"] = True
+    terminal_tool.record_session_cwd(session["session_key"], str(worktree))
+
+    assert server._reconcile_session_cwd_from_terminal(session) is False
+    assert session["cwd"] == str(repo)
+
+
+def test_a_settle_adopted_cwd_can_keep_following(session, repo_with_worktree):
+    """The settle marker keeps a session following the agent across worktrees."""
+    repo, worktree = repo_with_worktree
+    terminal_tool.record_session_cwd(session["session_key"], str(worktree))
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["explicit_cwd"] is True
+    assert session["cwd_from_settle"] is True
+
+    # Agent moves back to the primary checkout: still follows.
+    terminal_tool.record_session_cwd(session["session_key"], str(repo))
+    assert server._reconcile_session_cwd_from_terminal(session) is True
+    assert session["cwd"] == str(repo)
+
+
 def test_remote_backends_do_not_reanchor(session, repo_with_worktree, monkeypatch):
     """A remote cwd names a path on the host, not one this gateway can probe."""
     repo, worktree = repo_with_worktree

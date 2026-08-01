@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -49,6 +50,18 @@ def test_real_binaries_execute_leading_dash_program_payload(
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
     if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
         pytest.skip(f"{tool} or script is not installed")
+    if tool == "sort":
+        version = subprocess.run(
+            [tool, "--version"], capture_output=True, text=True, check=False
+        )
+        if "GNU coreutils" not in (version.stdout + version.stderr):
+            pytest.skip("execution-bearing sort flags are GNU-sort specific")
+    if tool == "man":
+        version = subprocess.run(
+            [tool, "--version"], capture_output=True, text=True, check=False
+        )
+        if version.returncode != 0 or "man-db" not in (version.stdout + version.stderr):
+            pytest.skip("long pager-option integration is specific to man-db")
 
     marker = tmp_path / "executed"
     payload = tmp_path / "-payload-marker"
@@ -70,7 +83,10 @@ def test_real_binaries_execute_leading_dash_program_payload(
     }
     argv = [tool, *resolved_args]
     if needs_tty:
-        argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
+        if sys.platform == "darwin":
+            argv = ["script", "-q", "/dev/null", *argv]
+        else:
+            argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
 
     subprocess.run(argv, input=input_text, text=True, capture_output=True, env=env, timeout=20)
 

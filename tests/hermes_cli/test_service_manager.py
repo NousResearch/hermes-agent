@@ -192,23 +192,31 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 # tests/docker/test_s6_profile_gateway_integration.py.
 
 
-def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
+def test_seed_supervise_skeleton_creates_expected_layout(
+    tmp_path, monkeypatch
+) -> None:
     """Verifies the dirs + FIFO + modes the helper lays down."""
+    import os
     import stat
+    import sys
 
-    from hermes_cli.service_manager import _seed_supervise_skeleton
+    import hermes_cli.service_manager as service_manager
+
+    monkeypatch.setattr(service_manager, "_HERMES_UID", os.getuid())
+    monkeypatch.setattr(service_manager, "_HERMES_GID", os.getgid())
 
     svc_dir = tmp_path / "gateway-foo"
     svc_dir.mkdir()
 
-    _seed_supervise_skeleton(svc_dir)
+    service_manager._seed_supervise_skeleton(svc_dir)
 
     # Top-level event/ — s6-svlisten1 event subscription dir.
     event = svc_dir / "event"
     assert event.is_dir(), "missing top-level event/"
-    assert stat.S_IMODE(event.stat().st_mode) == 0o3730, (
-        f"event/ mode = {oct(event.stat().st_mode)}, want 03730"
-    )
+    event_mode = stat.S_IMODE(event.stat().st_mode)
+    assert event_mode & ~stat.S_ISGID == 0o1730
+    if sys.platform != "darwin":
+        assert event_mode & stat.S_ISGID
 
     # supervise/ dir.
     supervise = svc_dir / "supervise"
@@ -218,7 +226,10 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # supervise/event/.
     supervise_event = supervise / "event"
     assert supervise_event.is_dir(), "missing supervise/event/"
-    assert stat.S_IMODE(supervise_event.stat().st_mode) == 0o3730
+    supervise_event_mode = stat.S_IMODE(supervise_event.stat().st_mode)
+    assert supervise_event_mode & ~stat.S_ISGID == 0o1730
+    if sys.platform != "darwin":
+        assert supervise_event_mode & stat.S_ISGID
 
     # supervise/control FIFO.
     control = supervise / "control"
@@ -227,6 +238,35 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
         "supervise/control must be a FIFO"
     )
     assert stat.S_IMODE(control.stat().st_mode) == 0o660
+
+
+def test_seed_supervise_skeleton_applies_modes_after_chown(
+    tmp_path, monkeypatch
+) -> None:
+    """Ownership changes must not silently clear event set-ID bits."""
+    import os
+    from pathlib import Path
+
+    import hermes_cli.service_manager as service_manager
+
+    operations: list[tuple[str, str]] = []
+    real_chmod = Path.chmod
+
+    def record_chown(path, uid, gid) -> None:
+        operations.append(("chown", Path(path).name))
+
+    def record_chmod(path, mode, *, follow_symlinks=True) -> None:
+        operations.append(("chmod", path.name))
+        real_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os, "chown", record_chown)
+    monkeypatch.setattr(Path, "chmod", record_chmod)
+
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
+    service_manager._seed_supervise_skeleton(svc_dir)
+
+    assert operations[:2] == [("chown", "event"), ("chmod", "event")]
 
 
 
@@ -487,5 +527,4 @@ def test_s6_log_run_never_invokes_chown_with_symlinked_log_dir(tmp_path) -> None
     assert after.st_gid == before.st_gid
     assert (victim / "marker").read_text(encoding="utf-8") == "keep"
     assert (victim / "lock").read_text(encoding="utf-8") == "keep-lock"
-
 

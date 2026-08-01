@@ -115,25 +115,35 @@ class TestAtomicSnapshotWrite:
         assert f"> '{snap}'" not in wrapped
         assert f"> {snap}\n" not in wrapped
 
-    def test_temp_path_uses_bashpid_not_dollardollar(self):
-        """The temp name MUST use ``$BASHPID`` (the real subshell PID), not
-        ``$$``.  In ``&``-launched concurrent subshells ``$$`` stays the parent
-        shell's PID, so two writers would pick the same temp name, clobber each
-        other mid-write, and mv would publish a torn file — the corruption is
-        only narrowed, not closed.  This is the bug shared by every prior PR in
-        the #38249 cluster."""
+    def test_temp_path_uses_mktemp_not_shell_pid(self):
+        """Portable unique names must work on macOS Bash 3.2 too."""
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        assert "$BASHPID" in wrapped
-        # The bare $$ temp form must be gone.
+        assert "mktemp " in wrapped
+        assert ".tmp.XXXXXX" in wrapped
+        assert "$BASHPID" not in wrapped
         assert ".tmp.$$" not in wrapped
 
+    def test_temp_path_template_with_spaces_is_quoted(self):
+        """The mktemp template remains one token when its directory has spaces."""
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        env._snapshot_path = "/tmp/has space/hermes-snap-x.sh"
+        wrapped = env._wrap_command("echo hi", "/tmp")
+        assert "mktemp '/tmp/has space/hermes-snap-x.sh.tmp.XXXXXX'" in wrapped
 
-    def test_init_session_bootstrap_also_atomic_and_bashpid(self):
+    def test_wrap_command_mv_chained_on_export_success(self):
+        """A failed export must not replace a valid snapshot."""
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("echo hi", "/tmp")
+        assert "export -p" in wrapped and "> " in wrapped and "&& mv -f " in wrapped
+        assert "rm -f " in wrapped
+
+    def test_init_session_bootstrap_also_atomic_and_uses_mktemp(self):
         """The init_session bootstrap (first snapshot write) is the same shared
-        file a concurrent command could source — it must be atomic and use
-        ``$BASHPID`` too."""
+        file a concurrent command could source and must use portable mktemp."""
         env = _TestableEnv()
         captured = {}
 
@@ -148,7 +158,8 @@ class TestAtomicSnapshotWrite:
             pass
         boot = captured.get("cmd", "")
         assert ".tmp." in boot and "mv -f " in boot, boot
-        assert "$BASHPID" in boot
+        assert "mktemp " in boot and ".tmp.XXXXXX" in boot
+        assert "$BASHPID" not in boot
         assert ".tmp.$$" not in boot
 
 
@@ -178,8 +189,8 @@ class TestAtomicSnapshotConcurrencyBehavioral:
     the emitted script's guarantee holds under real concurrency: N concurrent
     writers + readers, and the snapshot is ALWAYS a complete, parseable env
     dump — never truncated mid-line with a ``declare -x`` / ``export`` fragment
-    that would corrupt PATH.  Crucially it uses ``$BASHPID`` (per-subshell
-    unique), which is what closes the race; ``$$`` would still tear here.
+    that would corrupt PATH. It uses the same portable ``mktemp`` strategy as
+    production, including on macOS Bash 3.2 where ``BASHPID`` is unavailable.
     """
 
     def _run(self, script):
@@ -194,13 +205,13 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         import shlex
         snap = str(tmp_path / "hermes-snap-x.sh")
         _q = shlex.quote
-        _snap_tmp = _q(snap + ".tmp.") + "$BASHPID"
         # One writer iteration = the exact atomic sequence _wrap_command emits.
         writer = (
             "for i in $(seq 1 80); do "
             "export BIG_$i=$(head -c 600 /dev/zero | tr '\\0' x); "
-            f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_q(snap)}; }} "
-            f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true; "
+            f"tmp=$(mktemp {_q(snap + '.tmp.XXXXXX')}) || exit 1; "
+            f"{{ export -p > \"$tmp\" && mv -f \"$tmp\" {_q(snap)}; }} "
+            "2>/dev/null || rm -f \"$tmp\" 2>/dev/null || true; "
             "done"
         )
         # Reader: repeatedly source the snapshot and check PATH never absorbs

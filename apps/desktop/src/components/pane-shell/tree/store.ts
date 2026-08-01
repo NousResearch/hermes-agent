@@ -4,7 +4,7 @@
  * the persisted tree is the user's customization; reset returns to default.
  */
 
-import { atom, computed } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { setPluginEnabled } from '@/contrib/plugins-store'
@@ -1050,16 +1050,27 @@ function adoptContributedPanes(): void {
     const target = findGroupOfPane(next, anchor ?? '')?.id
 
     if (target) {
+      // Whether the DESTINATION zone's header was explicitly hidden, read
+      // BEFORE the insert — `insertAtGroup` pins `headerHidden: false` on a
+      // center drop (a stack you can't see is a trap), which is right for a
+      // drag but wrong for adoption into a zone whose bar the user hid.
+      const hostHeaderHidden = findGroup(next, target)?.headerHidden === true
+
       // Silent adoption: don't front over the zone's active tab — a reveal does.
       next = insertAtGroup(next, target, pane.id, dock?.pos ?? 'center', dock?.before, false) ?? next
 
       // An adopted pane ARRIVES with its chip showing — a surprise zone with
       // zero chrome has no obvious handle to drag or close. (Explicit reveal;
       // the next structural op returns lone panes to the auto-hide default.)
+      //
+      // EXCEPT into a zone whose header the user explicitly hid: that's a
+      // standing preference about the zone, not a stale default. Without this
+      // the bar came back every time a tool panel was closed and toggled on
+      // again — Close dismisses the pane, the toggle re-adopts it through here.
       const landed = findGroupOfPane(next, pane.id)
 
       if (landed) {
-        next = setGroupHeaderHiddenOp(next, landed.id, false)
+        next = setGroupHeaderHiddenOp(next, landed.id, hostHeaderHidden)
       }
     }
   }
@@ -1315,34 +1326,102 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
 }
 
 /** Restore a minimized tool pane the truthful way — through its store opener
- *  when bound (keeps ⌃`/titlebar toggles in sync), else just un-minimize +
- *  front. Used by the rail (tab / whole-rail click) and the header chevron. */
+ *  when bound (keeps ⌃`/titlebar toggles in sync), then reveal regardless.
+ *  Used by the rail (tab / whole-rail click), the header chevron, and ⌃`.
+ *
+ *  The opener is fire-and-forget because it may be a NO-OP: the store can
+ *  already be `true` while the pane is off screen (the zone was minimized from
+ *  the zone menu, the tab was closed with ⌘W, or a stacked sibling holds the
+ *  active slot). nanostores don't fire listeners on a same-value `.set()`, so
+ *  the bindPaneCollapse listener never runs. `revealTreePane` is idempotent and
+ *  does the real work — un-dismiss, un-collapse the side, un-minimize, front. */
 export function restoreTreePane(paneId: string) {
-  const open = paneOpeners[paneId]
+  paneOpeners[paneId]?.()
+  revealTreePane(paneId)
+}
 
-  if (open) {
-    open()
-
-    // The opener may be a no-op — the store was already true (zone minimized
-    // via the zone menu, not the toggle). nanostores don't fire listeners on
-    // a same-value .set(), so the bindPaneCollapse listener never runs and
-    // the zone stays minimized. Un-minimize directly when that happens.
-    const group = paneGroup(paneId)
-
-    if (group?.minimized) {
-      setTreeGroupMinimized(group.id, false)
-    }
-
-    revealTreePane(paneId)
-
-    return
+/** Is a tool pane actually ON SCREEN? In the tree, not dismissed or chrome
+ *  hidden, its zone un-minimized, and holding its stack's active slot. */
+export function isToolPaneVisible(paneId: string): boolean {
+  if ($dismissedPanes.get().has(paneId) || $hiddenTreePanes.get().has(paneId)) {
+    return false
   }
 
   const group = paneGroup(paneId)
 
-  if (group) {
-    setTreeGroupMinimized(group.id, false)
-    activateTreePane(group.id, paneId)
+  return Boolean(group && !group.minimized && group.active === paneId)
+}
+
+const toolPaneVisibleCache = new Map<string, ReadableAtom<boolean>>()
+
+/** Reactive `isToolPaneVisible` for chrome that renders an on/off affordance
+ *  (the statusbar's terminal button). Memoized per pane id so `useStore`
+ *  subscriptions stay referentially stable across renders. */
+export function $toolPaneVisible(paneId: string): ReadableAtom<boolean> {
+  let cached = toolPaneVisibleCache.get(paneId)
+
+  if (!cached) {
+    cached = computed([$layoutTree, $dismissedPanes, $hiddenTreePanes], () => isToolPaneVisible(paneId))
+    toolPaneVisibleCache.set(paneId, cached)
+  }
+
+  return cached
+}
+
+/**
+ * TOOL PANELS (terminal, logs): bind a pane's visibility STORE to the tree so
+ * its toggle COLLAPSES the zone to a persistent rail (the tab stays) instead of
+ * hiding it — the IntelliJ/VS-Code tool-window model. Restore routes back
+ * through `open` (rail click / chevron) so ⌃` and the statusbar button stay
+ * truthful; Close removes the tab.
+ *
+ * OPEN goes through `revealTreePane`, not `setPaneCollapsed`: Close DISMISSES
+ * the pane, and `setPaneCollapsed` is a no-op on a pane that has left the tree,
+ * so the toggle would flip its store with nothing coming back. `revealTreePane`
+ * un-dismisses and re-adopts.
+ *
+ * BOOT ONLY COLLAPSES — it must never reveal. `setPaneCollapsed(id, false)`
+ * fronts the pane in its stack, so binding two tool panels that are both "open"
+ * let the second one steal the active tab from the persisted tree. With
+ * terminal+logs stacked (what you get by dragging the terminal to the bottom),
+ * logs bound last and won the slot; ⌃` then asked to collapse a terminal that
+ * wasn't the active tab, the shared-zone branch declined, and the key read as
+ * dead until the stack was broken up. The persisted tree already records which
+ * tab was active — leave it alone.
+ */
+export function bindToolPaneCollapse(
+  paneId: string,
+  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
+  close: () => void,
+  open: () => void
+) {
+  markCollapsePane(paneId)
+
+  if (!$open.get()) {
+    setPaneCollapsed(paneId, true)
+  }
+
+  $open.listen(isOpen => (isOpen ? revealTreePane(paneId) : setPaneCollapsed(paneId, true)))
+  registerPaneCloser(paneId, close)
+  registerPaneOpener(paneId, open)
+}
+
+/**
+ * ⌃` / the statusbar button / ⌘J's terminal fallback: ONE resolver for "flip
+ * this tool panel", derived from what is on screen rather than from the
+ * toggle's own boolean.
+ *
+ * A free-floating `!$open.get()` diverges from the tree the moment anything
+ * else moves the pane — stacked behind a sibling tab, minimized from the zone
+ * menu, closed with ⌘W — and then the toggle spends its press re-asserting a
+ * value the store already held, which reads as a dead key. Asking the tree
+ * instead means the first press always does the visible thing.
+ */
+export function toggleToolPane(paneId: string) {
+  if (isToolPaneVisible(paneId)) {
+    collapseTreePane(paneId)
+  } else {
+    restoreTreePane(paneId)
   }
 }
 

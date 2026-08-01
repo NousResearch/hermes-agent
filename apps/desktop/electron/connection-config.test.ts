@@ -166,6 +166,15 @@ test('normalizeSshConfig rejects unsafe remote profile mappings', () => {
     mode: 'ssh',
     host: 'box'
   })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'root' }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', remoteProfile: 'default' }), {
+    mode: 'ssh',
+    host: 'box',
+    remoteProfile: 'default'
+  })
 })
 
 test('normalizeSshConfig handles IPv6 and strict port bounds', () => {

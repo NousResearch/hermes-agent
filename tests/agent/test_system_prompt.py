@@ -259,6 +259,48 @@ class TestTelegramRichMessagesHint:
         assert "lean into it" not in stable
 
 
+    def test_gateway_rich_messages_integration_via_real_config(self, tmp_path, monkeypatch):
+        """End-to-end through the real config-resolution chain: a config.yaml
+        under HERMES_HOME with ``gateway.platforms.telegram.extra.rich_messages``
+        must activate the rich hint. ``load_config_readonly`` is NOT mocked here,
+        so this guards against the exact path-mismatch bug this PR fixes.
+        """
+        config_yaml = (
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      extra:\n"
+            "        rich_messages: true\n"
+        )
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        (home / "config.yaml").write_text(config_yaml)
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # Point config resolution at the temp file without mocking the loader:
+        # mirror the pattern used in test_config_env_expansion.py.
+        from hermes_cli import config as _cfgmod
+        monkeypatch.setattr(_cfgmod, "get_config_path", lambda: home / "config.yaml")
+
+        agent = _make_agent(platform="telegram")
+        stable = _stable_prompt(agent)
+        assert "lean into it" in stable
+        assert "task lists" in stable
+
+    def test_malformed_extra_value_falls_back_to_base_hint(self, tmp_path, monkeypatch):
+        """A truthy non-mapping ``extra`` must not crash prompt construction —
+        it should fail open to the base hint (Tek's fail-open concern).
+        """
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": "not-a-map"}}}
+            }
+            stable = _stable_prompt(agent)
+        assert "Standard Markdown is automatically converted" in stable
+        assert "lean into it" not in stable
+
+
 _SKILLS = "SKILLS_INDEX_SENTINEL"
 _CONTEXT = "CONTEXT_FILES_SENTINEL"
 

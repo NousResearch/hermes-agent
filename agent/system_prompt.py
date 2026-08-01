@@ -454,8 +454,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         try:
             from hermes_cli.config import load_config_readonly
             _cfg = load_config_readonly()
-            _gw_tg_extra = (((_cfg.get("gateway") or {}).get("platforms") or {}).get("telegram") or {}).get("extra") or {}
-            _top_tg_extra = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra") or {}
+            _gw_tg_extra = (((_cfg.get("gateway") or {}).get("platforms") or {}).get("telegram") or {}).get("extra")
+            _top_tg_extra = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra")
+            if not isinstance(_gw_tg_extra, dict):
+                _gw_tg_extra = {}
+            if not isinstance(_top_tg_extra, dict):
+                _top_tg_extra = {}
             _tg_extra = {**_gw_tg_extra, **_top_tg_extra}
             if _tg_extra.get("rich_messages"):
                 _default_hint = _default_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT

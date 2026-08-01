@@ -51,6 +51,12 @@ export function terminalClipboardIntent(
 // CoreBrowserTerminal.ts:531). Without it `webContents.copy()` — what the Edit
 // menu, ⌘C, and the right-click Copy item all call — finds no DOM selection and
 // copies nothing.
+//
+// `textarea.select()` replaces the document's live range. Only claim it while
+// the terminal owns focus AND nothing outside the terminal is highlighted —
+// otherwise a leftover terminal scrap wins ⌘C over text the user just
+// selected in chat. The terminal's own ⌘C key handler still copies via
+// writeClipboardText when focus is on the canvas path.
 export function mirrorSelection(host: HTMLElement, text: string) {
   const textarea = host.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
 
@@ -65,5 +71,18 @@ export function mirrorSelection(host: HTMLElement, text: string) {
   }
 
   textarea.value = text
+
+  if (!host.contains(document.activeElement)) {
+    return
+  }
+
+  const live = window.getSelection()
+  const foreign =
+    live && !live.isCollapsed && live.anchorNode != null && !host.contains(live.anchorNode)
+
+  if (foreign) {
+    return
+  }
+
   textarea.select()
 }

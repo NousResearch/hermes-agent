@@ -215,10 +215,16 @@ _nb_install_bundled_node() {
 
     local _link_dir
     _link_dir="$(_nb_get_link_dir)"
-    mkdir -p "$_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
+    # HERMES_NODE_SKIP_LINKS=1: the caller only wants the private managed tree
+    # (e.g. the EBADENGINE recovery provisioning a runtime alongside a working
+    # system Node). Skipping the links keeps the user's own node/npm first on
+    # PATH instead of shadowing them with ours.
+    if [ "${HERMES_NODE_SKIP_LINKS:-0}" != "1" ]; then
+        mkdir -p "$_link_dir"
+        ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
+        ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
+        ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
+    fi
 
     _nb_configure_npm_prefix
 

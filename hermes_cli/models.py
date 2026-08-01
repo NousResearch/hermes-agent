@@ -8,8 +8,10 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import threading
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -20,6 +22,8 @@ from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+
+logger = logging.getLogger(__name__)
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -3066,6 +3070,56 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 #     to a live fetch — the picker keeps working.
 
 _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
+# Stale-while-revalidate window: an expired-but-same-credentials entry is
+# served IMMEDIATELY (picker opens stay instant) while a background daemon
+# thread re-fetches the live catalog and rewrites the disk cache for the
+# next open. Beyond this bound the entry is considered too old to trust and
+# the caller blocks on a live fetch as before. Rationale: the /model picker's
+# provider listing runs 8-9 serial /v1/models round-trips (~2-3s) whenever
+# the 1h TTL lapses mid-session — model catalogs change on release timescales,
+# not hourly, so serving hour-old data while refreshing off-thread is strictly
+# better than stalling every picker surface (CLI, TUI, dashboard, gateway).
+_PROVIDER_MODELS_STALE_SERVE_MAX = 7 * 24 * 3600  # 7d
+
+# Providers with a background SWR refresh currently in flight — dedupes
+# concurrent refreshes so repeated picker opens during one refresh don't
+# stack threads or duplicate network calls.
+_swr_refresh_inflight: set = set()
+_swr_refresh_lock = threading.Lock()
+
+
+def _spawn_swr_refresh(provider: str) -> None:
+    """Kick a background refresh of *provider*'s model-id cache entry.
+
+    Fire-and-forget daemon thread; at most one in flight per provider.
+    Failures are swallowed — the stale entry stays served until a later
+    refresh succeeds (same degradation the blocking path already had).
+    """
+    with _swr_refresh_lock:
+        if provider in _swr_refresh_inflight:
+            return
+        _swr_refresh_inflight.add(provider)
+
+    def _refresh() -> None:
+        try:
+            live = provider_model_ids(provider, force_refresh=True)
+            if live:
+                cache = _load_provider_models_cache()
+                cache[provider] = {
+                    "fp": _credential_fingerprint(provider),
+                    "at": time.time(),
+                    "models": list(live),
+                }
+                _save_provider_models_cache(cache)
+        except Exception:
+            logger.debug("SWR refresh failed for %s", provider, exc_info=True)
+        finally:
+            with _swr_refresh_lock:
+                _swr_refresh_inflight.discard(provider)
+
+    threading.Thread(
+        target=_refresh, daemon=True, name=f"model-cache-swr-{provider}"
+    ).start()
 
 
 def _provider_models_cache_path() -> Path:
@@ -3205,9 +3259,16 @@ def cached_provider_model_ids(
         and entry.get("fp") == fp
         and isinstance(entry.get("models"), list)
         and entry["models"]
-        and (now - float(entry.get("at", 0))) < ttl_seconds
     ):
-        return list(entry["models"])
+        age = now - float(entry.get("at", 0))
+        if age < ttl_seconds:
+            return list(entry["models"])
+        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+            # Stale-while-revalidate: serve the expired entry immediately so
+            # interactive picker opens never block on serial /v1/models
+            # round-trips; refresh the cache off-thread for the next open.
+            _spawn_swr_refresh(normalized)
+            return list(entry["models"])
 
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)

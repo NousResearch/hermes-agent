@@ -64,6 +64,13 @@ const project = { id: 'p1', label: 'Test D' } as unknown as SidebarProjectTree
 const session = (id: string, updated: number): SessionInfo => ({ id, updated_at: updated }) as unknown as SessionInfo
 
 describe('ProjectOverviewRow', () => {
+  it('keeps long project labels single-line truncated', () => {
+    render(<ProjectOverviewRow project={project} />)
+
+    const label = screen.getByText('Test D')
+    expect(label.className).toContain('truncate')
+  })
+
   afterEach(() => {
     workspaceOpen.value = false
     projectsStore.fetchProjectSessions.mockReset()

@@ -623,12 +623,11 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
-def test_real_batch_persists_finished_child_before_sibling_join(monkeypatch):
+def test_real_batch_publishes_finished_child_before_sibling_join(monkeypatch):
     """The production aggregation callback closes the partial-crash window.
 
-    PR1 deliberately preserves legacy delivery timing: a finished child is
-    durable while its sibling is still running, but nothing reaches the shared
-    completion queue until the aggregate batch finalizes.
+    PR2 keeps PR1's pre-join durability and additionally makes the finished
+    child visible on the shared completion queue before its sibling finishes.
     """
     from unittest.mock import MagicMock
     import tools.delegate_tool as dt
@@ -642,7 +641,7 @@ def test_real_batch_persists_finished_child_before_sibling_join(monkeypatch):
 
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
-    first_persisted = threading.Event()
+    first_published = threading.Event()
     release_sibling = threading.Event()
     sibling_returned = threading.Event()
 
@@ -660,12 +659,12 @@ def test_real_batch_persists_finished_child_before_sibling_join(monkeypatch):
             "exit_reason": "completed",
         }
 
-    real_persist = ad.persist_batch_child_completion
+    real_publish = ad.publish_batch_child_completion
 
-    def observe_persist(delegation_id, task_index, result):
-        inserted = real_persist(delegation_id, task_index, result)
+    def observe_publish(delegation_id, task_index, result):
+        inserted = real_publish(delegation_id, task_index, result)
         if task_index == 0 and inserted:
-            first_persisted.set()
+            first_published.set()
         return inserted
 
     creds = {
@@ -675,7 +674,7 @@ def test_real_batch_persists_finished_child_before_sibling_join(monkeypatch):
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
     monkeypatch.setattr(dt, "_run_single_child", child_result)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    monkeypatch.setattr(ad, "persist_batch_child_completion", observe_persist)
+    monkeypatch.setattr(ad, "publish_batch_child_completion", observe_publish)
 
     out = dt.delegate_task(
         tasks=[{"goal": "fast child"}, {"goal": "blocked child"}],
@@ -687,7 +686,7 @@ def test_real_batch_persists_finished_child_before_sibling_join(monkeypatch):
 
     try:
         assert parsed["status"] == "dispatched"
-        assert first_persisted.wait(timeout=5)
+        assert first_published.wait(timeout=5)
         with ad._DB_LOCK, ad._transaction() as conn:
             rows = conn.execute(
                 "SELECT event_key FROM async_delegation_events "
@@ -695,6 +694,8 @@ def test_real_batch_persists_finished_child_before_sibling_join(monkeypatch):
                 (delegation_id,),
             ).fetchall()
         assert rows == [("task:0",)]
+        queued = process_registry.completion_queue.get_nowait()
+        assert queued["delivery_event_key"] == "task:0"
         assert process_registry.completion_queue.empty()
 
         # Simulate the owner disappearing in this exact pre-join state. Recovery

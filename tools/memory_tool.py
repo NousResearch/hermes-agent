@@ -363,6 +363,7 @@ class MemoryStore:
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
+        self._backup_before_write(target)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -386,6 +387,61 @@ class MemoryStore:
         if target == "user":
             return self.user_char_limit
         return self.memory_char_limit
+
+    # --- Pre-consolidation guard -------------------------------------------
+    # Below this fraction of the char limit, content-reducing operations
+    # (replace-with-shorter, remove, batch net-reduction) are refused. Prevents
+    # the destructive case where the agent falsely believes memory is full and
+    # consolidates, dropping operator-added content (observed: file was at 64%
+    # of the limit, agent hallucinated "memory full" and rewrote it).
+    _CONSOLIDATION_CAPACITY_THRESHOLD = 0.80
+
+    def _pre_consolidation_guard(self, target: str) -> Optional[Dict[str, Any]]:
+        """Refuse content-reducing operations when the file is not near capacity.
+
+        Returns a refusal dict with the factual char count if the current file
+        is below the consolidation threshold (< 80% of the char limit). The
+        agent gets the factual state and can self-correct. Returns None when
+        the operation should proceed normally.
+        """
+        current = self._char_count(target)
+        limit = self._char_limit(target)
+        if limit <= 0:
+            return None
+        pct = current / limit
+        if pct < self._CONSOLIDATION_CAPACITY_THRESHOLD:
+            return {
+                "success": False,
+                "error": (
+                    f"Memory is not near capacity ({current:,}/{limit:,} chars, "
+                    f"{pct:.0%}). Consolidation refused; no compaction needed. "
+                    f"If you need to edit a specific entry for accuracy, use "
+                    f"'replace' with the exact old_text."
+                ),
+                "usage": f"{current:,}/{limit:,}",
+            }
+        return None
+
+    def _backup_before_write(self, target: str) -> None:
+        """Copy the current memory file to a timestamped backup before a rewrite.
+
+        Best-effort: failures are logged at debug and swallowed (a backup
+        failure must never block the write). Mirrors the skill-curator backup
+        pattern so dropped content is recoverable if a consolidation
+        over-rewrites.
+        """
+        import shutil
+        import datetime as _dt
+
+        path = self._path_for(target)
+        if not path.exists():
+            return
+        try:
+            ts = _dt.datetime.now().strftime("%Y%m%dT%H%M%SZ")
+            bak = path.with_suffix(path.suffix + f".bak-{ts}")
+            shutil.copy2(path, bak)
+        except OSError:
+            logger.debug("Memory backup failed for %s", path, exc_info=True)
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -490,6 +546,17 @@ class MemoryStore:
                 # All identical -- safe to replace just the first
 
             idx = matches[0][0]
+
+            # Pre-consolidation guard: if the replacement is dramatically
+            # shorter than the matched entry (< 50% of its length), this looks
+            # like consolidation rather than editing. Refuse it when the file
+            # is well under the limit (the agent may be acting on a false
+            # belief that memory is full).
+            if len(entries[idx]) > 0 and len(new_content) < len(entries[idx]) * 0.5:
+                guard = self._pre_consolidation_guard(target)
+                if guard is not None:
+                    return guard
+
             limit = self._char_limit(target)
 
             # Check that replacement doesn't blow the budget
@@ -661,6 +728,16 @@ class MemoryStore:
                     "current_entries": self._entries_for(target),
                     "usage": f"{current:,}/{limit:,}",
                 })
+
+            # Pre-consolidation guard: if the batch dramatically reduces total
+            # content (> 50% loss) and the file is well under the limit, refuse
+            # (consolidation not needed; the agent may be acting on a false
+            # belief that memory is full).
+            current_total = self._char_count(target)
+            if current_total > 0 and new_total < current_total * 0.5:
+                guard = self._pre_consolidation_guard(target)
+                if guard is not None:
+                    return guard
 
             # Commit.
             self._set_entries(target, working)

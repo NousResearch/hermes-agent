@@ -627,3 +627,67 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+class TestPreConsolidationGuard:
+    """Guard that refuses consolidation when the file is not near capacity."""
+
+    def test_replace_dramatic_shorten_refused_under_capacity(self, store):
+        """Replacing an entry with <50% of its length is refused when the file
+        is under 80% of the char limit (pre-consolidation guard)."""
+        store.add("memory", "x" * 250)  # ~250/500 = 50%
+        result = store.replace("memory", "x", "y" * 50)
+        assert result["success"] is False
+        assert "not near capacity" in result["error"].lower()
+        assert "usage" in result
+
+    def test_replace_dramatic_shorten_allowed_near_capacity(self, store):
+        """Same dramatic shortening, but file is at 90% so the guard allows it."""
+        store.add("memory", "x" * 450)  # ~450/500 = 90%
+        result = store.replace("memory", "x", "y" * 50)
+        assert result["success"] is True
+
+    def test_replace_minor_shorten_allowed_under_capacity(self, store):
+        """Replacing with >50% of original length is editing, not consolidation."""
+        store.add("memory", "x" * 250)  # 50%
+        result = store.replace("memory", "x", "y" * 200)  # 200 > 250*0.5
+        assert result["success"] is True
+
+    def test_batch_dramatic_reduction_refused_under_capacity(self, store):
+        """A batch that reduces content by >50% is refused when under 80%."""
+        store.add("memory", "x" * 250)
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[{"action": "replace", "old_text": "x", "content": "y" * 50}],
+            store=store,
+        ))
+        assert result["success"] is False
+        assert "not near capacity" in result["error"].lower()
+
+    def test_batch_minor_reduction_allowed_under_capacity(self, store):
+        """A batch with a small net reduction (< 50%) is allowed even under 80%."""
+        store.add("memory", "stale one")
+        store.add("memory", "stale two")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "remove", "old_text": "stale one"},
+                {"action": "remove", "old_text": "stale two"},
+                {"action": "add", "content": "fresh durable fact"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is True
+
+
+class TestBackupBeforeWrite:
+    """A timestamped backup is created before each save_to_disk rewrite."""
+
+    def test_backup_created_on_second_write(self, store, tmp_path):
+        """The first add creates MEMORY.md (no prior file, no backup). The
+        second add finds the existing file and backs it up."""
+        store.add("memory", "first entry")
+        store.add("memory", "second entry")
+        bak_files = list(tmp_path.glob("MEMORY.md.bak-*"))
+        assert len(bak_files) >= 1
+

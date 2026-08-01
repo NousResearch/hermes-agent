@@ -2004,6 +2004,7 @@ def mark_job_run(
     delivery_error: Optional[str] = None,
     *,
     expected_fire_claim_id: Optional[str] = None,
+    expected_run_claim_id: Optional[str] = None,
 ) -> bool:
     """
     Mark a job as having been run.
@@ -2029,6 +2030,21 @@ def mark_job_run(
                             job_id,
                             expected_fire_claim_id,
                             current_claim_id,
+                        )
+                        return False
+                if expected_run_claim_id is not None:
+                    run_claim = job.get("run_claim")
+                    current_run_claim_id = (
+                        run_claim.get("id")
+                        if isinstance(run_claim, dict)
+                        else None
+                    )
+                    if current_run_claim_id != expected_run_claim_id:
+                        logger.warning(
+                            "Job '%s': stale run owner %s cannot finalize claim %s",
+                            job_id,
+                            expected_run_claim_id,
+                            current_run_claim_id,
                         )
                         return False
                 now = _hermes_now().isoformat()

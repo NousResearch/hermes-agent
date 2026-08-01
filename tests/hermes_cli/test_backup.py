@@ -300,6 +300,70 @@ class TestBackup:
         assert coder_live["prompt"] == "coder-live-generation"
         assert coder_live["last_status"] == "error"
 
+    def test_manual_backup_removes_archive_when_cron_pair_write_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A full backup must never retain only one member of a cron pair."""
+        from cron import jobs
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model:\n  provider: test\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        with jobs.use_cron_store(hermes_home):
+            jobs.create_job(prompt="pair-write", schedule="every 1h")
+
+        real_write = backup_mod.zipfile.ZipFile.write
+
+        def fail_runtime_member(archive, filename, arcname=None, *args, **kwargs):
+            if str(arcname) == "cron/runtime.db":
+                raise OSError("injected cron runtime write failure")
+            return real_write(archive, filename, arcname, *args, **kwargs)
+
+        monkeypatch.setattr(backup_mod.zipfile.ZipFile, "write", fail_runtime_member)
+        out_zip = tmp_path / "cron-pair-failure.zip"
+        backup_mod.run_backup(Namespace(output=str(out_zip)))
+
+        assert not out_zip.exists()
+        assert list(tmp_path.glob("*.db")) == []
+
+    def test_pre_update_backup_removes_archive_when_named_cron_pair_write_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Named-profile cron pairs also fail closed in pre-update archives."""
+        from cron import jobs
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model:\n  provider: test\n")
+        coder_home = hermes_home / "profiles" / "coder"
+        coder_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        with jobs.use_cron_store(coder_home):
+            jobs.create_job(prompt="named-pair-write", schedule="every 1h")
+
+        real_write = backup_mod.zipfile.ZipFile.write
+
+        def fail_named_runtime(archive, filename, arcname=None, *args, **kwargs):
+            if str(arcname) == "profiles/coder/cron/runtime.db":
+                raise OSError("injected named cron runtime write failure")
+            return real_write(archive, filename, arcname, *args, **kwargs)
+
+        monkeypatch.setattr(backup_mod.zipfile.ZipFile, "write", fail_named_runtime)
+        out_zip = tmp_path / "pre-update-cron-pair-failure.zip"
+        result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
+
+        assert result is None
+        assert not out_zip.exists()
+
 
 
 

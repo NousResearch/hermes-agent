@@ -381,6 +381,30 @@ class TestMarkJobRun:
         assert updated["last_error"] is None
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
 
+    def test_stale_run_claim_cannot_finalize_or_clear_replacement(
+        self,
+        tmp_cron_dir,
+    ):
+        job = create_job(prompt="Fenced completion", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["fire_claim"] = {"id": "fire-a", "at": "now"}
+        jobs[0]["run_claim"] = {"id": "run-b", "by": "replacement", "at": "now"}
+        save_jobs(jobs)
+
+        finalized = mark_job_run(
+            job["id"],
+            success=True,
+            expected_fire_claim_id="fire-a",
+            expected_run_claim_id="run-a",
+        )
+
+        assert finalized is False
+        current = get_job(job["id"])
+        assert current is not None
+        assert current["fire_claim"]["id"] == "fire-a"
+        assert current["run_claim"]["id"] == "run-b"
+        assert current["last_run_at"] is None
+
 
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
         """Regression test for issue #16265.

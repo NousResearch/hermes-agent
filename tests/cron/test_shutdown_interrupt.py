@@ -26,6 +26,8 @@ def _reset_scheduler_state(monkeypatch):
     sched._interrupted_job_ids.clear()
     sched._interrupted_job_reasons.clear()
     sched._active_cron_worker_processes.clear()
+    if hasattr(sched, "_cron_shutdown_event"):
+        sched._cron_shutdown_event.clear()
     monkeypatch.setattr(sched, "claim_job_for_fire_token", lambda jid: f"claim-{jid}")
     monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *a, **k: True)
     yield
@@ -33,6 +35,8 @@ def _reset_scheduler_state(monkeypatch):
     sched._interrupted_job_ids.clear()
     sched._interrupted_job_reasons.clear()
     sched._active_cron_worker_processes.clear()
+    if hasattr(sched, "_cron_shutdown_event"):
+        sched._cron_shutdown_event.clear()
 
 
 class TestGetRunningJobIds:
@@ -213,6 +217,34 @@ class TestRunOneJobHonoursInterruptedFlag:
             error="gateway shutdown",
             delivery_outcome="suppressed",
         )
+
+    def test_shutdown_between_queue_check_and_worker_spawn_never_starts_worker(
+        self,
+    ):
+        """Worker registration must be atomic with the final shutdown fence."""
+        import cron.scheduler as sched
+
+        job = self._make_job("direct-spawn-race-job")
+
+        def interrupt_before_worker_scope(*_args, **_kwargs):
+            sched.mark_running_jobs_interrupted("gateway shutdown")
+            return None
+
+        with patch("cron.scheduler.claim_dispatch", return_value=True), \
+             patch(
+                 "agent.secret_scope.set_secret_scope",
+                 side_effect=interrupt_before_worker_scope,
+             ), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.reset_secret_scope"), \
+             patch("cron.scheduler.subprocess.Popen") as popen, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run"):
+            result = sched.run_one_job(job)
+
+        assert result is True
+        popen.assert_not_called()
 
     def test_success_path_is_fenced_failure_when_interrupted(self):
         import cron.scheduler as sched

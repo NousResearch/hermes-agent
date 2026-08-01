@@ -353,6 +353,11 @@ _interrupted_job_ids: set = set()
 # write with its own fire token. A non-owner must never finalize a replacement.
 _interrupted_job_reasons: dict[str, str] = {}
 _active_cron_worker_processes: dict[str, subprocess.Popen] = {}
+# Process-lifetime latch: gateway shutdown is terminal for this scheduler
+# process. Keeping the intent after the initial sweep prevents a direct
+# run_one_job path from spawning in the gap after shutdown observed no active
+# worker but before that path registers its Popen.
+_cron_shutdown_event = threading.Event()
 
 
 def get_running_job_ids() -> "frozenset[str]":
@@ -392,6 +397,7 @@ def mark_running_jobs_interrupted(reason: str) -> list:
     Returns the list of job IDs marked, for the caller to log.
     """
     with _running_lock:
+        _cron_shutdown_event.set()
         job_ids = list(_running_job_ids | _active_cron_worker_processes.keys())
         _interrupted_job_ids.update(job_ids)
         for job_id in job_ids:
@@ -4325,13 +4331,17 @@ def _run_job_in_killable_process(
     else:
         popen_kwargs["start_new_session"] = True
 
-    try:
-        process = subprocess.Popen(_cron_worker_command(), **popen_kwargs)
-    except (OSError, ValueError):
-        logger.error("Job '%s': unable to start isolated cron worker", job_id)
-        return False, "", "", "Unable to start isolated cron worker"
-
+    # Fence shutdown intent and worker registration under one lock. Either the
+    # shutdown thread records the interruption first (and no worker is spawned),
+    # or the worker is registered first and shutdown sees and terminates it.
     with _running_lock:
+        if _cron_shutdown_event.is_set() or job_id in _interrupted_job_ids:
+            return False, "", "", "Cron job interrupted before worker start"
+        try:
+            process = subprocess.Popen(_cron_worker_command(), **popen_kwargs)
+        except (OSError, ValueError):
+            logger.error("Job '%s': unable to start isolated cron worker", job_id)
+            return False, "", "", "Unable to start isolated cron worker"
         _active_cron_worker_processes[job_id] = process
 
     timeout = _cron_inactivity_limit_seconds()
@@ -4457,6 +4467,12 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     """
     execution_id = job.get("execution_id")
     fire_claim_id = job.get("_fire_claim_id")
+    run_claim = job.get("run_claim")
+    run_claim_id = str(
+        job.get("_run_claim_id")
+        or (run_claim.get("id") if isinstance(run_claim, dict) else "")
+        or ""
+    )
     if not execution_id:
         execution_id = create_execution(job["id"], source="direct")["id"]
     if not fire_claim_id:
@@ -4589,9 +4605,16 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # remains in the parent process so live gateway adapters are never
         # serialized across the process boundary.
         delivery_error = None
-        ownership_lost = not heartbeat_fire_claim(
-            job["id"], expected_claim_id=fire_claim_id
-        )
+        def _heartbeat_completion_ownership() -> bool:
+            if run_claim_id and not heartbeat_run_claim(
+                job["id"], expected_claim_id=run_claim_id
+            ):
+                return False
+            return heartbeat_fire_claim(
+                job["id"], expected_claim_id=fire_claim_id
+            )
+
+        ownership_lost = not _heartbeat_completion_ownership()
         should_deliver = False
         unresolved_origin = False
         if not ownership_lost:
@@ -4631,9 +4654,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 # Renew immediately before the irreversible external send. The
                 # worker may have completed close to the claim TTL, and a stale
                 # owner must not deliver after a replacement has taken over.
-                if not heartbeat_fire_claim(
-                    job["id"], expected_claim_id=fire_claim_id
-                ):
+                if not _heartbeat_completion_ownership():
                     ownership_lost = True
                     should_deliver = False
 
@@ -4671,12 +4692,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         if interrupted_reason is not None:
             success = False
             error = interrupted_reason
+        finalization_claims = {"expected_fire_claim_id": fire_claim_id}
+        if run_claim_id:
+            finalization_claims["expected_run_claim_id"] = run_claim_id
         finalized = mark_job_run(
             job["id"],
             success,
             error,
             delivery_error=delivery_error,
-            expected_fire_claim_id=fire_claim_id,
+            **finalization_claims,
         )
         if finalized is False:
             success = False
@@ -4714,11 +4738,14 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             interrupted_reason = _consume_interrupted_reason(job["id"])
             if interrupted_reason is not None:
                 _err_text = interrupted_reason
+            finalization_claims = {"expected_fire_claim_id": fire_claim_id}
+            if run_claim_id:
+                finalization_claims["expected_run_claim_id"] = run_claim_id
             mark_job_run(
                 job["id"],
                 False,
                 _err_text,
-                expected_fire_claim_id=fire_claim_id,
+                **finalization_claims,
             )
         except Exception as record_err:
             # Never let bookkeeping mask the original interruption.

@@ -228,6 +228,34 @@ def test_claim_lost_after_run_suppresses_output_delivery_and_success(monkeypatch
     ]
 
 
+def test_run_claim_lost_after_run_suppresses_output_and_delivery(monkeypatch):
+    """A replaced run token must fence all parent-side completion effects."""
+    calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
+    monkeypatch.setattr(s, "heartbeat_run_claim", lambda *a, **k: False)
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "lost-run-owner",
+            "name": "t",
+            "execution_id": "exec-lost-run",
+            "_fire_claim_id": "fire-a",
+            "run_claim": {"id": "run-a", "by": "owner", "at": "now"},
+        }
+    )
+
+    assert ok is False
+    assert calls == [("run_job", "lost-run-owner")]
+    assert finished[-1][1]["delivery_outcome"] == "suppressed"
+    assert "ownership" in finished[-1][1]["error"].lower()
+
+
 def test_claim_lost_before_delivery_suppresses_external_side_effect(monkeypatch):
     """A token lost after output save must not deliver a stale response."""
     calls = _patch_pipeline(monkeypatch)
@@ -256,6 +284,95 @@ def test_claim_lost_before_delivery_suppresses_external_side_effect(monkeypatch)
     assert ok is False
     assert [call[0] for call in calls] == ["run_job", "save"]
     assert finished[-1][1]["delivery_outcome"] == "suppressed"
+
+
+def test_run_claim_lost_before_delivery_suppresses_external_side_effect(monkeypatch):
+    """The second run-token heartbeat fences the irreversible delivery phase."""
+    calls = _patch_pipeline(monkeypatch)
+    run_heartbeats = iter([True, False])
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
+    monkeypatch.setattr(
+        s,
+        "heartbeat_run_claim",
+        lambda *a, **k: next(run_heartbeats),
+    )
+    finished = []
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "lost-run-before-delivery",
+            "name": "t",
+            "execution_id": "exec-run-before-delivery",
+            "_fire_claim_id": "fire-a",
+            "run_claim": {"id": "run-a", "by": "owner", "at": "now"},
+        }
+    )
+
+    assert ok is False
+    assert [call[0] for call in calls] == ["run_job", "save"]
+    assert finished[-1][1]["delivery_outcome"] == "suppressed"
+
+
+def test_successful_finalization_propagates_run_claim_token(monkeypatch):
+    """Successful completion compares and clears only the owned run token."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "heartbeat_fire_claim", lambda *a, **k: True)
+    monkeypatch.setattr(s, "heartbeat_run_claim", lambda *a, **k: True)
+    marked = []
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)) or True,
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "run-finalize-success",
+            "name": "t",
+            "_fire_claim_id": "fire-a",
+            "run_claim": {"id": "run-a", "by": "owner", "at": "now"},
+        }
+    )
+
+    assert ok is True
+    assert marked[-1][1]["expected_fire_claim_id"] == "fire-a"
+    assert marked[-1][1]["expected_run_claim_id"] == "run-a"
+
+
+def test_exception_finalization_propagates_run_claim_token(monkeypatch):
+    """Exception bookkeeping cannot clear a replacement run token."""
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+
+    def fail_worker(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(s, "_run_job_in_killable_process", fail_worker)
+    marked = []
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)) or True,
+    )
+    monkeypatch.setattr(s, "finish_execution", lambda *args, **kwargs: None)
+
+    ok = s.run_one_job(
+        {
+            "id": "run-finalize-error",
+            "name": "t",
+            "execution_id": "exec-run-finalize-error",
+            "_fire_claim_id": "fire-a",
+            "run_claim": {"id": "run-a", "by": "owner", "at": "now"},
+        }
+    )
+
+    assert ok is False
+    assert marked[-1][1]["expected_fire_claim_id"] == "fire-a"
+    assert marked[-1][1]["expected_run_claim_id"] == "run-a"
 
 
 def test_finalization_claim_loss_overrides_successful_execution_ledger(monkeypatch):

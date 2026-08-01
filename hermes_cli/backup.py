@@ -144,6 +144,17 @@ class _SQLiteSnapshotError(RuntimeError):
     pass
 
 
+class _CronPairArchiveError(RuntimeError):
+    """Raised when a cron jobs.json/runtime.db pair member fails to archive.
+
+    Must propagate out of the ``_atomic_output_path`` write block (never be
+    swallowed into a flag+break) so the atomic publisher's own exception path
+    discards the hidden partial and leaves any previously-published archive
+    at the final path untouched — the same reason ``_SQLiteSnapshotError``
+    is raised rather than flagged.
+    """
+
+
 @contextmanager
 def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
     """Acquire one cross-process backup slot for full and quick snapshots."""
@@ -584,6 +595,21 @@ def _format_size(nbytes: int) -> str:
     return f"{nbytes:.1f} TB"
 
 
+def _is_cron_pair_archive_path(path: Path) -> bool:
+    """Return whether a path is a root or named-profile cron pair member."""
+    parts = path.parts
+    return (
+        len(parts) == 2
+        and parts[0] == "cron"
+        and parts[1] in {"jobs.json", "runtime.db"}
+    ) or (
+        len(parts) == 4
+        and parts[0] == "profiles"
+        and parts[2] == "cron"
+        and parts[3] in {"jobs.json", "runtime.db"}
+    )
+
+
 def _prepare_full_backup_cron_pair(
     *,
     home: Path,
@@ -798,58 +824,77 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     errors = []
     t0 = time.monotonic()
 
-    with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
-        archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6
-    ) as zf:
-        for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
-            try:
-                # Safe copy for SQLite databases (handles WAL mode)
-                if abs_path.suffix == ".db":
-                    # Stage the snapshot alongside the output zip so that the
-                    # temp file lives on the same filesystem.  The system
-                    # default (/tmp) may be a small tmpfs that cannot hold
-                    # large databases, causing silent backup incompleteness.
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".db", delete=False, dir=str(out_path.parent)
-                    ) as tmp:
-                        tmp_db = Path(tmp.name)
-                    if _safe_copy_db(abs_path, tmp_db):
-                        zf.write(tmp_db, arcname=str(rel_path))
-                        total_bytes += tmp_db.stat().st_size
-                        tmp_db.unlink(missing_ok=True)
+    try:
+        with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
+            archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6
+        ) as zf:
+            for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
+                try:
+                    # Safe copy for SQLite databases (handles WAL mode)
+                    if abs_path.suffix == ".db":
+                        # Stage the snapshot alongside the output zip so that the
+                        # temp file lives on the same filesystem.  The system
+                        # default (/tmp) may be a small tmpfs that cannot hold
+                        # large databases, causing silent backup incompleteness.
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".db", delete=False, dir=str(out_path.parent)
+                        ) as tmp:
+                            tmp_db = Path(tmp.name)
+                        if _safe_copy_db(abs_path, tmp_db):
+                            try:
+                                zf.write(tmp_db, arcname=str(rel_path))
+                                total_bytes += tmp_db.stat().st_size
+                            finally:
+                                tmp_db.unlink(missing_ok=True)
+                        else:
+                            tmp_db.unlink(missing_ok=True)
+                            errors.append(f"  {rel_path}: SQLite safe copy failed")
+                            if _is_cron_pair_archive_path(rel_path):
+                                # Raise (not flag+break): must propagate out of
+                                # the atomic-output-path block so its exception
+                                # path discards the hidden partial instead of
+                                # the `with` exiting "cleanly" and publishing
+                                # an archive missing half the cron pair.
+                                raise _CronPairArchiveError(str(rel_path))
+                            continue
                     else:
-                        tmp_db.unlink(missing_ok=True)
-                        errors.append(f"  {rel_path}: SQLite safe copy failed")
-                        continue
-                else:
-                    zf.write(abs_path, arcname=str(rel_path))
+                        zf.write(abs_path, arcname=str(rel_path))
+                        total_bytes += abs_path.stat().st_size
+                except (PermissionError, OSError, ValueError) as exc:
+                    errors.append(f"  {rel_path}: {exc}")
+                    if _is_cron_pair_archive_path(rel_path):
+                        raise _CronPairArchiveError(str(rel_path)) from exc
+                    continue
+
+                # Progress every 500 files
+                if i % 500 == 0:
+                    print(f"  {i}/{file_count} files ...")
+                    logger.info(
+                        "backup phase=archive status=progress completed=%d total=%d",
+                        i,
+                        file_count,
+                    )
+
+            # External memory-provider state, stored under the ``_external/``
+            # arc prefix. These never include ``.db`` files in practice
+            # (config/env blobs), so a straight zf.write is fine.
+            for abs_path, arcname in external_to_add:
+                try:
+                    zf.write(abs_path, arcname=arcname)
                     total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError, ValueError) as exc:
-                errors.append(f"  {rel_path}: {exc}")
-                continue
-
-            # Progress every 500 files
-            if i % 500 == 0:
-                print(f"  {i}/{file_count} files ...")
-                logger.info(
-                    "backup phase=archive status=progress completed=%d total=%d",
-                    i,
-                    file_count,
-                )
-
-        # External memory-provider state, stored under the ``_external/`` arc
-        # prefix. These never include ``.db`` files in practice (config/env
-        # blobs), so a straight zf.write is fine.
-        for abs_path, arcname in external_to_add:
-            try:
-                zf.write(abs_path, arcname=arcname)
-                total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError, ValueError) as exc:
-                errors.append(f"  {arcname}: {exc}")
-                continue
-
-    if cron_stage is not None:
-        cron_stage.cleanup()
+                except (PermissionError, OSError, ValueError) as exc:
+                    errors.append(f"  {arcname}: {exc}")
+                    continue
+    except _CronPairArchiveError as exc:
+        logger.warning("Backup aborted: cron pair write failed: %s", exc)
+        # ``_atomic_output_path`` already removed the hidden partial. Do not
+        # unlink ``out_path`` here: it may be a previous valid backup that the
+        # atomic publisher deliberately preserved.
+        print("Backup aborted: a coherent cron pair could not be archived.")
+        return
+    finally:
+        if cron_stage is not None:
+            cron_stage.cleanup()
 
     elapsed = time.monotonic() - t0
     zip_size = out_path.stat().st_size
@@ -2169,6 +2214,17 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
                     else:
                         zf.write(abs_path, arcname=str(rel_path))
                 except (PermissionError, OSError, ValueError) as exc:
+                    if _is_cron_pair_archive_path(rel_path):
+                        logger.warning(
+                            "Full-zip backup aborted: cron pair write failed for %s: %s",
+                            rel_path,
+                            exc,
+                        )
+                        # Raise (not flag+break): must propagate out of the
+                        # atomic-output-path block below so its exception
+                        # path discards the hidden partial instead of the
+                        # `with` exiting "cleanly" and getting published.
+                        raise _CronPairArchiveError(str(rel_path)) from exc
                     logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
                     continue
                 if index % 500 == 0:
@@ -2177,7 +2233,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
                         index,
                         len(files_to_add),
                     )
-    except (OSError, _SQLiteSnapshotError) as exc:
+    except (OSError, _SQLiteSnapshotError, _CronPairArchiveError) as exc:
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         # ``_atomic_output_path`` already removed the hidden partial.  Do not
         # unlink ``out_path`` here: it may be a previous valid backup that the

@@ -114,6 +114,16 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
 
     let cancelled = false
     let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryCount = 0
+
+    // The desktop races its own backend at startup: the renderer mounts before
+    // the backend is ready, so the first /api/config call can time out. We keep
+    // the established permanent-failure contract — a rejected config load
+    // settles on English so the UI stays usable — but bounded retries recover
+    // transient startup failures, applying the persisted display.language once
+    // the backend comes up.
+    const MAX_LOCALE_RETRIES = 10
+    const LOCALE_RETRY_DELAY_MS = 3_000
 
     const loadLocale = () => {
       setIsLoadingConfig(true)
@@ -132,16 +142,14 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
           }
 
           setConfigLoadError(toError(error))
+          setLocaleState(DEFAULT_LOCALE)
 
-          // The desktop races its own backend at startup: the renderer mounts
-          // before the backend is ready, and the first /api/config call times
-          // out (60s). Falling back to the default locale permanently made the
-          // UI stuck in English until a manual language switch. Retry with a
-          // short delay instead — the backend comes up, the next attempt
-          // succeeds, and the persisted display.language takes effect.
-          retryTimer = setTimeout(() => {
-            loadLocale()
-          }, 3_000)
+          if (retryCount < MAX_LOCALE_RETRIES) {
+            retryCount += 1
+            retryTimer = setTimeout(() => {
+              loadLocale()
+            }, LOCALE_RETRY_DELAY_MS)
+          }
         })
         .finally(() => {
           if (!cancelled) {

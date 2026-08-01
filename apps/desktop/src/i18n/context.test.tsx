@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
@@ -246,5 +246,68 @@ describe('I18nProvider', () => {
 
     expect(screen.getByTestId('locale').textContent).toBe('en')
     expect(screen.getByTestId('label').textContent).toBe('Language')
+  })
+
+  it('retries a transient config failure and applies the persisted locale', async () => {
+    const getConfig = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('backend not ready yet'))
+      .mockResolvedValueOnce({ display: { language: 'zh-Hans' } })
+
+    const configClient: I18nConfigClient = {
+      getConfig,
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    // First attempt fails → settles on English (permanent-failure contract).
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+
+    // The bounded retry succeeds and applies the persisted language.
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('zh'), { timeout: 5_000 })
+    expect(getConfig).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops retrying after the bounded retry budget is exhausted', async () => {
+    vi.useFakeTimers()
+    const getConfig = vi.fn().mockRejectedValue(new Error('backend unavailable'))
+
+    const configClient: I18nConfigClient = {
+      getConfig,
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient} initialLocale="zh">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    // Flush the initial attempt: it fails and settles on English.
+    await act(async () => {})
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+    expect(getConfig).toHaveBeenCalledTimes(1)
+
+    // Budget is 10 retries at 3s each; run the whole budget to completion.
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(3_000)
+      })
+    }
+    expect(getConfig).toHaveBeenCalledTimes(11)
+
+    // No timer is left after the budget is spent — nothing fires later.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+    })
+    expect(getConfig).toHaveBeenCalledTimes(11)
+
+    vi.useRealTimers()
   })
 })

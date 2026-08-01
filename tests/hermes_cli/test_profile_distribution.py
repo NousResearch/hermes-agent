@@ -267,6 +267,49 @@ class TestInstall:
             assert full.exists() or full.is_dir(), \
                 f"DEFAULT_DIST_OWNED '{path}' not found in target"
 
+    def test_install_omitted_allowlist_copies_everything(self, profile_env):
+        """Legacy contract: when distribution_owned is OMITTED, every staged
+        entry outside USER_OWNED_EXCLUDE is copied — the omitted list must NOT
+        silently narrow to DEFAULT_DIST_OWNED."""
+        staged = _make_staging_dir(profile_env, "legacy_all")
+        # Extra top-level payload not covered by DEFAULT_DIST_OWNED
+        (staged / "extra.txt").write_text("bonus\n")
+        (staged / "tools").mkdir()
+        (staged / "tools" / "helper.py").write_text("# helper\n")
+
+        plan = install_distribution(str(staged), name="legacy_all")
+        assert (plan.target_dir / "extra.txt").read_text() == "bonus\n", \
+            "omitted distribution_owned must keep copying undeclared files"
+        assert (plan.target_dir / "tools" / "helper.py").exists(), \
+            "omitted distribution_owned must keep copying undeclared dirs"
+
+    def test_install_allowlist_supports_nested_paths(self, profile_env):
+        """Documented nested entries like skills/research/ and cron/digest.json
+        must select exactly that subtree/file, not be silently dropped."""
+        mf = DistributionManifest(
+            name="nested",
+            version="0.1.0",
+            distribution_owned=["SOUL.md", "skills/research/", "cron/digest.json"],
+        )
+        staged = _make_staging_dir(profile_env, "nested", manifest=mf)
+        (staged / "skills" / "research").mkdir()
+        (staged / "skills" / "research" / "SKILL.md").write_text(
+            "---\nname: research\ndescription: r\n---\n# R\n"
+        )
+        (staged / "cron" / "digest.json").write_text('{"schedule": "0 8 * * *"}')
+
+        plan = install_distribution(str(staged), name="nested")
+        # Nested allowlisted paths are installed
+        assert (plan.target_dir / "skills" / "research" / "SKILL.md").exists()
+        assert (plan.target_dir / "cron" / "digest.json").exists()
+        # Sibling paths under the same parents are NOT dragged along
+        assert not (plan.target_dir / "skills" / "demo").exists(), \
+            "skills/demo is not allowlisted and must not be copied"
+        assert not (plan.target_dir / "cron" / "daily.json").exists(), \
+            "cron/daily.json is not allowlisted and must not be copied"
+        # Unrelated top-level entries stay out too
+        assert not (plan.target_dir / "mcp.json").exists()
+
     def test_update_respects_distribution_owned_allowlist(self, profile_env):
         """Update must only copy paths listed in distribution_owned."""
         # 1. Install with full default distribution_owned

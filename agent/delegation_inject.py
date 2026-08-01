@@ -13,6 +13,7 @@ import os
 import queue
 import threading
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,11 @@ logger = logging.getLogger(__name__)
 _PENDING_CLAIMS_ATTR = "_pending_delegation_inject_claims"
 _CLAIM_HEARTBEAT_ATTR = "_delegation_inject_claim_heartbeat"
 _CLAIM_HEARTBEAT_INTERVAL_SECONDS = 60.0
+_CARRIER_SPILL_TOOL_NAME = "__delegation_carrier__"
+_CARRIER_MARKER = (
+    "\n\n[DELEGATION RESULT READY — background evidence for the current task; "
+    "not a new user request]\n"
+)
 
 
 def _event_identity(event: dict[str, Any]) -> str:
@@ -56,11 +62,7 @@ def _remove_carrier_identity(message: dict[str, Any]) -> None:
 
 
 def _append_carrier_text(message: dict[str, Any], text: str) -> None:
-    marker = (
-        "\n\n[DELEGATION RESULT READY — background evidence for the current task; "
-        "not a new user request]\n"
-        + text
-    )
+    marker = _CARRIER_MARKER + text
     content = message.get("content", "")
     if isinstance(content, str):
         message["content"] = content + marker
@@ -71,6 +73,67 @@ def _append_carrier_text(message: dict[str, Any], text: str) -> None:
         message["content"] = blocks
     except Exception:
         message["content"] = f"{content}{marker}"
+
+
+def _content_text_size(content: Any) -> int:
+    """Count provider-visible text without charging binary image payloads."""
+
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if isinstance(block, str):
+                total += len(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    total += len(text)
+        return total
+    return len(str(content)) if content is not None else 0
+
+
+def _bounded_carrier_text(
+    text: str,
+    *,
+    max_chars: int | None,
+    event_id: str,
+    storage_env: Any,
+    budget_config: Any,
+) -> str | None:
+    """Return a bounded carrier or persist its full report in the active env.
+
+    A missing/failed sandbox is a delivery deferral, not permission to lose the
+    full child report through inline truncation. The durable event therefore
+    remains pending for the ordinary after-turn rail.
+    """
+
+    if max_chars is None or len(text) <= max_chars:
+        return text
+    if max_chars <= 0 or storage_env is None or budget_config is None:
+        return None
+
+    from tools.tool_result_storage import PERSISTED_OUTPUT_TAG, maybe_persist_tool_result
+
+    preview_size = max(0, min(int(budget_config.preview_size), max_chars))
+    for _ in range(3):
+        carrier_budget = replace(budget_config, preview_size=preview_size)
+        bounded = maybe_persist_tool_result(
+            content=text,
+            tool_name=_CARRIER_SPILL_TOOL_NAME,
+            tool_use_id=f"delegation-{event_id}",
+            env=storage_env,
+            config=carrier_budget,
+            threshold=0,
+        )
+        if PERSISTED_OUTPUT_TAG not in bounded:
+            return None
+        if len(bounded) <= max_chars:
+            return bounded
+        if preview_size == 0:
+            return None
+        preview_size = max(0, preview_size - (len(bounded) - max_chars) - 16)
+    return None
 
 
 def _durable_event_is_in_history(
@@ -263,6 +326,8 @@ def attach_ready_injects_to_tool_results(
     num_tool_msgs: int,
     *,
     turn_id: str | None = None,
+    storage_env: Any = None,
+    budget_config: Any = None,
 ) -> int:
     """Carry ready delegation results on a newly produced tool result.
 
@@ -291,6 +356,20 @@ def attach_ready_injects_to_tool_results(
             break
     if target is None:
         return 0
+
+    carrier_capacity: int | None = None
+    if budget_config is not None:
+        carrier_limit = min(
+            int(budget_config.default_result_size),
+            int(budget_config.turn_budget),
+        )
+        carrier_capacity = (
+            carrier_limit
+            - _content_text_size(target.get("content", ""))
+            - len(_CARRIER_MARKER)
+        )
+        if carrier_capacity <= 0:
+            return 0
 
     from tools.async_delegation import (
         claim_event_delivery,
@@ -335,16 +414,37 @@ def attach_ready_injects_to_tool_results(
             if not text:
                 completion_queue.put(event)
                 continue
+            event_id = _event_identity(event)
+            separator_size = 2 if accepted else 0
+            available = (
+                None
+                if carrier_capacity is None
+                else carrier_capacity - separator_size
+            )
+            bounded_text = _bounded_carrier_text(
+                text,
+                max_chars=available,
+                event_id=event_id,
+                storage_env=storage_env,
+                budget_config=budget_config,
+            )
+            if bounded_text is None:
+                completion_queue.put(event)
+                continue
             claim_id = claim_event_delivery(event, f"tool-boundary:{os.getpid()}")
             if claim_id is None:
                 process_registry.defer_unclaimed_delivery(event)
                 continue
-            accepted.append((event, claim_id, text, _event_identity(event)))
+            accepted.append((event, claim_id, bounded_text, event_id))
+            if carrier_capacity is not None:
+                carrier_capacity -= separator_size + len(bounded_text)
 
     if not accepted:
         return 0
 
+    original_target = deepcopy(target)
     original_content = deepcopy(target.get("content", ""))
+    original_pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
     event_ids = [item[3] for item in accepted]
     try:
         _append_carrier_text(target, "\n\n".join(item[2] for item in accepted))
@@ -355,24 +455,36 @@ def attach_ready_injects_to_tool_results(
         display_metadata["delegation_delivery"] = "tool_boundary"
         target["display_metadata"] = display_metadata
         agent._session_messages = messages
+
+        pending = list(original_pending)
+        pending.extend(
+            {
+                "event": event,
+                "claim_id": claim_id,
+                "event_id": event_id,
+                "message": target,
+                "turn_id": active_turn_id,
+            }
+            for event, claim_id, _text, event_id in accepted
+        )
+        setattr(agent, _PENDING_CLAIMS_ATTR, pending)
+        ensure_pending_inject_heartbeat(agent)
     except Exception:
+        target.clear()
+        target.update(original_target)
+        try:
+            setattr(agent, _PENDING_CLAIMS_ATTR, original_pending)
+            _stop_claim_heartbeat_if_idle(agent)
+        except Exception:
+            logger.debug("Failed to restore delegation claim bookkeeping", exc_info=True)
         for event, claim_id, _text, _event_id in accepted:
-            if release_event_delivery(event, claim_id):
-                if get_event_delivery_state(event) == "pending":
-                    completion_queue.put(event)
+            try:
+                released = release_event_delivery(event, claim_id)
+            except Exception:
+                logger.exception("Failed to release rolled-back delegation claim")
+                continue
+            if released and get_event_delivery_state(event) == "pending":
+                completion_queue.put(event)
         raise
 
-    pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
-    pending.extend(
-        {
-            "event": event,
-            "claim_id": claim_id,
-            "event_id": event_id,
-            "message": target,
-            "turn_id": active_turn_id,
-        }
-        for event, claim_id, _text, event_id in accepted
-    )
-    setattr(agent, _PENDING_CLAIMS_ATTR, pending)
-    ensure_pending_inject_heartbeat(agent)
     return len(accepted)

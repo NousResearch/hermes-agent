@@ -103,3 +103,125 @@ def test_s1_contended_clear_gives_up_within_short_budget(tmp_path):
         release.set()
         locker.join(timeout=10)
     assert elapsed < 3.0, f"label clear waited {elapsed:.1f}s under contention"
+
+
+# ── S2: watchdog revalidates immediately before /new delivery ────────────────
+
+
+class _FakeAdapter:
+    def __init__(self):
+        self._pending_messages = {}
+        self.sent = []
+
+    async def send(self, chat_id, content, metadata=None):
+        self.sent.append({"chat_id": chat_id, "content": content})
+
+
+class _RacingAgent:
+    """Reports stale activity on the first read, fresh on the second.
+
+    Models an agent that makes progress between the watchdog's candidate
+    scan and its delivery attempt.
+    """
+
+    def __init__(self):
+        self.reads = 0
+
+    def get_activity_summary(self):
+        self.reads += 1
+        age = 999 if self.reads == 1 else 1
+        return build_activity_snapshot(
+            last_activity_at=time.time() - age,
+            last_activity_description="api call",
+            last_activity_provenance=ActivityProvenance.UNKNOWN,
+        )
+
+
+def _runner_for_stall(adapter):
+    from gateway.run import GatewayRunner
+
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._running = True
+    r.adapters = {"fake": adapter}
+    r._profile_adapters = {}
+    r._running_agents = {}
+    r._running_agents_ts = {}
+    r._queued_events = {}
+    r._session_stall_notified = {}
+    r._thread_metadata_for_source = lambda source, *a, **k: {}
+    return r
+
+
+def _pending_event(chat_id="chat-1"):
+    source = SimpleNamespace(chat_id=chat_id, thread_id=None, platform=None)
+    return SimpleNamespace(text="follow-up", source=source, timestamp=time.time())
+
+
+@pytest.mark.asyncio
+async def test_s2_progress_between_scan_and_send_aborts_delivery():
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:race"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _RacingAgent()
+    runner._running_agents[session_key] = agent
+
+    sent = await runner._check_session_stalls(60)
+    # First read said stale; the pre-delivery re-read said fresh → abort.
+    assert sent == 0
+    assert adapter.sent == []
+    assert agent.reads >= 2, "watchdog must re-read activity before delivery"
+    # Latch re-armed: a future genuine stall must still notify.
+    assert session_key not in runner._session_stall_notified
+
+
+@pytest.mark.asyncio
+async def test_s2_pending_drained_between_scan_and_send_aborts_delivery():
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:drain"
+
+    class _DrainOnReadAgent:
+        def __init__(self):
+            self.reads = 0
+
+        def get_activity_summary(self):
+            self.reads += 1
+            if self.reads == 1:
+                # Simulate the queue draining after the candidate scan but
+                # before the pre-delivery revalidation.
+                adapter._pending_messages.pop(session_key, None)
+            return build_activity_snapshot(
+                last_activity_at=time.time() - 999,
+                last_activity_description="api call",
+                last_activity_provenance=ActivityProvenance.UNKNOWN,
+            )
+
+    adapter._pending_messages[session_key] = _pending_event()
+    runner._running_agents[session_key] = _DrainOnReadAgent()
+
+    sent = await runner._check_session_stalls(60)
+    assert sent == 0
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_s2_still_stale_after_revalidation_delivers():
+    """Sanity: revalidation must not suppress GENUINE stall notices."""
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:genuine"
+    adapter._pending_messages[session_key] = _pending_event()
+
+    class _StaleAgent:
+        def get_activity_summary(self):
+            return build_activity_snapshot(
+                last_activity_at=time.time() - 999,
+                last_activity_description="api call",
+                last_activity_provenance=ActivityProvenance.UNKNOWN,
+            )
+
+    runner._running_agents[session_key] = _StaleAgent()
+    sent = await runner._check_session_stalls(60)
+    assert sent == 1
+    assert adapter.sent and "/new" in adapter.sent[0]["content"]

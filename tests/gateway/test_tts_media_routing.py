@@ -474,7 +474,6 @@ async def test_post_stream_html_src_bare_path_not_delivered(tmp_path, monkeypatc
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
 @pytest.mark.asyncio
 async def test_post_stream_file_url_windows_path_delivered(tmp_path, monkeypatch):
     """``file:///C:/...`` style Windows URI (three slashes + drive letter)
@@ -703,112 +702,111 @@ async def test_post_stream_dedup_http_exact_url(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
-@pytest.mark.asyncio
-async def test_post_stream_history_dedup_case_variation(tmp_path, monkeypatch):
-    """History contains C:\\...\\Image.PNG; current file URI pointing to the
-    same file (case/slash variation) is deduplicated."""
-    event = _event()
-    img = _allowed_media_path(tmp_path, monkeypatch, "image.png")
-    # Simulate history containing a case-different variant of the SAME file
-    alt_case = str(img).replace("image.png", "Image.PNG")
-    # Response uses an alternative file:// encoding of the same file
-    response = f"![shot](file://{img.as_posix()})"
-    adapter = SimpleNamespace(
-        name="test",
-        extract_media=BasePlatformAdapter.extract_media,
-        extract_images=BasePlatformAdapter.extract_images,
-        extract_local_files=BasePlatformAdapter.extract_local_files,
-        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
-        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
-        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
-        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
-        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
-    )
-
-    await GatewayRunner._deliver_media_from_response(
-        _fake_runner(None),
-        response,
-        event,
-        adapter,
-        history_media_paths={alt_case},
-    )
-
-    # The file:// URI resolves to the same canonical path as history -> skip
-    adapter.send_multiple_images.assert_not_awaited()
-    adapter.send_image_file.assert_not_awaited()
-    adapter.send_document.assert_not_awaited()
+# ---------------------------------------------------------------------------
+# New contract (#73771): explicit MEDIA:/file:// in a LATER turn is a deliberate
+# resend and must NOT be blocked by history-based dedup. The same file may be
+# delivered again when the model explicitly attaches it in a subsequent
+# response. Only same-response canonical dedup applies (see
+# test_post_stream_dedup_file_url_media_same_file).
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_post_stream_history_dedup_same_file_via_media(tmp_path, monkeypatch):
-    """History contains original MEDIA path; current percent-encoded file URI
-    pointing to the same file is deduplicated."""
+async def test_post_stream_explicit_resend_allowed_in_later_turn(tmp_path, monkeypatch):
+    """A later turn explicitly repeating the same MEDIA: tag still delivers.
+
+    Regression guard for #73771: cross-turn history dedup was removed. The
+    post-stream rescan is explicit-only, and a MEDIA: directive in the final
+    streamed reply is the model deliberately attaching a file — including a
+    user-requested resend. Calling _deliver_media_from_response twice with the
+    same response must deliver both times (no hidden history state).
+    """
     event = _event()
-    img = _allowed_media_path(tmp_path, monkeypatch, "dedup_hist.png")
-    # Response has BOTH a MEDIA: (which goes through extract_media) and an
-    # explicit file:// tag; history contains the same path.
+    img = _allowed_media_path(tmp_path, monkeypatch, "resend.png")
     response = f"MEDIA:{img} ![shot](file://{img.as_posix()})"
-    adapter = SimpleNamespace(
-        name="test",
-        extract_media=BasePlatformAdapter.extract_media,
-        extract_images=BasePlatformAdapter.extract_images,
-        extract_local_files=BasePlatformAdapter.extract_local_files,
-        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
-        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
-        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
-        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
-        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
-    )
 
+    def _make_adapter():
+        return SimpleNamespace(
+            name="test",
+            extract_media=BasePlatformAdapter.extract_media,
+            extract_images=BasePlatformAdapter.extract_images,
+            extract_local_files=BasePlatformAdapter.extract_local_files,
+            send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+            send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+            send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+            send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+            send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+        )
+
+    # Turn 1 delivers the explicit media.
+    adapter1 = _make_adapter()
     await GatewayRunner._deliver_media_from_response(
         _fake_runner(None),
         response,
         event,
-        adapter,
-        history_media_paths={str(img)},
+        adapter1,
     )
+    adapter1.send_multiple_images.assert_awaited_once()
 
-    # The MEDIA: path matches history -> filtered out.
-    # The file:// path also matches history -> filtered out.
-    # Result: nothing to deliver.
-    adapter.send_multiple_images.assert_not_awaited()
-    adapter.send_image_file.assert_not_awaited()
-    adapter.send_document.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_post_stream_history_dedup_different_paths_both_deliver(tmp_path, monkeypatch):
-    """Two different files (one in history, one new) — both deliver."""
-    event = _event()
-    img1 = _allowed_media_path(tmp_path, monkeypatch, "already_sent.png")
-    img2 = _allowed_media_path(tmp_path, monkeypatch, "new_file.png",)
-    response = f"![old](file://{img1.as_posix()}) ![new](file://{img2.as_posix()})"
-    adapter = SimpleNamespace(
-        name="test",
-        extract_media=BasePlatformAdapter.extract_media,
-        extract_images=BasePlatformAdapter.extract_images,
-        extract_local_files=BasePlatformAdapter.extract_local_files,
-        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
-        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
-        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
-        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
-        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
-    )
-
+    # Turn 2 (a later turn, same explicit directive) must deliver AGAIN —
+    # no cross-turn history dedup may suppress it.
+    adapter2 = _make_adapter()
     await GatewayRunner._deliver_media_from_response(
         _fake_runner(None),
         response,
         event,
-        adapter,
-        history_media_paths={str(img1)},
+        adapter2,
     )
-
-    # img1 matches history -> skipped; img2 is new -> delivered
-    adapter.send_multiple_images.assert_awaited_once()
-    args, kwargs = adapter.send_multiple_images.call_args
+    adapter2.send_multiple_images.assert_awaited_once()
+    args, kwargs = adapter2.send_multiple_images.call_args
     images = kwargs.get("images")
     assert images is not None, "images kwarg missing"
-    assert len(images) == 1, f"expected 1 new image, got {len(images)}: {images}"
-    # Only the new file's URI is present
-    assert str(img2) in images[0][0], f"Expected {img2} in {images[0][0]}"
-    assert str(img1) not in images[0][0], f"Old file {img1} should not appear"
+    assert len(images) == 1, f"expected 1 image in resend turn, got {len(images)}: {images}"
+
+
+@pytest.mark.asyncio
+async def test_post_stream_file_url_resend_allowed_in_later_turn(tmp_path, monkeypatch):
+    """A later turn explicitly repeating the same file:// image still delivers.
+
+    Mirrors test_post_stream_explicit_resend_allowed_in_later_turn for the
+    file:// markdown image path — the explicit file:// contract is also exempt
+    from cross-turn dedup (#73771).
+    """
+    event = _event()
+    img = _allowed_media_path(tmp_path, monkeypatch, "resend_uri.png")
+    response = f"See: ![shot](file://{img.as_posix()})"
+
+    def _make_adapter():
+        return SimpleNamespace(
+            name="test",
+            extract_media=BasePlatformAdapter.extract_media,
+            extract_images=BasePlatformAdapter.extract_images,
+            extract_local_files=BasePlatformAdapter.extract_local_files,
+            send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+            send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+            send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+            send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+            send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+        )
+
+    adapter1 = _make_adapter()
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter1,
+    )
+    adapter1.send_multiple_images.assert_awaited_once()
+
+    adapter2 = _make_adapter()
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter2,
+    )
+    adapter2.send_multiple_images.assert_awaited_once()
+    args, kwargs = adapter2.send_multiple_images.call_args
+    images = kwargs.get("images")
+    assert images is not None, "images kwarg missing"
+    assert len(images) == 1, f"expected 1 image in resend turn, got {len(images)}: {images}"

@@ -1100,8 +1100,9 @@ class TestGitHubTokenCheck:
         call_log = []
         def mock_run(cmd, **kwargs):
             call_log.append(cmd)
-            if cmd[:2] == ["gh", "auth"]:
-                result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            if cmd == ["gh", "auth", "status", "--json", "hosts", "--hostname", "github.com"]:
+                stdout = '{"hosts":{"github.com":[{"active":true,"state":"success"}]}}'
+                result = types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
             else:
                 result = types.SimpleNamespace(returncode=1, stdout="", stderr="")
             return result

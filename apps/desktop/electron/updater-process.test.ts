@@ -68,7 +68,7 @@ test('resolveStagedUpdaterBinary hands Windows the staged installer it finds', (
   const probed: string[] = []
 
   const resolved = resolveStagedUpdaterBinary(home, {
-    fileExists: (candidate) => {
+    fileExists: candidate => {
       probed.push(candidate)
 
       return candidate === staged

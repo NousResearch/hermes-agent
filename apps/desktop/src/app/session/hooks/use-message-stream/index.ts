@@ -606,6 +606,7 @@ export function useMessageStream({
       // failure signals — never on a healthy reply that happens to say
       // "disk full".
       const diskFullSignal = failure?.error || (failure ? text : '')
+
       if (diskFullSignal && isDiskFullErrorMessage(diskFullSignal)) {
         notifyError(new Error(diskFullSignal), translateNow('notifications.errors.diskFull'))
       }

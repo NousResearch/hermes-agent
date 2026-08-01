@@ -509,6 +509,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
   const growable = tracks.map((_, i) => i).filter(i => !tracks[i].collapsed && !tracks[i].minimized)
   const allFixed = growable.length > 0 && growable.every(i => tracks[i].track !== null)
+
   // Only an uncapped fixed track may absorb leftover. A maxWidth/maxHeight
   // sidebar (review, files, sessions) must keep that clamp — otherwise ⌘G
   // balloons the rail and sash-remembered sizes become a flex-basis that

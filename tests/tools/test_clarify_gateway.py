@@ -379,3 +379,84 @@ class TestMultiSelectTextFallback:
         from tools import clarify_gateway as cm
         entry = cm.register("s4", "sk", "Q?", ["A", "B"])
         assert cm._coerce_text_response(entry, "b") == "B"
+
+
+class TestNativeRejectClassification:
+    """Rejected typed replies must distinguish free prose from bad selections.
+
+    Free prose cancels/falls through (deadlock break). Selection-shaped but
+    invalid replies (out-of-range number, unrecognised comma-list) keep the
+    pending clarify armed so the user can retry.
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_multi_select_out_of_range_is_invalid_selection(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ms-oor", "sk-ms", "Pick some", ["A", "B", "C"], multi_select=True,
+        )
+        assert entry.awaiting_text is False
+        value, reason = cm._coerce_text_response_detailed(entry, "99")
+        assert value is None
+        assert reason == "invalid_selection"
+        assert cm.attempt_text_response_for_session("sk-ms", "99") == (
+            cm.TEXT_REJECTED_SELECTION
+        )
+        pending = cm.get_pending_for_session("sk-ms", include_choice_prompts=True)
+        assert pending is not None
+        assert not pending.event.is_set()
+
+    def test_multi_select_bad_comma_list_is_invalid_selection(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ms-bad", "sk-ms2", "Pick some", ["A", "B", "C"], multi_select=True,
+        )
+        value, reason = cm._coerce_text_response_detailed(entry, "1,99")
+        assert value is None
+        assert reason == "invalid_selection"
+        assert cm.attempt_text_response_for_session("sk-ms2", "nope,nope") == (
+            cm.TEXT_REJECTED_SELECTION
+        )
+        pending = cm.get_pending_for_session("sk-ms2", include_choice_prompts=True)
+        assert pending is not None
+        assert not pending.event.is_set()
+
+    def test_multi_select_free_prose_is_rejected_prose(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ms-prose", "sk-ms3", "Pick some", ["A", "B"], multi_select=True,
+        )
+        value, reason = cm._coerce_text_response_detailed(
+            entry, "just checking the visual UI, no need to pass any data",
+        )
+        assert value is None
+        assert reason == "prose"
+        assert cm.attempt_text_response_for_session(
+            "sk-ms3", "just checking the visual UI, no need to pass any data",
+        ) == cm.TEXT_REJECTED_PROSE
+
+    def test_single_select_out_of_range_is_invalid_selection(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("ss-oor", "sk-ss", "Pick one", ["A", "B"])
+        value, reason = cm._coerce_text_response_detailed(entry, "9")
+        assert value is None
+        assert reason == "invalid_selection"
+        assert cm.attempt_text_response_for_session("sk-ss", "9") == (
+            cm.TEXT_REJECTED_SELECTION
+        )
+
+    def test_single_select_prose_is_rejected_prose(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("ss-prose", "sk-ss2", "Pick one", ["A", "B"])
+        value, reason = cm._coerce_text_response_detailed(
+            entry, "one more unrelated thought",
+        )
+        assert value is None
+        assert reason == "prose"

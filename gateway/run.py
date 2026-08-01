@@ -18442,6 +18442,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_text, _successful_transcripts = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    topic_context=event.channel_prompt or "",
                 )
                 # Echo each successful transcript back to the user immediately
                 # when configured. Lets users verify STT quality in real-time,
@@ -24861,6 +24862,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         user_text: str,
         audio_paths: List[str],
+        topic_context: str = "",
     ) -> tuple[str, List[str]]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -24869,12 +24871,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Args:
             user_text:   The user's original caption / message text.
             audio_paths: List of local file paths to cached audio files.
+            topic_context: Stable channel-specific context for optional cleanup.
 
         Returns:
             A tuple of ``(enriched_text, successful_transcripts)``:
               - ``enriched_text``: the message string with transcription wrappers
                 prepended (same as before).
-              - ``successful_transcripts``: the raw transcript strings for audio
+              - ``successful_transcripts``: the retained transcript strings for audio
                 clips that were successfully transcribed, in input order. Empty
                 list if every clip failed or STT is disabled. Callers can use
                 this to echo transcripts back to the user before the agent loop.
@@ -24951,6 +24954,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "to resend or type it out.]"
                         )
                         continue
+                    cleanup_config = getattr(self.config, "stt_cleanup", {})
+                    if isinstance(cleanup_config, dict) and cleanup_config.get("enabled"):
+                        try:
+                            from tools.transcript_cleanup import cleanup_transcript
+
+                            cleanup_result = await asyncio.to_thread(
+                                cleanup_transcript,
+                                transcript,
+                                topic_context,
+                                cleanup_config,
+                            )
+                            transcript = cleanup_result.text
+                        except Exception:
+                            logger.exception(
+                                "Transcript cleanup failed; using raw transcript"
+                            )
                     successful_transcripts.append(transcript)
                     # Pass the transcript through as a plain quoted line. The
                     # earlier wording ("The user sent a voice message~ Here's
@@ -25033,6 +25052,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
             text,
             audio_paths,
+            topic_context=event.channel_prompt or "",
         )
         setattr(event, "_gateway_pending_stt_text", enriched_text)
         setattr(event, "_gateway_pending_stt_transcripts", list(successful_transcripts))

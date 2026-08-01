@@ -134,17 +134,18 @@ export function normalize(node: LayoutNode): LayoutNode | null {
     }
 
     const active = node.panes.includes(node.active) ? node.active : node.panes[0]
-    // A zone down to one pane clears a redundant HIDDEN override (the lone-pane
-    // default is already headerless) but KEEPS an explicit SHOWN override —
-    // once a zone has ever had a tab bar, closing back to one tab leaves it
-    // shown (sticky bar; the off switch is "Hide tab bar"). `false` survives.
-    const headerHidden = node.panes.length <= 1 && node.headerHidden !== false ? undefined : node.headerHidden
 
-    if (active === node.active && headerHidden === node.headerHidden) {
+    // NOTE: `headerHidden` is deliberately untouched here. A zone down to one
+    // pane is headerless by default anyway, so a stored `true` is visually
+    // redundant *while it's alone* — but normalize used to DROP it, which threw
+    // away the user's standing choice: the bar came back the moment a pane
+    // rejoined (close a stacked tool panel, toggle it back on). `false` is
+    // sticky for the mirror reason — once a zone has had a tab bar, it keeps it.
+    if (active === node.active) {
       return node
     }
 
-    return { ...node, active, headerHidden }
+    return { ...node, active }
   }
 
   const children: LayoutNode[] = []

@@ -281,6 +281,8 @@ class ComputeHost:
             with session.get("history_lock", threading.Lock()):
                 session["_turn_cancel_requested"] = True
                 session["queued_prompt"] = None
+                session.pop("queued_prompts", None)
+                session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": True, "applied_ns": now_ns()})
         except Exception as exc:
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False, "message": str(exc)})
@@ -355,6 +357,22 @@ class ComputeHost:
 
             session = self._ensure_server_session(server, frame)
             with session["history_lock"]:
+                queued_prompt_generation = frame.get("queued_prompt_generation")
+                if (
+                    queued_prompt_generation is not None
+                    and int(session.get("_queued_prompt_generation", 0))
+                    != int(queued_prompt_generation)
+                ):
+                    self.emit(
+                        {
+                            "type": "turn.end",
+                            "sid": sid,
+                            "request_id": request_id,
+                            "interrupted": True,
+                            "ended_ns": now_ns(),
+                        }
+                    )
+                    return
                 if session.get("running"):
                     self.emit({"type": "turn.error", "sid": sid, "request_id": request_id, "message": "session busy"})
                     return

@@ -271,6 +271,22 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
         server._sessions.pop("iso-sid", None)
 
 
+def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch):
+    class _Supervisor:
+        def submit_turn(self, _frame, *, on_complete=None):
+            session["attached_images"].append("/tmp/c.png")
+
+    session = _session(attached_images=[])
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
+
+    response = server._submit_prompt_to_compute_host(
+        "r1", "sid", session, "B", image_paths=["/tmp/b.png"]
+    )
+
+    assert response["result"]["status"] == "streaming"
+    assert session["attached_images"] == ["/tmp/c.png"]
+
+
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
     class _BrokenSupervisor:
         def submit_turn(self, frame, *, on_complete=None):
@@ -9121,6 +9137,7 @@ def test_interrupt_drops_queued_prompt_for_session():
         ),
         running=True,
         queued_prompt={"text": "next prompt", "transport": None},
+        queued_prompts=[{"text": "later prompt", "image_paths": ["/tmp/later.png"], "transport": None}],
         _run_thread=_LiveThread(),
     )
     server._sessions["sid"] = session
@@ -9133,6 +9150,7 @@ def test_interrupt_drops_queued_prompt_for_session():
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert calls["interrupted"] is True
         assert session.get("queued_prompt") is None
+        assert session.get("queued_prompts") is None
     finally:
         server._sessions.pop("sid", None)
 

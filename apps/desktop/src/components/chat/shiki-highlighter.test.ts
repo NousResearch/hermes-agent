@@ -44,13 +44,22 @@ describe('copyableCodeText', () => {
     )
   })
 
-  it('unwraps each supported URL quote style without changing other references', () => {
-    expect(copyableCodeText(`first @url:'https://one.example'\nsecond @url:"https://two.example" @file:\`src/app.ts\``)).toBe(
-      'first https://one.example\nsecond https://two.example @file:`src/app.ts`'
+  it('unwraps bare URL reference directives without losing code punctuation', () => {
+    expect(copyableCodeText('curl @url:https://example.com/image.png; echo done')).toBe(
+      'curl https://example.com/image.png; echo done'
     )
   })
 
-  it('leaves text that is not a wire reference unchanged', () => {
-    expect(copyableCodeText("const directive = '@url:'")).toBe("const directive = '@url:'")
+  it('unwraps each supported URL quote style without changing other references', () => {
+    const code = `first @url:'https://one.example'
+second @url:"https://two.example" @file:\`src/app.ts\``
+
+    expect(copyableCodeText(code)).toBe('first https://one.example\nsecond https://two.example @file:`src/app.ts`')
+  })
+
+  it('leaves invalid URL directives and other reference kinds unchanged', () => {
+    const code = '@url:ftp://example.com @url:example.com @image:https://example.com/image.png'
+
+    expect(copyableCodeText(code)).toBe(code)
   })
 })

@@ -3,7 +3,7 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
 import { type FC, lazy, Suspense, useMemo } from 'react'
 
-import { referenceRe, unwrapReferenceValue } from '@/components/assistant-ui/reference-kinds'
+import { referenceRe, unquoteReferenceValue } from '@/components/assistant-ui/reference-kinds'
 import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 // Theme constants live in shiki-config (dependency-free) so the lazy shiki
@@ -122,7 +122,7 @@ const URL_REFERENCE_VALUE_RE = /^https?:\/\/\S+$/i
 /** Convert URL references back to literal URLs for code-block clipboard text. */
 export function copyableCodeText(code: string): string {
   return code.replace(referenceRe(), (directive, kind: string, value: string) => {
-    const url = unwrapReferenceValue(value)
+    const url = unquoteReferenceValue(value)
 
     return kind === 'url' && URL_REFERENCE_VALUE_RE.test(url) ? url : directive
   })
@@ -158,7 +158,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
         iconClassName="size-2.5"
         label={t.assistant.tool.copyCode}
         showLabel={false}
-        text={copyableCodeText(content)}
+        text={() => copyableCodeText(content)}
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>

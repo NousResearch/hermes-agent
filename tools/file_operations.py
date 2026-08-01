@@ -884,6 +884,17 @@ class ShellFileOperations(FileOperations):
         
         # Content analysis: >30% non-printable chars = binary
         if content_sample:
+            # Undecodable bytes: the terminal env decodes stdout with
+            # errors="replace", so any non-UTF-8 byte arrives here already
+            # turned into U+FFFD. That char is "printable" (ord 65533), so the
+            # non-printable ratio below never catches it — and returning the
+            # lossy text would let a read→edit→write round-trip silently
+            # overwrite the original bytes with mojibake. Treat a file whose
+            # sample carries the replacement char as binary (read-only) so the
+            # agent can't corrupt it. Legitimate UTF-8 text effectively never
+            # contains U+FFFD.
+            if "\ufffd" in content_sample[:1000]:
+                return True
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
             return non_printable / min(len(content_sample), 1000) > 0.30
@@ -1022,11 +1033,21 @@ class ShellFileOperations(FileOperations):
         script = (
             "set -e; "
             f"d={q_parent}; t={q_path}; "
+            # Follow a symlink target so we edit the file the link points at,
+            # rather than replacing the symlink itself with a plain file (which
+            # orphans the real target and destroys the link). Recompute the
+            # temp dir from the RESOLVED target so `mv` stays same-filesystem
+            # atomic. Best-effort: a broken link or missing readlink/realpath
+            # falls back to the original path (pre-fix behavior, no regression).
+            'if [ -L "$t" ]; then '
+            'rt="$(readlink -f "$t" 2>/dev/null || realpath "$t" 2>/dev/null || true)"; '
+            '[ -n "$rt" ] && { t="$rt"; d="$(dirname "$t")"; }; '
+            "fi; "
             'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
             '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
             '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
             '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
-            "trap 'rm -f \"$tmp\"' EXIT; "
+            "trap 'rm -f \\\"$tmp\\\"' EXIT; "
             # preserve mode of an existing target (best-effort, never fatal)
             'if [ -e "$t" ]; then '
             'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '

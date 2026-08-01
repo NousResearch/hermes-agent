@@ -158,21 +158,152 @@ def test_managed_uv_helper_delegates_to_the_shared_one():
 
 
 def test_no_open_coded_venv_layout_remains_in_hermes_cli():
-    """Fails if a new call site hand-rolls Scripts/bin again (#76105)."""
+    """Fails if a new call site hand-rolls Scripts/bin again (#76105).
+
+    Uses AST rather than substring matching: an earlier `"if" in line` version
+    matched any word containing "if" (mod*if*y, ver*if*y) and still missed
+    `os.path.join(venv, "Scripts")`.
+
+    ``stdio.py`` is exempt: it builds a list of literal *Windows-only* PATH
+    candidates, not a cross-platform layout derivation, so ``venv_bin_dir()``
+    (which branches on the host platform) would be the wrong tool there.
+    """
+    import ast
     import hermes_cli
 
+    exempt = {"stdio.py"}
     pkg = Path(hermes_cli.__file__).parent
     offenders = []
     for py in pkg.rglob("*.py"):
-        for lineno, line in enumerate(
-            py.read_text(encoding="utf-8", errors="replace").splitlines(), 1
-        ):
-            if '"Scripts"' not in line:
-                continue
-            # Comments and docstrings referencing the path are fine.
-            stripped = line.strip()
-            if stripped.startswith("#") or stripped.startswith(("'", '"', "-")):
-                continue
-            if "if" in line or "/" in line:
-                offenders.append(f"{py.relative_to(pkg)}:{lineno}: {stripped}")
-    assert not offenders, "open-coded venv layout found:\n" + "\n".join(offenders)
+        if py.name in exempt:
+            continue
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            # Any *code* string literal "Scripts" is a hand-rolled layout;
+            # docstrings and comments never reach ast.Constant in an expr
+            # position we care about here.
+            if isinstance(node, ast.Constant) and node.value == "Scripts":
+                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
+    assert not offenders, (
+        "open-coded venv layout found (use hermes_constants.venv_bin_dir):\n"
+        + "\n".join(offenders)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top-level FILES must be atomic too (#76104 review, C1)
+# ---------------------------------------------------------------------------
+
+def test_top_level_files_are_swapped_atomically(tmp_path):
+    """The repo root holds 20 first-party modules (run_agent.py, cli.py,
+    hermes_constants.py, ...). Covering only directories would leave exactly
+    the bug class this PR closes."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    live.mkdir()
+    new.mkdir()
+    (live / "run_agent.py").write_text("old")
+    (new / "run_agent.py").write_text("new")
+
+    staged = [
+        (
+            update_cmd._stage_replacement(
+                str(new / "run_agent.py"), str(live / "run_agent.py")
+            ),
+            str(live / "run_agent.py"),
+        )
+    ]
+    update_cmd._commit_staged_replacements(staged)
+
+    assert (live / "run_agent.py").read_text() == "new"
+    assert not [p for p in os.listdir(live) if "hermes-update" in p]
+
+
+def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
+    """A mid-swap failure must not leave a stale-or-corrupt root module."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    live.mkdir()
+    new.mkdir()
+    for name in ("cli.py", "run_agent.py"):
+        (live / name).write_text("old")
+        (new / name).write_text("new")
+
+    staged = [
+        (update_cmd._stage_replacement(str(new / n), str(live / n)), str(live / n))
+        for n in ("cli.py", "run_agent.py")
+    ]
+
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def flaky_rename(src, dst):
+        calls["n"] += 1
+        if calls["n"] == 4:
+            raise OSError("simulated AV interference")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(update_cmd.os, "rename", flaky_rename)
+    with pytest.raises(OSError):
+        update_cmd._commit_staged_replacements(staged)
+    monkeypatch.undo()
+
+    versions = {n: (live / n).read_text() for n in ("cli.py", "run_agent.py")}
+    assert versions == {"cli.py": "old", "run_agent.py": "old"}, (
+        f"mixed/corrupt root modules after rollback: {versions}"
+    )
+
+
+def test_failed_staging_leaves_no_orphaned_copies(tmp_path, monkeypatch):
+    """#76104 review C2: orphaned staging dirs make the retry we recommend
+    fail harder than the original attempt (less free space each time)."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    _live_tree(live, {"agent": "old", "tools": "old", "gateway": "old"})
+    _live_tree(new, {"agent": "new", "tools": "new", "gateway": "new"})
+
+    real_copytree = update_cmd.shutil.copytree
+    calls = {"n": 0}
+
+    def flaky_copytree(src, dst, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise OSError(28, "No space left on device")
+        return real_copytree(src, dst, *a, **kw)
+
+    monkeypatch.setattr(update_cmd.shutil, "copytree", flaky_copytree)
+
+    staged: list[tuple[str, str]] = []
+    with pytest.raises(OSError):
+        try:
+            for n in ("agent", "tools", "gateway"):
+                staged.append(
+                    (
+                        update_cmd._stage_replacement(
+                            str(new / n), str(live / n)
+                        ),
+                        str(live / n),
+                    )
+                )
+        except Exception:
+            update_cmd._discard_staged(staged)
+            raise
+    monkeypatch.undo()
+
+    leftovers = [p for p in os.listdir(live) if "hermes-update" in p]
+    assert leftovers == [], f"orphaned staging copies: {leftovers}"
+    # And nothing live was touched.
+    for n in ("agent", "tools", "gateway"):
+        assert (live / n / "version.txt").read_text() == "old"
+
+
+def test_atomic_replace_dir_still_works_as_a_shim(tmp_path):
+    """W1: it is now an alias over the two-phase helpers; #49145 must hold."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    _live_tree(live, {"ui-tui": "old"})
+    _live_tree(new, {"ui-tui": "new"})
+
+    update_cmd._atomic_replace_dir(str(new / "ui-tui"), str(live / "ui-tui"))
+
+    assert (live / "ui-tui" / "version.txt").read_text() == "new"
+    assert not [p for p in os.listdir(live) if "hermes-update" in p]

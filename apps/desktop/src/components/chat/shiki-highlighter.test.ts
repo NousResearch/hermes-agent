@@ -38,9 +38,19 @@ describe('chunkByLines', () => {
 
 
 describe('copyableCodeText', () => {
-  it('unwraps URL reference directives before copying a code block', () => {
-    expect(copyableCodeText('curl @url:https://example.com/image.png -o image.png')).toBe(
+  it('unwraps quoted URL reference directives before copying a code block', () => {
+    expect(copyableCodeText('curl @url:`https://example.com/image.png` -o image.png')).toBe(
       'curl https://example.com/image.png -o image.png'
     )
+  })
+
+  it('unwraps each supported URL quote style without changing other references', () => {
+    expect(copyableCodeText(`first @url:'https://one.example'\nsecond @url:"https://two.example" @file:\`src/app.ts\``)).toBe(
+      'first https://one.example\nsecond https://two.example @file:`src/app.ts`'
+    )
+  })
+
+  it('leaves text that is not a wire reference unchanged', () => {
+    expect(copyableCodeText("const directive = '@url:'")).toBe("const directive = '@url:'")
   })
 })

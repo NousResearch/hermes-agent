@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  beginComposerComposition,
   composerPlainText,
   deleteChipBeforeCaret,
   normalizeComposerEditorDom,
@@ -158,6 +159,26 @@ describe('an emptied composer shows its placeholder again', () => {
     normalizeComposerEditorDom(el)
 
     expect(el.matches(PLACEHOLDER_SHOWS)).toBe(false)
+  })
+
+  // Input events are skipped for the duration of an IME composition, so nothing
+  // else clears the marker until it ends — the hint would sit behind the
+  // hiragana the user is composing (#75960).
+  it('hides the placeholder before IME preedit text starts', () => {
+    const el = emptied()
+
+    beginComposerComposition(el)
+
+    expect(el.matches(PLACEHOLDER_SHOWS)).toBe(false)
+  })
+
+  it('brings the placeholder back when composition ends with nothing committed', () => {
+    const el = emptied()
+
+    beginComposerComposition(el)
+    normalizeComposerEditorDom(el)
+
+    expect(el.matches(PLACEHOLDER_SHOWS)).toBe(true)
   })
 })
 

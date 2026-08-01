@@ -71,6 +71,17 @@ export function markEditorEmptiness(editor: HTMLElement) {
   }
 }
 
+/** Drop the marker as IME composition starts, before any preedit text lands.
+ *
+ *  Input events during composition are deliberately skipped (they carry
+ *  uncommitted preedit text), so nothing else clears the marker until
+ *  `compositionend` — and the hint would otherwise sit behind the hiragana the
+ *  user is composing. `normalizeComposerEditorDom` restores it if composition
+ *  ends with nothing committed. */
+export function beginComposerComposition(editor: HTMLElement) {
+  delete editor.dataset.empty
+}
+
 /** @see referenceRe — the shared pattern every surface recognises a reference
  *  with. Module-level `/g` regexes carry `lastIndex`, so call sites reset it. */
 export const REF_RE = referenceRe()

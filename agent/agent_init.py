@@ -569,6 +569,18 @@ def init_agent(
     """
     _install_safe_stdio()
 
+    # Assign the durable session identity before constructing provider clients.
+    # Opted-in Anthropic-compatible proxies use it to keep client-driven tool
+    # loops on one upstream session; assigning it later made the first client
+    # anonymous.
+    agent.session_start = datetime.now()
+    if session_id:
+        agent.session_id = session_id
+    else:
+        timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
+        short_uuid = uuid.uuid4().hex[:6]
+        agent.session_id = f"{timestamp_str}_{short_uuid}"
+
     agent.model = model
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
@@ -984,7 +996,7 @@ def init_agent(
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
     if agent.api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+        from agent.anthropic_adapter import resolve_anthropic_token
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
@@ -1045,7 +1057,11 @@ def init_agent(
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
             agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-            agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+            agent._anthropic_client = agent._build_anthropic_client(
+                effective_key,
+                base_url,
+                timeout=_provider_timeout,
+            )
             # No OpenAI client needed for Anthropic mode
             agent.client = None
             agent._client_kwargs = {}
@@ -1445,17 +1461,6 @@ def init_agent(
             source = "Claude via OpenRouter"
         print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
     
-    # Session logging setup - auto-save conversation trajectories for debugging
-    agent.session_start = datetime.now()
-    if session_id:
-        # Use provided session ID (e.g., from CLI)
-        agent.session_id = session_id
-    else:
-        # Generate a new session ID
-        timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
-        short_uuid = uuid.uuid4().hex[:6]
-        agent.session_id = f"{timestamp_str}_{short_uuid}"
-
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
     # coordination, and logging. Keep the ContextVar and os.environ

@@ -4805,6 +4805,31 @@ def _reconfigure_simple_requirements(ts_key: str):
             _print_info("    Kept current")
 
 
+# ─── Privacy Controls ─────────────────────────────────────────────────────────
+
+
+def _configure_third_party_identifier_opt_in(config: dict) -> bool:
+    """Toggle the generic outbound-identifier gate from ``hermes tools``."""
+    privacy = config.get("privacy")
+    if not isinstance(privacy, dict):
+        privacy = {}
+        config["privacy"] = privacy
+    current = privacy.get("allow_third_party_identifiers") is True
+    print()
+    _print_info(
+        "Stable third-party identifiers are disabled unless this global gate "
+        "and a provider-specific gate are both enabled."
+    )
+    choice = _prompt_choice(
+        "Allow explicitly configured third-party identifiers?",
+        ["Disabled", "Enabled"],
+        default=1 if current else 0,
+    )
+    enabled = choice == 1
+    privacy["allow_third_party_identifiers"] = enabled
+    return enabled
+
+
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
 def tools_command(args=None, first_install: bool = False, config: dict = None):
@@ -4841,6 +4866,16 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     print(color(f"    ✓ {label}", Colors.GREEN))
             else:
                 print(color("    (none enabled)", Colors.DIM))
+        identifiers_enabled = (
+            isinstance(config.get("privacy"), dict)
+            and config["privacy"].get("allow_third_party_identifiers") is True
+        )
+        identifier_status = "enabled" if identifiers_enabled else "disabled"
+        print()
+        print(
+            color("  Third-party identifiers", Colors.BOLD)
+            + color(f"  ({identifier_status})", Colors.DIM)
+        )
         print()
         return
     print(color("⚕ Hermes Tool Configuration", Colors.CYAN, Colors.BOLD))
@@ -4937,13 +4972,15 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if _has_mcp:
         platform_choices.append("Configure MCP server tools")
 
+    platform_choices.append("Configure third-party identifier privacy")
     platform_choices.append("Done")
 
     # Index offsets for the extra options after per-platform entries
     _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
     _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
     _mcp_idx = (_reconfig_idx + 1) if _has_mcp else -1
-    _done_idx = _reconfig_idx + (2 if _has_mcp else 1)
+    _privacy_idx = _reconfig_idx + 1 + (1 if _has_mcp else 0)
+    _done_idx = _privacy_idx + 1
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
@@ -4961,6 +4998,14 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         # "Configure MCP tools" selected
         if idx == _mcp_idx:
             _configure_mcp_tools_interactive(config)
+            print()
+            continue
+
+        if idx == _privacy_idx:
+            enabled = _configure_third_party_identifier_opt_in(config)
+            save_config(config)
+            status = "enabled" if enabled else "disabled"
+            print(color(f"  ✓ Third-party identifiers {status}", Colors.GREEN))
             print()
             continue
 

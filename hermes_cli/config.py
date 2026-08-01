@@ -1318,7 +1318,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify",
+        "ssl_ca_cert", "ssl_verify", "session_affinity",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -1442,6 +1442,10 @@ def _normalize_custom_provider_entry(
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
 
+    session_affinity = entry.get("session_affinity")
+    if isinstance(session_affinity, bool):
+        normalized["session_affinity"] = session_affinity
+
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
@@ -1493,6 +1497,7 @@ def _custom_provider_entry_to_provider_config(
         "extra_headers",
         "ssl_ca_cert",
         "ssl_verify",
+        "session_affinity",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]
@@ -1680,6 +1685,48 @@ def get_custom_provider_extra_headers(
             continue
         return normalize_extra_headers(entry.get("extra_headers"))
     return {}
+
+
+def get_custom_provider_session_affinity(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return whether a matching custom provider opted into session affinity.
+
+    Matching is scoped to the normalized endpoint identity, as with custom
+    provider TLS and extra-header settings. Both the generic privacy opt-in and
+    the provider-specific switch must be true because enabling this sends a
+    stable, hashed conversation identifier to the proxy.
+    """
+    if config is None:
+        try:
+            config = load_config_readonly()
+        except Exception:
+            config = {}
+    privacy = config.get("privacy") if isinstance(config, dict) else None
+    if (
+        not isinstance(privacy, dict)
+        or privacy.get("allow_third_party_identifiers") is not True
+    ):
+        return False
+
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            custom_providers = []
+    if not base_url or not isinstance(custom_providers, list):
+        return False
+
+    target_url = normalize_route_base_url(base_url)
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = normalize_route_base_url(entry.get("base_url"))
+        if entry_url and entry_url == target_url:
+            return entry.get("session_affinity") is True
+    return False
 
 
 def apply_custom_provider_extra_headers_to_client_kwargs(

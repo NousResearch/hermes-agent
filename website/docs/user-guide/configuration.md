@@ -1746,6 +1746,7 @@ Signal is listed as a valid platform key because the setting can be saved per pl
 ```yaml
 privacy:
   redact_pii: false  # Strip PII from LLM context (gateway only)
+  allow_third_party_identifiers: false  # Global opt-in; disabled by default
 ```
 
 When `redact_pii` is `true`, the gateway redacts personally identifiable information from the system prompt before sending it to the LLM on supported platforms:
@@ -1757,6 +1758,12 @@ When `redact_pii` is `true`, the gateway redacts personally identifiable informa
 | Chat IDs | Numeric portion hashed, platform prefix preserved (`telegram:<hash>`) |
 | Home channel IDs | Numeric portion hashed |
 | User names / usernames | **Not affected** (user-chosen, publicly visible) |
+
+`allow_third_party_identifiers` is the global opt-in for integrations that add
+stable analytics, attribution, or identifier metadata to third-party requests.
+Enabling it does nothing by itself: each integration or provider must also be
+enabled explicitly. Configure the gate through `hermes setup telemetry`, the
+privacy option in `hermes tools`, or this YAML field.
 
 **Platform support:** Redaction applies to WhatsApp, Signal, and Telegram. Discord and Slack are excluded because their mention systems (`<@user_id>`) require the real ID in the LLM context.
 

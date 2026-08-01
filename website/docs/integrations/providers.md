@@ -1212,9 +1212,19 @@ providers:
     api: https://proxy.example.com/anthropic
     key_env: ANTHROPIC_PROXY_KEY
     transport: anthropic_messages  # for Anthropic-compatible proxies
+    session_affinity: true          # opt in only if the proxy supports it
 ```
 
-Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key`, `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `ssl_ca_cert` / `ssl_verify`, and `enabled: false` to hide an entry without deleting it.
+Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key`, `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `ssl_ca_cert` / `ssl_verify`, `session_affinity`, and `enabled: false` to hide an entry without deleting it.
+
+`session_affinity` is a provider-specific opt-in for Anthropic-compatible
+proxies that support the `x-session-affinity` header. You must also enable the
+global `privacy.allow_third_party_identifiers` gate through `hermes setup
+telemetry`, `hermes tools`, or `config.yaml`. Hermes hashes the conversation ID
+before sending it and reuses the opaque value across tool-loop requests,
+client recovery, fallback, credential rotation, and model switches. Leave it
+disabled for endpoints that do not document this header. Hermes never sends
+the header to Anthropic's native endpoint.
 
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list instead. It still works — Hermes reads both — and `hermes update` auto-migrates it to the `providers:` dict (config v12). Field names differ slightly in the dict format: legacy `model` is `default_model`, and legacy `api_mode` is `transport`.

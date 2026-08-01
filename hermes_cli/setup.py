@@ -2386,8 +2386,8 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 def setup_telemetry(config: dict):
-    """Configure the local, privacy-safe shared-metrics subscriber."""
-    print_header("Shared Metrics")
+    """Configure local metrics and outbound identifier privacy."""
+    print_header("Privacy & Shared Metrics")
     print_info("Shared metrics contain only bounded counters and histograms.")
     print_info("Packages stay under this Hermes profile and are not uploaded.")
 
@@ -2409,6 +2409,27 @@ def setup_telemetry(config: dict):
         print_success("Local shared metrics enabled.")
     else:
         print_info("Local shared metrics disabled.")
+
+    print()
+    print_info(
+        "Some explicitly configured integrations can attach stable, hashed "
+        "identifiers to third-party requests."
+    )
+    print_info(
+        "This global gate does nothing by itself; each provider or feature "
+        "must also be enabled separately."
+    )
+    privacy = config.get("privacy")
+    if not isinstance(privacy, dict):
+        privacy = {}
+        config["privacy"] = privacy
+    current_identifiers = (
+        privacy.get("allow_third_party_identifiers") is True
+    )
+    privacy["allow_third_party_identifiers"] = prompt_yes_no(
+        "Allow explicitly configured third-party identifiers?",
+        default=current_identifiers,
+    )
 
 
 # =============================================================================
@@ -2819,7 +2840,7 @@ SETUP_SECTIONS = [
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
-    ("telemetry", "Shared Metrics", setup_telemetry),
+    ("telemetry", "Privacy & Shared Metrics", setup_telemetry),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 

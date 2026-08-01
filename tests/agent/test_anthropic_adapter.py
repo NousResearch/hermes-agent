@@ -1,5 +1,6 @@
 """Tests for agent/anthropic_adapter.py — Anthropic Messages API adapter."""
 
+import hashlib
 import json
 import sys
 import time
@@ -62,6 +63,53 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
 
+    def test_third_party_session_id_is_disabled_without_opt_in(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "proxy-key",
+                base_url="https://proxy.example.com/anthropic",
+                session_id="private-session-id",
+            )
+            headers = mock_sdk.Anthropic.call_args.kwargs["default_headers"]
+
+        assert "x-session-affinity" not in headers
+
+    def test_third_party_session_id_adds_opaque_affinity_header(self):
+        session_id = "../../user-controlled-session"
+        expected = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "proxy-key",
+                base_url="https://proxy.example.com/anthropic",
+                session_id=session_id,
+                session_affinity=True,
+            )
+            headers = mock_sdk.Anthropic.call_args.kwargs["default_headers"]
+
+        assert headers["x-session-affinity"] == expected
+        assert session_id not in headers.values()
+        assert "anthropic-beta" in headers
+
+    def test_native_anthropic_never_gets_session_affinity_header(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "«redacted:sk-…»",
+                base_url="https://api.anthropic.com",
+                session_id="private-session-id",
+                session_affinity=True,
+            )
+            headers = mock_sdk.Anthropic.call_args.kwargs["default_headers"]
+
+        assert "x-session-affinity" not in headers
+
+    def test_custom_base_url_strips_trailing_v1(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://proxy.example.com/anthropic/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
 
 
 

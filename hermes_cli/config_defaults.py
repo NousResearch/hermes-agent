@@ -1342,6 +1342,10 @@ DEFAULT_CONFIG = {
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        # Global opt-in for outbound analytics, attribution, or stable
+        # third-party identifiers. Individual features still require their
+        # own explicit provider/feature gate.
+        "allow_third_party_identifiers": False,
     },
 
     # Text-to-speech configuration

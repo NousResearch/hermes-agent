@@ -1297,10 +1297,9 @@ def try_recover_primary_transport(
         agent.api_key = rt["api_key"]
 
         if agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
+            agent._anthropic_client = agent._build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
             )
@@ -1489,10 +1488,9 @@ def restore_primary_runtime(agent) -> bool:
             agent.client = build_moa_facade(agent, agent.model)
             agent._anthropic_client = None
         elif agent.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client
             agent._anthropic_api_key = rt["anthropic_api_key"]
             agent._anthropic_base_url = rt["anthropic_base_url"]
-            agent._anthropic_client = build_anthropic_client(
+            agent._anthropic_client = agent._build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
             )
@@ -2270,7 +2268,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.client = build_moa_facade(agent, agent.model)
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
-                build_anthropic_client,
                 resolve_anthropic_token,
                 _is_oauth_token,
             )
@@ -2298,7 +2295,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
-            agent._anthropic_client = build_anthropic_client(
+            agent._anthropic_client = agent._build_anthropic_client(
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
             )

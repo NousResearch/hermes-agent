@@ -11,6 +11,7 @@ Auth supports:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -447,6 +448,33 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _session_affinity_headers(
+    base_url: str | None,
+    session_id: str | None,
+    *,
+    enabled: bool = False,
+) -> dict[str, str]:
+    """Return an opted-in opaque affinity header for proxy endpoints.
+
+    Anthropic-compatible proxies can maintain provider-side session state
+    across a client-driven tool loop when requests carry a stable affinity
+    key. Hash the Hermes session ID before transmission: callers can supply
+    user-controlled IDs, and the proxy needs only a stable opaque value.
+
+    This is disabled unless the matching custom provider explicitly sets
+    ``session_affinity: true``. Direct Anthropic requests do not need this
+    header and must not receive it even if a caller passes ``enabled=True``.
+    """
+    if (
+        not enabled
+        or not session_id
+        or not _is_third_party_anthropic_endpoint(base_url)
+    ):
+        return {}
+    affinity = hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()
+    return {"x-session-affinity": affinity}
+
+
 def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     """Return True for Kimi's /coding endpoint that requires claude-code UA."""
     normalized = _normalize_base_url_text(base_url)
@@ -688,6 +716,8 @@ def _build_anthropic_client_with_bearer_hook(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    session_id: str = None,
+    session_affinity: bool = False,
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
 
@@ -754,6 +784,16 @@ def _build_anthropic_client_with_bearer_hook(
     )
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+    affinity_headers = _session_affinity_headers(
+        base_url,
+        session_id,
+        enabled=session_affinity,
+    )
+    if affinity_headers:
+        kwargs["default_headers"] = {
+            **kwargs.get("default_headers", {}),
+            **affinity_headers,
+        }
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Same env-inference trap as build_anthropic_client: auth_token-only
@@ -768,6 +808,8 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    session_id: str = None,
+    session_affinity: bool = False,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -794,6 +836,11 @@ def build_anthropic_client(
     its default on fresh clients so 1M-capable subscriptions keep the
     capability.
 
+    ``session_affinity=True`` opts a configured third-party proxy into a
+    stable conversation identity derived from ``session_id``. The identifier
+    is hashed before being sent as ``x-session-affinity`` and is never sent to
+    Anthropic's own endpoint.
+
     Returns an anthropic.Anthropic instance.
     """
     _anthropic_sdk = _get_anthropic_sdk()
@@ -809,6 +856,8 @@ def build_anthropic_client(
         return _build_anthropic_client_with_bearer_hook(
             api_key, base_url, timeout,
             drop_context_1m_beta=drop_context_1m_beta,
+            session_id=session_id,
+            session_affinity=session_affinity,
         )
 
     normalize_proxy_env_vars()
@@ -887,6 +936,17 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    affinity_headers = _session_affinity_headers(
+        base_url,
+        session_id,
+        enabled=session_affinity,
+    )
+    if affinity_headers:
+        kwargs["default_headers"] = {
+            **kwargs.get("default_headers", {}),
+            **affinity_headers,
+        }
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it

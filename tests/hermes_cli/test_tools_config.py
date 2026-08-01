@@ -12,6 +12,7 @@ from hermes_cli.tools_config import (
     _RECENTLY_SHIPPED_TOOLSETS,
     _apply_toolset_change,
     _checklist_toolset_keys,
+    _configure_third_party_identifier_opt_in,
     _configure_provider,
     _reconfigure_provider,
     _get_platform_tools,
@@ -30,6 +31,35 @@ from hermes_cli.tools_config import (
 )
 
 
+
+
+def test_tools_privacy_toggle_updates_generic_identifier_gate(monkeypatch):
+    config = {}
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        lambda _prompt, _choices, default: 1,
+    )
+
+    assert _configure_third_party_identifier_opt_in(config) is True
+    assert config["privacy"]["allow_third_party_identifiers"] is True
+
+
+def test_tools_menu_exposes_identifier_privacy_toggle(monkeypatch):
+    config = {"platform_toolsets": {"cli": []}}
+    choices = iter([2, 1, 3])
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_choice",
+        lambda _prompt, _choices, default: next(choices),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda _config: None)
+
+    tools_command(config=config)
+
+    assert config["privacy"]["allow_third_party_identifiers"] is True
 
 
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):

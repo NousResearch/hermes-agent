@@ -1252,7 +1252,7 @@ AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 # ─── Venv layout ─────────────────────────────────────────────────────────────
 
-def venv_bin_dir(venv_dir) -> Path:
+def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
     """Directory holding a venv's executables (``Scripts`` / ``bin``).
 
     Canonical helper for venv layout. This was open-coded in seven places
@@ -1264,16 +1264,26 @@ def venv_bin_dir(venv_dir) -> Path:
     ``agent/lsp/install.py``) still hand-roll it — convert them as they are
     touched.
 
+    *windows* lets a caller pass its own platform verdict. Several callers
+    resolve this through predicates the test-suite patches to exercise
+    Windows paths on Linux CI (``hermes_cli.main._is_windows`` and friends);
+    reading ``sys.platform`` unconditionally here would silently drop those
+    paths out of coverage. Defaults to the host platform.
+
     The path is returned unconditionally — callers legitimately differ on
     whether a missing venv is an error, so existence checking stays with them.
     """
-    return Path(venv_dir) / ("Scripts" if sys.platform == "win32" else "bin")
+    if windows is None:
+        windows = sys.platform == "win32"
+    return Path(venv_dir) / ("Scripts" if windows else "bin")
 
 
-def venv_python_path(venv_dir) -> Path:
+def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
     """Path to the Python interpreter inside *venv_dir* (may not exist)."""
-    return venv_bin_dir(venv_dir) / (
-        "python.exe" if sys.platform == "win32" else "python"
+    if windows is None:
+        windows = sys.platform == "win32"
+    return venv_bin_dir(venv_dir, windows=windows) / (
+        "python.exe" if windows else "python"
     )
 
 

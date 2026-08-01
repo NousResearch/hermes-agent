@@ -7965,7 +7965,7 @@ def _venv_scripts_dir() -> Path | None:
         return None
     from hermes_constants import venv_bin_dir
 
-    scripts = venv_bin_dir(venv_dir)
+    scripts = venv_bin_dir(venv_dir, windows=_is_windows())
     return scripts if scripts.is_dir() else None
 
 
@@ -8761,7 +8761,7 @@ def _resolve_install_target_python(
         from hermes_constants import venv_python_path
 
         venv_root = Path(env["VIRTUAL_ENV"])
-        candidate = venv_python_path(venv_root)
+        candidate = venv_python_path(venv_root, windows=_is_windows())
         if candidate.exists():
             return candidate
 

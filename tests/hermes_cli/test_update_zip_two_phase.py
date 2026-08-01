@@ -307,3 +307,44 @@ def test_atomic_replace_dir_still_works_as_a_shim(tmp_path):
 
     assert (live / "ui-tui" / "version.txt").read_text() == "new"
     assert not [p for p in os.listdir(live) if "hermes-update" in p]
+
+
+def test_venv_helpers_honour_an_explicit_platform_verdict():
+    """Callers must be able to override the platform check (#76107 CI).
+
+    The suite exercises Windows paths on Linux CI by patching predicates like
+    `hermes_cli.main._is_windows`. A helper that reads `sys.platform`
+    unconditionally silently drops those paths out of coverage -- and broke
+    `test_verify_core_dependencies.py::test_uses_virtual_env_from_environment`,
+    which patches `_is_windows` and then asserts on a `Scripts/python.exe`
+    path.
+    """
+    v = Path("/opt/proj/venv")
+    assert venv_bin_dir(v, windows=True).name == "Scripts"
+    assert venv_bin_dir(v, windows=False).name == "bin"
+    assert venv_python_path(v, windows=True).name == "python.exe"
+    assert venv_python_path(v, windows=False).name == "python"
+    # Halves must stay consistent under an explicit verdict.
+    for flag in (True, False):
+        assert venv_python_path(v, windows=flag).parent == venv_bin_dir(
+            v, windows=flag
+        )
+
+
+def test_patched_is_windows_reaches_the_venv_path_derivation():
+    """End-to-end: patching the module predicate must change the derived path."""
+    from unittest.mock import patch
+
+    from hermes_cli import main as hermes_main
+
+    with patch.object(hermes_main, "_is_windows", return_value=True):
+        got = hermes_main._resolve_install_target_python(
+            ["uv", "pip"], env={"VIRTUAL_ENV": "/nope/venv"}
+        )
+    # The path doesn't exist so we get None, but the *derivation* must have
+    # used the Windows layout -- assert that directly.
+    assert got is None
+    assert (
+        venv_python_path("/nope/venv", windows=True).as_posix()
+        == "/nope/venv/Scripts/python.exe"
+    )

@@ -655,13 +655,20 @@ class SessionManager:
         # the agent snapshots tools once at build (run_agent/agent_init) and
         # never re-reads the registry, so without this join a reachable-but-
         # slow configured server would be invisible for the whole session.
-        # Bounded by ``mcp_discovery_timeout`` (config.yaml, default ~1.5s) so a
-        # dead server can't block — servers that miss the bound are picked up
-        # by the automatic late-refresh (see HermesACPAgent._schedule_mcp_late_refresh).
+        # ``ensure_mcp_discovery_before_agent_build`` also (re)starts discovery
+        # when the entry.py spawn never ran or exited with zero connected
+        # servers (the retry-after-zero-connected allowance), making this
+        # construction site self-sufficient.  Bounded by
+        # ``mcp_discovery_timeout`` (config.yaml, default ~1.5s) so a dead
+        # server can't block — servers that miss the bound are picked up by
+        # the automatic late-refresh (see HermesACPAgent._schedule_mcp_late_refresh).
         try:
-            from hermes_cli.mcp_startup import wait_for_mcp_discovery
+            from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
-            wait_for_mcp_discovery()
+            ensure_mcp_discovery_before_agent_build(
+                logger=logger,
+                thread_name="acp-mcp-discovery",
+            )
         except Exception:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 

@@ -121,3 +121,61 @@ class TestSendAttachesEmbed:
         call_kwargs = channel.send.call_args.kwargs
         assert call_kwargs.get("embed") is None
         assert call_kwargs["content"] == "normal message"
+
+    @pytest.mark.asyncio
+    async def test_forum_send_gets_embed(self):
+        """Forum routing must receive the parsed embed + marker-free content,
+        not the raw [EMBED] JSON (regression: extraction previously ran
+        after the forum branch)."""
+        a, _ = _make_adapter()
+        a._is_forum_parent = MagicMock(return_value=True)
+        a._send_to_forum = AsyncMock(
+            return_value=MagicMock(success=True, message_id="999")
+        )
+        await a.send("123", f"forum post\n[EMBED]\n{VALID_BODY}\n[/EMBED]")
+        call_args = a._send_to_forum.call_args
+        assert call_args.kwargs.get("embed") is not None
+        assert "[EMBED]" not in call_args.args[1]
+
+
+class TestEditMessageEmbed:
+    @pytest.mark.asyncio
+    async def test_finalize_oversized_embed_parses_before_split(self):
+        """A finalized stream over the length cap must parse the embed
+        before overflow splitting, so chunks never expose the marker
+        (regression: extraction previously ran after the overflow branch)."""
+        a, channel = _make_adapter()
+        msg = AsyncMock()
+        msg.id = "123"
+        channel.fetch_message = AsyncMock(return_value=msg)
+        a._edit_overflow_split = AsyncMock(
+            return_value=MagicMock(success=True, message_id="123")
+        )
+        huge_tail = "x" * 3000
+        content = f"[EMBED]\n{VALID_BODY}\n[/EMBED]\n{huge_tail}"
+        await a.edit_message("123", "123", content, finalize=True)
+        call_args = a._edit_overflow_split.call_args
+        assert call_args.kwargs.get("embed") is not None
+        assert "[EMBED]" not in call_args.args[3]
+        assert call_args.args[3].endswith(huge_tail)
+
+    @pytest.mark.asyncio
+    async def test_finalize_normal_embed_edits_in_place(self):
+        a, channel = _make_adapter()
+        msg = AsyncMock()
+        msg.id = "123"
+        channel.fetch_message = AsyncMock(return_value=msg)
+        await a.edit_message("123", "123", f"[EMBED]\n{VALID_BODY}\n[/EMBED]", finalize=True)
+        edit_kwargs = msg.edit.call_args.kwargs
+        assert edit_kwargs.get("embed") is not None
+        assert "[EMBED]" not in edit_kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_midstream_shows_placeholder(self):
+        a, channel = _make_adapter()
+        msg = AsyncMock()
+        msg.id = "123"
+        channel.fetch_message = AsyncMock(return_value=msg)
+        await a.edit_message("123", "123", f"[EMBED]\n{VALID_BODY}", finalize=False)
+        edit_kwargs = msg.edit.call_args.kwargs
+        assert "rendering embed" in edit_kwargs["content"]

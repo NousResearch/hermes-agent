@@ -2929,9 +2929,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+            # Format and split message if needed. Embed-marker extraction
+            # happens BEFORE routing so the forum path gets the parsed embed
+            # too (forum starters are created from this content).
+            formatted = self.format_message(content)
+            embed = None
+            if isinstance(formatted, str) and "[EMBED]" in formatted:
+                formatted, embed = self._extract_embed(formatted)
+
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                result = await self._send_to_forum(channel, content)
+                result = await self._send_to_forum(channel, formatted, embed=embed)
                 await asyncio.to_thread(
                     self._record_discord_response,
                     reply_to=reply_to,
@@ -2941,11 +2949,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
                 return result
 
-            # Format and split message if needed
-            formatted = self.format_message(content)
-            embed = None
-            if isinstance(formatted, str) and "[EMBED]" in formatted:
-                formatted, embed = self._extract_embed(formatted)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
@@ -3034,14 +3037,15 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return result
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(self, forum_channel: Any, content: str, embed=None) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
         POST to /channels/{forum_id}/threads with a thread name derived from
         the first line of the message.  Any follow-up chunk failures are
         reported in ``raw_response['warnings']`` so the caller can surface
-        partial-send issues.
+        partial-send issues.  ``embed`` (parsed from an [EMBED] marker before
+        routing) rides on the starter message.
         """
         # _derive_forum_thread_name is defined further down in this same
         # module — no cross-module import needed.
@@ -3057,6 +3061,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread = await forum_channel.create_thread(
                 name=thread_name,
                 content=starter_content,
+                embed=embed,
             )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
@@ -3205,6 +3210,21 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.fetch_message(int(message_id))
             formatted = self.format_message(content)
 
+            # Parse the embed marker BEFORE overflow handling so a finalized
+            # oversized embed only size-checks the remaining text, and the
+            # marker is never exposed in split chunks.
+            embed = None
+            edit_content = formatted
+            if "[EMBED]" in formatted:
+                if finalize:
+                    # Final edit: replace the marker with the real embed.
+                    edit_content, embed = self._extract_embed(formatted)
+                else:
+                    # Mid-stream: hide the raw JSON so the user doesn't
+                    # watch it type out — the finalize edit swaps it for
+                    # the finished embed.
+                    edit_content = "⏳ *rendering embed…*"
+
             _preview_key = (str(chat_id), str(message_id))
             _saturated_preview = False
             if finalize:
@@ -3214,14 +3234,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Pre-flight: oversized payload.  Final edits split-and-deliver;
             # streaming edits truncate a one-message preview in place.
-            if len(formatted) > self.MAX_MESSAGE_LENGTH:
+            if len(edit_content) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
                     return await self._edit_overflow_split(
-                        channel, msg, message_id, content,
+                        channel, msg, message_id, edit_content, embed=embed,
                     )
-                formatted = self.truncate_message(
-                    formatted, self.MAX_MESSAGE_LENGTH,
+                edit_content = self.truncate_message(
+                    edit_content, self.MAX_MESSAGE_LENGTH,
                 )[0]
+                formatted = edit_content
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap, every progressive
                 # edit truncates to the same text. Re-sending it is a visual
@@ -3237,17 +3258,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._last_overflow_preview.pop(_preview_key, None)
 
             try:
-                embed = None
-                edit_content = formatted
-                if "[EMBED]" in formatted:
-                    if finalize:
-                        # Final edit: replace the marker with the real embed.
-                        edit_content, embed = self._extract_embed(formatted)
-                    else:
-                        # Mid-stream: hide the raw JSON so the user doesn't
-                        # watch it type out — the finalize edit swaps it for
-                        # the finished embed.
-                        edit_content = "⏳ *rendering embed…*"
                 await msg.edit(content=edit_content, embed=embed)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = formatted
@@ -3306,6 +3316,7 @@ class DiscordAdapter(BasePlatformAdapter):
         msg: Any,
         message_id: str,
         content: str,
+        embed=None,
     ) -> SendResult:
         """Deliver an oversized final edit across message + continuations.
 
@@ -3329,12 +3340,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
             # not, just edit normally.
-            await msg.edit(content=chunks[0] if chunks else formatted)
+            await msg.edit(content=chunks[0] if chunks else formatted, embed=embed)
             return SendResult(success=True, message_id=message_id)
 
-        # Step 1 — edit the existing message with the first chunk.
+        # Step 1 — edit the existing message with the first chunk (the embed
+        # rides on it, mirroring send()).
         try:
-            await msg.edit(content=chunks[0])
+            await msg.edit(content=chunks[0], embed=embed)
         except Exception as e:
             logger.error(
                 "[%s] Overflow split: first-chunk edit failed: %s",

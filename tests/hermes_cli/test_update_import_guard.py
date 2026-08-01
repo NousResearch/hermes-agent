@@ -147,3 +147,27 @@ def test_import_guard_prefers_the_project_venv_interpreter(monkeypatch, tmp_path
     update_cmd._validate_critical_modules_import(tmp_path)
 
     assert seen["interpreter"] == str(venv_python)
+
+
+def test_import_guard_ignores_missing_third_party_dependency(monkeypatch, tmp_path):
+    """A new third-party requirement is not a partially-updated tree.
+
+    On the git path this guard runs BEFORE the dependency sync, so a release
+    that adds a dependency would otherwise look like breakage and trigger a
+    spurious `git reset --hard` rollback of a perfectly good update.
+    """
+    (tmp_path / "consumer.py").write_text("import totally_not_installed_pkg\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
+
+
+def test_import_guard_flags_missing_first_party_module(monkeypatch, tmp_path):
+    """A missing *first-party* module IS skew — the update dropped a file."""
+    (tmp_path / "consumer.py").write_text("import tools.nonexistent_module\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
+
+    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+    assert ok is False
+    assert module == "consumer"
+    assert error is not None and "tools.nonexistent_module" in error

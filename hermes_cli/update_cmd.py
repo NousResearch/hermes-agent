@@ -200,6 +200,16 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
         "for name in %r:\n"
         "    try:\n"
         "        importlib.import_module(name)\n"
+        "    except ModuleNotFoundError as exc:\n"
+        # A missing *third-party* module means dependencies aren't installed
+        # yet (this guard can run before the dependency sync on the git path),
+        # not a skewed checkout. Only treat it as breakage when the missing
+        # module is one of ours.
+        "        missing = (getattr(exc, 'name', '') or '').split('.')[0]\n"
+        "        if missing in ('tools', 'agent', 'gateway', 'plugins', 'providers') \\\n"
+        "                or missing.startswith('hermes'):\n"
+        "            sys.stdout.write(name + '\\n' + str(exc))\n"
+        "            raise SystemExit(3)\n"
         "    except ImportError as exc:\n"
         "        sys.stdout.write(name + '\\n' + str(exc))\n"
         "        raise SystemExit(3)\n"

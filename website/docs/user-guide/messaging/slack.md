@@ -625,6 +625,11 @@ slack:
   # Env: SLACK_REQUIRE_MENTION_CHANNELS.
   require_mention_channels: ""
 
+  # Resolve up to three explicitly pasted Slack message permalinks with the
+  # current workspace bot token. Also recovers same-message F... file IDs when
+  # Slack omits message.files. Disabled by default.
+  resolve_permalinks: false
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -765,6 +770,14 @@ Failure buckets:
 - `routing_logic:` the Slack adapter regressed on one of the peer-agent invariants (human mention routing, peer-bot ignore, explicit peer mention admit, or passive ack/status/error suppression).
 
 If this target passes but a live workspace still misroutes messages, investigate Slack token/workspace connectivity and runtime deployment state outside the routing logic itself.
+
+### Slack message permalinks and file references (`resolve_permalinks`)
+
+Set `slack.resolve_permalinks: true` to let Hermes fetch the body of up to three Slack message permalinks explicitly present in a triggering message. The resolver uses the existing workspace bot token and calls `conversations.history` for channel messages or `conversations.replies` for thread replies.
+
+The same option also recovers up to three explicit Slack file IDs (`F...`) when an existing-file share leaves the ID in message text but Slack omits `message.files`. Hermes calls `files.info` and accepts the file only when Slack's `shares` metadata ties it to the **exact current channel and message timestamp**; an accessible ID from another message or channel is refused with an attachment notice.
+
+The bot still needs the matching history scope (`channels:history`, `groups:history`, `im:history`, or `mpim:history`) and must be a member of the linked conversation. File recovery needs `files:read`. `links:read` is not required. Mention gating runs first, and permalink/file-reference API reads require both a non-empty requester ID and a positive gateway sender-authorization result; missing IDs, denials, and authorization-check errors fail closed. This is not a passive channel crawler. To prevent a shared bot from bridging Slack channel ACLs, only links whose channel ID matches the current conversation are fetched. Linked content is injected as quoted reference. Only human authors that pass the configured sender authorization check appear without a marker; bot/webhook, unknown, and non-allowlisted authors are marked `[unverified]`. ASCII square brackets in linked names, bodies, and errors are converted to full-width brackets before framing is composed, preventing delimiter completion across boundaries. `allowed_channels` also restricts linked targets.
 
 ### Channel allowlist (`allowed_channels`)
 

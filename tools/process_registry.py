@@ -36,6 +36,7 @@ from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
+from tools.process_registry_consumed import ProcessConsumptionMixin, _sweep_consumed_markers
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
@@ -671,7 +672,7 @@ _WSL_CHAIN_NOTE = (
 )
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin):
+class ProcessRegistry(ProcessConsumptionMixin, ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -1659,10 +1660,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return (session._reader_finish_requested.is_set() and not session._completion_event.is_set()
                 and reader is not None and reader.is_alive())
 
-    def is_completion_consumed(self, session_id: str) -> bool:
-        """Check if a completion notification was already consumed via wait/log."""
-        return session_id in self._completion_consumed
-
     def is_session_waiting(self, session_id: str) -> bool:
         """Whether a goal loop (``hermes_cli.goals`` wait barrier) should stay parked on
         this session: still running AND, with ``watch_patterns``, none matched yet (a
@@ -1767,17 +1764,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def _oneshot_completion_wait_seconds() -> float:
         """Linger (s) for one-shot exits with pending notify_on_complete processes; 0 disables."""
         return ProcessRegistry._config_seconds("oneshot_completion_wait_seconds", 600.0)
-
-    def _drain_should_skip(self, session_id: str, *, skip_poll_observed: bool = True) -> bool:
-        """Skip a completion the CLI agent already has this turn — consumed via wait/log
-        or observed inline via poll(). Gateway/tui watchers check only
-        ``is_completion_consumed`` so a read-only poll never suppresses their turn.
-
-        Skips when the agent has either truly consumed the output (wait/log → ``_completion_consumed``) or
-        observed the exit inline via poll() (``_poll_observed``). In both cases the CLI agent already has
-        the result this turn, so injecting a [SYSTEM: ...] completion would be a duplicate (#8228).
-        """
-        return session_id in self._completion_consumed or (skip_poll_observed and session_id in self._poll_observed)
 
     @staticmethod
     def _surface_child_process_notifications() -> bool:
@@ -2045,7 +2031,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             **self._status_head(session), "output": "\n".join(selected),
             "total_lines": total_lines, "showing": f"{len(selected)} lines"}
         if exited and observed_completion_output and not finalizing:
-            self._completion_consumed.add(session_id)
+            self._mark_completion_consumed(session.id)
         return result
 
     def wait(self, session_id: str, timeout: int | None = None) -> dict:
@@ -2079,7 +2065,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._reconcile_local_exit(session)  # orphaned-pipe reader guard
             result = None
             if session.exited and not self._reader_finalizing(session):
-                self._completion_consumed.add(session_id)
+                self._mark_completion_consumed(session.id)
                 result = self._exit_snapshot(session, "exited")
             elif _is_interrupted():
                 result = {
@@ -2155,7 +2141,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # Only suppress the autonomous turn after its output is present in
             # the explicit kill result, matching wait/log consumption.
             if consume_output and not finalizing:
-                self._completion_consumed.add(session_id)
+                self._mark_completion_consumed(session.id)
             return result
         try:
             early = self._signal_kill(session, session_id, consume_output)
@@ -2204,7 +2190,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             with session._lock:
                 output = _completion_output(session)
                 if consume_output:
-                    self._completion_consumed.add(session_id)
+                    self._mark_completion_consumed(session.id)
                 session.exited = True
                 session.exit_code = -15  # SIGTERM
                 session.completion_reason = "killed"
@@ -2260,7 +2246,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 with session._lock:
                     output = _completion_output(session)
                 if consume_output:
-                    self._completion_consumed.add(session_id)
+                    self._mark_completion_consumed(session.id)
                 # No waitable handle, so this is not a collected exit. Close the
                 # entry without queueing a completion, and do not signal a PID
                 # whose start time does not match.
@@ -2456,7 +2442,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             return [s for s in self._finished.values()
                     if s.owner_task_id == owner_task_id and s.notify_on_complete
                     and s.exit_code is not None
-                    and s.id not in self._completion_consumed and s.id not in self._poll_observed]
+                    and not self.is_completion_consumed(s.id) and s.id not in self._poll_observed]
 
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
                            to_session_key: str, note: str = "") -> Optional[ProcessSession]:
@@ -2561,6 +2547,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         tracked = self._running.keys() | self._finished.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
+        _sweep_consumed_markers(now)
 
 
 

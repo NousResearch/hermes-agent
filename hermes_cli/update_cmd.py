@@ -665,9 +665,10 @@ def _commit_staged_replacements(staged) -> None:
     This covers plain files as well as directories: the repo root holds 20
     first-party modules (``run_agent.py``, ``cli.py``, ``hermes_constants.py``
     …), so a files-only failure reproduces exactly the bug class we are
-    closing. ``os.replace`` is atomic on POSIX and maps to
-    ``MoveFileEx(REPLACE_EXISTING)`` on Windows, so a file swap can never
-    leave a half-written module the way ``copy2`` onto a live path can.
+    closing. Every swap is an ``os.rename`` onto a path that was just moved
+    aside — a same-filesystem rename is atomic on POSIX and NTFS alike, so a
+    file swap can never leave a half-written module the way ``copy2`` onto a
+    live path can.
 
     Splitting stage-all-then-swap-all shrinks the failure window from "the
     duration of a full tree copy" to "the duration of N renames", and makes

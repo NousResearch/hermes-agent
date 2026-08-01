@@ -281,3 +281,47 @@ def test_export_prefixed_known_key_in_user_env_is_kept(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
     load_hermes_dotenv(hermes_home=home)
     assert os.getenv("HERMES_ACP_AUTH_METHOD") == "claude_code_cli"
+
+
+def test_shell_exported_credentials_survive_cleanup(tmp_path, monkeypatch):
+    """User-shell-exported provider credentials must NOT be scrubbed.
+
+    ``export OPENAI_API_KEY=…`` in the shell with a ``.env`` that doesn't
+    contain the key is a documented, legitimate flow (see
+    test_dump_env_visibility.py). The startup cleanup is scoped to
+    _PROFILE_MANAGED_ENV_KEYS (ACP routing keys) precisely so it can never
+    delete shell-supplied credentials — a process cannot distinguish a
+    shell export from parent-process leakage, so credential isolation is
+    owned by read-time secret scoping instead.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("SOME_OTHER_KEY=x\n", encoding="utf-8")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-shell")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-shell")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "12345:token-from-shell")
+    # A profile-managed routing key inherited alongside them IS cleared.
+    monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "cursor_login")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("OPENAI_API_KEY") == "sk-from-shell"
+    assert os.getenv("ANTHROPIC_API_KEY") == "sk-ant-from-shell"
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "12345:token-from-shell"
+    assert "HERMES_ACP_AUTH_METHOD" not in os.environ
+
+
+def test_cleanup_scope_is_the_profile_managed_set():
+    """Lock the invariant: the startup scrub set contains only behavioral
+    ACP/routing keys — never credential-shaped keys. If this fails, someone
+    widened _PROFILE_MANAGED_ENV_KEYS toward the full known-key set, which
+    re-introduces the shell-export deletion bug.
+    """
+    from hermes_cli.env_loader import _PROFILE_MANAGED_ENV_KEYS
+
+    for key in _PROFILE_MANAGED_ENV_KEYS:
+        assert not key.endswith(("_API_KEY", "_TOKEN", "_SECRET")), (
+            f"{key} looks credential-shaped; startup scrub must not "
+            "cover credentials — read-time secret scoping owns those"
+        )

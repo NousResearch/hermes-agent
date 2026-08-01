@@ -64,6 +64,23 @@ def _known_hermes_env_keys() -> set[str]:
     return set(OPTIONAL_ENV_VARS.keys()) | set(_EXTRA_ENV_KEYS)
 
 
+# Behavioral routing keys a parent Hermes process injects into child env and
+# that silently redirect a profile onto the wrong provider path (ACP auth
+# method, copilot-ACP endpoints). These — and ONLY these — are scrubbed from
+# os.environ at startup when absent from the profile's .env. Credential keys
+# (API keys/tokens) are excluded: shell exports are a legitimate,
+# documented way to supply them, and read-time secret-scope checks
+# (agent/secret_scope.py) own cross-profile credential isolation.
+_PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
+    "HERMES_ACP_AUTH_METHOD",
+    "HERMES_ACP_AUTO_APPROVE",
+    "HERMES_COPILOT_ACP_COMMAND",
+    "HERMES_COPILOT_ACP_ARGS",
+    "COPILOT_CLI_PATH",
+    "COPILOT_ACP_BASE_URL",
+})
+
+
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     """Return KEY names assigned in a dotenv file (including empty ``KEY=``).
 
@@ -93,18 +110,27 @@ def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
 
 
 def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
-    """Remove inherited known Hermes keys absent from the profile ``.env``.
+    """Remove inherited profile-managed Hermes keys absent from ``.env``.
 
     After the profile's ``.env`` has been loaded with ``override=True``,
-    scan the file for which known Hermes keys it explicitly defines and
-    delete any known key that exists in ``os.environ`` but is *not* present
+    scan the file for which profile-managed keys it explicitly defines and
+    delete any such key that exists in ``os.environ`` but is *not* present
     in the file.
 
-    This mirrors the semantics of ``reload_env()`` in ``config.py`` (which
-    already deletes missing known keys on hot-reload) and closes the gap
-    between startup and hot-reload: without this, a known key inherited
-    from the parent process leaks into the profile, silently mutating
-    provider / ACP / platform behaviour.
+    Scope is deliberately NARROW: only ``_PROFILE_MANAGED_ENV_KEYS`` —
+    behavioral routing keys (ACP auth method, copilot-ACP endpoints) that a
+    parent Hermes process injects and that silently change *which provider
+    path* a profile uses. Provider API keys (OPENAI_API_KEY, …) are
+    intentionally excluded: users legitimately export those in their shell
+    (``export OPENAI_API_KEY=…`` is a documented flow — see
+    ``tests/hermes_cli/test_dump_env_visibility.py``), and a startup scrub
+    cannot distinguish a shell export from parent-process leakage. Clearing
+    the full known-key set would delete user-exported credentials on every
+    ``hermes`` invocation.
+
+    Cross-profile *credential* isolation is handled at read time by
+    ``agent.secret_scope.get_secret`` (scope authoritative under
+    multiplexing), not by mutating ``os.environ`` here.
 
     Does **not** run when the ``.env`` file does not exist (bare-profile
     case, which follows ``#66930`` / ``#67027`` semantics).
@@ -112,7 +138,7 @@ def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
     if not path.exists():
         return
     defined = _env_keys_defined_in_dotenv(path)
-    for key in _known_hermes_env_keys():
+    for key in _PROFILE_MANAGED_ENV_KEYS:
         if key not in defined and key in os.environ:
             del os.environ[key]
 

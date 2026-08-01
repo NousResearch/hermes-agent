@@ -12,7 +12,8 @@ with client construction mocked out, and assert on captured stdout.
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from run_agent import AIAgent
 
@@ -24,8 +25,8 @@ def _bare_agent() -> AIAgent:
     agent._base_url_lower = ""
     agent._base_url_hostname = ""
     # Methods used during the OpenAI client path.
-    agent._create_openai_client = MagicMock(return_value=MagicMock())
-    agent._apply_user_default_headers = MagicMock()
+    agent._create_openai_client = lambda *a, **k: SimpleNamespace()
+    agent._apply_user_default_headers = lambda: None
     return agent
 
 
@@ -38,7 +39,10 @@ def _common_patches():
         )
         stack.enter_context(patch("run_agent.get_tool_definitions", return_value=[]))
         stack.enter_context(
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock())
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=SimpleNamespace(),
+            )
         )
         stack.enter_context(
             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="")
@@ -53,7 +57,7 @@ def _common_patches():
             )
         )
         stack.enter_context(
-            patch("agent.credential_pool.load_pool", return_value=MagicMock())
+            patch("agent.credential_pool.load_pool", return_value=SimpleNamespace())
         )
         stack.enter_context(patch("hermes_cli.config.load_config", return_value={}))
         stack.enter_context(
@@ -137,23 +141,17 @@ class TestAnthropicInitBanner:
                 "agent.azure_identity_adapter.is_token_provider",
                 side_effect=lambda key: callable(key),
             ):
-                try:
-                    init_agent(
-                        agent,
-                        base_url="https://api.anthropic.com",
-                        api_key=provider,
-                        provider="anthropic",
-                        api_mode="anthropic_messages",
-                        model="claude-opus-4.8",
-                        skip_context_files=True,
-                        skip_memory=True,
-                        quiet_mode=False,
-                    )
-                except Exception:
-                    # Later init steps may still choke on a callable key
-                    # (context-length probes, etc.). The banner under test
-                    # already printed before those paths run.
-                    pass
+                init_agent(
+                    agent,
+                    base_url="https://api.anthropic.com",
+                    api_key=provider,
+                    provider="anthropic",
+                    api_mode="anthropic_messages",
+                    model="claude-opus-4.8",
+                    skip_context_files=True,
+                    skip_memory=True,
+                    quiet_mode=False,
+                )
         out = capsys.readouterr().out
         assert "Microsoft Entra ID" in out
         assert called["n"] == 0

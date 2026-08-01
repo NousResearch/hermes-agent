@@ -166,3 +166,54 @@ describe('watchSessionPins remote pull', () => {
     expect($pinnedSessionIds.get()).not.toContain('race')
   })
 })
+
+describe('watchSessionPins fresh-write windows', () => {
+  it('keeps a brand-new pin when the page still says pinned=false before the PATCH is sent', async () => {
+    // The stale page (pinned=false) is already loaded; the user then pins the
+    // session. The pull pass must not undo the fresh pin — its PATCH has not
+    // been sent yet, so the unconfirmed map cannot protect it.
+    $sessions.set([row('S-fresh', { pinned: false })])
+    await flush()
+
+    $pinnedSessionIds.set(['S-fresh'])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toContain('S-fresh')
+  })
+
+  it('keeps a fresh unpin when the page still says pinned=true before the unpin PATCH is sent', async () => {
+    // The stale page (pinned=true) is already loaded; the user then unpins the
+    // session. The pull pass must not re-adopt it.
+    $sessions.set([row('S-keep-off', { pinned: true })])
+    await flush()
+    $pinnedSessionIds.set(['S-keep-off'])
+    await flush()
+    patch.mockClear()
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('S-keep-off')
+    expect(patch).toHaveBeenCalledWith('S-keep-off', false, undefined)
+  })
+
+  it('does not undo a confirmed pin when a second session is pinned right after', async () => {
+    // Pin S-first against a stale pinned=false row; the PATCH ack refreshes
+    // the row. Pinning a second session must not read the row as stale and
+    // undo S-first.
+    $sessions.set([row('S-first', { pinned: false }), row('S-second')])
+    await flush()
+
+    $pinnedSessionIds.set(['S-first'])
+    await flush()
+    expect(patch).toHaveBeenCalledWith('S-first', true, undefined)
+    await flush()
+
+    $pinnedSessionIds.set(['S-first', 'S-second'])
+    await flush()
+
+    const ids = $pinnedSessionIds.get()
+    expect(ids).toContain('S-first')
+    expect(ids).toContain('S-second')
+  })
+})

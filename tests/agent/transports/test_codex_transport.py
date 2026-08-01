@@ -191,6 +191,7 @@ class TestCodexBuildKwargs:
             base_url=base_url,
         )
         assert "prompt_cache_retention" not in kw
+
     def test_azure_foundry_build_kwargs_keeps_reasoning_id(self, transport):
         messages = [
             {"role": "system", "content": "You are Hermes."},
@@ -221,6 +222,7 @@ class TestCodexBuildKwargs:
             "encrypted_content": "enc_blob",
             "summary": [{"type": "summary_text", "text": "brief"}],
         }
+
     def test_azure_foundry_preflight_keeps_reasoning_id(self, transport):
         kw = {
             "model": "gpt-5.5",
@@ -244,6 +246,43 @@ class TestCodexBuildKwargs:
             "encrypted_content": "enc_blob",
             "summary": [{"type": "summary_text", "text": "brief"}],
         }
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://relay.example.com/services.ai.azure.com/v1",
+            "https://proxy.internal/openai.azure.com/models",
+            "https://services.ai.azure.com.evil.example/v1",
+        ],
+    )
+    def test_azure_detection_is_hostname_scoped_not_substring(self, transport, base_url):
+        """Azure domains appearing in a path or as a prefix of an attacker
+        controlled host must not trigger the Azure reasoning carve-out."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "thinking",
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning",
+                        "id": "rs_123",
+                        "encrypted_content": "enc_blob",
+                        "summary": [{"type": "summary_text", "text": "brief"}],
+                    }
+                ],
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            base_url=base_url,
+        )
+        reasoning_item = next(
+            (item for item in kw["input"] if item.get("type") == "reasoning"),
+            None,
+        )
+        if reasoning_item is not None:
+            assert "id" not in reasoning_item
 
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the

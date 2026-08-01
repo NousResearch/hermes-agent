@@ -832,14 +832,18 @@ def _preflight_codex_input_items(
                     if item_id in seen_ids:
                         continue
                     seen_ids.add(item_id)
-                reasoning_item: Dict[str, Any] = {"type": "reasoning", "encrypted_content": encrypted}
-                # Do NOT include the "id" in the general Responses path —
-                # with store=False (our default) OpenAI/Codex tries to resolve
-                # the id server-side and returns 404. Azure AI Foundry expects
-                # the replayed reasoning id, so preserve it only there.
+                reasoning_item: Dict[str, Any] = {
+                    "type": "reasoning",
+                    "encrypted_content": encrypted,
+                }
+                # Do NOT include the "id" in the general Responses path — with
+                # store=False (our default) OpenAI/Codex tries to resolve the
+                # id server-side and returns 404.  The id is still used above
+                # for local deduplication via seen_ids.  Azure AI Foundry is
+                # the exception: it re-validates replayed reasoning items and
+                # requires the original id, so preserve it only there.
                 if is_azure_foundry and isinstance(item_id, str) and item_id:
                     reasoning_item["id"] = item_id
-                # above for local deduplication via seen_ids.
                 summary = item.get("summary")
                 if isinstance(summary, list):
                     reasoning_item["summary"] = (

@@ -561,8 +561,8 @@ class ResponsesApiTransport(ProviderTransport):
         *,
         allow_stream: bool = False,
         is_github_responses: bool = False,
-sanitize_harmony_tokens: bool = False,
-is_azure_foundry: bool = False,
+        sanitize_harmony_tokens: bool = False,
+        is_azure_foundry: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
 
@@ -576,8 +576,8 @@ is_azure_foundry: bool = False,
             api_kwargs,
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
-sanitize_harmony_tokens=sanitize_harmony_tokens,
-is_azure_foundry=is_azure_foundry,
+            sanitize_harmony_tokens=sanitize_harmony_tokens,
+            is_azure_foundry=is_azure_foundry,
         )
         if "prompt_cache_key" in normalized:
             bounded = _bounded_prompt_cache_key(normalized["prompt_cache_key"])

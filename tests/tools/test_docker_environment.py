@@ -222,6 +222,78 @@ def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
     assert "MY_SECRET=" not in args
 
 
+def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
+    """Docker forwarding must resolve the routed profile's secret scope."""
+    from agent import secret_scope as ss
+
+    env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
+    monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-routed-profile"})
+    try:
+        args = env._build_init_env_args()
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(False)
+
+    assert "SERVICE_TOKEN=token-for-routed-profile" in args
+    assert "SERVICE_TOKEN=token-for-default" not in args
+
+
+def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
+    """A missing routed secret must not reintroduce the process env value."""
+    from agent import secret_scope as ss
+
+    env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
+    monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({})
+    try:
+        args = env._build_init_env_args()
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(False)
+
+    assert "SERVICE_TOKEN=token-for-default" not in args
+    assert "SERVICE_TOKEN" not in args
+
+
+def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
+    """Shared Docker containers must refresh and clear profile-scoped values."""
+    from agent import secret_scope as ss
+
+    env = _make_execute_only_env(forward_env=["SERVICE_TOKEN"])
+    monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    calls = []
+    monkeypatch.setattr(
+        docker_env,
+        "_popen_bash",
+        lambda cmd, stdin_data=None: calls.append((cmd, stdin_data)) or object(),
+    )
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-profile-a"})
+    try:
+        env._run_bash("printf '%s' \"$SERVICE_TOKEN\"")
+    finally:
+        ss.reset_secret_scope(token)
+
+    token = ss.set_secret_scope({})
+    try:
+        env._run_bash("printf '%s' \"${SERVICE_TOKEN-unset}\"")
+    finally:
+        ss.reset_secret_scope(token)
+        ss.set_multiplex_active(False)
+
+    first_cmd = calls[0][0]
+    assert "SERVICE_TOKEN=token-for-profile-a" in first_cmd
+    second_cmd = calls[1][0]
+    assert "SERVICE_TOKEN=token-for-profile-a" not in second_cmd
+    assert "unset SERVICE_TOKEN" in second_cmd[-1]
+
+
 # ── docker_env tests ──────────────────────────────────────────────
 
 

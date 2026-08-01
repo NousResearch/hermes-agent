@@ -462,6 +462,10 @@ class CLIAgentSetupMixin:
             return True
         except Exception as e:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_constants import partial_update_hint
+
+            for line in partial_update_hint(e):
+                ChatConsole().print(line)
             return False
 
     def _preload_resumed_session(self) -> bool:

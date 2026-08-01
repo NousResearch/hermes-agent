@@ -10,7 +10,9 @@ Verifies:
 """
 import importlib.util
 import os
+import sqlite3
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -75,6 +77,45 @@ def test_dry_run_probes_skip_subprocess(monkeypatch, fake_home):
     assert mod.check_disk() is None
     assert mod.check_swap() is None
     assert mod.check_discord_bots() is None
+
+
+def test_check_kanban_accepts_pathlike_and_string_paths(monkeypatch, fake_home, tmp_path):
+    """Board paths are normalised before Path methods are used.
+
+    Covers the resolver's normal Path output plus absolute, relative, and
+    network-style string paths accepted at the compatibility boundary.
+    """
+    db_path = tmp_path / "kanban.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE task_events (
+                task_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            """
+        )
+
+    monkeypatch.chdir(tmp_path)
+    board_paths = {
+        "path": db_path,
+        "absolute-string": str(db_path),
+        "relative-string": db_path.name,
+        "network-string": f"//{db_path.as_posix().lstrip('/')}",
+    }
+    monkeypatch.setitem(
+        sys.modules,
+        "_board_compat",
+        types.SimpleNamespace(build_board_db_map=lambda _slugs: board_paths),
+    )
+
+    mod = _load_module(monkeypatch, fake_home)
+    assert mod.check_kanban() is None
 
 
 def test_dry_run_main_no_log_write(monkeypatch, fake_home):

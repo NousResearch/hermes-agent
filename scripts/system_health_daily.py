@@ -406,7 +406,9 @@ def check_kanban() -> dict | None:
         return None  # dry-run: skip _board_compat (hermes_cli import chain)
     # W1-G (Batch 1): board DB identities resolved via _board_compat.
     import _board_compat
-    boards = {slug: str(p) for slug, p in _board_compat.build_board_db_map([
+    # Normalise the compatibility boundary so Path methods remain safe even if
+    # an older/custom resolver supplies string paths.
+    boards = {slug: Path(p) for slug, p in _board_compat.build_board_db_map([
         "ops", "research", "apps", "content-lead", "default",
     ]).items()}
 

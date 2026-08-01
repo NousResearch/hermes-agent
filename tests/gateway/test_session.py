@@ -156,8 +156,8 @@ class TestBuildSessionContextPrompt:
         # Static pointer tells the agent where the volatile id actually lives.
         assert "provided per-turn in the incoming user message" in p1
 
-    def test_slack_prompt_without_detected_tools_preserves_api_access(self):
-        """Native/MCP detection must not disable the deployment's Slack API route."""
+    def test_slack_prompt_without_tools_or_helper_does_not_promise_api_access(self):
+        """No detected route must keep the Slack capability note non-promissory."""
         from unittest.mock import patch
         config = GatewayConfig(
             platforms={
@@ -177,15 +177,44 @@ class TestBuildSessionContextPrompt:
 
         normalized = prompt.lower()
         assert "slack" in normalized
-        assert "slack api access remains available" in normalized
-        assert "skill, cli, or helper" in normalized
-        assert "documented operations" in normalized
-        assert "operations and targets authorized" in normalized
-        assert "verify writes by reading back" in normalized
+        assert "slack api access remains available" not in normalized
+        assert "no dedicated native or mcp slack tool is loaded" in normalized
+        assert "inspect the loaded capabilities" in normalized
+        assert "do not claim slack api access unless" in normalized
         assert "current message's slack block/attachment payload" in normalized
-        assert "no native or mcp slack tool" not in normalized
         assert "you do not have access to slack-specific apis" not in normalized
         assert "you still cannot call slack apis yourself" not in normalized
+
+    def test_slack_prompt_with_configured_helper_preserves_api_access(self):
+        """A deployment-declared authenticated helper enables affirmative guidance."""
+        from unittest.mock import patch
+
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=True,
+                    token="fake",
+                    extra={"authenticated_api_helper": True},
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            user_name="bob",
+        )
+
+        ctx = build_session_context(source, config)
+        with patch("gateway.session._slack_tools_loaded", return_value=False):
+            prompt = build_session_context_prompt(ctx).lower()
+
+        assert ctx.authenticated_api_helper is True
+        assert "authenticated slack api helper is configured" in prompt
+        assert "slack api access remains available" in prompt
+        assert "operations and targets authorized" in prompt
+        assert "verify writes by reading back" in prompt
 
 
     def test_slack_tools_loaded_detects_real_mcp_registration(self):

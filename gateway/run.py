@@ -23535,10 +23535,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # MCP-registration flip re-renders once instead of serving a
         # stale pinned note for the rest of the session.
         slack_tools = ""
+        slack_api_helper = ""
         if src.platform == Platform.SLACK:
             from gateway.session import _slack_tools_loaded
 
             slack_tools = "1" if _slack_tools_loaded() else "0"
+            slack_api_helper = "1" if context.authenticated_api_helper else "0"
 
         try:
             from hermes_constants import display_hermes_home
@@ -23561,6 +23563,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             discord_ids,
             discord_tools,
             slack_tools,
+            slack_api_helper,
             tuple(p.value for p in context.connected_platforms),
             tuple(
                 (

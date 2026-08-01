@@ -324,6 +324,7 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
+    authenticated_api_helper: bool = False
     
     # Session metadata
     session_key: str = ""
@@ -339,6 +340,7 @@ class SessionContext:
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
             "shared_multi_user_session": self.shared_multi_user_session,
+            "authenticated_api_helper": self.authenticated_api_helper,
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -378,8 +380,8 @@ def _slack_tools_loaded() -> bool:
          server-name map.
 
     Returns False when no dedicated model tool is detected or on any error.
-    The caller then directs the agent to the authenticated deployment
-    skill/CLI/helper route without claiming a dedicated tool is loaded.
+    The caller separately checks the deployment-declared helper capability
+    before making any affirmative API-access claim.
     """
     try:
         from tools.mcp_tool import get_registered_mcp_server_names
@@ -606,19 +608,27 @@ def build_session_context_prompt(
                 "for Slack-specific requests, and do not promise Slack actions "
                 "beyond what the loaded tools actually expose."
             )
+        elif context.authenticated_api_helper:
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Slack. An authenticated "
+                "Slack API helper is configured for this deployment, so Slack API "
+                "access remains available even though no dedicated native or MCP "
+                "Slack tool is loaded. Consult the loaded deployment skill, CLI, or "
+                "helper and invoke its documented operations through the existing "
+                "tools. Use only operations and targets authorized by that interface, "
+                "and verify writes by reading back the result. The gateway may inline "
+                "the current message's Slack block/attachment payload when available."
+            )
         else:
             lines.append("")
             lines.append(
-                "**Platform notes:** You are running inside Slack. Slack API "
-                "access remains available through the deployment's authenticated "
-                "integration path. No dedicated native or MCP Slack tool is loaded, "
-                "so consult the loaded Slack skill, CLI, or helper and invoke its "
-                "documented operations through the existing tools. Use only "
-                "operations and targets authorized by that interface, and verify "
-                "writes by reading back the result. Do not claim Slack API access "
-                "is unavailable merely because a dedicated model tool is absent. "
-                "The gateway may inline the current message's Slack block/attachment "
-                "payload when available."
+                "**Platform notes:** You are running inside Slack. No dedicated "
+                "native or MCP Slack tool is loaded. Inspect the loaded capabilities "
+                "before attempting Slack API work; a deployment skill, CLI, or helper "
+                "may provide it. Do not claim Slack API access unless an authenticated "
+                "path is actually configured and available. The gateway may inline "
+                "the current message's Slack block/attachment payload when available."
             )
         if context.shared_multi_user_session:
             lines.append(
@@ -3493,6 +3503,12 @@ def build_session_context(
         home = config.get_home_channel(platform)
         if home:
             home_channels[platform] = home
+
+    platform_config = config.platforms.get(source.platform)
+    authenticated_api_helper = bool(
+        platform_config
+        and platform_config.extra.get("authenticated_api_helper") is True
+    )
     
     context = SessionContext(
         source=source,
@@ -3503,6 +3519,7 @@ def build_session_context(
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
+        authenticated_api_helper=authenticated_api_helper,
     )
     
     if session_entry:

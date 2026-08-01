@@ -518,6 +518,24 @@ display:
 |-----|---------|-------------|
 | `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
 
+### Authenticated API Helper Guidance
+
+Deployments that expose Slack API operations through an authenticated skill,
+CLI, or helper rather than the native Slack toolset or a Slack MCP server can
+declare that route explicitly:
+
+```yaml
+slack:
+  authenticated_api_helper: true
+```
+
+This setting changes only the capability guidance in the agent's Slack session
+prompt. It does not install a helper, grant credentials, or authorize any Slack
+operation. Set it only when the deployment already exposes an authenticated
+Slack helper through the agent's loaded capabilities. When it is absent or
+`false`, Hermes does not promise Slack API access and directs the agent to
+inspect its loaded capabilities first.
+
 ### Session Isolation
 
 ```yaml

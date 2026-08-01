@@ -1596,6 +1596,13 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
                 if "typing_status_text" in platform_cfg:
                     bridged["typing_status_text"] = platform_cfg["typing_status_text"]
+                if (
+                    plat == Platform.SLACK
+                    and "authenticated_api_helper" in platform_cfg
+                ):
+                    bridged["authenticated_api_helper"] = _coerce_bool(
+                        platform_cfg.get("authenticated_api_helper"), False
+                    )
                 # Bridge top-level port/host/secret into extra for platforms
                 # whose adapters read these from config.extra (webhook,
                 # msgraph_webhook, api_server).  Without this, YAML like:

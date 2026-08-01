@@ -350,6 +350,27 @@ class TestLoadGatewayConfig:
 
         assert os.getenv("SLACK_IGNORED_CHANNELS") == "C0123456789,C0987654321"
 
+    def test_slack_authenticated_api_helper_reaches_platform_extra(
+        self, tmp_path, monkeypatch
+    ):
+        """The user-facing Slack declaration must reach session construction."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "slack:\n"
+            "  enabled: true\n"
+            "  authenticated_api_helper: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.SLACK].extra["authenticated_api_helper"]
+            is True
+        )
+
 
     def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
         """``platforms.slack.typing_status_text`` reaches PlatformConfig via

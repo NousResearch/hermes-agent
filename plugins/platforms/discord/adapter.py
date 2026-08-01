@@ -25,12 +25,14 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Any, Tuple, Iterable
 from urllib.parse import urljoin
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
+from agent.secret_scope import current_secret_scope, get_secret, is_multiplex_active
 
 logger = logging.getLogger(__name__)
 
@@ -343,6 +345,303 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _coerce_access_values(raw: Any) -> set[str]:
+    """Normalize a comma-separated or sequence access-policy value."""
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, (list, tuple, set, frozenset)):
+        values = raw
+    else:
+        values = (raw,)
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _access_bool(raw: Any) -> bool:
+    return str(raw or "").strip().lower() in {"true", "1", "yes"}
+
+
+def _legacy_on_bool(raw: Any) -> bool:
+    """Parse a flag that historically accepts ``on``."""
+    return str(raw or "").strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _default_true_bool(raw: Any) -> bool:
+    """Parse a default-on flag while preserving explicit false values."""
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return True
+    text = str(raw).strip().lower()
+    if not text:
+        return True
+    return text not in {"false", "0", "no", "off"}
+
+
+@dataclass
+class DiscordAccessPolicy:
+    """Authorization inputs captured for one Discord adapter/profile."""
+
+    allowed_user_ids: set[str] = field(default_factory=set)
+    allowed_role_ids: set[int] = field(default_factory=set)
+    allowed_channel_keys: set[str] = field(default_factory=set)
+    ignored_channel_keys: set[str] = field(default_factory=set)
+    dm_role_auth_guild_id: Optional[int] = None
+    free_response_channel_keys: set[str] = field(default_factory=set)
+    require_mention: bool = True
+    thread_require_mention: bool = False
+    ignore_no_mention: bool = True
+    history_backfill_enabled: bool = True
+    history_backfill_limit: int = 50
+    approval_mentions: bool = False
+    missed_message_backfill_enabled: bool = False
+    missed_message_backfill_channels: set[str] = field(default_factory=set)
+    missed_message_backfill_channels_configured: bool = False
+    missed_message_backfill_window_seconds: float = 21600.0
+    missed_message_backfill_limit: int = 100
+    missed_message_backfill_max_dispatches: int = 10
+    allow_all_users: bool = False
+    gateway_allowed_user_ids: set[str] = field(default_factory=set)
+    gateway_allow_all_users: bool = False
+    allow_bots: str = "none"
+    bots_require_inline_mention: bool = False
+    pairing_check: Optional[Callable[[str], bool]] = field(
+        default=None, repr=False, compare=False
+    )
+
+    @classmethod
+    def from_config(cls, config: "PlatformConfig") -> "DiscordAccessPolicy":
+        """Capture policy while the adapter's profile secret scope is active."""
+        extra = config.extra if isinstance(getattr(config, "extra", None), dict) else {}
+
+        def _profile_value(env_name: str, extra_key: Optional[str] = None) -> Any:
+            # Preserve env-over-YAML precedence without confusing a present
+            # empty value with an absent value. Multiplex primary adapters may
+            # be constructed after their config-loading scope has exited, so
+            # the scoped value is also persisted in ``extra`` by
+            # ``_apply_yaml_config`` below.
+            scope = current_secret_scope()
+            if scope is not None and env_name in scope:
+                return scope[env_name]
+            if not is_multiplex_active() and env_name in os.environ:
+                return get_secret(env_name, "")
+            if extra_key is not None and extra_key in extra:
+                return extra[extra_key]
+            if is_multiplex_active():
+                return ""
+            return get_secret(env_name, "") or ""
+
+        def _profile_bool(
+            env_name: str,
+            extra_key: str,
+            *,
+            default: bool,
+            env_parser: Callable[[Any], bool],
+            config_parser: Callable[[Any], bool],
+        ) -> bool:
+            """Preserve the setting's legacy env/config parsing by source."""
+            scope = current_secret_scope()
+            if scope is not None and env_name in scope:
+                return env_parser(scope[env_name])
+            if not is_multiplex_active() and env_name in os.environ:
+                return env_parser(get_secret(env_name, str(default)))
+            if extra_key in extra:
+                value = extra[extra_key]
+                # Scoped env values handed off by _apply_yaml_config are
+                # normalized to bool before the creating scope exits.
+                if isinstance(value, bool):
+                    return value
+                return config_parser(value)
+            if is_multiplex_active():
+                return default
+            return env_parser(get_secret(env_name, str(default)))
+
+        backfill_extra = extra.get("missed_message_backfill")
+        if not isinstance(backfill_extra, dict):
+            backfill_extra = {}
+
+        def _backfill_value(env_name: str, key: str, default: Any) -> Any:
+            scope = current_secret_scope()
+            if scope is not None and env_name in scope:
+                return scope[env_name]
+            if key in backfill_extra:
+                return backfill_extra[key]
+            if not is_multiplex_active() and env_name in os.environ:
+                return get_secret(env_name, str(default))
+            if is_multiplex_active():
+                return default
+            return get_secret(env_name, str(default))
+
+        def _bounded_float(raw: Any, default: float, minimum: float) -> float:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = default
+            return max(minimum, value)
+
+        def _bounded_int(raw: Any, default: int, minimum: int, maximum: int) -> int:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                value = default
+            return max(minimum, min(value, maximum))
+
+        def _int_or_default(raw: Any, default: int) -> int:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return default
+
+        def _positive_int_or_none(raw: Any) -> Optional[int]:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                return None
+            return value if value > 0 else None
+
+        allowed_users = {
+            _clean_discord_id(value)
+            for value in _coerce_access_values(
+                _profile_value("DISCORD_ALLOWED_USERS", "allow_from")
+            )
+        }
+        allowed_roles = {
+            int(value)
+            for value in _coerce_access_values(
+                _profile_value("DISCORD_ALLOWED_ROLES", "allowed_roles")
+            )
+            if value.isdigit()
+        }
+        allow_bots = str(
+            _profile_value("DISCORD_ALLOW_BOTS", "allow_bots") or "none"
+        ).strip().lower()
+        if allow_bots not in {"none", "mentions", "all"}:
+            allow_bots = "none"
+        return cls(
+            allowed_user_ids=allowed_users,
+            allowed_role_ids=allowed_roles,
+            allowed_channel_keys=_coerce_access_values(
+                _profile_value("DISCORD_ALLOWED_CHANNELS", "allowed_channels")
+            ),
+            ignored_channel_keys=_coerce_access_values(
+                _profile_value("DISCORD_IGNORED_CHANNELS", "ignored_channels")
+            ),
+            dm_role_auth_guild_id=_positive_int_or_none(
+                extra.get("dm_role_auth_guild")
+            ),
+            free_response_channel_keys=_coerce_access_values(
+                _profile_value(
+                    "DISCORD_FREE_RESPONSE_CHANNELS", "free_response_channels"
+                )
+            ),
+            require_mention=_profile_bool(
+                "DISCORD_REQUIRE_MENTION",
+                "require_mention",
+                default=True,
+                env_parser=_default_true_bool,
+                config_parser=_default_true_bool,
+            ),
+            thread_require_mention=_profile_bool(
+                "DISCORD_THREAD_REQUIRE_MENTION",
+                "thread_require_mention",
+                default=False,
+                env_parser=_legacy_on_bool,
+                config_parser=_default_true_bool,
+            ),
+            ignore_no_mention=_profile_bool(
+                "DISCORD_IGNORE_NO_MENTION",
+                "ignore_no_mention",
+                default=True,
+                env_parser=_access_bool,
+                config_parser=_access_bool,
+            ),
+            history_backfill_enabled=_profile_bool(
+                "DISCORD_HISTORY_BACKFILL",
+                "history_backfill",
+                default=True,
+                env_parser=_access_bool,
+                config_parser=_default_true_bool,
+            ),
+            history_backfill_limit=_int_or_default(
+                _profile_value(
+                    "DISCORD_HISTORY_BACKFILL_LIMIT", "history_backfill_limit"
+                ),
+                50,
+            ),
+            approval_mentions=_profile_bool(
+                "DISCORD_APPROVAL_MENTIONS",
+                "approval_mentions",
+                default=False,
+                env_parser=_legacy_on_bool,
+                config_parser=_legacy_on_bool,
+            ),
+            missed_message_backfill_enabled=_legacy_on_bool(
+                _backfill_value("DISCORD_MISSED_MESSAGE_BACKFILL", "enabled", False)
+            ),
+            missed_message_backfill_channels=_coerce_access_values(
+                _backfill_value(
+                    "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "channels", ""
+                )
+            ),
+            missed_message_backfill_channels_configured=(
+                "channels" in backfill_extra
+            ),
+            missed_message_backfill_window_seconds=_bounded_float(
+                _backfill_value(
+                    "DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS",
+                    "window_seconds",
+                    21600,
+                ),
+                21600.0,
+                60.0,
+            ),
+            missed_message_backfill_limit=_bounded_int(
+                _backfill_value(
+                    "DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT", "limit", 100
+                ),
+                100,
+                1,
+                500,
+            ),
+            missed_message_backfill_max_dispatches=_bounded_int(
+                _backfill_value(
+                    "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES",
+                    "max_dispatches",
+                    10,
+                ),
+                10,
+                1,
+                100,
+            ),
+            allow_all_users=_profile_bool(
+                "DISCORD_ALLOW_ALL_USERS",
+                "allow_all_users",
+                default=False,
+                env_parser=_access_bool,
+                config_parser=_access_bool,
+            ),
+            gateway_allowed_user_ids=_coerce_access_values(
+                _profile_value("GATEWAY_ALLOWED_USERS", "gateway_allowed_users")
+            ),
+            gateway_allow_all_users=_profile_bool(
+                "GATEWAY_ALLOW_ALL_USERS",
+                "gateway_allow_all_users",
+                default=False,
+                env_parser=_access_bool,
+                config_parser=_access_bool,
+            ),
+            allow_bots=allow_bots,
+            bots_require_inline_mention=_profile_bool(
+                "DISCORD_BOTS_REQUIRE_INLINE_MENTION",
+                "bots_require_inline_mention",
+                default=False,
+                env_parser=_legacy_on_bool,
+                config_parser=_legacy_on_bool,
+            ),
+        )
 
 
 def check_discord_requirements() -> bool:
@@ -916,8 +1215,11 @@ class DiscordAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
-        self._allowed_user_ids: set = set()  # For button approval authorization
-        self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
+        self._access_policy = DiscordAccessPolicy.from_config(config)
+        # Keep these long-standing attributes as aliases for internal callers
+        # and third-party tests while the policy remains the source of truth.
+        self._allowed_user_ids = self._access_policy.allowed_user_ids
+        self._allowed_role_ids = self._access_policy.allowed_role_ids
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
@@ -1106,6 +1408,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
         asyncio.create_task(_notify())
 
+    def _discord_members_intent_required(self) -> bool:
+        """Return whether this adapter needs Discord's privileged members intent.
+
+        Legacy single-profile adapters refresh at connect time, matching the
+        prior environment-driven behavior. Multiplex adapters retain their
+        constructor-captured snapshot.
+        """
+        policy = self._discord_access_policy()
+        return any(
+            entry != "*" and not entry.isdigit()
+            for entry in policy.allowed_user_ids
+        ) or bool(policy.allowed_role_ids)
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
@@ -1154,22 +1469,9 @@ class DiscordAdapter(BasePlatformAdapter):
             if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
 
-            # Parse allowed user entries (may contain usernames or IDs)
-            allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
-            if allowed_env:
-                self._allowed_user_ids = {
-                    _clean_discord_id(uid) for uid in allowed_env.split(",")
-                    if uid.strip()
-                }
-
-            # Parse DISCORD_ALLOWED_ROLES — comma-separated role IDs.
-            # Users with ANY of these roles can interact with the bot.
-            roles_env = os.getenv("DISCORD_ALLOWED_ROLES", "")
-            if roles_env:
-                self._allowed_role_ids = {
-                    int(rid.strip()) for rid in roles_env.split(",")
-                    if rid.strip().isdigit()
-                }
+            # Access policy was captured in __init__ while this adapter's
+            # profile secret scope was active. Never re-read process globals
+            # here: multiplexed adapters share one process.
 
             # Set up intents.
             # Message Content is required for normal text replies.
@@ -1182,15 +1484,10 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
-            intents.members = (
-                # ``"*"`` is the open-mode wildcard (honored in _is_allowed_user),
-                # not a username to resolve, so it must not pull in the privileged
-                # Server Members intent — exactly the migrate-from-OpenClaw path
-                # the wildcard fix targets would otherwise silently fail to come
-                # online when Members Intent isn't enabled in the Developer Portal.
-                any(entry != "*" and not entry.isdigit() for entry in self._allowed_user_ids)
-                or bool(self._allowed_role_ids)  # Need members intent for role lookup
-            )
+            # ``"*"`` is the open-mode wildcard, not a username to resolve.
+            # Legacy single-profile configuration is intentionally refreshed by
+            # this helper; multiplex policy snapshots must never consult globals.
+            intents.members = self._discord_members_intent_required()
             intents.voice_states = True
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
@@ -1341,7 +1638,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         role_authorized = False
         if getattr(message.author, "bot", False):
-            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            allow_bots = self._discord_access_policy().allow_bots
             if allow_bots == "none":
                 return False, False
             if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
@@ -1369,7 +1666,12 @@ class DiscordAdapter(BasePlatformAdapter):
             ):
                 self._warn_if_fail_closed_default()
                 return False, False
-            role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
+            role_authorized = self._has_allowed_role(
+                str(message.author.id),
+                message.author,
+                guild=msg_guild,
+                is_dm=is_dm,
+            )
 
         raw_self_mention = self._self_is_explicitly_mentioned(message)
         if not isinstance(message.channel, discord.DMChannel) and (
@@ -1381,9 +1683,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             if other_bots_mentioned and not raw_self_mention:
                 return False, False
-            ignore_no_mention = os.getenv(
-                "DISCORD_IGNORE_NO_MENTION", "true"
-            ).lower() in {"true", "1", "yes"}
+            ignore_no_mention = self._discord_ignore_no_mention()
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
                 parent_id = None
                 if hasattr(message.channel, "parent_id") and message.channel.parent_id:
@@ -1991,14 +2291,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _missed_message_backfill_enabled(self) -> bool:
         """Whether to reconcile Discord messages missed while the gateway was down."""
-        configured = self.config.extra.get("missed_message_backfill")
-        if isinstance(configured, dict) and "enabled" in configured:
-            value = configured["enabled"]
-            if isinstance(value, str):
-                return value.strip().lower() in ("true", "1", "yes", "on")
-            return bool(value)
-        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
-        return str(raw).strip().lower() in ("true", "1", "yes", "on")
+        return self._discord_access_policy().missed_message_backfill_enabled
 
     def _missed_message_backfill_channels(self) -> set[str]:
         """Channels to scan for missed messages after Discord reconnects.
@@ -2008,62 +2301,21 @@ class DiscordAdapter(BasePlatformAdapter):
         Operators can set ``channels: "*"`` to scan every reachable text
         channel, but the safe default is scoped.
         """
-        configured = self.config.extra.get("missed_message_backfill")
-        if isinstance(configured, dict) and "channels" in configured:
-            raw = configured.get("channels")
-            if isinstance(raw, list):
-                return {str(item).strip() for item in raw if str(item).strip()}
-            raw = str(raw or "")
-            if raw.strip():
-                return {item.strip() for item in raw.split(",") if item.strip()}
-        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "")
-        if not raw.strip():
-            allowed = {
-                item.strip()
-                for item in os.getenv("DISCORD_ALLOWED_CHANNELS", "").split(",")
-                if item.strip()
-            }
-            return allowed | self._discord_free_response_channels()
-        return {item.strip() for item in raw.split(",") if item.strip()}
+        policy = self._discord_access_policy()
+        if policy.missed_message_backfill_channels_configured:
+            return set(policy.missed_message_backfill_channels)
+        if policy.missed_message_backfill_channels:
+            return set(policy.missed_message_backfill_channels)
+        return set(policy.allowed_channel_keys) | set(policy.free_response_channel_keys)
 
     def _missed_message_backfill_window_seconds(self) -> float:
-        configured = self.config.extra.get("missed_message_backfill")
-        raw = (
-            configured.get("window_seconds", 21600)
-            if isinstance(configured, dict)
-            else os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS", "21600")
-        )
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            value = 21600.0
-        return max(60.0, value)
+        return self._discord_access_policy().missed_message_backfill_window_seconds
 
     def _missed_message_backfill_limit(self) -> int:
-        configured = self.config.extra.get("missed_message_backfill")
-        raw = (
-            configured.get("limit", 100)
-            if isinstance(configured, dict)
-            else os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT", "100")
-        )
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            value = 100
-        return max(1, min(value, 500))
+        return self._discord_access_policy().missed_message_backfill_limit
 
     def _missed_message_backfill_max_dispatches(self) -> int:
-        configured = self.config.extra.get("missed_message_backfill")
-        raw = (
-            configured.get("max_dispatches", 10)
-            if isinstance(configured, dict)
-            else os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES", "10")
-        )
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            value = 10
-        return max(1, min(value, 100))
+        return self._discord_access_policy().missed_message_backfill_max_dispatches
 
     def _ensure_missed_message_backfill_task(self) -> asyncio.Task:
         """Return the active recovery task, or start one when none is running."""
@@ -4411,14 +4663,129 @@ class DiscordAdapter(BasePlatformAdapter):
             except OSError:
                 pass
 
+    def _discord_access_policy(self) -> DiscordAccessPolicy:
+        """Return local policy while preserving legacy live config reads."""
+        previous = getattr(self, "_access_policy", None)
+        if not is_multiplex_active():
+            config = getattr(self, "config", None) or PlatformConfig(enabled=True)
+            policy = DiscordAccessPolicy.from_config(config)
+            alias_users = set(getattr(self, "_allowed_user_ids", set()) or set())
+            alias_roles = set(getattr(self, "_allowed_role_ids", set()) or set())
+            if previous is not None:
+                policy.pairing_check = previous.pairing_check
+            extra = (
+                config.extra
+                if isinstance(getattr(config, "extra", None), dict)
+                else {}
+            )
+            has_live_users = (
+                "DISCORD_ALLOWED_USERS" in os.environ or "allow_from" in extra
+            )
+            has_live_roles = (
+                "DISCORD_ALLOWED_ROLES" in os.environ or "allowed_roles" in extra
+            )
+            if alias_users and not has_live_users:
+                policy.allowed_user_ids = alias_users
+            if alias_roles and not has_live_roles:
+                policy.allowed_role_ids = alias_roles
+            self._access_policy = policy
+            self._allowed_user_ids = policy.allowed_user_ids
+            self._allowed_role_ids = policy.allowed_role_ids
+            return policy
+
+        policy = previous
+        if policy is None:
+            if hasattr(self, "config"):
+                policy = DiscordAccessPolicy.from_config(self.config)
+            else:
+                policy = DiscordAccessPolicy(
+                    allowed_user_ids=set(
+                        getattr(self, "_allowed_user_ids", set()) or set()
+                    ),
+                    allowed_role_ids=set(
+                        getattr(self, "_allowed_role_ids", set()) or set()
+                    ),
+                )
+            self._access_policy = policy
+        return policy
+
+    def _authorization_policy_allows(
+        self,
+        user_id: str,
+        *,
+        chat_id: Optional[str] = None,
+        channel_keys: Optional[Iterable[str]] = None,
+        is_dm: bool = False,
+        role_authorized: bool = False,
+        is_bot: bool = False,
+    ) -> bool:
+        """Apply the captured Discord policy at the gateway's second auth gate.
+
+        Channel restrictions are hard boundaries: neither user, role, bot, nor
+        pairing grants may bypass an explicit ignored channel or an allowed-
+        channel miss.
+        """
+        policy = self._discord_access_policy()
+        uid = _clean_discord_id(user_id)
+        resolved_channel_keys = {
+            str(value).strip()
+            for value in (channel_keys or set())
+            if str(value).strip()
+        }
+        if chat_id:
+            raw_chat_id = str(chat_id).strip()
+            if raw_chat_id:
+                resolved_channel_keys.add(raw_chat_id)
+                cleaned_chat_id = _clean_discord_id(raw_chat_id)
+                if cleaned_chat_id:
+                    resolved_channel_keys.add(cleaned_chat_id)
+
+        channel_allowed = False
+        if not is_dm:
+            ignored = policy.ignored_channel_keys
+            if "*" in ignored or bool(resolved_channel_keys & ignored):
+                return False
+
+            allowed_channels = policy.allowed_channel_keys
+            if allowed_channels:
+                channel_allowed = "*" in allowed_channels or bool(
+                    resolved_channel_keys & allowed_channels
+                )
+                if not channel_allowed:
+                    return False
+
+        if is_bot:
+            return policy.allow_bots in {"mentions", "all"}
+        if policy.allow_all_users or policy.gateway_allow_all_users:
+            return True
+        if "*" in policy.allowed_user_ids or uid in policy.allowed_user_ids:
+            return True
+        if (
+            "*" in policy.gateway_allowed_user_ids
+            or uid in policy.gateway_allowed_user_ids
+        ):
+            return True
+        if role_authorized:
+            return True
+        if self._is_pairing_approved_user(uid):
+            return True
+        if not policy.allowed_user_ids and not policy.allowed_role_ids:
+            return channel_allowed
+        return False
+
+    def set_pairing_check(
+        self, callback: Optional[Callable[[str], bool]]
+    ) -> None:
+        """Bind pairing authorization to this adapter's owning profile."""
+        self._access_policy.pairing_check = callback
+
     def _discord_channel_ids_allowed(self, channel_ids: set[str]) -> bool:
-        """True when *channel_ids* intersect ``DISCORD_ALLOWED_CHANNELS``."""
+        """True when *channel_ids* intersect the profile's allowed channels."""
         if not channel_ids:
             return False
-        allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip()
-        if not allowed_raw:
+        allowed = self._discord_access_policy().allowed_channel_keys
+        if not allowed:
             return False
-        allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
         if "*" in allowed:
             return True
         return bool(channel_ids & allowed)
@@ -4428,12 +4795,83 @@ class DiscordAdapter(BasePlatformAdapter):
         user_id = str(user_id or "").strip()
         if not user_id:
             return False
+        policy = self._discord_access_policy()
+        if policy.pairing_check is not None:
+            try:
+                return bool(policy.pairing_check(user_id))
+            except Exception:
+                return False
+        if is_multiplex_active():
+            return False
         try:
             from gateway.pairing import PairingStore
 
             return bool(PairingStore().is_approved("discord", user_id))
         except Exception:
             return False
+
+    def _has_allowed_role(
+        self,
+        user_id: str,
+        author=None,
+        *,
+        guild=None,
+        is_dm: bool = False,
+    ) -> bool:
+        """Return whether the sender actually matches this profile's role policy."""
+        allowed_roles = self._discord_access_policy().allowed_role_ids
+        if not allowed_roles:
+            return False
+        if is_dm or guild is None:
+            if is_multiplex_active():
+                dm_guild_id = self._discord_access_policy().dm_role_auth_guild_id
+            else:
+                dm_guild_id = _read_dm_role_auth_guild()
+            if dm_guild_id is None or self._client is None:
+                return False
+            dm_guild = self._client.get_guild(dm_guild_id)
+            if dm_guild is None:
+                return False
+            try:
+                uid_int = int(user_id)
+            except (TypeError, ValueError):
+                return False
+            member = dm_guild.get_member(uid_int)
+            roles = getattr(member, "roles", None) or [] if member else []
+            return any(getattr(role, "id", None) in allowed_roles for role in roles)
+
+        direct_roles = getattr(author, "roles", None) if author is not None else None
+        author_guild = getattr(author, "guild", None)
+        if direct_roles and (author_guild is None or author_guild.id == guild.id):
+            if any(getattr(role, "id", None) in allowed_roles for role in direct_roles):
+                return True
+        try:
+            uid_int = int(user_id)
+        except (TypeError, ValueError):
+            return False
+        member = guild.get_member(uid_int)
+        roles = getattr(member, "roles", None) or [] if member else []
+        return any(getattr(role, "id", None) in allowed_roles for role in roles)
+
+    def _source_has_allowed_role(
+        self,
+        user_id: str,
+        *,
+        guild_id: Optional[str] = None,
+        is_dm: bool = False,
+    ) -> bool:
+        """Revalidate a persisted source against current cached role membership."""
+        if is_dm:
+            return self._has_allowed_role(user_id, is_dm=True)
+        if self._client is None or not guild_id:
+            return False
+        try:
+            guild = self._client.get_guild(int(guild_id))
+        except (TypeError, ValueError):
+            return False
+        if guild is None:
+            return False
+        return self._has_allowed_role(user_id, guild=guild)
 
     def _is_allowed_user(
         self,
@@ -4471,8 +4909,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # ``getattr`` fallbacks here guard against test fixtures that build
         # an adapter via ``object.__new__(DiscordAdapter)`` and skip __init__
         # (see AGENTS.md pitfall #17 — same pattern as gateway.run).
-        allowed_users = getattr(self, "_allowed_user_ids", set())
-        allowed_roles = getattr(self, "_allowed_role_ids", set())
+        policy = self._discord_access_policy()
+        allowed_users = policy.allowed_user_ids
+        allowed_roles = policy.allowed_role_ids
         has_users = bool(allowed_users)
         has_roles = bool(allowed_roles)
 
@@ -4483,10 +4922,18 @@ class DiscordAdapter(BasePlatformAdapter):
         if self._is_pairing_approved_user(user_id):
             return True
 
+        gateway_users = policy.gateway_allowed_user_ids
+        cleaned_user_id = _clean_discord_id(user_id)
+        if (
+            policy.gateway_allow_all_users
+            or "*" in gateway_users
+            or cleaned_user_id in gateway_users
+        ):
+            return True
+
         if not has_users and not has_roles:
-            if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
-                return True
-            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+            policy = self._discord_access_policy()
+            if policy.allow_all_users or policy.gateway_allow_all_users:
                 return True
             # Channel-scoped guild access requires validated channel context.
             # Do not treat DISCORD_ALLOWED_CHANNELS alone as a user-wide bypass
@@ -4509,61 +4956,25 @@ class DiscordAdapter(BasePlatformAdapter):
         if not has_roles:
             return False
 
-        # DM path: roles require explicit opt-in via
-        # ``discord.dm_role_auth_guild`` in config.yaml. Without this, a
-        # user with the configured role in ANY mutual guild could DM the
-        # bot and bypass the allowlist (cross-guild leakage).
-        if is_dm or guild is None:
-            dm_guild_id = _read_dm_role_auth_guild()
-            if dm_guild_id is None:
-                return False
-            if self._client is None:
-                return False
-            dm_guild = self._client.get_guild(dm_guild_id)
-            if dm_guild is None:
-                return False
-            try:
-                uid_int = int(user_id)
-            except (TypeError, ValueError):
-                return False
-            m = dm_guild.get_member(uid_int)
-            if m is None:
-                return False
-            m_roles = getattr(m, "roles", None) or []
-            return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
-
-        # Guild path: role check is scoped to THIS guild only.
-        # 1) Prefer the direct Member object passed in (correct guild by construction).
-        direct_roles = getattr(author, "roles", None) if author is not None else None
-        author_guild = getattr(author, "guild", None)
-        if direct_roles and (author_guild is None or author_guild.id == guild.id):
-            if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
-                return True
-        # 2) Fallback: resolve the Member in the message's guild only — NEVER
-        #    scan other mutual guilds (that is the cross-guild bypass bug).
-        try:
-            uid_int = int(user_id)
-        except (TypeError, ValueError):
-            return False
-        m = guild.get_member(uid_int)
-        if m is None:
-            return False
-        m_roles = getattr(m, "roles", None) or []
-        return any(getattr(r, "id", None) in allowed_roles for r in m_roles)
+        return self._has_allowed_role(
+            user_id,
+            author,
+            guild=guild,
+            is_dm=is_dm,
+        )
 
     def _warn_if_fail_closed_default(self) -> None:
         """Log once when Discord is rejecting traffic with no allowlist set."""
         if getattr(self, "_warned_fail_closed_default", False):
             return
-        allowed_users = getattr(self, "_allowed_user_ids", set()) or set()
-        allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
+        policy = self._discord_access_policy()
+        allowed_users = policy.allowed_user_ids
+        allowed_roles = policy.allowed_role_ids
         if allowed_users or allowed_roles:
             return
-        if os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip():
+        if policy.allowed_channel_keys:
             return
-        if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
-            return
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+        if policy.allow_all_users or policy.gateway_allow_all_users:
             return
         self._warned_fail_closed_default = True
         logger.warning(
@@ -4613,6 +5024,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+        policy = self._discord_access_policy()
 
         channel_ids: set = set()
         channel_keys: set = set()
@@ -4642,9 +5054,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 else None,
             )
 
-            allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_raw:
-                allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
+            allowed = policy.allowed_channel_keys
+            if allowed:
                 if "*" not in allowed:
                     if not channel_ids:
                         # Channel policy is configured but the interaction
@@ -4659,16 +5070,15 @@ class DiscordAdapter(BasePlatformAdapter):
             # Ignored beats allowed: even when a thread's parent channel
             # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
             # entry on the thread or its parent rejects the interaction.
-            ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            if ignored_raw and channel_ids:
-                ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
+            ignored = policy.ignored_channel_keys
+            if ignored and channel_ids:
                 if "*" in ignored or (channel_keys & ignored):
                     return (False, "channel in DISCORD_IGNORED_CHANNELS")
 
         # ── User / role allowlist (mirrors on_message line 681) ──
         user = getattr(interaction, "user", None)
-        allowed_users = getattr(self, "_allowed_user_ids", set()) or set()
-        allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
+        allowed_users = policy.allowed_user_ids
+        allowed_roles = policy.allowed_role_ids
         if user is None or getattr(user, "id", None) is None:
             # No identifiable user — fail closed even with allow-all opt-in.
             # Downstream slash handlers (_build_slash_event, etc.) require
@@ -5126,8 +5536,9 @@ class DiscordAdapter(BasePlatformAdapter):
         Resolve non-numeric entries in DISCORD_ALLOWED_USERS to Discord user IDs.
 
         Users can specify usernames (e.g. "teknium") or display names instead of
-        raw numeric IDs.  After resolution, the env var and internal set are updated
-        so authorization checks work with IDs only.
+        raw numeric IDs. After resolution, the adapter-local policy is updated so
+        authorization checks use IDs only. Single-profile mode also preserves the
+        legacy process-environment rewrite; multiplex mode never does.
         """
         if not self._allowed_user_ids or not self._client:
             return
@@ -5188,11 +5599,14 @@ class DiscordAdapter(BasePlatformAdapter):
         if to_resolve:
             print(f"[{self.name}] Could not resolve usernames: {', '.join(to_resolve)}")
 
-        # Update internal set and env var so gateway auth checks use IDs
+        # Update the adapter-local snapshot. Process-global write-back is kept
+        # only for legacy single-profile callers; it would leak between profiles.
         self._allowed_user_ids = numeric_ids
-        os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
+        self._access_policy.allowed_user_ids = set(numeric_ids)
+        if not is_multiplex_active():
+            os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
         if resolved_count:
-            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
+            print(f"[{self.name}] Resolved {resolved_count} allowed username(s) to Discord IDs")
 
     def format_message(self, content: str) -> str:
         """Format message for Discord.
@@ -5834,6 +6248,23 @@ class DiscordAdapter(BasePlatformAdapter):
         # Get channel topic (if available).
         # For forum threads, inherit the parent forum's topic.
         chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
+        parent_chat_id = (
+            self._get_parent_channel_id(interaction.channel) if is_thread else None
+        )
+        channel_keys = (
+            self._discord_channel_keys_from_channel(
+                interaction.channel, parent_chat_id
+            )
+            if not is_dm
+            else set()
+        )
+        guild = getattr(interaction, "guild", None)
+        role_authorized = self._has_allowed_role(
+            str(interaction.user.id),
+            interaction.user,
+            guild=guild,
+            is_dm=is_dm,
+        )
 
         source = self.build_source(
             chat_id=str(interaction.channel_id),
@@ -5843,6 +6274,10 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(guild.id) if guild else None,
+            parent_chat_id=parent_chat_id,
+            authorization_channel_keys=channel_keys,
+            role_authorized=role_authorized,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -5928,6 +6363,20 @@ class DiscordAdapter(BasePlatformAdapter):
         # Inherit forum topic when the thread was created inside a forum channel.
         _chan = getattr(interaction, "channel", None)
         chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+        _parent_channel = self._thread_parent_channel(_chan)
+        _parent_id = str(getattr(_parent_channel, "id", "") or "")
+        channel_keys = self._discord_channel_keys_from_channel(
+            _parent_channel or _chan
+        )
+        channel_keys.update({thread_id, thread_name, f"#{thread_name}"})
+        guild = getattr(interaction, "guild", None)
+        guild_id = getattr(guild, "id", None)
+        role_authorized = self._has_allowed_role(
+            str(interaction.user.id),
+            interaction.user,
+            guild=guild,
+            is_dm=False,
+        )
 
         source = self.build_source(
             chat_id=thread_id,
@@ -5937,10 +6386,12 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(guild_id) if guild_id is not None else None,
+            parent_chat_id=_parent_id or None,
+            authorization_channel_keys=channel_keys,
+            role_authorized=role_authorized,
         )
 
-        _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
-        _parent_id = str(getattr(_parent_channel, "id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
@@ -5972,12 +6423,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""
-        configured = self.config.extra.get("require_mention")
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() not in {"false", "0", "no", "off"}
-            return bool(configured)
-        return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+        return self._discord_access_policy().require_mention
 
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
@@ -6040,22 +6486,12 @@ class DiscordAdapter(BasePlatformAdapter):
         A single ``"*"`` entry (either from a list or a comma-separated
         string) is preserved in the returned set so callers can short-circuit
         on wildcard membership, consistent with ``allowed_channels``.
+
+        Non-list scalar values are accepted as well. YAML may parse a bare
+        numeric channel ID as an integer, so policy capture normalizes it to a
+        string before this method returns the adapter-local snapshot.
         """
-        raw = self.config.extra.get("free_response_channels")
-        if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        # Coerce non-list scalars (str/int/float) to str before splitting.
-        # YAML parses a bare numeric value such as
-        # `free_response_channels: 1491973769726791812` as int, which was
-        # previously falling through the isinstance(str) branch and silently
-        # returning an empty set.  str() here accepts whatever scalar the YAML
-        # loader hands us without changing existing string/CSV semantics.
-        s = str(raw).strip() if raw is not None else ""
-        if s:
-            return {part.strip() for part in s.split(",") if part.strip()}
-        return set()
+        return set(self._discord_access_policy().free_response_channel_keys)
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
@@ -6107,17 +6543,7 @@ class DiscordAdapter(BasePlatformAdapter):
         Config: ``discord.bots_require_inline_mention`` (or env
         ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
         """
-        configured = self.config.extra.get("bots_require_inline_mention")
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() in {"true", "1", "yes", "on"}
-            return bool(configured)
-        return os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false").lower() in {
-            "true",
-            "1",
-            "yes",
-            "on",
-        }
+        return self._discord_access_policy().bots_require_inline_mention
 
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Return channel identifiers accepted by Discord channel config gates.
@@ -6175,21 +6601,15 @@ class DiscordAdapter(BasePlatformAdapter):
         one to only fire on explicit @mention, avoiding bot-to-bot loops or
         unwanted cross-replies.
         """
-        configured = self.config.extra.get("thread_require_mention")
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() not in {"false", "0", "no", "off"}
-            return bool(configured)
-        return os.getenv("DISCORD_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+        return self._discord_access_policy().thread_require_mention
+
+    def _discord_ignore_no_mention(self) -> bool:
+        """Whether mixed-mention messages without this bot should be ignored."""
+        return self._discord_access_policy().ignore_no_mention
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
-        configured = self.config.extra.get("history_backfill")
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() not in {"false", "0", "no", "off"}
-            return bool(configured)
-        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
+        return self._discord_access_policy().history_backfill_enabled
 
     def _discord_history_backfill_limit(self) -> int:
         """Return the max number of messages to scan backwards for context.
@@ -6199,17 +6619,7 @@ class DiscordAdapter(BasePlatformAdapter):
         limit is a safety cap for cold starts and long gaps where no prior
         bot message exists in recent history.
         """
-        configured = self.config.extra.get("history_backfill_limit")
-        if configured is not None:
-            try:
-                return int(configured)
-            except (ValueError, TypeError):
-                pass
-        raw = os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
-        try:
-            return int(raw)
-        except (ValueError, TypeError):
-            return 50
+        return self._discord_access_policy().history_backfill_limit
 
     async def _fetch_channel_context(
         self,
@@ -6243,7 +6653,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return ""
 
         # Determine which bot messages to include in context
-        allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+        allow_bots_raw = self._discord_access_policy().allow_bots
         include_other_bots = allow_bots_raw != "none"
 
         # Use the in-memory cache to narrow the fetch window on hot paths.
@@ -6775,13 +7185,17 @@ class DiscordAdapter(BasePlatformAdapter):
     def _approval_mention_content(self) -> Optional[str]:
         """Return user mentions for approval prompts when explicitly enabled.
 
-        Gated on ``discord.approval_mentions`` in config.yaml (bridged to the
-        ``DISCORD_APPROVAL_MENTIONS`` env var). Only numeric allowlist entries
-        can be mentioned; default off avoids surprise pings.
+        Gated on this adapter's captured ``discord.approval_mentions`` value.
+        Only numeric allowlist entries can be mentioned; default off avoids
+        surprise pings.
         """
-        if not _env_bool("DISCORD_APPROVAL_MENTIONS", False):
+        if not self._discord_access_policy().approval_mentions:
             return None
-        user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
+        user_ids = sorted(
+            uid
+            for uid in self._discord_access_policy().allowed_user_ids
+            if str(uid).isdigit()
+        )
         if not user_ids:
             return None
         return " ".join(f"<@{uid}>" for uid in user_ids)
@@ -6864,6 +7278,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                access_policy=self._discord_access_policy(),
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
                 allow_permanent=allow_permanent,
@@ -6924,6 +7339,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                access_policy=self._discord_access_policy(),
             )
 
             msg = await channel.send(content=content, embed=embed, view=view)
@@ -7031,6 +7447,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
+                    access_policy=self._discord_access_policy(),
                 )
             else:
                 embed.add_field(
@@ -7087,6 +7504,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                access_policy=self._discord_access_policy(),
             )
             # Mirror the prompt in plain content — embeds are invisible on
             # some clients (see send_exec_approval).
@@ -7153,6 +7571,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 on_model_selected=on_model_selected,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                access_policy=self._discord_access_policy(),
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -7201,6 +7620,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 on_choice_selected=on_choice_selected,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                access_policy=self._discord_access_policy(),
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -7444,23 +7864,28 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
-        if not isinstance(message.channel, discord.DMChannel):
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        channel_keys: set[str] = set()
+        require_mention = False
+        is_free_channel = False
+        in_bot_thread = False
+        if not is_dm:
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
 
+            policy = self._discord_access_policy()
+
             # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+            allowed_channels = policy.allowed_channel_keys
+            if allowed_channels:
                 if "*" not in allowed_channels and not (channel_keys & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
                     return False
 
             # Check ignored channels - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
+            ignored_channels = policy.ignored_channel_keys
             if "*" in ignored_channels or (channel_keys & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
                 return False
@@ -7614,6 +8039,7 @@ class DiscordAdapter(BasePlatformAdapter):
             is_bot=getattr(message.author, "bot", False),
             guild_id=str(guild.id) if guild else None,
             parent_chat_id=parent_channel_id,
+            authorization_channel_keys=channel_keys if not is_dm else set(),
             message_id=str(message.id),
             role_authorized=role_authorized,
             auto_thread_created=auto_threaded_channel is not None,
@@ -7987,6 +8413,7 @@ def _component_check_auth(
     interaction,
     allowed_user_ids: Optional[set],
     allowed_role_ids: Optional[set],
+    access_policy: Optional[DiscordAccessPolicy] = None,
 ) -> bool:
     """Shared user-or-role OR semantics for component view button clicks.
 
@@ -8010,18 +8437,69 @@ def _component_check_auth(
     if user is None or getattr(user, "id", None) is None:
         return False
 
-    if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
-        return True
-    if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+    if access_policy is None:
+        # Backward-compatible path for direct helper/view construction in
+        # single-profile callers. Multiplex direct construction has no owning
+        # profile snapshot and therefore fails closed instead of reading globals.
+        if is_multiplex_active():
+            access_policy = DiscordAccessPolicy()
+        else:
+            access_policy = DiscordAccessPolicy(
+                allow_all_users=_access_bool(
+                    get_secret("DISCORD_ALLOW_ALL_USERS", "")
+                ),
+                gateway_allowed_user_ids=_coerce_access_values(
+                    get_secret("GATEWAY_ALLOWED_USERS", "")
+                ),
+                gateway_allow_all_users=_access_bool(
+                    get_secret("GATEWAY_ALLOW_ALL_USERS", "")
+                ),
+            )
+
+    channel = getattr(interaction, "channel", None)
+    channel_keys: set[str] = set()
+    for candidate in (channel, getattr(channel, "parent", None)):
+        if candidate is None:
+            continue
+        candidate_id = getattr(candidate, "id", None)
+        if candidate_id is not None:
+            channel_keys.add(str(candidate_id).strip())
+        candidate_name = str(getattr(candidate, "name", "") or "").strip()
+        if candidate_name:
+            bare_name = candidate_name.removeprefix("#")
+            channel_keys.update({bare_name, f"#{bare_name}"})
+    interaction_channel_id = getattr(interaction, "channel_id", None)
+    if interaction_channel_id is not None:
+        channel_keys.add(str(interaction_channel_id).strip())
+
+    is_dm = bool(
+        discord is not None
+        and channel is not None
+        and isinstance(channel, discord.DMChannel)
+    )
+    has_channel_boundaries = bool(
+        access_policy.allowed_channel_keys or access_policy.ignored_channel_keys
+    )
+    if has_channel_boundaries and not is_dm and (channel is None or not channel_keys):
+        return False
+    channel_allowed = False
+    if channel_keys and not is_dm:
+        if "*" in access_policy.ignored_channel_keys or bool(
+            channel_keys & access_policy.ignored_channel_keys
+        ):
+            return False
+        if access_policy.allowed_channel_keys and not (
+            "*" in access_policy.allowed_channel_keys
+            or bool(channel_keys & access_policy.allowed_channel_keys)
+        ):
+            return False
+        channel_allowed = bool(access_policy.allowed_channel_keys)
+
+    if access_policy.allow_all_users or access_policy.gateway_allow_all_users:
         return True
 
     user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
-    global_allowed = {
-        uid.strip()
-        for uid in os.getenv("GATEWAY_ALLOWED_USERS", "").split(",")
-        if uid.strip()
-    }
-    user_set.update(global_allowed)
+    user_set.update(access_policy.gateway_allowed_user_ids)
     role_set = set(allowed_role_ids or set())
     has_users = bool(user_set)
     has_roles = bool(role_set)
@@ -8051,17 +8529,27 @@ def _component_check_auth(
         if user_role_ids & role_set:
             return True
 
-    # Check pairing store — mirrors ``authz_mixin._check_authorization``
-    # so users approved via ``hermes pairing approve`` can interact with
-    # component buttons even without DISCORD_ALLOWED_USERS set.
+    # Pairing is injected by GatewayRunner so multiplex views use the owning
+    # profile's store. Retain the historical global-store fallback only for
+    # single-profile/direct construction.
     if uid:
-        try:
-            from gateway.pairing import PairingStore
-            store = PairingStore()
-            if store.is_approved("discord", uid):
-                return True
-        except Exception:
-            pass
+        if access_policy.pairing_check is not None:
+            try:
+                if access_policy.pairing_check(uid):
+                    return True
+            except Exception:
+                return False
+        elif not is_multiplex_active():
+            try:
+                from gateway.pairing import PairingStore
+
+                if PairingStore().is_approved("discord", uid):
+                    return True
+            except Exception:
+                pass
+
+    if not has_users and not has_roles:
+        return channel_allowed
 
     return False
 
@@ -8134,11 +8622,13 @@ def _define_discord_view_classes() -> None:
             allow_permanent: bool = True,
             allow_session: bool = True,
             smart_denied: bool = False,
+            access_policy: Optional[DiscordAccessPolicy] = None,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.access_policy = access_policy
             # Opt-in admin gate for exec approval (default off → user-scope,
             # the v0.16-restored behavior). When on, the clicker must be in
             # ``admin_user_ids`` on top of passing the base admission check.
@@ -8164,7 +8654,10 @@ def _define_discord_view_classes() -> None:
             can approve (logged once so the misconfiguration is visible).
             """
             if not _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.access_policy,
             ):
                 return False
             if not self.require_admin:
@@ -8301,17 +8794,22 @@ def _define_discord_view_classes() -> None:
             confirm_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            access_policy: Optional[DiscordAccessPolicy] = None,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.confirm_id = confirm_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.access_policy = access_policy
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.access_policy,
             )
 
         async def _resolve(
@@ -8406,16 +8904,21 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            access_policy: Optional[DiscordAccessPolicy] = None,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.access_policy = access_policy
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.access_policy,
             )
 
         async def _respond(
@@ -8505,6 +9008,7 @@ def _define_discord_view_classes() -> None:
             on_model_selected,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            access_policy: Optional[DiscordAccessPolicy] = None,
         ):
             super().__init__(timeout=120)
             self.providers = providers
@@ -8514,6 +9018,7 @@ def _define_discord_view_classes() -> None:
             self.on_model_selected = on_model_selected
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.access_policy = access_policy
             self.resolved = False
             self._selected_provider: str = ""
             self._pending_expensive_model: str = ""
@@ -8522,7 +9027,10 @@ def _define_discord_view_classes() -> None:
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.access_policy,
             )
 
         def _build_provider_select(self):
@@ -8832,12 +9340,14 @@ def _define_discord_view_classes() -> None:
             on_choice_selected,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            access_policy: Optional[DiscordAccessPolicy] = None,
         ):
             super().__init__(timeout=120)
             self.choices = list(choices)[:25]  # Discord select cap
             self.on_choice_selected = on_choice_selected
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.access_policy = access_policy
             self.resolved = False
             self._message = None
 
@@ -8862,7 +9372,10 @@ def _define_discord_view_classes() -> None:
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.access_policy,
             )
 
         async def _on_select(self, interaction: discord.Interaction):
@@ -8930,12 +9443,14 @@ def _define_discord_view_classes() -> None:
             clarify_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            access_policy: Optional[DiscordAccessPolicy] = None,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.access_policy = access_policy
             self.resolved = False
 
             for index, choice in enumerate(self.choices):
@@ -8999,7 +9514,10 @@ def _define_discord_view_classes() -> None:
 
         def _check_auth(self, interaction: "discord.Interaction") -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.access_policy,
             )
 
         def _make_choice_callback(self, index: int, choice: str):
@@ -9657,11 +10175,25 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     remains only for existing callers that construct adapters without config
     extras. Returns canonical WebSocket liveness settings to seed that extra.
     """
-    if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
+    scope = current_secret_scope()
+    legacy_env_bridge = scope is None and not is_multiplex_active()
+    if (
+        legacy_env_bridge
+        and "require_mention" in discord_cfg
+        and not os.getenv("DISCORD_REQUIRE_MENTION")
+    ):
         os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
-    if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
+    if (
+        legacy_env_bridge
+        and "thread_require_mention" in discord_cfg
+        and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION")
+    ):
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
-    if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
+    if (
+        legacy_env_bridge
+        and "bots_require_inline_mention" in discord_cfg
+        and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION")
+    ):
         os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
@@ -9671,45 +10203,158 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
+    seeded_extra = {}
+
+    def _yaml_policy_value(key: str) -> tuple[bool, Any]:
+        if key in discord_cfg:
+            return True, discord_cfg[key]
+        if key in platform_extra_cfg:
+            return True, platform_extra_cfg[key]
+        return False, None
+
+    # Persist the effective profile-local policy while configuration is loaded
+    # under that profile's secret scope. Primary adapter construction and
+    # reconnect happen after the scope exits, so the config object is the stable
+    # hand-off boundary. Presence checks deliberately preserve explicit empty
+    # strings/lists and explicit false booleans.
+    scoped_bool_parsers = {
+        "DISCORD_REQUIRE_MENTION": _default_true_bool,
+        "DISCORD_IGNORE_NO_MENTION": _access_bool,
+        "DISCORD_THREAD_REQUIRE_MENTION": _legacy_on_bool,
+        "DISCORD_ALLOW_ALL_USERS": _access_bool,
+        "DISCORD_HISTORY_BACKFILL": _access_bool,
+        "DISCORD_APPROVAL_MENTIONS": _legacy_on_bool,
+        "DISCORD_BOTS_REQUIRE_INLINE_MENTION": _legacy_on_bool,
+        "GATEWAY_ALLOW_ALL_USERS": _access_bool,
+    }
+    for env_name, extra_key, yaml_key in (
+        ("DISCORD_ALLOWED_USERS", "allow_from", "allow_from"),
+        ("DISCORD_ALLOWED_ROLES", "allowed_roles", "allowed_roles"),
+        ("DISCORD_ALLOWED_CHANNELS", "allowed_channels", "allowed_channels"),
+        ("DISCORD_IGNORED_CHANNELS", "ignored_channels", "ignored_channels"),
+        (
+            "DISCORD_FREE_RESPONSE_CHANNELS",
+            "free_response_channels",
+            "free_response_channels",
+        ),
+        ("DISCORD_REQUIRE_MENTION", "require_mention", "require_mention"),
+        (
+            "DISCORD_IGNORE_NO_MENTION",
+            "ignore_no_mention",
+            "ignore_no_mention",
+        ),
+        (
+            "DISCORD_THREAD_REQUIRE_MENTION",
+            "thread_require_mention",
+            "thread_require_mention",
+        ),
+        ("DISCORD_ALLOW_ALL_USERS", "allow_all_users", "allow_all_users"),
+        ("DISCORD_ALLOW_BOTS", "allow_bots", "allow_bots"),
+        (
+            "DISCORD_HISTORY_BACKFILL",
+            "history_backfill",
+            "history_backfill",
+        ),
+        (
+            "DISCORD_HISTORY_BACKFILL_LIMIT",
+            "history_backfill_limit",
+            "history_backfill_limit",
+        ),
+        (
+            "DISCORD_APPROVAL_MENTIONS",
+            "approval_mentions",
+            "approval_mentions",
+        ),
+        (
+            "DISCORD_BOTS_REQUIRE_INLINE_MENTION",
+            "bots_require_inline_mention",
+            "bots_require_inline_mention",
+        ),
+        ("GATEWAY_ALLOWED_USERS", "gateway_allowed_users", None),
+        ("GATEWAY_ALLOW_ALL_USERS", "gateway_allow_all_users", None),
+    ):
+        if scope is not None and env_name in scope:
+            value = scope[env_name]
+            parser = scoped_bool_parsers.get(env_name)
+            seeded_extra[extra_key] = parser(value) if parser else value
+            continue
+        if yaml_key is not None:
+            present, value = _yaml_policy_value(yaml_key)
+            if present:
+                seeded_extra[extra_key] = value
+
+    dm_guild_present, dm_guild_value = _yaml_policy_value("dm_role_auth_guild")
+    if dm_guild_present:
+        seeded_extra["dm_role_auth_guild"] = dm_guild_value
+
     allowed_users_cfg = (
         discord_cfg["allow_from"] if "allow_from" in discord_cfg
         else platform_extra_cfg.get("allow_from")
     )
-    if allowed_users_cfg is not None and not os.getenv("DISCORD_ALLOWED_USERS"):
-        if isinstance(allowed_users_cfg, list):
-            allowed_users_cfg = ",".join(str(v) for v in allowed_users_cfg)
-        os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_cfg)
+    if allowed_users_cfg is not None:
+        seeded_extra.setdefault("allow_from", allowed_users_cfg)
+        if legacy_env_bridge and not os.getenv("DISCORD_ALLOWED_USERS"):
+            allowed_users_env = allowed_users_cfg
+            if isinstance(allowed_users_env, list):
+                allowed_users_env = ",".join(str(v) for v in allowed_users_env)
+            os.environ["DISCORD_ALLOWED_USERS"] = str(allowed_users_env)
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")
     )
-    if approval_mentions_cfg is not None and not os.getenv("DISCORD_APPROVAL_MENTIONS"):
-        os.environ["DISCORD_APPROVAL_MENTIONS"] = str(approval_mentions_cfg).lower()
+    if approval_mentions_cfg is not None:
+        seeded_extra.setdefault("approval_mentions", approval_mentions_cfg)
+        if legacy_env_bridge and not os.getenv("DISCORD_APPROVAL_MENTIONS"):
+            os.environ["DISCORD_APPROVAL_MENTIONS"] = str(
+                approval_mentions_cfg
+            ).lower()
     frc = discord_cfg.get("free_response_channels")
-    if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+    if frc is not None:
+        seeded_extra.setdefault("free_response_channels", frc)
+        if legacy_env_bridge and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
+            free_response_env = frc
+            if isinstance(free_response_env, list):
+                free_response_env = ",".join(str(v) for v in free_response_env)
+            os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(free_response_env)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
         os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
-    seeded_extra = {}
-    backfill_cfg = discord_cfg.get("missed_message_backfill")
-    if isinstance(backfill_cfg, dict):
-        seeded_extra["missed_message_backfill"] = dict(backfill_cfg)
+    backfill_cfg = (
+        discord_cfg["missed_message_backfill"]
+        if "missed_message_backfill" in discord_cfg
+        else platform_extra_cfg.get("missed_message_backfill")
+    )
+    seeded_backfill = dict(backfill_cfg) if isinstance(backfill_cfg, dict) else {}
+    for env_name, key in (
+        ("DISCORD_MISSED_MESSAGE_BACKFILL", "enabled"),
+        ("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "channels"),
+        ("DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS", "window_seconds"),
+        ("DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT", "limit"),
+        ("DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES", "max_dispatches"),
+    ):
+        if scope is not None and env_name in scope:
+            seeded_backfill[key] = scope[env_name]
+    if seeded_backfill:
+        seeded_extra["missed_message_backfill"] = seeded_backfill
     # ignored_channels: channels where bot never responds (even when mentioned)
     ic = discord_cfg.get("ignored_channels")
-    if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
-        if isinstance(ic, list):
-            ic = ",".join(str(v) for v in ic)
-        os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+    if ic is not None:
+        seeded_extra.setdefault("ignored_channels", ic)
+        if legacy_env_bridge and not os.getenv("DISCORD_IGNORED_CHANNELS"):
+            ignored_channels_env = ic
+            if isinstance(ignored_channels_env, list):
+                ignored_channels_env = ",".join(str(v) for v in ignored_channels_env)
+            os.environ["DISCORD_IGNORED_CHANNELS"] = str(ignored_channels_env)
     # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
     ac = discord_cfg.get("allowed_channels")
-    if ac is not None and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
-        if isinstance(ac, list):
-            ac = ",".join(str(v) for v in ac)
-        os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
+    if ac is not None:
+        seeded_extra.setdefault("allowed_channels", ac)
+        if legacy_env_bridge and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+            allowed_channels_env = ac
+            if isinstance(allowed_channels_env, list):
+                allowed_channels_env = ",".join(str(v) for v in allowed_channels_env)
+            os.environ["DISCORD_ALLOWED_CHANNELS"] = str(allowed_channels_env)
     # no_thread_channels: channels where bot responds directly without creating thread
     ntc = discord_cfg.get("no_thread_channels")
     if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
@@ -9719,11 +10364,17 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     # history_backfill: recover missed channel messages for shared sessions
     # when require_mention is active.  Fetches messages between bot turns
     # and prepends them to the user message for context.
-    if "history_backfill" in discord_cfg and not os.getenv("DISCORD_HISTORY_BACKFILL"):
-        os.environ["DISCORD_HISTORY_BACKFILL"] = str(discord_cfg["history_backfill"]).lower()
+    if "history_backfill" in discord_cfg:
+        seeded_extra.setdefault("history_backfill", discord_cfg["history_backfill"])
+        if legacy_env_bridge and not os.getenv("DISCORD_HISTORY_BACKFILL"):
+            os.environ["DISCORD_HISTORY_BACKFILL"] = str(
+                discord_cfg["history_backfill"]
+            ).lower()
     hbl = discord_cfg.get("history_backfill_limit")
-    if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
-        os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+    if hbl is not None:
+        seeded_extra.setdefault("history_backfill_limit", hbl)
+        if legacy_env_bridge and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
+            os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
     # allow_mentions: granular control over what the bot can ping.
     # Safe defaults (no @everyone/roles) are applied in the adapter;
     # these YAML keys only override when set and let users opt back

@@ -175,6 +175,10 @@ class SessionSource:
     scope_id: Optional[str] = None
     guild_id: Optional[str] = None  # @deprecated legacy alias for scope_id (D-Q2.5)
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
+    # Adapter-validated channel identifiers used by authorization gates (IDs,
+    # bare names, #names, and parent equivalents). Persisted so a restored
+    # session is checked against the same channel context as live ingress.
+    authorization_channel_keys: List[str] = field(default_factory=list)
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
     # Profile this inbound message is routed to in a multiplexing gateway
@@ -182,6 +186,12 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
+    # Profile that owns the transport adapter/bot which received this event.
+    # This can differ from ``profile`` when profile_routes sends an inbound
+    # message to another runtime. Persist it so restored delivery and policy
+    # checks do not silently switch bot credentials or authorization domains.
+    # None preserves legacy sources that predate transport provenance.
+    transport_profile: Optional[str] = None
 
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can
@@ -250,6 +260,8 @@ class SessionSource:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
+        if self.is_bot:
+            d["is_bot"] = True
         # D-Q2.5 dual-write: emit BOTH the canonical `scope_id` and the
         # deprecated `guild_id` alias (mirrored in __post_init__) so a connector
         # on either side of the migration resolves the scope. Drop `guild_id`
@@ -260,10 +272,16 @@ class SessionSource:
             d["guild_id"] = scope
         if self.parent_chat_id:
             d["parent_chat_id"] = self.parent_chat_id
+        if self.authorization_channel_keys:
+            d["authorization_channel_keys"] = sorted(
+                {str(value) for value in self.authorization_channel_keys if str(value)}
+            )
         if self.message_id:
             d["message_id"] = self.message_id
         if self.profile:
             d["profile"] = self.profile
+        if self.transport_profile:
+            d["transport_profile"] = self.transport_profile
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         if self.auto_thread_initial_name:
@@ -283,12 +301,23 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
+            is_bot=data.get("is_bot") is True,
             # D-Q2.5 dual-read: prefer the canonical `scope_id`, fall back to the
             # deprecated `guild_id` alias (a peer not yet migrated still sends it).
             scope_id=data.get("scope_id", data.get("guild_id")),
             parent_chat_id=data.get("parent_chat_id"),
+            authorization_channel_keys=(
+                [
+                    str(value)
+                    for value in data.get("authorization_channel_keys", [])
+                    if str(value)
+                ]
+                if isinstance(data.get("authorization_channel_keys"), list)
+                else []
+            ),
             message_id=data.get("message_id"),
             profile=data.get("profile"),
+            transport_profile=data.get("transport_profile"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
         )

@@ -541,7 +541,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union, Iterable
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -2747,6 +2747,9 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        # Transport-owning profile, stamped by GatewayRunner before connect.
+        # Persisted through SessionSource separately from runtime routing.
+        self._gateway_profile_name: Optional[str] = None
         self._message_handler: Optional[MessageHandler] = None
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).
@@ -6567,6 +6570,7 @@ class BasePlatformAdapter(ABC):
         scope_id: Optional[str] = None,
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
+        authorization_channel_keys: Optional[Iterable[str]] = None,
         message_id: Optional[str] = None,
         role_authorized: bool = False,
         auto_thread_created: bool = False,
@@ -6605,6 +6609,9 @@ class BasePlatformAdapter(ABC):
                         scope_id=str(scope_id) if scope_id else None,
                         guild_id=str(guild_id) if guild_id else None,
                         parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+                        authorization_channel_keys=[
+                            str(value) for value in (authorization_channel_keys or [])
+                        ],
                         message_id=str(message_id) if message_id else None,
                     )
                 )
@@ -6629,15 +6636,18 @@ class BasePlatformAdapter(ABC):
             scope_id=str(scope_id) if scope_id else None,
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+            authorization_channel_keys=[
+                str(value) for value in (authorization_channel_keys or [])
+            ],
             message_id=str(message_id) if message_id else None,
             profile=profile,
+            transport_profile=getattr(self, "_gateway_profile_name", None),
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,
         )
-        # In-process transport provenance is deliberately not serialized by
-        # SessionSource.to_dict(). The live receiving adapter is authoritative
-        # for this turn even when profile_routes selects a different runtime.
+        # Retain the exact live adapter for this process. ``transport_profile``
+        # above is the serialized fallback used after restart.
         source._transport_adapter_ref = weakref.ref(self)
         return source
     

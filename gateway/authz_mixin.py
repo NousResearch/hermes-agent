@@ -77,7 +77,7 @@ class GatewayAuthorizationMixin:
         if not platform:
             return None
         profile_name = (profile or "").strip() or None
-        if profile_name and profile_name != "default":
+        if profile_name:
             active_profile = None
             active_profile_fn = getattr(self, "_active_profile_name", None)
             if callable(active_profile_fn):
@@ -120,9 +120,12 @@ class GatewayAuthorizationMixin:
             return adapters.get(Platform.RELAY)
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
+        transport_profile = getattr(source, "transport_profile", None)
         return self._authorization_adapter(
             getattr(source, "platform", None),
-            getattr(source, "profile", None),
+            transport_profile
+            if isinstance(transport_profile, str) and transport_profile.strip()
+            else getattr(source, "profile", None),
         )
 
     def _registered_transport_adapter(self, source: SessionSource):
@@ -160,6 +163,9 @@ class GatewayAuthorizationMixin:
             ).items():
                 if adapter is profile_adapters.get(platform):
                     return profile
+        transport_profile = getattr(source, "transport_profile", None)
+        if isinstance(transport_profile, str) and transport_profile.strip():
+            return transport_profile
         return getattr(source, "profile", None)
 
     def _adapter_authorization_is_upstream(
@@ -340,18 +346,20 @@ class GatewayAuthorizationMixin:
         return False
 
     def _pairing_store_for(self, source: "SessionSource"):
-        """Pick the per-profile PairingStore for a source, falling back to global.
+        """Pick the PairingStore owned by ``source`` without crossing profiles.
 
-        In a multiplexing gateway, each profile owns its own pairing whitelist
-        so isolation is preserved. When the source has no profile (single-
-        profile gateway, or a path that hasn't stamped profile yet) or the
-        profile isn't registered, fall back to ``self.pairing_store`` (the
-        global default) so existing behavior is preserved.
+        A multiplex source with an explicit profile must resolve to that
+        profile's store. Missing registration fails closed. Unstamped and
+        single-profile sources retain the legacy global fallback.
         """
         per_profile = getattr(self, "pairing_stores", None) or {}
         profile = getattr(source, "profile", None)
-        if profile and profile in per_profile:
-            return per_profile[profile]
+        if profile:
+            if profile in per_profile:
+                return per_profile[profile]
+            config = getattr(self, "config", None)
+            if bool(getattr(config, "multiplex_profiles", False)):
+                return None
         return getattr(self, "pairing_store", None)
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -469,11 +477,91 @@ class GatewayAuthorizationMixin:
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            # Discord owns this decision when a concrete adapter is available;
+            # bare-runner/direct tests retain the historical env fallback.
+            adapter_owns_bot_policy = False
+            if source.platform == Platform.DISCORD:
+                bot_adapter = self._authorization_adapter(
+                    source.platform, adapter_profile
+                )
+                adapter_owns_bot_policy = callable(
+                    getattr(type(bot_adapter), "_authorization_policy_allows", None)
+                )
+            if (
+                not adapter_owns_bot_policy
+                and allow_bots_var
+                and os.getenv(allow_bots_var, "none").lower().strip()
+                in {"mentions", "all"}
+            ):
                 return True
 
         if not user_id:
             return False
+
+        # Discord adapters capture every user/role/channel/global fallback and
+        # pairing callback under their owning profile scope. Treat that snapshot
+        # as the complete authorization decision at this second gateway gate;
+        # reopening process globals or applying pairing again here could bypass
+        # an adapter-level hard channel denial.
+        adapter = self._authorization_adapter(source.platform, adapter_profile)
+        policy_authorizer = getattr(
+            type(adapter), "_authorization_policy_allows", None
+        )
+        if callable(policy_authorizer):
+            channel_keys = {
+                str(value).strip()
+                for value in getattr(source, "authorization_channel_keys", [])
+                if str(value).strip()
+            }
+            for value in (source.chat_id, getattr(source, "parent_chat_id", None)):
+                if value:
+                    channel_keys.add(str(value).strip())
+            chat_name = str(getattr(source, "chat_name", "") or "").strip()
+            if chat_name:
+                channel_keys.add(chat_name)
+                leaf_name = chat_name.rsplit(" / ", 1)[-1].strip()
+                if leaf_name:
+                    channel_keys.add(leaf_name)
+                    bare_name = leaf_name.removeprefix("#")
+                    if bare_name:
+                        channel_keys.update({bare_name, f"#{bare_name}"})
+            role_authorized = getattr(source, "role_authorized", False) is True
+            if not role_authorized:
+                role_checker = getattr(type(adapter), "_source_has_allowed_role", None)
+                if callable(role_checker):
+                    try:
+                        role_authorized = bool(
+                            role_checker(
+                                adapter,
+                                user_id,
+                                guild_id=(
+                                    getattr(source, "scope_id", None)
+                                    or getattr(source, "guild_id", None)
+                                ),
+                                is_dm=getattr(source, "chat_type", "dm") == "dm",
+                            )
+                        )
+                    except Exception:
+                        role_authorized = False
+            try:
+                return bool(
+                    policy_authorizer(
+                        adapter,
+                        user_id,
+                        chat_id=source.chat_id,
+                        channel_keys=channel_keys,
+                        is_dm=getattr(source, "chat_type", "dm") == "dm",
+                        role_authorized=role_authorized,
+                        is_bot=getattr(source, "is_bot", False) is True,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Adapter-local authorization check failed for %s",
+                    source.platform.value,
+                    exc_info=True,
+                )
+                return False
 
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",

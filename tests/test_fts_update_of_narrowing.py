@@ -200,6 +200,43 @@ def test_cjk_ensure_failure_marks_unavailable_and_propagates(
         db.close()
 
 
+def test_cjk_soft_fail_ensure_without_raise_marks_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Production ensure swallows OperationalError — still must quarantine."""
+    path = tmp_path / "state.db"
+    db = SessionDB(db_path=path)
+    try:
+        db._conn.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
+        db._conn.execute(
+            "CREATE TRIGGER messages_fts_cjk_update "
+            "AFTER UPDATE ON messages BEGIN SELECT 1; END"
+        )
+        db._fts_cjk_available = True
+
+        def _soft_fail_cjk_ensure(_cursor):
+            # Mirrors real _ensure_fts_cjk_schema OperationalError path:
+            # clear availability, do not raise, do not recreate triggers.
+            db._fts_cjk_available = False
+
+        monkeypatch.setattr(db, "_ensure_fts_cjk_schema", _soft_fail_cjk_ensure)
+
+        dropped = db._migrate_broad_fts_update_triggers(db._conn)
+        assert dropped >= 1
+        assert db._fts_cjk_available is False
+        assert _trigger_sql(db._conn, "messages_fts_cjk_update") is None
+
+        with sqlite3.connect(path) as observer:
+            stale = observer.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (FTS_CJK_STALE_KEY,),
+            ).fetchone()
+            assert stale == ("1",)
+            assert _trigger_sql(observer, "messages_fts_cjk_update") is None
+    finally:
+        db.close()
+
+
 def test_cjk_broad_trigger_is_restored_as_update_of(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

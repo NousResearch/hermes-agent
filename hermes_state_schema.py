@@ -131,26 +131,26 @@ class SessionSchemaMixin:
                 cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
             )
             # CJK triggers live on the host SessionDB; only recreate one that
-            # this migration actually dropped.  Unexpected ensure failures
-            # must not leave the host advertising a now-triggerless index.
-            if (
-                "messages_fts_cjk_update" in to_drop
-            ):
+            # this migration actually dropped. ``_ensure_fts_cjk_schema`` is
+            # documented never-raises and soft-fails OperationalError by
+            # clearing availability — raise-path handling alone is not
+            # enough. After ensure, require a narrowed CJK UPDATE trigger or
+            # durable quarantine (stale breadcrumb + unavailable).
+            if "messages_fts_cjk_update" in to_drop:
                 try:
                     self._ensure_fts_cjk_schema(cursor)
                 except Exception:
-                    self._fts_cjk_available = False
-                    try:
-                        self.set_meta(FTS_CJK_STALE_KEY, "1", cursor=cursor)
-                    except Exception:
-                        logger.debug(
-                            "Could not persist CJK FTS stale breadcrumb",
-                            exc_info=True,
-                        )
+                    self._quarantine_cjk_after_update_of_migration(cursor)
                     logger.exception(
                         "CJK FTS re-ensure after UPDATE OF migration failed"
                     )
                     raise
+                if not self._cjk_update_trigger_is_narrowed(cursor):
+                    self._quarantine_cjk_after_update_of_migration(cursor)
+                    logger.warning(
+                        "CJK FTS UPDATE trigger missing or still broad after "
+                        "UPDATE OF migration; marked stale and unavailable"
+                    )
 
         logger.info(
             "Migrated %d broad FTS UPDATE trigger(s) to AFTER UPDATE OF "
@@ -158,6 +158,43 @@ class SessionSchemaMixin:
             len(to_drop),
         )
         return len(to_drop)
+
+    def _cjk_update_trigger_is_narrowed(self, cursor: sqlite3.Cursor) -> bool:
+        """True when messages_fts_cjk_update exists with AFTER UPDATE OF."""
+        row = cursor.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = ?",
+            ("messages_fts_cjk_update",),
+        ).fetchone()
+        if not row:
+            return False
+        sql = row[0] if not isinstance(row, sqlite3.Row) else row["sql"]
+        return not self._fts_update_trigger_needs_narrowing(sql)
+
+    def _quarantine_cjk_after_update_of_migration(
+        self, cursor: sqlite3.Cursor
+    ) -> None:
+        """Fail-closed after dropping CJK UPDATE during OF migration.
+
+        Clears availability, persists ``fts_cjk_stale``, and drops any
+        residual broad/partial CJK UPDATE trigger so a later open cannot
+        ``CREATE TRIGGER IF NOT EXISTS`` a gap without rebuild.
+        """
+        self._fts_cjk_available = False
+        try:
+            self.set_meta(FTS_CJK_STALE_KEY, "1", cursor=cursor)
+        except Exception:
+            logger.debug(
+                "Could not persist CJK FTS stale breadcrumb",
+                exc_info=True,
+            )
+        try:
+            cursor.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
+        except Exception:
+            logger.debug(
+                "Could not drop residual CJK UPDATE trigger after quarantine",
+                exc_info=True,
+            )
 
 
     @staticmethod

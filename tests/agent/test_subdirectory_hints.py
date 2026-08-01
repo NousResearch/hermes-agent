@@ -108,6 +108,23 @@ class TestSubdirectoryHintTracker:
         # Should be capped
         assert len(result) < 20_000
 
+    def test_skips_hints_in_install_tree(self, tmp_path, monkeypatch):
+        """Install-tree contributor guides must not be injected on tool visits."""
+        from agent import runtime_cwd
+
+        install_tree = tmp_path / "hermes-agent"
+        install_tree.mkdir()
+        (install_tree / "AGENTS.md").write_text("Install-tree contributor guide")
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", install_tree.resolve())
+
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(install_tree / "agent.py")}
+        )
+
+        assert result is None
+
+
     def test_empty_args(self, project):
         """Empty args should not crash."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

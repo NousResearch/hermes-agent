@@ -189,7 +189,7 @@ import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
-import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
+import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
   buildRelaunchScript,
@@ -2896,6 +2896,19 @@ async function applyUpdates(opts = {}) {
       emitUpdateProgress({ stage: 'manual', message: command, percent: null })
 
       return { ok: true, manual: true, command, hermesRoot: updateRoot }
+    }
+
+    const handoffConflict = updateHandoffConflict(HERMES_HOME)
+
+    if (handoffConflict) {
+      // A different updater already owns the marker — most often a previous
+      // "Update" click whose updater is still alive and parked mid-run.
+      // Spawning another here would overwrite its claim and let two updaters
+      // mutate the checkout at once (#75778); refuse instead.
+      rememberLog(`[updates] refusing hand-off: ${handoffConflict.message}`)
+      emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
+
+      return { ok: false, error: 'update-already-running', message: handoffConflict.message }
     }
 
     emitUpdateProgress({

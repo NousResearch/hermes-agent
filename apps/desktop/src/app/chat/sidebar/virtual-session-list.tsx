@@ -42,7 +42,9 @@ interface VirtualSessionListProps {
   workingSessionIdSet: Set<string>
 }
 
-const ROW_ESTIMATE_PX = 28
+// Two-line session titles are allowed; estimate their measured row height to keep
+// scroll geometry stable before individual rows enter the viewport.
+const ROW_ESTIMATE_PX = 37
 const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({

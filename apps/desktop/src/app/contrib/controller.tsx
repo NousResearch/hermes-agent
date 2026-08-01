@@ -37,7 +37,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { FileText, LayoutDashboard, PanelBottom, Zap } from '@/lib/icons'
+import { FileText, LayoutDashboard, PanelBottom, Terminal, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
@@ -567,6 +567,19 @@ bindPaneCollapse(
   $terminalTakeover,
   () => setTerminalTakeover(false),
   () => setTerminalTakeover(true)
+)
+// ⌘K door onto the same store the keybind and statusbar pill flip — was a
+// one-way "open" row under Go to, so it never showed on/off and couldn't hide.
+registry.register(
+  paletteToggle({
+    id: 'view.showTerminal',
+    label: 'Toggle terminal',
+    action: 'view.showTerminal',
+    icon: Terminal,
+    keywords: ['terminal', 'shell', 'console', 'pty'],
+    get: () => $terminalTakeover.get(),
+    set: setTerminalTakeover
+  })
 )
 
 // Preview EXISTS only while something is previewed (old-shell semantics:

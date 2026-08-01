@@ -1868,7 +1868,7 @@ class HermesACPAgent(acp.Agent):
                 # model emits absolute paths under ~/.hermes/workspace and the
                 # edit silently lands outside the editor's workspace.
                 session_tokens = set_session_vars(
-                    session_key=session_id, cwd=state.cwd,
+                    session_key=session_id, session_id=session_id, cwd=state.cwd,
                 )
             except Exception:
                 session_tokens = None

@@ -169,3 +169,92 @@ class TestMoASlotDecorationHonorsDisable:
         ):
             out = _maybe_apply_moa_cache_control(messages, runtime)
         assert not _has_cache_control(out)
+
+
+class TestPreparedAggregatorNoAgentConfigOff:
+    """Prepared-aggregator facades from ``MoAChatCompletions.__new__`` have
+    no ``_agent``. The planner must not raise and must honor config-off.
+    """
+
+    def test_prepared_aggregator_without_agent_honors_config_off(self):
+        import copy
+
+        from agent import moa_loop
+
+        calls = []
+        with (
+            patch.object(
+                moa_loop,
+                "call_llm",
+                side_effect=lambda **kwargs: calls.append(kwargs) or SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        message=SimpleNamespace(content="ok", tool_calls=[]),
+                        finish_reason="stop",
+                    )],
+                    usage=None,
+                    model="fake",
+                ),
+            ),
+            patch.object(
+                moa_loop,
+                "_slot_runtime",
+                return_value={
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                    "base_url": "https://api.anthropic.com",
+                    "api_mode": "anthropic_messages",
+                },
+            ),
+            patch(
+                "hermes_cli.config.load_config_readonly",
+                return_value={"prompt_caching": {"cache_ttl": "off"}},
+            ),
+        ):
+            completions = moa_loop.MoAChatCompletions.__new__(
+                moa_loop.MoAChatCompletions
+            )
+            # No _agent attribute — the regression surface from review.
+            completions._pending_trace = None
+            prepared = {
+                "messages": [
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "lookup"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "lookup",
+                            "function": {"name": "lookup", "arguments": "{}"},
+                        }],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "lookup",
+                        "content": "result",
+                    },
+                ],
+                "guidance": None,
+                "aggregator": {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                },
+                "aggregator_temperature": None,
+            }
+            tools = [{
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }]
+            canonical_tools = copy.deepcopy(tools)
+
+            completions._call_prepared_aggregator(prepared, {"tools": tools})
+
+        assert calls, "prepared aggregator must still call the LLM"
+        assert not _has_cache_control(calls[0].get("tools") or []), (
+            "config cache_ttl=off with no live _agent must not inject "
+            "cache_control (planner config fallback, not forced False)."
+        )
+        assert not _has_cache_control(calls[0].get("messages") or [])
+        assert tools == canonical_tools

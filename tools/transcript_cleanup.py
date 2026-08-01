@@ -3,11 +3,14 @@
 import json
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from agent.auxiliary_client import resolve_provider_client
+from hermes_constants import get_hermes_home
 
 
 logger = logging.getLogger(__name__)
@@ -93,6 +96,25 @@ def _parse_output(content: object) -> Optional[tuple[str, float]]:
     return cleaned_text, float(confidence)
 
 
+def _load_system_prompt(cleanup_config: Mapping[str, object]) -> Optional[str]:
+    prompt_file = cleanup_config.get("prompt_file", "")
+    if prompt_file is None:
+        return _SYSTEM_PROMPT
+    if not isinstance(prompt_file, str):
+        return None
+    raw_path = prompt_file.strip()
+    if not raw_path:
+        return _SYSTEM_PROMPT
+    path = Path(os.path.expandvars(raw_path)).expanduser()
+    if not path.is_absolute():
+        path = get_hermes_home() / path
+    try:
+        prompt = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return prompt or None
+
+
 def cleanup_transcript(
     raw_transcript: str,
     topic_context: str,
@@ -116,6 +138,10 @@ def cleanup_transcript(
         return _result(raw_transcript, provider, model, started_at, "error")
     if not math.isfinite(threshold) or not 0 <= threshold <= 1:
         return _result(raw_transcript, provider, model, started_at, "error")
+
+    system_prompt = _load_system_prompt(cleanup_config)
+    if system_prompt is None:
+        return _result(raw_transcript, provider, model, started_at, "prompt_error")
 
     try:
         client, resolved_model = resolve_provider_client(provider, model=model)
@@ -142,7 +168,7 @@ def cleanup_transcript(
         response = create(
             model=call_model,
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_data},
             ],
             temperature=0,

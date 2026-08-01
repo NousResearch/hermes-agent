@@ -2508,8 +2508,7 @@ class TestCompressionChainProjection:
         db.append_message("xtip", "user", "continued in webui")
         db._conn.commit()
 
-        # Unfiltered list (WebUI dashboard path): projected tip must carry
-        # source=webui so client-side webui tab shows the conversation.
+        # Unfiltered list: projected tip carries source=webui.
         all_sessions = db.list_sessions_rich(limit=20)
         by_id = {s["id"]: s for s in all_sessions}
         assert "xtip" in by_id
@@ -2520,21 +2519,22 @@ class TestCompressionChainProjection:
         assert projected["preview"].startswith("continued in webui")
         assert projected["ended_at"] is None
 
-        # SQL source=webui still only admits roots with that source — the
-        # telegram root is filtered pre-projection (same as before). This
-        # documents that client-side filtering after unfiltered load is the
-        # path that needs projected source; it is not a regression.
+        # source= filter is applied to the *projected tip*, not the root
+        # (#75625 sweeper): webui tab sees the chain; telegram tab does not
+        # (tip is webui).
         webui_only = db.list_sessions_rich(source="webui", limit=20)
-        assert "xtip" not in {s["id"] for s in webui_only}
+        assert "xtip" in {s["id"] for s in webui_only}
+        webui_row = next(s for s in webui_only if s["id"] == "xtip")
+        assert webui_row["source"] == "webui"
 
-        # Same-source filter still surfaces the chain when root matches.
         telegram_only = db.list_sessions_rich(source="telegram", limit=20)
-        t_ids = {s["id"] for s in telegram_only}
-        assert "xtip" in t_ids
-        # After projection the row reports the tip source even when admitted
-        # via the root's telegram source filter.
-        t_row = next(s for s in telegram_only if s["id"] == "xtip")
-        assert t_row["source"] == "webui"
+        assert "xtip" not in {s["id"] for s in telegram_only}
+
+        # Totals paired with list_sessions_rich must use tip source too.
+        assert db.session_count(source="webui", exclude_children=True) >= 1
+        assert db.session_count(source="telegram", exclude_children=True) == 0
+        by_src = db.session_count_by_source(exclude_children=True)
+        assert by_src.get("webui", 0) >= 1
 
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial

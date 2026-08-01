@@ -8743,6 +8743,26 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
         include_sources = [source] if source else list(sources or [])
+        # When projecting compression tips, source membership is defined by the
+        # *live tip* source, not the root. Defer include/exclude until after
+        # projection so telegram→webui chains appear under source=webui (#75625).
+        defer_source_filter = bool(
+            project_compression_tips
+            and not include_children
+            and (include_sources or exclude_sources)
+        )
+        deferred_include_sources: List[str] = []
+        deferred_exclude_sources: List[str] = []
+        page_limit, page_offset = limit, offset
+        if defer_source_filter:
+            deferred_include_sources = list(include_sources)
+            deferred_exclude_sources = list(exclude_sources or [])
+            include_sources = []
+            exclude_sources = None
+            # Over-fetch then filter/slice so LIMIT is not applied to the wrong
+            # pre-projection population. Cap keeps pathological DBs bounded.
+            limit = min(max((page_limit + page_offset) * 25, page_limit + page_offset, 100), 10_000)
+            offset = 0
         if include_sources:
             placeholders = ",".join("?" for _ in include_sources)
             where_clauses.append(f"s.source IN ({placeholders})")
@@ -9016,6 +9036,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 projected.append(merged)
             sessions = projected
 
+        if defer_source_filter:
+            sessions = [
+                s
+                for s in sessions
+                if self._session_source_matches(
+                    s.get("source"),
+                    include_sources=deferred_include_sources,
+                    exclude_sources=deferred_exclude_sources,
+                )
+            ]
+            sessions = sessions[page_offset : page_offset + page_limit]
+
         # Derive read state per surfaced conversation. ``last_read_at`` is
         # lineage-stamped by set_session_read, so a projected row's root
         # watermark and its tip's are the same value — comparing it against
@@ -9071,6 +9103,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 finish_reason=row["finish_reason"],
             )
         return statuses
+
+    @staticmethod
+    def _session_source_matches(
+        row_source: Any,
+        *,
+        include_sources: List[str] | None = None,
+        exclude_sources: List[str] | None = None,
+    ) -> bool:
+        """Return whether a (possibly projected) session source matches filters."""
+        src = row_source if row_source not in (None, "") else "cli"
+        if include_sources:
+            if src not in include_sources:
+                return False
+        if exclude_sources and src in exclude_sources:
+            return False
+        return True
 
     # =========================================================================
     # Message storage
@@ -11121,7 +11169,30 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (e.g. ``["cron"]`` so the recents "load more" total matches a
         cron-excluded ``list_sessions_rich`` page and doesn't keep "load more"
         stuck on for buried scheduler sessions).
+
+        With ``exclude_children=True`` and a source filter, membership matches
+        ``list_sessions_rich`` after compression-tip projection (tip source),
+        not the raw root source (#75625).
         """
+        include_sources = [source] if source else list(sources or [])
+        if exclude_children and (include_sources or exclude_sources):
+            # Projected-tip semantics: reuse list_sessions_rich (defers source
+            # until after tip projection) with a large page and count results.
+            rows = self.list_sessions_rich(
+                source=source,
+                sources=sources,
+                exclude_sources=exclude_sources,
+                cwd_prefix=cwd_prefix,
+                min_message_count=min_message_count,
+                include_archived=include_archived,
+                archived_only=archived_only,
+                limit=10_000,
+                offset=0,
+                project_compression_tips=True,
+                include_children=False,
+            )
+            return len(rows)
+
         where_clauses = []
         params = []
 
@@ -11131,7 +11202,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # children.
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
-        include_sources = [source] if source else list(sources or [])
         if include_sources:
             placeholders = ",".join("?" for _ in include_sources)
             where_clauses.append(f"s.source IN ({placeholders})")
@@ -11192,14 +11262,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``exclude_children=True`` mirrors ``list_sessions_rich`` visibility
         (roots + branch/reset sessions, excluding sub-agent runs, delegates,
         and compression continuations) so the source counts match what the
-        Sessions page actually lists.
+        Sessions page actually lists. Counts use the **projected tip** source
+        when compression tips are projected (#75625).
         """
+        if exclude_children:
+            rows = self.list_sessions_rich(
+                limit=10_000,
+                offset=0,
+                include_archived=include_archived,
+                archived_only=archived_only,
+                project_compression_tips=True,
+                include_children=False,
+            )
+            counts: Dict[str, int] = {}
+            for s in rows:
+                src = s.get("source") if s.get("source") not in (None, "") else "cli"
+                counts[str(src)] = counts.get(str(src), 0) + 1
+            return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
         where_clauses = []
         params: list = []
 
-        if exclude_children:
-            where_clauses.append(_LISTABLE_CHILD_SQL)
-            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
         if archived_only:
             where_clauses.append("s.archived = 1")
         elif not include_archived:

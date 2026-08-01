@@ -13,6 +13,8 @@ handler are thin wrappers that parse args and delegate.
 import json
 import re
 import shutil
+import stat
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -46,23 +48,147 @@ def _display_source(r) -> str:
 # Shared do_* functions
 # ---------------------------------------------------------------------------
 
-def _audit_scan_source_for_lock_entry(entry: Dict[str, Any]) -> str:
-    """Return the trust-bearing scanner source for an installed hub skill.
+def _audit_path_is_redirect(path: Path) -> bool:
+    """Return True for symlinks and Windows directory junctions."""
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        if is_junction and is_junction():
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except OSError:
+        return True
 
-    Lock entries carry both an upstream identifier (used for update checks) and
-    source/trust provenance (used for install policy).  Do not replay audits of
-    official optional skills with identifiers like ``official/devops/foo``:
-    ``tools.skills_guard`` intentionally treats those strings as community so a
-    user-controlled identifier cannot spoof official trust.  Instead, preserve
-    the installation provenance when the lock says the skill came from the
-    official optional-skills source.
+
+def _normalized_bundle_files(bundle: Any) -> Optional[Dict[str, bytes]]:
+    """Return a validated, normalized bundle file map or ``None``."""
+    try:
+        expected: Dict[str, bytes] = {}
+        for raw_path, content in bundle.files.items():
+            relative = Path(str(raw_path))
+            normalized = relative.as_posix()
+            if (
+                relative.is_absolute()
+                or normalized in {"", "."}
+                or ".." in relative.parts
+                or normalized in expected
+            ):
+                return None
+            expected[normalized] = (
+                content if isinstance(content, bytes) else content.encode("utf-8")
+            )
+        return expected or None
+    except (AttributeError, TypeError, UnicodeEncodeError, ValueError):
+        return None
+
+
+def _installed_skill_matches_bundle(skill_path: Path, bundle: Any) -> bool:
+    """Compare an installed skill with a canonical bundle byte-for-byte."""
+    expected = _normalized_bundle_files(bundle)
+    if expected is None:
+        return False
+    try:
+        if _audit_path_is_redirect(skill_path) or not skill_path.is_dir():
+            return False
+
+        seen: set[str] = set()
+        for path in skill_path.rglob("*"):
+            if _audit_path_is_redirect(path):
+                return False
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                return False
+            if path.stat(follow_symlinks=False).st_mode & 0o111:
+                return False
+            relative = path.relative_to(skill_path).as_posix()
+            if relative not in expected or path.read_bytes() != expected[relative]:
+                return False
+            seen.add(relative)
+        return seen == set(expected)
+    except (OSError, ValueError):
+        return False
+
+
+def _audit_fallback_source(entry: Dict[str, Any]) -> str:
+    identifier = str(entry.get("identifier") or "community")
+    if entry.get("source") == "official" or identifier == "official":
+        return "community"
+    return identifier
+
+
+def _canonical_official_audit_bundle(entry: Dict[str, Any]) -> Any:
+    """Resolve audit provenance only from the tree shipped beside Hermes code.
+
+    Package-manager overrides remain valid for discovery and installation, but
+    an external tree cannot establish builtin audit trust until its root is
+    cryptographically or otherwise authentically bound to that package.
     """
-    stored = entry.get("scan_source")
-    if stored:
-        return str(stored)
-    if entry.get("source") == "official" and entry.get("trust_level") == "builtin":
+    identifier = str(entry.get("identifier") or "")
+    if (
+        entry.get("source") != "official"
+        or entry.get("trust_level") != "builtin"
+        or not identifier.startswith("official/")
+    ):
+        return None
+
+    import tools.skills_hub as skills_hub
+
+    try:
+        # Audit trust must be anchored to the optional-skills tree shipped beside
+        # the loaded Hermes code. OptionalSkillSource() intentionally honors the
+        # wrapper-facing HERMES_OPTIONAL_SKILLS override, which is valid for
+        # discovery/install but is not a provenance authority.
+        module_file = skills_hub.__file__
+        if not module_file:
+            return None
+        source = skills_hub.OptionalSkillSource.__new__(skills_hub.OptionalSkillSource)
+        source._optional_dir = Path(module_file).resolve().parent.parent / "optional-skills"
+        bundle = source.fetch(identifier)
+        if (
+            bundle is None
+            or bundle.source != "official"
+            or bundle.trust_level != "builtin"
+            or bundle.identifier != identifier
+            or _normalized_bundle_files(bundle) is None
+        ):
+            return None
+        return bundle
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _audit_scan_source_for_lock_entry(
+    entry: Dict[str, Any], skill_path: Optional[Path] = None
+) -> str:
+    """Return a scanner source bound to installed content, not lock claims."""
+    bundle = _canonical_official_audit_bundle(entry)
+    if (
+        bundle is not None
+        and skill_path is not None
+        and _installed_skill_matches_bundle(skill_path, bundle)
+    ):
         return "official"
-    return str(entry.get("identifier") or entry.get("source") or "community")
+    return _audit_fallback_source(entry)
+
+
+def _scan_skill_for_audit(entry: Dict[str, Any], skill_path: Path, scan_skill: Any):
+    """Scan official content from a verified private snapshot."""
+    source = _audit_scan_source_for_lock_entry(entry, skill_path)
+    if source != "official":
+        return scan_skill(skill_path, source=source)
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-skills-audit-") as directory:
+            snapshot_path = Path(directory) / skill_path.name
+            shutil.copytree(skill_path, snapshot_path, symlinks=True)
+            if _audit_scan_source_for_lock_entry(entry, snapshot_path) != "official":
+                return scan_skill(skill_path, source="community")
+            return scan_skill(snapshot_path, source="official")
+    except (OSError, shutil.Error):
+        return scan_skill(skill_path, source="community")
 
 
 def _resolve_short_name(name: str, sources, console: Console) -> str:
@@ -1153,7 +1279,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
 
-        result = scan_skill(skill_path, source=_audit_scan_source_for_lock_entry(entry))
+        result = _scan_skill_for_audit(entry, skill_path, scan_skill)
         c.print(format_scan_report(result))
 
         if deep:

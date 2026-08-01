@@ -4181,6 +4181,27 @@ def _auth_refresh_provider_for_route(
     return normalized
 
 
+def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[Dict[str, Any]]:
+    """Resolve the configured ``fallback_chain`` entry a label points at.
+
+    Labels minted by :func:`_try_configured_fallback_chain` carry the entry
+    index in our own stable format (``fallback_chain[<i>](<provider>)``).
+    Returns ``None`` when the label is not a configured-chain candidate or
+    the index no longer resolves to a dict entry.
+    """
+    if not task or not fb_label:
+        return None
+    m = re.match(r"fallback_chain\[(\d+)\]", fb_label)
+    if not m:
+        return None
+    try:
+        chain = _get_auxiliary_task_config(task).get("fallback_chain")
+        entry = chain[int(m.group(1))] if isinstance(chain, list) else None
+    except Exception:
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
 def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[float]:
     """Resolve a per-entry ``timeout`` for a configured fallback candidate.
 
@@ -4192,24 +4213,13 @@ def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[floa
     primary's 30s deadline every turn (#62452).
 
     Entries in ``auxiliary.<task>.fallback_chain`` may declare their own
-    ``timeout`` (seconds). This helper reads it by parsing the entry index
-    out of the label minted by :func:`_try_configured_fallback_chain`
-    (``fallback_chain[<i>](<provider>)`` — our own stable format). Returns
-    ``None`` when the label is not a configured-chain candidate, the entry
-    has no ``timeout``, or the value is invalid — callers then keep the
-    task-level timeout, preserving existing behavior.
+    ``timeout`` (seconds). Returns ``None`` when the label is not a
+    configured-chain candidate, the entry has no ``timeout``, or the value
+    is invalid — callers then keep the task-level timeout, preserving
+    existing behavior.
     """
-    if not task or not fb_label:
-        return None
-    m = re.match(r"fallback_chain\[(\d+)\]", fb_label)
-    if not m:
-        return None
-    try:
-        chain = _get_auxiliary_task_config(task).get("fallback_chain")
-        entry = chain[int(m.group(1))] if isinstance(chain, list) else None
-        raw = entry.get("timeout") if isinstance(entry, dict) else None
-    except Exception:
-        return None
+    entry = _fallback_chain_entry(task, fb_label)
+    raw = entry.get("timeout") if entry else None
     if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
         return float(raw)
     return None
@@ -4284,15 +4294,9 @@ def _fallback_destination(
     api_mode = None
     model = fb_model
 
-    match = re.match(r"fallback_chain\[(\d+)\]", fb_label or "")
-    if match and task:
-        try:
-            chain = _get_auxiliary_task_config(task).get("fallback_chain")
-            entry = chain[int(match.group(1))] if isinstance(chain, list) else None
-        except Exception:
-            entry = None
-        if isinstance(entry, dict):
-            return _fallback_destination_from_entry(entry, fb_client, fb_model)
+    entry = _fallback_chain_entry(task, fb_label)
+    if entry is not None:
+        return _fallback_destination_from_entry(entry, fb_client, fb_model)
 
     return _complete_fallback_destination(provider, base_url, api_mode, model)
 
@@ -4304,42 +4308,16 @@ def _replan_synchronous_cache_sections(
     destination: _FallbackDestination,
 ) -> tuple[list, list]:
     """Strip source decoration and plan one synchronous destination locally."""
-    from agent.agent_runtime_helpers import (
-        _direct_native_anthropic_tool_cache_capability,
-        anthropic_prompt_cache_policy,
-    )
-    from agent.prompt_caching import (
-        build_prompt_cache_plan,
-        strip_anthropic_cache_control,
-        strip_anthropic_tool_cache_control,
-    )
+    from agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
-    canonical_messages = copy.deepcopy(messages or [])
-    strip_anthropic_cache_control(canonical_messages)
-    canonical_tools = strip_anthropic_tool_cache_control(tools)
-    stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
-    should_cache, native_layout = anthropic_prompt_cache_policy(
-        stub,
+    return plan_cache_sections_for_destination(
+        messages,
+        tools,
         provider=destination.provider,
         base_url=destination.base_url,
         api_mode=destination.api_mode or "",
         model=destination.model or "",
     )
-    if not should_cache:
-        return canonical_messages, canonical_tools
-    plan = build_prompt_cache_plan(
-        canonical_messages,
-        canonical_tools,
-        native_anthropic=native_layout,
-        direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
-            stub,
-            provider=destination.provider,
-            base_url=destination.base_url,
-            api_mode=destination.api_mode or "",
-            model=destination.model or "",
-        ),
-    )
-    return plan.messages, plan.tools
 
 
 def _call_fallback_candidate_sync(

@@ -541,3 +541,56 @@ class TestEscapeNormalizedNewString:
         assert count == 1
         assert "return 2" in new
 
+
+class TestContextAwareCorrectness:
+    """Strategy 9 must not silently replace half-matching (wrong) blocks."""
+
+    def test_half_garbage_block_does_not_match(self):
+        """A pattern where one line is unrelated must NOT match/corrupt.
+
+        Old behavior: context_aware accepted a block when >=50% of lines were
+        similar, so this 2-line pattern (one real line, one garbage line)
+        matched and silently deleted the real second line.
+        """
+        content = "config_value = 100\nthreshold = 200\n"
+        old = "config_value = 999\ntotally_unrelated_line_here"
+        new = "config_value = 42\ntotally_unrelated_line_here"
+        result, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert count == 0, f"should not match, got strategy={strategy}"
+        assert err is not None
+        assert "threshold = 200" in result  # not destroyed
+
+    def test_replace_all_refuses_similarity_strategy(self):
+        """replace_all must not mass-overwrite approximate (non-exact) blocks."""
+        content = "aX\nbY\naX\nbY\naX\nbY\n"
+        # 'aX\nbZ' never appears exactly; only approximately (bY != bZ).
+        result, count, strategy, err = fuzzy_find_and_replace(
+            content, "aX\nbZ", "QQ\nRR", replace_all=True
+        )
+        assert count == 0, f"should refuse, got strategy={strategy}"
+        assert err is not None
+        assert result == content  # untouched
+
+    def test_all_lines_matching_still_replaces(self):
+        """A block where every line is a close match still applies (unique)."""
+        content = "alpha one\nbeta two\ngamma three\n"
+        old = "alpha one\nbeta 2\ngamma three"  # close on every line
+        new = "alpha one\nbeta TWO\ngamma three"
+        result, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert count == 1, f"err={err}"
+        assert "beta TWO" in result
+
+    def test_no_match_on_large_file_is_fast(self):
+        """The anchor pre-filter keeps a no-match scan from being O(file×pattern)."""
+        import time
+        from tools.fuzzy_match import _strategy_context_aware
+
+        big = "\n".join(f"line {i} content here" for i in range(10000))
+        patt = "\n".join(f"nomatch xyzzy {i}" for i in range(40))
+        start = time.perf_counter()
+        matches = _strategy_context_aware(big, patt)
+        elapsed = time.perf_counter() - start
+        assert matches == []
+        # Was ~5.5s before anchoring; generous ceiling to avoid CI flake.
+        assert elapsed < 2.0, f"context_aware no-match took {elapsed:.2f}s"
+

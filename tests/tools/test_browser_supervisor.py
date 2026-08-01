@@ -160,6 +160,11 @@ def _test_page_url() -> str:
     return "data:text/html;base64," + base64.b64encode(html.encode()).decode()
 
 
+def _title_page_url(title: str) -> str:
+    html = f"<!doctype html><html><head><title>{title}</title></head><body>{title}</body></html>"
+    return "data:text/html;base64," + base64.b64encode(html.encode()).decode()
+
+
 def _fire_on_page(cdp_url: str, expression: str) -> None:
     """Navigate the first page target to a data URL and fire `expression`."""
     import asyncio
@@ -235,6 +240,36 @@ def test_supervisor_start_and_snapshot(chrome_cdp, supervisor_registry):
     assert snap.pending_dialogs == ()
     # At minimum a top frame should exist after the navigate.
     assert snap.frame_tree.get("top") is not None
+
+
+def test_two_supervisors_navigate_distinct_owned_pages(chrome_cdp, supervisor_registry):
+    """Two task IDs navigate separate real Chrome tabs through owned sessions.
+
+    This is the integration boundary behind ``browser_navigate`` for shared
+    CDP browsers: each operation goes through ``CDPSupervisor.navigate_page``
+    and must remain bound to that supervisor's page session (#69727).
+    """
+    cdp_url, _port = chrome_cdp
+    first = supervisor_registry.get_or_start(task_id="pytest-nav-a", cdp_url=cdp_url)
+    second = supervisor_registry.get_or_start(task_id="pytest-nav-b", cdp_url=cdp_url)
+
+    assert first.page_target_id()
+    assert second.page_target_id()
+    assert first.page_target_id() != second.page_target_id()
+    assert first.navigate_page(_title_page_url("owned-page-a"))["ok"] is True
+    assert second.navigate_page(_title_page_url("owned-page-b"))["ok"] is True
+
+    deadline = time.monotonic() + 5
+    titles = (None, None)
+    while time.monotonic() < deadline:
+        first_title = first.evaluate_runtime("document.title")
+        second_title = second.evaluate_runtime("document.title")
+        titles = (first_title.get("result"), second_title.get("result"))
+        if titles == ("owned-page-a", "owned-page-b"):
+            break
+        time.sleep(0.05)
+
+    assert titles == ("owned-page-a", "owned-page-b")
 
 
 def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry):

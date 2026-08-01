@@ -47,6 +47,7 @@ import {
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
+import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
@@ -200,7 +201,7 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { spawnUpdaterProcess } from './updater-process'
+import { resolveStagedUpdaterBinary, spawnUpdaterProcess } from './updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import {
@@ -680,7 +681,15 @@ const WINDOW_BUTTON_POSITION = {
 // (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
 // It's only the pre-layout fallback — the renderer measures the exact overlay
 // width live via the Window Controls Overlay API.
+// The apple-touch PNG bakes in the macOS-style ~10% margin, which is correct
+// for the dock but renders visibly smaller than neighboring taskbar icons on
+// Windows, where icons are full-bleed. Windows prefers the full-bleed
+// assets/icon.ico (shipped to resources/ via extraResources) and only falls
+// back to the padded PNG if the ico is missing.
 const APP_ICON_PATHS = [
+  ...(IS_WINDOWS
+    ? [path.join(process.resourcesPath ?? '', 'icon.ico'), path.join(APP_ROOT, 'assets', 'icon.ico')]
+    : []),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
   path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
@@ -1099,6 +1108,14 @@ let bootstrapAbortController = null
 // repair can force the installer without destroying provenance about how the
 // install was created. Cleared once the reinstall is under way.
 let bootstrapRepairRequested = false
+// Counter for in-flight repair attempts. Reset on a clean boot completion
+// (see runBootstrap -> ensureRuntime resolve path). Each successive repair
+// in the same failure episode increments this; once it crosses
+// MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS the guard escalates from "soft restart"
+// to "hard reinstall" so a transient backend stall (issue #74874) stops
+// looping the user through a destructive venv reinstall.
+let bootstrapRepairAttempt = 0
+const MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS = 3
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
 const hermesLog = []
@@ -2602,18 +2619,14 @@ let isQuittingForHandoff = false
 let quitPromptOpen = false
 let quitConfirmedWithActiveWork = false
 
-// Resolve the staged updater binary. The Tauri installer copies itself to
-// HERMES_HOME/hermes-setup.exe on a successful install (see
-// apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
-// ALL repo mutation — running `hermes update` + rebuilding the desktop — so
-// the desktop never touches its own bits while running. Returns null when the
-// updater isn't staged (e.g. a dev/source run that never went through the
-// installer); callers degrade gracefully.
+// Resolve the staged updater binary the desktop may hand an update to. On
+// Windows that binary owns ALL repo mutation — running `hermes update` +
+// rebuilding the desktop — so the desktop never touches its own bits while
+// running. macOS/Linux stage the same binary but deliberately do not use it;
+// see resolveStagedUpdaterBinary for the policy and for #74836. Returns null
+// whenever no hand-off applies; callers degrade gracefully.
 function resolveUpdaterBinary() {
-  const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
-  const candidate = path.join(HERMES_HOME, name)
-
-  return fileExists(candidate) ? candidate : null
+  return resolveStagedUpdaterBinary(HERMES_HOME, { fileExists, isWindows: IS_WINDOWS })
 }
 
 function repairMacUpdaterHelper(updater) {
@@ -2841,12 +2854,13 @@ async function applyUpdates(opts = {}) {
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
-      // macOS/Linux drag-install: no staged Tauri hermes-setup. Unlike Windows
-      // (where a venv-shim file lock forces the quit→hand-off→rebuild dance),
-      // there's no mandatory file locking here, so the desktop can drive the
-      // whole update itself: `hermes update` (backend) + `hermes desktop
-      // --build-only` (OS-aware GUI rebuild), then swap the running .app bundle
-      // with the freshly built one and relaunch.
+      // macOS/Linux: never hand off, staged hermes-setup or not — the resolver
+      // returns null there by policy. Unlike Windows (where a venv-shim file
+      // lock forces the quit→hand-off→rebuild dance), there's no mandatory file
+      // locking here, so the desktop can drive the whole update itself:
+      // `hermes update` (backend) + `hermes desktop --build-only` (OS-aware GUI
+      // rebuild), then swap the running .app bundle with the freshly built one
+      // and relaunch.
       return await applyUpdatesPosixInApp(opts)
     }
 
@@ -4040,6 +4054,7 @@ async function ensureRuntime(backend) {
     // The repair request has been honoured by reaching the installer; clear it
     // so a later boot isn't forced through bootstrap again.
     bootstrapRepairRequested = false
+    bootstrapRepairAttempt = 0
 
     const bootstrapResult = await runBootstrap({
       installStamp: backend.installStamp,
@@ -8550,6 +8565,13 @@ async function startHermes() {
       error: null
     })
 
+    // A successful boot (including a soft restart that the repair-guard
+    // chose over a hard reinstall, see #74874) means any in-flight repair
+    // attempt counter has been honoured — reset it so the next genuine
+    // failure starts fresh from attempt 1 instead of inheriting the
+    // accumulated count of the resolved episode.
+    bootstrapRepairAttempt = 0
+
     return {
       baseUrl,
       mode: 'local',
@@ -9631,9 +9653,41 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // transient backend errors on a perfectly healthy install, and deleting the
   // marker in that case stranded the app in first-run setup with no way back
   // (#72166). The explicit flag carries the intent instead.
-  rememberLog('[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure')
+  bootstrapRepairAttempt += 1
 
-  bootstrapRepairRequested = true
+  // Probe the live backend process so the guard can distinguish "venv is
+  // genuinely broken" (force reinstall) from "backend is just transiently
+  // stalled under GIL pressure" (#74874 — `event loop stalled` followed by
+  // `ws ready frame send failed`, then renderer keeps reporting dead).
+  const primaryProc = backendConnectionState.getProcess()
+
+  const primaryBackendAlive = Boolean(
+    primaryProc &&
+    (primaryProc as { exitCode?: number | null }).exitCode === null &&
+    (primaryProc as { signalCode?: string | null }).signalCode === null
+  )
+
+  const repairDecision = decideBootstrapRepair({
+    attempt: bootstrapRepairAttempt,
+    maxSoftAttempts: MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS,
+    primaryBackendAlive
+  })
+
+  rememberLog(
+    `[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure ` +
+      `(attempt=${repairDecision.attempt}/${MAX_BOOTSTRAP_REPAIR_SOFT_ATTEMPTS}, ` +
+      `primaryBackendAlive=${primaryBackendAlive}, ` +
+      `hardReinstall=${repairDecision.hardReinstall}): ${repairDecision.reason}`
+  )
+
+  // The guard may decide the install is healthy enough that a restart
+  // (without touching the venv) is the right answer. Translate that into
+  // the existing flag: if the guard said "soft restart", we skip the
+  // "bypass active runtime" path inside startHermes() and fall through
+  // to the normal restart branch, which just kills the current child
+  // and respawns it against the same venv. See #74874 — this is what
+  // breaks the infinite reinstall loop the user hit.
+  bootstrapRepairRequested = repairDecision.hardReinstall
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null

@@ -15,6 +15,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
 import { $newWorktreeRequest } from '@/store/projects'
@@ -219,16 +220,35 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           // once `status` exists, so a spinner here only ever fired on *refreshes*
           // of an already-loaded repo (window focus, turn settle), reading as an
           // annoying icon "blip" with no first-load value. Refreshes are silent.
-          leading={<Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />}
-          onActivate={onOpen}
+          // It's a button (not the whole row) so the glyph opens the review pane
+          // while the strip around it stays inert; size-3.5 fills the slot exactly.
+          leading={
+            <button className="flex size-3.5 items-center justify-center" onClick={onOpen} type="button">
+              <Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />
+            </button>
+          }
         >
           <div className="flex min-w-0 flex-1 items-center gap-1">
-            <span
-              className="min-w-0 truncate text-xs font-normal text-muted-foreground/92 transition-colors group-hover/status-row:text-foreground/90"
-              title={branchLabel}
-            >
-              {branchLabel}
-            </span>
+            {/* Branch name — the other half of the review-pane target. `contents`
+                so the button lays out nothing of its own: the label stays the
+                same flex child it always was, and the hit area is the text. */}
+            <button className="contents" onClick={onOpen} type="button">
+              <span className="min-w-0 truncate text-xs font-normal text-muted-foreground/92" title={branchLabel}>
+                {branchLabel}
+              </span>
+            </button>
+
+            {/* Worktree path — plain muted text, not a chip. Always in the flex
+                so hover doesn't reflow the row; opacity alone reveals it.
+                `displayPath` collapses home → ~ (shell / VS Code convention). */}
+            {resolvedRepoPath && (
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[0.62rem] leading-4 text-muted-foreground/50 opacity-0 transition-opacity group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100"
+                data-slot="coding-status-cwd"
+              >
+                {displayPath(resolvedRepoPath)}
+              </span>
+            )}
 
             {/* Branch actions kebab — same pattern as the session/worktree rows.
                 ALWAYS laid out; only its opacity flips on hover/focus/open, so
@@ -246,14 +266,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                 <Button
                   aria-label={s.newBranch}
                   className="pointer-events-none size-4 shrink-0 text-muted-foreground/60 opacity-0 transition hover:text-foreground group-hover/status-row:pointer-events-auto group-hover/status-row:opacity-100 group-focus-within/status-row:pointer-events-auto group-focus-within/status-row:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:opacity-100"
-                  onClick={event => event.stopPropagation()}
-                  onKeyDown={event => {
-                    // The row's onActivate also fires on Enter/Space; keep it from
-                    // opening the review pane when the kebab is the focus target.
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.stopPropagation()
-                    }
-                  }}
                   size="icon-xs"
                   variant="ghost"
                 >
@@ -263,36 +275,43 @@ export const CodingStatusRow = memo(function CodingStatusRow({
             )}
           </div>
 
-          {(status.ahead > 0 || status.behind > 0) && (
-            <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
-              {status.ahead > 0 && (
-                <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
-                  <span aria-hidden>↑</span>
-                  {status.ahead}
+          {/* The counts describe what's in the review pane, so clicking them
+              opens it. `contents` again: the two spans stay direct flex children
+              of the row, keeping their gap and `ml-auto` behaviour untouched. */}
+          {(status.ahead > 0 || status.behind > 0 || hasLineDelta || untrackedOnly) && (
+            <button className="contents" onClick={onOpen} type="button">
+              {(status.ahead > 0 || status.behind > 0) && (
+                <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
+                  {status.ahead > 0 && (
+                    <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
+                      <span aria-hidden>↑</span>
+                      {status.ahead}
+                    </span>
+                  )}
+                  {status.behind > 0 && (
+                    <span className="flex items-center gap-0.5" title={s.behind(status.behind)}>
+                      <span aria-hidden>↓</span>
+                      {status.behind}
+                    </span>
+                  )}
                 </span>
               )}
-              {status.behind > 0 && (
-                <span className="flex items-center gap-0.5" title={s.behind(status.behind)}>
-                  <span aria-hidden>↓</span>
-                  {status.behind}
-                </span>
-              )}
-            </span>
-          )}
 
-          {hasLineDelta ? (
-            <DiffCount
-              added={status.added}
-              className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
-              removed={status.removed}
-            />
-          ) : untrackedOnly ? (
-            <span
-              className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
-            >
-              {s.changed(status.untracked)}
-            </span>
-          ) : null}
+              {hasLineDelta ? (
+                <DiffCount
+                  added={status.added}
+                  className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+                  removed={status.removed}
+                />
+              ) : untrackedOnly ? (
+                <span
+                  className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+                >
+                  {s.changed(status.untracked)}
+                </span>
+              ) : null}
+            </button>
+          )}
         </StatusRow>
       </ActionsContextMenu>
 

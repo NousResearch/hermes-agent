@@ -26,9 +26,13 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
 
   const surfaceTheme = () => {
     const ansi = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
-    const surface = resolveSurfaceColor('#ffffff')
+    const base = terminalTheme(renderedMode, ansi)
+    // Fall back to the palette's own background, not white — a hardcoded
+    // '#ffffff' flashes a white slab in dark mode whenever the probe can't read
+    // the token (pre-paint mount). Same contract as the user terminal.
+    const surface = resolveSurfaceColor(base.background ?? '#ffffff')
 
-    return { ...terminalTheme(renderedMode, ansi), background: surface, cursorAccent: surface }
+    return { ...base, background: surface, cursorAccent: surface }
   }
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)

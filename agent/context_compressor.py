@@ -636,6 +636,12 @@ _ACTIVE_TASK_MAX_CHARS = 1400
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+
+# Pre-LLM feasibility skip (#60451): when the compressible middle is below
+# this fraction of threshold_tokens (and a prior real-usage ineffectiveness
+# strike exists), skip the LLM summary call — deterministic dropping alone
+# recovers the negligible savings such a summary could deliver.
+_FEASIBILITY_SKIP_MIDDLE_FRACTION = 0.10
 # Under context pressure (protected-tail tool bodies alone exceed the soft
 # tail budget), demote large completed tool/file outputs even inside the
 # protected region — but always keep this many trailing messages verbatim so
@@ -764,13 +770,50 @@ def _serialized_length_for_budget(value: Any) -> int:
 # Responses sessions in particular carry ``codex_reasoning_items`` blobs of
 # ``encrypted_content`` that can dominate the serialized session (a measured
 # 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+#
+# ``reasoning_details`` is handled separately (see
+# ``_reasoning_details_text_chars``): its signed/base64 envelope is excluded
+# from the budget, mirroring the preflight estimator's exclusion in
+# ``model_metadata._estimate_message_tokens_without_images`` (#73298).
 _REPLAY_BUDGET_KEYS = (
     "reasoning",
     "reasoning_content",
-    "reasoning_details",
     "codex_reasoning_items",
     "codex_message_items",
 )
+
+
+def _reasoning_details_text_chars(value: Any) -> int:
+    """Textual thinking chars inside a ``reasoning_details`` envelope.
+
+    ``reasoning_details`` carries provider thinking blocks: the actual
+    thinking TEXT plus opaque signed/base64 envelope blobs (Anthropic
+    ``signature``, redacted ``data``, encrypted payloads).  The envelope is
+    never billed at anything near chars/4 by the provider and — on every
+    transport except Codex Responses — is replayed for at most the newest
+    assistant turn, so charging it on every message inflated the tail-budget
+    walk and silently shrank the surviving tail (#73298, second site).
+
+    Count only the thinking text (the #51800 lesson: real reasoning text
+    MUST stay visible to the budget), skip everything else.
+    """
+    if not value:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    total = 0
+    if isinstance(value, dict):
+        value = [value]
+    if isinstance(value, list):
+        for part in value:
+            if isinstance(part, str):
+                total += len(part)
+            elif isinstance(part, dict):
+                for text_key in ("thinking", "text", "summary"):
+                    text = part.get(text_key)
+                    if isinstance(text, str):
+                        total += len(text)
+    return total
 
 
 def _estimate_msg_budget_tokens(msg: dict) -> int:
@@ -804,6 +847,17 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
             tokens += estimate_tokens_rough(str(tc))
     for key in _REPLAY_BUDGET_KEYS:
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+    # reasoning_details: charge only the thinking TEXT, never the signed /
+    # base64 envelope (#73298 second site; mirrors the preflight estimator's
+    # exclusion in model_metadata).  When the same thinking text already rides
+    # in ``reasoning``/``reasoning_content`` (measured byte-identical on
+    # Anthropic-wire sessions), skip it here entirely so the prose is not
+    # charged twice on top of the envelope exclusion.
+    if not (msg.get("reasoning") or msg.get("reasoning_content")):
+        tokens += (
+            _reasoning_details_text_chars(msg.get("reasoning_details"))
+            // _CHARS_PER_TOKEN
+        )
     return tokens
 
 
@@ -1281,11 +1335,13 @@ class ContextCompressor(ContextEngine):
         self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._last_feasibility_skip = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._anti_thrash_recovery_deadline = 0.0
+        self._prellm_skip_count = 0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1337,6 +1393,7 @@ class ContextCompressor(ContextEngine):
             "protected_head_tokens": None,
             "protected_tail_tokens": None,
             "middle_window_tokens": None,
+            "prellm_skip_count": 0,
             "aux_prompt_tokens": None,
             "aux_output_reservation": None,
             "aux_provider": "",
@@ -1547,11 +1604,13 @@ class ContextCompressor(ContextEngine):
         self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._last_feasibility_skip = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._anti_thrash_recovery_deadline = 0.0
+        self._prellm_skip_count = 0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1578,6 +1637,7 @@ class ContextCompressor(ContextEngine):
         self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
         self._ineffective_compression_count = 0
+        self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = 0.0
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
@@ -1722,9 +1782,34 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = count
         self._persist_ineffective_compression_count()
 
-    def record_completed_compaction(self, *, used_fallback: bool = False) -> None:
-        """Record one completed boundary and its summary quality."""
+    def record_completed_compaction(
+        self, *, used_fallback: bool = False, feasibility_skip: bool = False,
+    ) -> None:
+        """Record one completed boundary and its summary quality.
+
+        ``feasibility_skip=True`` marks a deliberate pre-LLM skip (#60451):
+        the boundary is streak-NEUTRAL for ``_fallback_compression_streak``
+        (neither incremented nor reset). It still arms the real-usage
+        effectiveness verdict (``_verify_compaction_cleared_threshold``) on
+        purpose — a skipped-summary drop that fails to clear the threshold is
+        exactly the incompressible-transcript case the ineffective-strike
+        breaker exists for, and its recovery probe bounds the block.
+        """
         self._verify_compaction_cleared_threshold = True
+        if feasibility_skip:
+            # A deliberate pre-LLM feasibility skip (#60451) is not a
+            # summary-quality verdict: it must neither extend a fallback
+            # streak (two skips would otherwise latch the >= 2 breaker and
+            # disable compression entirely — including the cheap deterministic
+            # dropping the skip exists to reach) nor reset one (a skip proves
+            # nothing about the summary model's health).
+            if not self.quiet_mode:
+                logger.info(
+                    "Compaction completed via pre-LLM feasibility skip; "
+                    "fallback_compression_streak unchanged (%d)",
+                    self._fallback_compression_streak,
+                )
+            return
         if used_fallback:
             self._fallback_compression_streak += 1
             if not self.quiet_mode:
@@ -1934,6 +2019,7 @@ class ContextCompressor(ContextEngine):
         # trigger invalidates them. Keep the durable copy in sync so a
         # restart doesn't resurrect strikes this recalibration just voided.
         self._record_ineffective_compression_verdict(0)
+        self._prellm_skip_count = 0
         if runtime_changed:
             self._fallback_compression_streak = 0
             self._persist_fallback_compression_streak()
@@ -2166,6 +2252,10 @@ class ContextCompressor(ContextEngine):
         self._micro_compact_consecutive_failures: int = 0
         self._micro_compact_last_failure_cursor: int = -1
         self._micro_compact_defrag_threshold_tokens: int = 2000
+        # Set by _defrag_rolling_summary when it pops _DB_PERSISTED_MARKER
+        # from a live dict in place; consumed by finalize_turn to invalidate
+        # the agent's bounded flush-scan cursor (sibling of the #75170 site).
+        self._flush_scan_cursor_invalidated: bool = False
         self._micro_compact_passes: int = 0
         self._micro_compact_tokens_saved_total: int = 0
         # Cadence: run a pass every Nth completed turn. Each pass rewrites
@@ -2227,6 +2317,9 @@ class ContextCompressor(ContextEngine):
         # restart with a persisted tripped counter (#69872) waits a full fresh
         # window before probing (#54923: restart must never disarm a guard).
         self._anti_thrash_recovery_deadline: float = 0.0
+        # Pre-LLM feasibility skips (#60451). Observability only; NEVER feeds
+        # the ineffectiveness strike latch or the fallback streak breaker.
+        self._prellm_skip_count: int = 0
         # Consecutive completed deterministic-fallback boundaries. Unlike the
         # real-usage effectiveness counter, ordinary fitting responses must not
         # reset this breaker; only a healthy completed summary does.
@@ -2248,6 +2341,7 @@ class ContextCompressor(ContextEngine):
         # (gateway hygiene, /compress) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
+        self._last_feasibility_skip: bool = False
         # When summary generation fails we now ABORT compression entirely
         # and return the original messages unchanged instead of dropping
         # the middle window with a static placeholder.  Callers inspect
@@ -4236,6 +4330,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         end: int,
     ) -> list[tuple[int, str]]:
         """Find handoff summaries inside a compression window."""
+        n = len(messages)
+        # Defensive: clamp bounds so a caller passing an out-of-range end
+        # (e.g. tail-cut returning len(messages)+1 when head_end >= n)
+        # cannot trigger IndexError.  (#75588)
+        start = max(0, min(start, n))
+        end = max(start, min(end, n))
         summaries: list[tuple[int, str]] = []
         for idx in range(start, end):
             content = messages[idx].get("content")
@@ -5005,7 +5105,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # exists to prevent.  Re-align FORWARD (never backward, which would give
         # the floor's message back) so a raised cut skips to the end of the
         # group and the whole call/result pair is summarised together.
-        return self._align_boundary_forward(messages, max(cut_idx, head_end + 1))
+        return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))
 
     # ------------------------------------------------------------------
     # ContextEngine: manual /compress preflight
@@ -5322,6 +5422,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Content changed after a possible flush — clear the persisted
                 # stamp so the DB sync/flush rewrites the row.
                 entry.pop(_DB_PERSISTED_MARKER, None)
+                # Sibling of the finalize_turn pop site (#75170): this pop
+                # also strips the marker from a LIVE dict in place, so the
+                # bounded flush-scan cursor would identity-skip the rewritten
+                # marker and the defragged summary would never reach state.db.
+                # The compressor holds no agent reference, so raise a flag the
+                # finalizer consumes to invalidate agent._db_flush_scan_prefix.
+                # (The pop sites at module scope — fresh copies in
+                # strip-marker helpers — break identity and need no flag.)
+                self._flush_scan_cursor_invalidated = True
                 break
         logger.info(
             "Micro-compaction defrag: rolling summary re-summarized "
@@ -5784,7 +5893,11 @@ This compaction should PRIORITISE preserving all information related to the focu
           1. Prune old tool results (cheap pre-pass, no LLM call)
           2. Protect head messages (system prompt + first exchange)
           3. Find tail boundary by token budget (~20K tokens of recent context)
-          4. Summarize middle turns with structured LLM prompt
+          4. Summarize middle turns with structured LLM prompt (skipped
+             pre-LLM when the middle is below
+             ``_FEASIBILITY_SKIP_MIDDLE_FRACTION`` of the threshold after a
+             prior real-usage ineffectiveness strike — the deterministic
+             fallback drop recovers the negligible savings instead)
           5. On re-compression, iteratively update the previous summary
 
         Blank platform-echo user rows trailing the latest actionable user
@@ -5804,7 +5917,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                 everything else.  Inspired by Claude Code's ``/compact``.
             force: If True, clear any active summary-failure cooldown before
                 running so a manual ``/compress`` can retry immediately after
-                an auto-compression abort.  Auto-compress callers pass False.
+                an auto-compression abort, and bypass the pre-LLM feasibility
+                skip so an explicit user request always exercises the full
+                summary path.  Auto-compress callers pass False.
             memory_context: Optional provider-supplied context to preserve in
                 the summary prompt. Whitespace-only values are ignored.
         """
@@ -5812,6 +5927,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # after compress() returns to decide whether to surface a warning.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._last_feasibility_skip = False
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
@@ -6094,12 +6210,65 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
 
         # Phase 3: Generate structured summary
-        summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(
-            turns_to_summarize,
-            focus_topic=summary_focus_topic,
-            memory_context=memory_context,
-        )
+
+        # Pre-LLM feasibility check: if the middle section is too small to
+        # yield meaningful token savings, skip the expensive LLM summarization
+        # call and fall through to the deterministic message-dropping path
+        # (which is cheap and always applicable).  Without this guard a
+        # tool-heavy session where the protected tail already holds most of
+        # the tokens can burn 500+ seconds on a summary call that replaces a
+        # few lightweight messages, leaving the total token count essentially
+        # unchanged.
+        #
+        # Only fires after at least one prior real-usage ineffectiveness
+        # strike.  The check READS ``_ineffective_compression_count`` but
+        # never writes it: that strike counter is fed exclusively by real
+        # provider token counts (see the anti-thrashing verdict in
+        # _update_token_usage), and consumers latch at >= 2 to disable
+        # compression entirely.  Feasibility skips are tracked separately
+        # in ``_prellm_skip_count`` for observability.
+        #
+        # Skipped when ``force=True`` (manual /compress) so auth/error
+        # handling paths are always exercised on explicit user request.
+        feasibility_skip = False
+        if not force and self._ineffective_compression_count >= 1:
+            # _record_compression_regions already estimated this exact window
+            # into the telemetry dict above; reuse it so the log line and
+            # telemetry can never disagree. The regions helper no-ops when the
+            # telemetry attr isn't a dict, so fall back to a fresh estimate
+            # when the key is absent/None (0 is a legitimate value).
+            middle_tokens = telemetry.get("middle_window_tokens")
+            if middle_tokens is None:
+                middle_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+            if middle_tokens < int(
+                self.threshold_tokens * _FEASIBILITY_SKIP_MIDDLE_FRACTION
+            ):
+                feasibility_skip = True
+                self._last_feasibility_skip = True
+                self._prellm_skip_count += 1
+                telemetry["prellm_skip_count"] = self._prellm_skip_count
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression: middle section (%d tokens at indices "
+                        "%d-%d) is below %.0f%% of threshold (%d tokens) — "
+                        "skipping LLM summarization, proceeding with "
+                        "deterministic message dropping. prellm_skip_count=%d",
+                        middle_tokens, compress_start, compress_end,
+                        _FEASIBILITY_SKIP_MIDDLE_FRACTION * 100,
+                        self.threshold_tokens, self._prellm_skip_count,
+                    )
+
+        if feasibility_skip:
+            summary = None  # No LLM call; Phase 4 inserts the deterministic fallback
+        else:
+            # Deriving the auto focus topic scans recent user turns — only pay
+            # for it when a summary will actually be generated.
+            summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
+            summary = self._generate_summary(
+                turns_to_summarize,
+                focus_topic=summary_focus_topic,
+                memory_context=memory_context,
+            )
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -6121,7 +6290,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # of these cases, rotating into a child session with a placeholder
         # summary degrades the conversation for zero benefit. Preserve it
         # unchanged until access is restored or connectivity recovers.
-        if not summary and (
+        if not summary and not feasibility_skip and (
             self.abort_on_summary_failure
             or self._last_summary_auth_failure
             or self._last_summary_network_failure
@@ -6201,15 +6370,26 @@ This compaction should PRIORITISE preserving all information related to the focu
         # content-free "N messages were removed" marker.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting deterministic fallback context summary")
+                if feasibility_skip:
+                    logger.info("Feasibility skip — inserting deterministic fallback context summary")
+                else:
+                    logger.warning("Summary generation failed — inserting deterministic fallback context summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
             telemetry["fallback_used"] = True
-            telemetry["failure_class"] = telemetry.get("failure_class") or "summary_generation_failed"
+            if feasibility_skip:
+                # Deliberate optimization, not a summary failure — keep the
+                # telemetry class distinct so dashboards don't count skips
+                # as aux-model breakage.
+                telemetry["failure_class"] = telemetry.get("failure_class") or "feasibility_skip"
+            else:
+                telemetry["failure_class"] = telemetry.get("failure_class") or "summary_generation_failed"
             summary = self._build_static_fallback_summary(
                 turns_to_summarize,
-                reason=self._last_summary_error,
+                # A stale error from an earlier real failure must not be
+                # embedded into a deliberate feasibility skip's fallback.
+                reason=None if feasibility_skip else self._last_summary_error,
             )
 
         tail_messages: List[Dict[str, Any]] = []
@@ -6258,16 +6438,18 @@ This compaction should PRIORITISE preserving all information related to the focu
                 None,
             )
         first_tail_role = None
+        first_tail_visible_idx: Optional[int] = None
         if tail_messages:
-            first_tail_role = next(
+            first_tail_visible_idx, first_tail_role = next(
                 (
-                    role
-                    for role in (
-                        _template_visible_role(m) for m in tail_messages
+                    (idx, role)
+                    for idx, role in (
+                        (idx, _template_visible_role(m))
+                        for idx, m in enumerate(tail_messages)
                     )
                     if role is not None
                 ),
-                None,
+                (None, None),
             )
         # When the only protected head message is the system prompt, the
         # summary becomes the first *visible* message in the API request
@@ -6294,11 +6476,27 @@ This compaction should PRIORITISE preserving all information related to the focu
         # If no user-role message survives in either the protected head or the
         # preserved tail, the summary MUST carry role="user" so the request
         # always has at least one user turn.
+        #
+        # A bare role check is not enough: the tail's sole surviving user
+        # turn can be image-only (a screenshot with no caption). The newest
+        # image-bearing user message is the ``_strip_historical_media``
+        # anchor and is kept byte-for-byte, so it never gains a text
+        # placeholder — its role is "user" but its text content is empty,
+        # which backends checking for actual query text still reject. Count
+        # only user messages with non-empty text as "surviving"; when the
+        # guard fires, the real (never fabricated) summary text lands in a
+        # role="user" slot, which is always non-empty (falls back to
+        # ``_build_static_fallback_summary`` above when generation fails).
         if not _force_user_leading:
+            def _is_nonempty_user_turn(message: Dict[str, Any]) -> bool:
+                return message.get("role") == "user" and bool(
+                    _content_text_for_contains(message.get("content")).strip()
+                )
+
             _user_survives = any(
-                message.get("role") == "user" for message in compressed
+                _is_nonempty_user_turn(message) for message in compressed
             ) or any(
-                message.get("role") == "user" for message in tail_messages
+                _is_nonempty_user_turn(message) for message in tail_messages
             )
             if not _user_survives:
                 _force_user_leading = True
@@ -6354,9 +6552,27 @@ This compaction should PRIORITISE preserving all information related to the focu
                 ),
             })
 
+        # Default merge target: literal tail index 0. For an ordinary
+        # alternation collision the summary only has to stay *invisible* to
+        # the template, and a leading template-exempt row (bare tool-call
+        # assistant message, tool result) is the ideal carrier — it absorbs
+        # the summary without adding a visible turn, and it leaves the live
+        # tail user message intact as the model's actual prompt. Retargeting
+        # to the first template-visible row here would convert that live
+        # request into the summary carrier for no benefit.
+        #
+        # The forced repair path is the exception. There the merge is not
+        # about alternation but about guaranteeing at least one genuinely
+        # non-empty role="user" message (an image-only or otherwise
+        # text-empty surviving user row). An exempt carrier cannot satisfy
+        # that invariant, so the summary text must land on the
+        # template-visible row itself.
+        _merge_target_idx = 0
+        if _force_user_leading and first_tail_visible_idx is not None:
+            _merge_target_idx = first_tail_visible_idx
         for tail_idx, msg in enumerate(tail_messages):
-            if _merge_summary_into_tail and tail_idx == 0:
-                # Merge the summary into the first (post-strip) tail message.
+            if _merge_summary_into_tail and tail_idx == _merge_target_idx:
+                # Merge the summary into the tail message that collided.
                 old_content = msg.get("content", "")
                 if _force_user_leading and summary_role == "user":
                     # The summary must be part of the first user-visible

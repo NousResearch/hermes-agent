@@ -1273,6 +1273,109 @@ class TestWebServerEndpoints:
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
 
+    def test_get_sessions_rejects_negative_limit(self):
+        """limit=-1 must be rejected (422), not passed through to SQLite as
+        LIMIT -1 (unbounded) — issue #74316."""
+        resp = self.client.get("/api/sessions?limit=-1")
+        assert resp.status_code == 422
+
+    def test_get_sessions_rejects_negative_offset(self):
+        resp = self.client.get("/api/sessions?offset=-1")
+        assert resp.status_code == 422
+
+    def test_get_sessions_positive_limit_still_works(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(5):
+                db.create_session(session_id=f"pos-limit-{i}", source="cli")
+                db.append_message(session_id=f"pos-limit-{i}", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=3&offset=0")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["limit"] == 3
+        assert len(payload["sessions"]) == 3
+
+    def test_profiles_sessions_rejects_negative_limit(self):
+        """Same guard on the cross-profile aggregate route — negative limit
+        previously bypassed the per-profile 500-row clamp entirely."""
+        resp = self.client.get("/api/profiles/sessions?limit=-1")
+        assert resp.status_code == 422
+
+    def test_profiles_sessions_rejects_negative_offset(self):
+        resp = self.client.get("/api/profiles/sessions?offset=-1")
+        assert resp.status_code == 422
+
+    def test_profiles_sessions_positive_limit_still_works(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i in range(5):
+                db.create_session(session_id=f"pos-plimit-{i}", source="cli")
+                db.append_message(session_id=f"pos-plimit-{i}", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/profiles/sessions?limit=3&offset=0")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["limit"] == 3
+        assert len(payload["sessions"]) == 3
+
+    def test_get_session_messages_rejects_negative_limit(self):
+        """limit=-1 previously bypassed the documented 500-row clamp because
+        min(-1, 500) == -1, which SQLite treats as 'no limit'."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="neg-limit-messages", source="cli")
+            for i in range(60):
+                db.append_message(
+                    session_id="neg-limit-messages", role="user", content=f"msg {i}"
+                )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/neg-limit-messages/messages?limit=-1")
+        assert resp.status_code == 422
+
+    def test_get_session_messages_rejects_negative_offset(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="neg-offset-messages", source="cli")
+            db.append_message(session_id="neg-offset-messages", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/neg-offset-messages/messages?offset=-1")
+        assert resp.status_code == 422
+
+    def test_get_session_messages_limit_above_500_is_capped_not_rejected(self):
+        """A limit above the documented 500-row cap is silently clamped
+        (existing ``min(limit, 500)`` behaviour), not rejected — the request
+        still succeeds."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="many-messages", source="cli")
+            for i in range(60):
+                db.append_message(session_id="many-messages", role="user", content=f"msg {i}")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/many-messages/messages?limit=1000")
+        assert resp.status_code == 200
+        assert resp.json()["pagination"]["limit"] == 500
+
 
 
 

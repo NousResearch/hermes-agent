@@ -207,10 +207,7 @@ test('parseTokenResponse cannot read a persisted set (the reload bug #73271)', (
 })
 
 test('parseStoredTokenSet rejects a non-normalized server response', () => {
-  assert.throws(
-    () => parseStoredTokenSet({ access_token: 'AT-server' }),
-    /missing accessToken/i
-  )
+  assert.throws(() => parseStoredTokenSet({ access_token: 'AT-server' }), /missing accessToken/i)
 })
 
 // --- refresh timing ---

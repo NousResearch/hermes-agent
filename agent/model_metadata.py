@@ -273,6 +273,27 @@ CONTEXT_PROBE_TIERS = [
 # Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 
+# (model, base_url) pairs that already emitted the fallback warning.
+# The fallback result itself is deliberately never cached, so without this
+# the warning would repeat on every resolution for the same unknown model.
+_FALLBACK_WARNED: set = set()
+
+
+def _warn_context_length_fallback(model: str, base_url: str) -> None:
+    """Warn (once per model+endpoint) that context detection failed and the
+    hard default is being used, so small-context models (8K, 32K) don't
+    silently get 256K and cause hard-to-debug API failures."""
+    key = (model, base_url or "")
+    if key in _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED.add(key)
+    logger.warning(
+        "Could not determine context length for model %r (base_url=%s) "
+        "— falling back to %s tokens. Set model.context_length in "
+        "config.yaml to override.",
+        model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
+    )
+
 # Minimum context length required to run Hermes Agent.  Models with fewer
 # tokens cannot maintain enough working memory for tool-calling workflows.
 # Sessions, model switches, and cron jobs should reject models below this.
@@ -634,12 +655,17 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 
 
 def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
-    """Return metadata confirmed only for the Kimi Coding endpoint.
+    """Return context metadata confirmed for one provider endpoint.
 
     Kimi Coding serves K3 under the bare slug ``k3``, but users may also
     configure or select the public-facing aliases ``kimi-k3`` and
     ``kimi-k3-cot``. Only canonical ``https://api.kimi.com/coding`` endpoints
     (legacy Moonshot keys do not serve K3) get the 1 Mi context window.
+
+    NVIDIA NIM serves ``deepseek-ai/deepseek-v4-pro`` with a 262,144-token
+    window even though DeepSeek's native endpoint serves the V4 family with a
+    1M window. Keep the lower limit scoped to NVIDIA instead of weakening the
+    global model-family metadata.
     """
     normalized = _normalize_base_url(base_url)
     try:
@@ -659,6 +685,18 @@ def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
         and model.strip().lower() in {"k3", "kimi-k3", "kimi-k3-cot"}
     ):
         return 1_048_576
+    if (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == "integrate.api.nvidia.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") == "/v1"
+        and not parsed.query
+        and not parsed.fragment
+        and model.strip().lower() == "deepseek-ai/deepseek-v4-pro"
+    ):
+        return 262_144
     return None
 
 
@@ -2582,6 +2620,9 @@ def get_model_context_length(
                         f"{length:,}", model, default_model,
                     )
                     return length
+            # Same silent-256K bug class as the step-9 fallback below —
+            # warn here too so custom/local endpoints aren't left invisible.
+            _warn_context_length_fallback(model, base_url)
             return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
@@ -2754,7 +2795,10 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Default fallback — 256K
+    # 9. Default fallback — warn (deduped per model+endpoint) so
+    #    small-context models don't silently get 256K. See
+    #    _warn_context_length_fallback for rationale.
+    _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
 
 
@@ -2965,6 +3009,68 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     return count * cost_per_image
 
 
+def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Shadow of a message holding only what the provider actually receives.
+
+    Two adjustments to the raw persisted dict:
+
+    * ``api_content`` is a SUBSTITUTE for ``content``, not an addition to it.
+      ``turn_context.substitute_api_content()`` pops the sidecar and overwrites
+      ``content`` at every API-bound build site, so exactly one of the two is
+      ever sent. Counting both double-counts any message whose sidecar differs
+      from its clean stored content (2.00x on a 40KB sidecar).
+
+      The substitution mirrors that helper's guard exactly: only a non-empty
+      STRING sidecar on a ``user``/``assistant`` row displaces ``content``.
+      Any other sidecar shape is popped and discarded on the wire without
+      touching ``content``, so a shadow that substituted unconditionally
+      would UNDERcount those rows — the dangerous direction, since it makes
+      compaction fire too late and the turn dies on a hard context error.
+    * Base64 image payloads are replaced with a placeholder; they are charged
+      separately at a flat rate by ``_count_image_tokens``, and counting their
+      raw chars here would massively overestimate usage.
+    """
+    sidecar = msg.get("api_content")
+    sidecar_wins = (
+        isinstance(sidecar, str)
+        and bool(sidecar)
+        and msg.get("role") in ("user", "assistant")
+    )
+    shadow: Dict[str, Any] = {}
+    for k, v in msg.items():
+        if k in ("_anthropic_content_blocks", "reasoning_details"):
+            continue
+        if k == "api_content":
+            # Always popped before the request is built; only counted when it
+            # actually replaces ``content``.
+            if sidecar_wins:
+                shadow["content"] = v
+            continue
+        if k == "content":
+            if sidecar_wins:
+                # The sidecar wins on the wire; skip the clean copy so the
+                # same logical content is not counted twice.
+                continue
+            if isinstance(v, list):
+                cleaned = []
+                for part in v:
+                    if isinstance(part, dict):
+                        if part.get("type") in {"image", "image_url", "input_image"}:
+                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
+                        else:
+                            cleaned.append(part)
+                    else:
+                        cleaned.append(part)
+                shadow[k] = cleaned
+            elif isinstance(v, dict) and v.get("_multimodal"):
+                shadow[k] = v.get("text_summary", "")
+            else:
+                shadow[k] = v
+        else:
+            shadow[k] = v
+    return shadow
+
+
 def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     """Char count for token estimation, excluding base64 image data.
 
@@ -2973,58 +3079,14 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     """
     if not isinstance(msg, dict):
         return len(str(msg))
-    shadow: Dict[str, Any] = {}
-    for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
-            continue
-        if k == "content":
-            if isinstance(v, list):
-                cleaned = []
-                for part in v:
-                    if isinstance(part, dict):
-                        if part.get("type") in {"image", "image_url", "input_image"}:
-                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
-                        else:
-                            cleaned.append(part)
-                    else:
-                        cleaned.append(part)
-                shadow[k] = cleaned
-            elif isinstance(v, dict) and v.get("_multimodal"):
-                shadow[k] = v.get("text_summary", "")
-            else:
-                shadow[k] = v
-        else:
-            shadow[k] = v
-    return len(str(shadow))
+    return len(str(_wire_message_shadow(msg)))
 
 
 def _estimate_message_tokens_without_images(msg: Dict[str, Any]) -> int:
     """Token estimate for a message shadow with image payloads stripped."""
     if not isinstance(msg, dict):
         return estimate_tokens_rough(str(msg))
-    shadow: Dict[str, Any] = {}
-    for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
-            continue
-        if k == "content":
-            if isinstance(v, list):
-                cleaned = []
-                for part in v:
-                    if isinstance(part, dict):
-                        if part.get("type") in {"image", "image_url", "input_image"}:
-                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
-                        else:
-                            cleaned.append(part)
-                    else:
-                        cleaned.append(part)
-                shadow[k] = cleaned
-            elif isinstance(v, dict) and v.get("_multimodal"):
-                shadow[k] = v.get("text_summary", "")
-            else:
-                shadow[k] = v
-        else:
-            shadow[k] = v
-    return estimate_tokens_rough(str(shadow))
+    return estimate_tokens_rough(str(_wire_message_shadow(msg)))
 
 
 def estimate_request_tokens_rough(

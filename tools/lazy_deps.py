@@ -104,7 +104,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Google Vertex AI provider — OAuth2 token minting for the Gemini
     # OpenAI-compatible endpoint. Only loaded when provider=vertex is selected;
     # google-auth is NOT in [all] so plain installs don't carry it.
-    "provider.vertex": ("google-auth==2.55.1",),
+    "provider.vertex": (
+        "google-auth==2.55.1",
+        "pyasn1==0.6.4",
+    ),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
@@ -257,8 +260,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
         "google-api-python-client==2.194.0",
+        "google-auth==2.55.1",
         "google-auth-oauthlib==1.3.1",
         "google-auth-httplib2==0.3.1",
+        # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
+        # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
+        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale pyasn1/google-auth.
+        "httplib2==0.32.0",
+        "pyasn1==0.6.4",
     ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
@@ -277,14 +286,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # for stripped/source-build installs that somehow dropped it. The vision
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
-    "tool.vision": ("Pillow==12.2.0",),
+    "tool.vision": ("Pillow==12.3.0",),
     # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
     # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
     # extras in pyproject.toml. The one-liner installer pulls this in via
     # `[all]`; lazy-installing here covers lean / partial / broken-extra
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
-        "mcp==1.26.0",
+        "mcp==1.28.1",
         "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).

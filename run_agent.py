@@ -1485,6 +1485,30 @@ class AIAgent:
             or "models.github.ai" in self._base_url_lower
         )
 
+    def _is_copilot_provider(self) -> bool:
+        """True when the active provider is GitHub Copilot, however spelled.
+
+        ``self.provider`` is not always the normalized slug: ``/model`` and
+        profile configs can leave the alias ``github-copilot`` (or ``github``)
+        in place — a single session log can show both ``provider=copilot`` and
+        ``provider=github-copilot`` for the same account. A bare
+        ``provider == "copilot"`` gate silently skips credential recovery for
+        the alias spellings, so this is the single owner of the check; the
+        Copilot base URL is accepted as a fallback signal.
+        """
+        if (self.provider or "").strip().lower() in {"copilot", "github-copilot", "github"}:
+            return True
+        return self._is_copilot_url()
+
+    def _is_codex_backend(self) -> bool:
+        """Return True for the ChatGPT OAuth Codex Responses backend."""
+        return (
+            getattr(self, "api_mode", None) == "codex_responses"
+            and getattr(self, "_base_url_hostname", "") == "chatgpt.com"
+            and "/backend-api/codex"
+            in (getattr(self, "_base_url_lower", "") or "")
+        )
+
     def _anthropic_prompt_cache_policy(
         self,
         *,
@@ -1496,6 +1520,24 @@ class AIAgent:
         """Forwarder — see ``agent.agent_runtime_helpers.anthropic_prompt_cache_policy``."""
         from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
         return anthropic_prompt_cache_policy(self, provider=provider, base_url=base_url, api_mode=api_mode, model=model)
+
+    def _direct_native_anthropic_tool_cache_capability(
+        self,
+        *,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> bool:
+        """Forwarder for the request-local native Anthropic tool capability."""
+        from agent.agent_runtime_helpers import _direct_native_anthropic_tool_cache_capability
+        return _direct_native_anthropic_tool_cache_capability(
+            self,
+            provider=provider,
+            base_url=base_url,
+            api_mode=api_mode,
+            model=model,
+        )
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -3515,8 +3557,8 @@ class AIAgent:
                 prefix
                 + "the turn was stopped because session storage could not be "
                 "written (the transcript would have been lost on restart). "
-                "Check disk space / permissions for the state DB, then send "
-                "your message again."
+                "This is often a full disk — free some space (or fix state.db "
+                "permissions), then send your message again."
             )
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
         # which already surfaces its own message) — don't second-guess.
@@ -3540,8 +3582,14 @@ class AIAgent:
         self._last_activity_desc = desc
         if os.environ.get("HERMES_KANBAN_TASK"):
             try:
-                from tools.kanban_tools import heartbeat_current_worker_from_env
+                from tools.kanban_tools import (
+                    heartbeat_current_worker_from_env,
+                    inject_new_comments_from_env,
+                )
                 heartbeat_current_worker_from_env()
+                # Fold any new operator notes into the running turn (OUT-OF-BAND
+                # steer) so the user can talk to a live task without a restart.
+                inject_new_comments_from_env(self)
             except Exception:
                 # Never let the bridge break the agent loop.  The function
                 # already swallows exceptions internally; this outer guard
@@ -5143,16 +5191,27 @@ class AIAgent:
     def _try_refresh_copilot_client_credentials(self) -> bool:
         """Refresh Copilot credentials and rebuild the shared OpenAI client.
 
-        Copilot tokens may remain the same string across refreshes (`gh auth token`
-        returns a stable OAuth token in many setups). We still rebuild the client
-        on 401 so retries recover from stale auth/client state without requiring
-        a session restart.
+        The raw GitHub OAuth token (`gh auth token`) is usually stable, but the
+        short-TTL *exchanged* IDE token minted from it is what Copilot actually
+        authenticates — and it expires mid-session. A heavy/long turn whose
+        request straddles that expiry gets a clean `401 IDE token expired:
+        unauthorized: token expired`. Simply re-resolving the (unchanged) raw
+        token and rebuilding the client leaves the SAME expired IDE token on the
+        wire, so the retry 401s again and the turn aborts as non-retryable —
+        only a gateway restart helped, because a cold process re-runs the
+        exchange. Fix: force a fresh exchange (evict the cached exchanged JWT,
+        then mint a new one) so the retry carries a valid IDE token. Mirrors the
+        400 stale-credential recovery; the caller enforces the single-shot guard.
         """
-        if self.provider != "copilot":
+        if not self._is_copilot_provider():
             return False
 
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token
+            from hermes_cli.copilot_auth import (
+                resolve_copilot_token,
+                get_copilot_api_token,
+                evict_cached_exchanged_token,
+            )
 
             new_token, token_source = resolve_copilot_token()
         except Exception as exc:
@@ -5164,6 +5223,22 @@ class AIAgent:
 
         new_token = new_token.strip()
 
+        # Force a fresh IDE-token exchange: the cached exchanged JWT is the thing
+        # that expired ("401 IDE token expired"), so evict it and re-mint before
+        # rebuilding the client. Fall back to the resolved (raw) token only if the
+        # exchange itself is unavailable (network blip) — a client rebuild on the
+        # raw token still clears stale client state and may recover on enterprise
+        # seats where headers matter.
+        try:
+            evict_cached_exchanged_token(new_token)
+            api_token, enterprise_base_url = get_copilot_api_token(new_token)
+            if isinstance(api_token, str) and api_token.strip():
+                new_token = api_token.strip()
+                if enterprise_base_url:
+                    self.base_url = enterprise_base_url.rstrip("/")
+        except Exception as exc:
+            logger.debug("Copilot 401 re-exchange failed, using resolved token: %s", exc)
+
         self.api_key = new_token
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
@@ -5173,6 +5248,72 @@ class AIAgent:
             return False
 
         logger.info("Copilot credentials refreshed from %s", token_source)
+        return True
+
+    def _try_recover_stale_copilot_credential(self) -> bool:
+        """Force a fresh Copilot token exchange + client rebuild after a 400.
+
+        Copilot surfaces a stale/degraded credential as a
+        ``400 model_not_available_for_integrator`` /
+        ``model_not_supported`` — NOT a clean 401 — so the normal 401 refresh
+        path never fires. The most common trigger is a raw ``ghu_`` OAuth token
+        that got seeded (and cached) when the startup token exchange degraded:
+        the raw token routes the request to the restricted
+        ``copilot-language-server`` integrator whose allowlist omits
+        enterprise-only models (e.g. ``claude-opus-4.8``).
+
+        Recovery = evict the poisoned cache entry, force a fresh exchange to
+        mint the real ~437-char API token, re-apply the Copilot headers, and
+        rebuild the shared client. Single-shot (guarded by the caller) so a
+        genuinely unavailable model can't loop.
+        """
+        if not self._is_copilot_provider():
+            return False
+
+        try:
+            from hermes_cli.copilot_auth import (
+                resolve_copilot_token,
+                get_copilot_api_token,
+                evict_cached_exchanged_token,
+            )
+
+            raw_token, token_source = resolve_copilot_token()
+            if not isinstance(raw_token, str) or not raw_token.strip():
+                return False
+            raw_token = raw_token.strip()
+
+            # Drop any cached (possibly degraded/raw) exchanged token so the
+            # next exchange hits the network and mints a fresh one.
+            evict_cached_exchanged_token(raw_token)
+
+            api_token, enterprise_base_url = get_copilot_api_token(raw_token)
+        except Exception as exc:
+            logger.debug("Copilot stale-credential recovery failed: %s", exc)
+            return False
+
+        if not isinstance(api_token, str) or not api_token.strip():
+            return False
+
+        # If the exchange STILL degraded to the raw token, a rebuild won't help
+        # — don't burn the single-shot retry on an identical request.
+        if api_token == raw_token and not enterprise_base_url:
+            logger.warning(
+                "Copilot stale-credential recovery: exchange still degraded to "
+                "raw token; skipping retry (network/exchange endpoint unavailable)."
+            )
+            return False
+
+        self.api_key = api_token.strip()
+        if enterprise_base_url:
+            self.base_url = enterprise_base_url.rstrip("/")
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        self._apply_client_headers_for_base_url(str(self.base_url or ""))
+
+        if not self._replace_primary_openai_client(reason="copilot_stale_credential_recovery"):
+            return False
+
+        logger.info("Copilot credentials re-exchanged after stale-credential 400 (source=%s)", token_source)
         return True
 
     def _try_refresh_anthropic_client_credentials(self) -> bool:
@@ -6428,10 +6569,10 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
-    def _build_api_kwargs(self, api_messages: list) -> dict:
+    def _build_api_kwargs(self, api_messages: list, tools_for_api: Optional[list] = None) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
         from agent.chat_completion_helpers import build_api_kwargs
-        return build_api_kwargs(self, api_messages)
+        return build_api_kwargs(self, api_messages, tools_for_api=tools_for_api)
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.

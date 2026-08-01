@@ -24,6 +24,8 @@ from agent.secret_scope import (
     set_secret_scope,
 )
 from hermes_constants import (
+    DEFAULT_INDICATOR_STYLE,
+    INDICATOR_STYLES,
     get_hermes_home,
     get_hermes_home_override,
     reset_hermes_home_override,
@@ -618,7 +620,7 @@ def _transfer_active_session_slot(
 # TUI backend itself creates ("tui", plus whatever a client passes as its
 # own ``source``) and the CLI's own sessions are NOT gateway-owned.
 _NON_GATEWAY_SOURCES = frozenset({
-    "", "tui", "cli", "webui", "desktop", "cron", "subagent", "test",
+    "", "tui", "cli", "webui", "desktop", "cron", "kanban", "subagent", "test",
     "local", "acp", "webhook", "api_server", "msgraph_webhook",
 })
 
@@ -793,6 +795,39 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         pass
 
 
+# End reasons where the BACKEND reclaimed a session the client never asked to
+# close: the idle-TTL reaper, the LRU cap, and the WS-orphan reap. A client
+# holding that live session id gets no signal today — its next prompt fails
+# against an id the backend has already forgotten, which reads as the session
+# silently vanishing rather than being reclaimed. ``tui_close`` and friends are
+# deliberately absent: the client initiated those and already knows.
+_RECLAIM_END_REASONS = frozenset({"idle_timeout", "lru_evict", "ws_orphan_reap"})
+
+
+def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
+    """Tell connected clients a session was reclaimed out from under them.
+
+    Broadcast rather than session-targeted: the reap paths run on background
+    timer threads with no contextvar binding, and the WS-orphan case has by
+    definition lost its own transport — ``_emit`` would bottom out on stdio and
+    the peer that owns the session would never see it. Best-effort; a failed
+    notify must never break teardown.
+    """
+    if end_reason not in _RECLAIM_END_REASONS:
+        return
+    try:
+        _broadcast_global_event(
+            "session.reclaimed",
+            {
+                "session_id": str(session.get("_sid") or ""),
+                "stored_session_id": str(session.get("session_key") or ""),
+                "reason": end_reason,
+            },
+        )
+    except Exception:
+        logger.debug("session.reclaimed broadcast failed", exc_info=True)
+
+
 def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
     """Fully tear down a session: finalize, unregister, close agent + worker.
 
@@ -806,6 +841,7 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     if not session:
         return
     _finalize_session(session, end_reason=end_reason)
+    _announce_session_reclaimed(session, end_reason)
     try:
         from tools.approval import unregister_gateway_notify
 
@@ -1454,11 +1490,22 @@ def _get_compute_host_supervisor(cfg: dict | None = None):
         return _compute_host_supervisor
 
 
-def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> dict:
+def _compute_host_turn_frame(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+    image_paths: list[str] | None = None,
+    queued_prompt_generation: int | None = None,
+) -> dict:
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
-        attached_images = list(session.get("attached_images", []))
+        attached_images = (
+            list(image_paths)
+            if image_paths is not None
+            else list(session.get("attached_images", []))
+        )
     return {
         "type": "turn.start",
         "sid": sid,
@@ -1475,6 +1522,7 @@ def _compute_host_turn_frame(rid: str, sid: str, session: dict, text: Any) -> di
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session),
         "attached_images": attached_images,
+        "queued_prompt_generation": queued_prompt_generation,
     }
 
 
@@ -1545,9 +1593,23 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     _drain_queued_prompt(rid, sid, session)
 
 
-def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any) -> dict:
+def _submit_prompt_to_compute_host(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+    image_paths: list[str] | None = None,
+    queued_prompt_generation: int | None = None,
+) -> dict:
     cfg = _load_dashboard_process_isolation_config()
-    frame = _compute_host_turn_frame(rid, sid, session, text)
+    frame = _compute_host_turn_frame(
+        rid,
+        sid,
+        session,
+        text,
+        image_paths=image_paths,
+        queued_prompt_generation=queued_prompt_generation,
+    )
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure through the callback
@@ -1564,7 +1626,8 @@ def _submit_prompt_to_compute_host(rid: str, sid: str, session: dict, text: Any)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
         session["_compute_host_active"] = True
-        session["attached_images"] = []
+        if image_paths is None:
+            session["attached_images"] = []
     return _ok(rid, {"status": "streaming", "turn_isolation": True})
 
 
@@ -2482,7 +2545,14 @@ def _ensure_session_db_row(session: dict) -> None:
             # means the launch/default profile (matches run_agent's convention).
             profile_name=Path(profile_home).name if profile_home else None,
         )
-    except Exception:
+    except Exception as exc:
+        # Disk-full is not a soft failure: if we swallow it here, prompt.submit
+        # returns {"status":"streaming"} and the user's message vanishes with
+        # no toast. Re-raise so the submit handler can return a real RPC error.
+        from hermes_state import is_disk_full_error
+
+        if is_disk_full_error(exc):
+            raise
         logger.debug("failed to persist desktop session row", exc_info=True)
     finally:
         if close_db:
@@ -2525,7 +2595,11 @@ def _persist_branch_seed(session: dict) -> None:
                     timestamp=msg.get("timestamp"),
                 )
             session["_branch_seed_persisted"] = True
-        except Exception:
+        except Exception as exc:
+            from hermes_state import is_disk_full_error
+
+            if is_disk_full_error(exc):
+                raise
             logger.debug("branch seed persist failed", exc_info=True)
 
 
@@ -2623,12 +2697,6 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
 
 # ── Config I/O ────────────────────────────────────────────────────────
 
-
-# Keep aligned with `INDICATOR_STYLES` / `DEFAULT_INDICATOR_STYLE` in
-# ``ui-tui/src/app/interfaces.ts`` — both ends validate against the
-# same shape so `config.get indicator` and the live TUI render agree.
-_INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
-_INDICATOR_DEFAULT = "kaomoji"
 
 _DASHBOARD_TURN_ISOLATION_DEFAULT = False
 _DASHBOARD_COMPUTE_HOST_HEARTBEAT_SECS_DEFAULT = 15
@@ -3554,8 +3622,31 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
         logger.debug("failed to persist live session system prompt", exc_info=True)
 
 
+# Stable leading text of the model-switch marker, shared by the builder and the
+# dedup below. Only the newest marker is meaningful (it names the *currently*
+# active model); older ones are stale and would otherwise be re-sent to the
+# provider on every turn (#65891).
+_MODEL_SWITCH_MARKER_PREFIX = "[System: The active model for this chat has changed to "
+
+
+def _is_model_switch_marker(entry: Any) -> bool:
+    """Whether a history entry is a (self-replacing) model-switch marker."""
+    if not isinstance(entry, dict):
+        return False
+    content = entry.get("content")
+    return isinstance(content, str) and content.startswith(_MODEL_SWITCH_MARKER_PREFIX)
+
+
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
-    """Record a real system-history pivot after a live model switch."""
+    """Record a real system-history pivot after a live model switch.
+
+    Only the most recent marker is kept: each new switch first strips any
+    prior model-switch markers from the live history, so N switches leave one
+    marker (naming the active model), not N stale ones accumulating tokens on
+    every subsequent API call (#65891). The in-memory history is the payload
+    re-sent each turn; the dedup is self-healing across resumes because the
+    next switch collapses whatever markers a reload brought back.
+    """
     if not session:
         return
     session_key = str(session.get("session_key") or "").strip()
@@ -3564,7 +3655,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
     provider_part = f" via provider {provider}" if provider else ""
     marker = (
-        "[System: The active model for this chat has changed to "
+        f"{_MODEL_SWITCH_MARKER_PREFIX}"
         f"{model}{provider_part}. From this point forward, use this runtime "
         "metadata when answering questions about what model/provider is active.]"
     )
@@ -3574,14 +3665,19 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     # beginning of the API message list (#48338).
     entry = {"role": "user", "content": marker, "display_kind": "model_switch"}
 
+    def _replace_markers() -> None:
+        history = session.setdefault("history", [])
+        # Drop any earlier markers in place before appending the new one.
+        history[:] = [h for h in history if not _is_model_switch_marker(h)]
+        history.append(entry)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+
     lock = session.get("history_lock")
     if lock is not None:
         with lock:
-            session.setdefault("history", []).append(entry)
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            _replace_markers()
     else:
-        session.setdefault("history", []).append(entry)
-        session["history_version"] = int(session.get("history_version", 0)) + 1
+        _replace_markers()
 
     try:
         agent = session.get("agent")
@@ -5845,6 +5941,9 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     session["agent"] = new_agent
     session["config_model_seen"] = _config_model_target()
     session["attached_images"] = []
+    session["queued_prompt"] = None
+    session.pop("queued_prompts", None)
+    session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
     session["edit_snapshots"] = {}
     session["image_counter"] = 0
     session["running"] = False
@@ -7026,24 +7125,41 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     return {"attempt": attempt, "interrupted_at": marker["started_at"]}
 
 
-def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
+def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    image_paths: list[str] | None = None,
+) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
-    Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). A single
-    slot is kept; a second arrival is merged (lossless, mirroring the
-    consecutive-user merge in ``repair_message_sequence``) so nothing the user
-    typed is dropped. ``transport`` is pinned so the drained turn streams back to
-    the client that sent it even if the session transport is rebound meanwhile.
+    Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). Text-only
+    arrivals share a slot and merge losslessly (mirroring the consecutive-user
+    merge in ``repair_message_sequence``). Image-bearing submissions stay as
+    separate envelopes, so their attachment ownership and chronology survive.
+    ``transport`` is pinned so the drained turn streams back to the client that
+    sent it even if the session transport is rebound meanwhile.
     """
+    image_paths = list(image_paths or [])
+    queued = {"text": text, "transport": transport}
+    if image_paths:
+        queued["image_paths"] = image_paths
     existing = session.get("queued_prompt")
     if (
         existing
         and isinstance(existing.get("text"), str)
         and isinstance(text, str)
+        and not existing.get("image_paths")
+        and not image_paths
+        and not session.get("queued_prompts")
     ):
         prev = existing["text"]
-        text = f"{prev}\n\n{text}" if prev and text else (prev or text)
-    session["queued_prompt"] = {"text": text, "transport": transport}
+        existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
+        return
+    if existing:
+        session.setdefault("queued_prompts", []).append(queued)
+        return
+    session["queued_prompt"] = queued
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -7110,7 +7226,15 @@ def _handle_busy_submit(
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
-    text_only = _is_text_only_busy_payload(text)
+    with session["history_lock"]:
+        if not session.get("running"):
+            return None
+        image_paths = list(session.get("attached_images", []))
+        if image_paths:
+            # Claim at submission time. A later paste must not be consumed by
+            # this prompt after the active turn finally yields.
+            session["attached_images"] = []
+    text_only = not image_paths and _is_text_only_busy_payload(text)
     plain_text = _coerce_message_text(text).strip() if text_only else ""
     if mode == "steer" and text_only and plain_text and agent is not None and hasattr(agent, "steer"):
         try:
@@ -7144,11 +7268,15 @@ def _handle_busy_submit(
     # can wait behind the very operation it is trying to cancel.
     with session["history_lock"]:
         if not session.get("running"):
+            if image_paths:
+                session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        _enqueue_prompt(session, text, transport)
+        _enqueue_prompt(session, text, transport, image_paths=image_paths)
         session["last_active"] = time.time()
 
-    if mode != "queue":
+    # Attachments need a separate model invocation. Queue them without
+    # cancelling the active turn so the user gets both results in order.
+    if mode != "queue" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 
@@ -7164,21 +7292,60 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queued = session.get("queued_prompt")
         if not queued or session.get("running"):
             return False
-        session["queued_prompt"] = None
+        queue_generation = int(session.get("_queued_prompt_generation", 0))
+        queued_prompts = session.get("queued_prompts") or []
+        session["queued_prompt"] = queued_prompts.pop(0) if queued_prompts else None
+        if not queued_prompts:
+            session.pop("queued_prompts", None)
         session["running"] = True
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
+    use_compute_host = _session_uses_compute_host(session)
+    with session["history_lock"]:
+        if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
+            session["running"] = False
+            return True
+    dispatch_failed = False
     try:
-        if _session_uses_compute_host(session):
-            resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
+        if use_compute_host:
+            if queued.get("image_paths"):
+                resp = _submit_prompt_to_compute_host(
+                    rid,
+                    sid,
+                    session,
+                    queued["text"],
+                    image_paths=queued["image_paths"],
+                    queued_prompt_generation=queue_generation,
+                )
+            else:
+                resp = _submit_prompt_to_compute_host(
+                    rid, sid, session, queued["text"], queued_prompt_generation=queue_generation
+                )
             if resp.get("error"):
                 message = str(((resp.get("error") or {}).get("message")) or "queued prompt failed")
                 with session["history_lock"]:
                     session["running"] = False
                     _clear_inflight_turn(session)
                 _emit("error", sid, {"message": message})
+                dispatch_failed = True
         else:
-            _run_prompt_submit(rid, sid, session, queued["text"])
+            if queued.get("image_paths"):
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    queued["text"],
+                    image_paths=queued["image_paths"],
+                    queued_prompt_generation=queue_generation,
+                )
+            else:
+                _run_prompt_submit(
+                    rid,
+                    sid,
+                    session,
+                    queued["text"],
+                    queued_prompt_generation=queue_generation,
+                )
     except Exception as exc:
         print(
             f"[tui_gateway] queued prompt dispatch failed: "
@@ -7187,6 +7354,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         )
         with session["history_lock"]:
             session["running"] = False
+        dispatch_failed = True
+    if dispatch_failed:
+        with session["history_lock"]:
+            drain_next = bool(session.get("queued_prompt")) and not session.get(
+                "_turn_cancel_requested"
+            )
+        if drain_next:
+            _drain_queued_prompt(rid, sid, session)
     return True
 
 
@@ -8960,25 +9135,41 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(
-    rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    display_kind: str | None = None,
     display_metadata: dict | None = None,
+    image_paths: list[str] | None = None,
+    queued_prompt_generation: int | None = None,
 ) -> None:
     with session["history_lock"]:
+        if (
+            queued_prompt_generation is not None
+            and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation
+        ):
+            session["running"] = False
+            return
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
-        images = list(session.get("attached_images", []))
-        session["attached_images"] = []
+        if image_paths is None:
+            images = list(session.get("attached_images", []))
+            session["attached_images"] = []
+        else:
+            images = list(image_paths)
         inflight = session.get("inflight_turn")
         # A retained failed turn (see _fail_inflight_turn) is a stale leftover
         # by the time a new turn starts — replace it, never append onto it.
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(session, text)
-    agent = session["agent"]
-    if hasattr(agent, "clear_interrupt"):
-        try:
-            agent.clear_interrupt()
-        except Exception:
-            pass
+        agent = session["agent"]
+        if hasattr(agent, "clear_interrupt"):
+            try:
+                agent.clear_interrupt()
+            except Exception:
+                pass
     _emit("message.start", sid)
 
     def run():
@@ -9810,6 +10001,26 @@ def _allowed_image_extensions() -> frozenset[str]:
         return frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 
 
+def _session_images_dir(session: dict) -> Path:
+    """Resolve the uploads ``images/`` dir against the session's effective home.
+
+    Attach RPCs (``image.attach_bytes``, ``clipboard.paste``, ``pdf.attach``)
+    run BEFORE ``prompt.submit`` installs the session's profile HERMES_HOME
+    override, so ``get_hermes_home()`` here would return the gateway's launch
+    home. In a multi-profile / root-gateway deployment that writes the upload to
+    the launch home's ``images/`` while the sandbox mount and the vision host-
+    read allowlist both resolve the *session profile's* ``images/`` at run time
+    — so the file the agent tries to read is never the file we wrote (#69575).
+
+    Anchor the write on the session's stored ``profile_home`` when present
+    (matching the mount/read scope), else fall back to the launch home. Keeps
+    per-profile isolation: a profile's uploads stay under that profile's home.
+    """
+    profile_home = session.get("profile_home")
+    base = Path(profile_home) if profile_home else _hermes_home
+    return base / "images"
+
+
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
     """Write image bytes into the gateway's images dir and queue them.
 
@@ -9818,7 +10029,7 @@ def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: 
     the existing native-image-attach pipeline. Returns the written path.
     """
     session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _hermes_home / "images"
+    img_dir = _session_images_dir(session)
     img_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
@@ -10628,11 +10839,11 @@ def _(rid, params: dict) -> dict:
         # non-string inputs (0, False, []) still surface as themselves
         # in the error message instead of looking like a blank value.
         raw = ("" if value is None else str(value)).strip().lower()
-        if raw not in _INDICATOR_STYLES:
+        if raw not in INDICATOR_STYLES:
             return _err(
                 rid,
                 4002,
-                f"unknown indicator: {raw!r}; pick one of {'|'.join(_INDICATOR_STYLES)}",
+                f"unknown indicator: {raw!r}; pick one of {'|'.join(INDICATOR_STYLES)}",
             )
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})
@@ -11033,10 +11244,11 @@ def _discover_repos_payload(
     return out
 
 
-# Sources excluded from the project tree: cron runs and tool/subagent children
-# are not user conversations. Subagent/compression children are already dropped
-# by list_sessions_rich(include_children=False); cron has its own section.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron"]
+# Sources excluded from the project tree: cron runs, and kanban dispatcher
+# workers, are not user conversations. Subagent/compression children are
+# already dropped by list_sessions_rich(include_children=False); cron has its
+# own section, and kanban runs are read on the board.
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban"]
 
 
 def _project_tree_row(r: dict) -> dict:
@@ -11338,6 +11550,55 @@ def _skill_usage_lookup():
         return "local"
 
     return usage, origin
+
+
+_SLASH_COMPLETION_LIMIT = 30
+
+
+def _rank_slash_completions(
+    items: list[dict],
+    usage,
+    origin_of,
+    *,
+    browsing: bool,
+) -> list[dict]:
+    """Rank and bound slash completions the way the menu should read.
+
+    ``usage``/``origin_of`` are the callables :func:`_skill_usage_lookup`
+    returns. Registry commands keep their existing order — only the skill
+    block is reordered, most-used first and A-Z within a tie, so the handful
+    of skills someone invokes daily lead the ones that shipped with Hermes
+    and were never opened.
+
+    The limit is spent PER KIND rather than on one flat truncation. A flat
+    cut is positional, not editorial: the completer emits every registry
+    command before the first skill, so on a 230-skill install a bare ``/``
+    hit the cap while still inside the command block and offered no skill at
+    all, and ``/p`` dropped ``/proving-a-fix-works`` (471 uses) while keeping
+    ``/pretext`` (2).
+
+    ``browsing`` separates the two things a slash means. A bare ``/`` is
+    BROWSING, so bundled skills with no recorded activity are dropped as
+    noise. A typed query is SEARCHING, and a search that hides a match is
+    broken — there nothing is pruned, the ranking only reorders.
+    """
+
+    def name_of(item: dict) -> str:
+        return str(item.get("text", "")).strip().lstrip("/").lower()
+
+    commands = [item for item in items if item.get("kind") != "skill"]
+    skills = [item for item in items if item.get("kind") == "skill"]
+
+    if browsing:
+        skills = [
+            item
+            for item in skills
+            if origin_of(name_of(item)) != "bundled" or usage(name_of(item)) > 0
+        ]
+
+    skills.sort(key=lambda item: (-usage(name_of(item)), name_of(item)))
+
+    return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
 
 
 def _cli_exec_blocked(argv: list[str]) -> str | None:

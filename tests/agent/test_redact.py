@@ -20,6 +20,45 @@ class TestKnownPrefixes:
 
 
 
+    def test_gitlab_token_prefixes(self):
+        """GitLab token families redact via their literal prefixes.
+
+        Ported from openclaw/openclaw#112954; follow-up invited in #4541.
+        """
+        tokens = [
+            # NOTE: every token is prefix + suffix CONCATENATION so no
+            # contiguous token literal exists in this file — GitHub push
+            # protection blocks realistic GitLab-token-shaped literals.
+            "glpat-" + "Zx9AbCdEfGhIjKlMnOpQ",       # personal access token
+            "gloas-" + "a" * 64,                     # OAuth application secret
+            "gldt-" + "AbCdEfGhIjKlMnOpQrSt",        # deploy token
+            "glrt-" + "t1_AbCdEfGhIjKlMnOpQrSt",     # runner auth token
+            "glrt-" + "A" * 27 + ".01." + "a" * 9,   # routable (dotted) runner token
+            "glrtr-" + "B" * 27 + ".01." + "b" * 9,  # routable runner registration
+            "glcbt-" + "a1B2_AbCdEfGhIjKlMnOpQ",     # CI/CD job token
+            "glptt-" + "c" * 40,                     # pipeline trigger token
+            "glft-" + "AbCdEfGhIjKlMnOp",            # feed token
+            "glimt-" + "AbCdEfGhIjKlMnOpQrStUvWxY",  # incoming mail token
+            "glagent-" + "d" * 50,                   # agent (KAS) token
+            "glsoat-" + "AbCdEfGhIjKlMnOpQrSt",      # service-account token
+            "glffct-" + "AbCdEfGhIjKlMnOpQrSt",      # feature-flags client token
+            "glwt-" + "AbCdEfGhIjKlMnOpQrSt",        # workspace token
+            "GR1348941" + "E" * 20,                  # legacy runner registration
+        ]
+        for token in tokens:
+            result = redact_sensitive_text(f"leaked {token} in output")
+            secret_body = token.split("-", 1)[-1] if "-" in token else token[9:]
+            assert secret_body not in result, f"{token!r} survived redaction: {result!r}"
+
+    def test_gitlab_prefix_requires_word_boundary_and_length(self):
+        """Prose and embedded identifiers must not false-positive."""
+        for benign in [
+            "the glossary explains gitlab tokens",   # no prefix at all
+            "glpat-short",                            # suffix under 10 chars
+            "myglpat-AbCdEfGhIjKlMnOpQrSt",           # embedded — lookbehind blocks
+        ]:
+            assert redact_sensitive_text(benign) == benign
+
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
         result = redact_sensitive_text(token)
@@ -504,6 +543,65 @@ class TestLowercaseDottedConfigKeys:
 
 
 
+
+
+class TestConfigKeyRedosResistance:
+    """The dotted-key patterns must not backtrack exponentially (ReDoS).
+
+    Before the possessive-quantifier rewrite, a non-matching run of ~40
+    dotted segments took ~30ms and doubled every ~4 segments; 100 segments
+    would effectively hang the redactor (it runs on every log line).
+    """
+
+    def test_long_dotted_run_completes_fast(self):
+        import time
+
+        # 100 dotted segments with no '=' — worst case for the old pattern.
+        text = ".".join(["segment"] * 100) + " end"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_long_dotted_run_with_keyword_completes_fast(self):
+        """Exercise _CFG_DOTTED_RE directly (bypasses the keyword pre-gate).
+
+        The pre-gate skips the regex when no secret keyword is present, so
+        test_long_dotted_run_completes_fast only guards the pre-gate.  This
+        test includes a keyword but no '=' so the regex runs and must still
+        complete quickly thanks to the possessive quantifiers.
+        """
+        import time
+
+        text = ".".join(["segment"] * 100) + ".token end"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_long_dotted_secret_still_redacted(self):
+        # Possessive quantifiers must not change matching behavior.
+        text = ".".join(["seg"] * 50) + ".password=Sup3rS3cret!"
+        result = redact_sensitive_text(text)
+        assert "Sup3rS3cret!" not in result
+        assert ".password=" in result
+
+    def test_yaml_assign_redos_resistance(self):
+        """_YAML_ASSIGN_RE must not backtrack excessively on long inputs."""
+        import time
+
+        # 100 lines of a long dotted key with a secret keyword but no
+        # matching colon-value form — stresses the regex without matching.
+        line = "a." * 50 + "token not_an_assignment"
+        text = "\n".join([line] * 100)
+        t0 = time.perf_counter()
+        redact_sensitive_text(text)
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_yaml_assign_secret_still_redacted(self):
+        # Possessive quantifiers must not change YAML matching behavior.
+        text = "spring.datasource.password: hunter2"
+        result = redact_sensitive_text(text)
+        assert "hunter2" not in result
+        assert "password:" in result
 
 
 class TestXaiToken:

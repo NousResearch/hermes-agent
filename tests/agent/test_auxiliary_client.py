@@ -11,6 +11,7 @@ import pytest
 
 from agent.auxiliary_client import (
     _NOUS_MODEL,
+    CodexAuxiliaryClient,
     get_text_auxiliary_client,
     get_available_vision_backends,
     resolve_vision_provider_client,
@@ -66,6 +67,7 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
     # Module-level unhealthy cache (10-min TTL) leaks between tests;
@@ -3301,6 +3303,43 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
             codex_runtime._consume_codex_event_stream = original_consume
 
 
+class TestCodexAuxiliaryAdapterCompletedResponse:
+    def test_accepts_completed_response_when_stream_was_requested(self):
+        completed = SimpleNamespace(
+            status="completed",
+            id="resp_completed",
+            output=[SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="completed response",
+                )],
+            )],
+            usage=SimpleNamespace(
+                input_tokens=11,
+                output_tokens=3,
+                total_tokens=14,
+            ),
+        )
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                assert kwargs["stream"] is True
+                return completed
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.6-terra")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "review this"}],
+        )
+
+        assert response.choices[0].message.content == "completed response"
+        assert response.usage.prompt_tokens == 11
+        assert response.usage.completion_tokens == 3
+        assert response.usage.total_tokens == 14
+
+
 # ---------------------------------------------------------------------------
 # Issue #23432 — auxiliary timeout poisons cached client; later aux calls fail
 # ---------------------------------------------------------------------------
@@ -3453,16 +3492,6 @@ class TestBuildCallKwargsToolDedup:
         )
         assert kwargs.get("tools") == [] or "tools" not in kwargs
 
-
-
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    """Strip provider env vars so each test starts clean."""
-    for key in (
-        "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
-        "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
-    ):
-        monkeypatch.delenv(key, raising=False)
 
 
 class TestNvidiaBillingHeaders:
@@ -4051,3 +4080,199 @@ class TestCustomEndpointApiKeyInheritance:
 
         assert captured.get("api_key") == "no-key-required"
 
+
+class TestMoaAggregatorStreamingBypass:
+    def test_moa_aggregator_stream_bypasses_relay_for_codex_auxiliary_client(self, monkeypatch):
+        """The MoA facade owns the streaming contract. For Codex Responses-shim
+        clients (openai-codex, xai-oauth), call_llm must return the provider's
+        direct create() result instead of routing through Relay's managed
+        stream, which cannot iterate a completed SimpleNamespace (#74903).
+        """
+
+        completed = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+
+        real_client = SimpleNamespace(
+            api_key="test-key",
+            base_url="https://chatgpt.com/backend-api/codex/",
+            close=lambda: None,
+        )
+        client = CodexAuxiliaryClient(real_client, "gpt-5.6-sol")
+        direct_create = MagicMock(return_value=completed)
+        monkeypatch.setattr(client.chat.completions, "create", direct_create)
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (client, "gpt-5.6-sol"),
+        )
+        relay_stream = MagicMock(side_effect=AssertionError("_relay_sync_stream must not be used"))
+        monkeypatch.setattr("agent.auxiliary_client._relay_sync_stream", relay_stream)
+
+        result = call_llm(
+            task="moa_aggregator",
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "只回答 OK"}],
+            stream=True,
+        )
+
+        assert result is completed
+        direct_create.assert_called_once()
+        relay_stream.assert_not_called()
+
+
+class TestSynchronousFallbackCachePlans:
+    @staticmethod
+    def _run_configured_fallback(monkeypatch, entry):
+        from agent.auxiliary_client import (
+            _call_fallback_candidate_sync,
+            _try_configured_fallback_chain,
+        )
+
+        client = MagicMock()
+        client.base_url = entry["base_url"]
+        client.chat.completions.create.return_value = _DummyResponse()
+        resolved_calls = []
+
+        def resolve(provider, model=None, **kwargs):
+            resolved_calls.append((provider, model, kwargs))
+            return client, model
+
+        monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", resolve)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": [entry]},
+        )
+        fallback_client, fallback_model, label = _try_configured_fallback_chain(
+            task="moa_aggregator",
+            failed_provider="primary",
+        )
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        _call_fallback_candidate_sync(
+            fallback_client,
+            fallback_model,
+            label,
+            task="moa_aggregator",
+            messages=[
+                {"role": "system", "content": "stable prefix"},
+                {"role": "user", "content": "lookup"},
+            ],
+            temperature=None,
+            max_tokens=None,
+            tools=tools,
+            effective_timeout=30.0,
+            effective_extra_body={},
+            reasoning_config=None,
+        )
+        return client, resolved_calls, tools
+
+    def test_direct_anthropic_fallback_uses_entry_destination_for_tool_marker(self, monkeypatch):
+        client, resolved_calls, tools = self._run_configured_fallback(monkeypatch, {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        })
+
+        assert resolved_calls == [(
+            "anthropic",
+            "claude-sonnet-4-6",
+            {
+                "explicit_base_url": "https://api.anthropic.com",
+                "explicit_api_key": None,
+                "api_mode": "anthropic_messages",
+            },
+        )]
+        wire_tools = client.chat.completions.create.call_args.kwargs["tools"]
+        assert "cache_control" in wire_tools[-1]
+        assert "cache_control" not in tools[-1]
+
+    def test_third_party_anthropic_fallback_keeps_message_markers_without_tool_marker(self, monkeypatch):
+        client, resolved_calls, tools = self._run_configured_fallback(monkeypatch, {
+            "provider": "custom",
+            "model": "claude-sonnet-4-6",
+            "base_url": "https://api.minimax.io/anthropic",
+            "api_mode": "anthropic_messages",
+        })
+
+        assert resolved_calls[0][2]["explicit_base_url"] == "https://api.minimax.io/anthropic"
+        assert resolved_calls[0][2]["api_mode"] == "anthropic_messages"
+        wire_request = client.chat.completions.create.call_args.kwargs
+        assert "cache_control" not in wire_request["tools"][-1]
+        assert "cache_control" not in tools[-1]
+        assert any(
+            isinstance(part, dict) and "cache_control" in part
+            for message in wire_request["messages"]
+            for part in (message.get("content") if isinstance(message.get("content"), list) else [])
+        )
+
+
+
+class TestAsynchronousFallbackCachePlans:
+    @pytest.mark.asyncio
+    async def test_async_fallback_replans_cache_sections_like_sync(self, monkeypatch):
+        """Async mirror parity: per-destination cache replan, not verbatim pass-through."""
+        from agent.auxiliary_client import (
+            _call_fallback_candidate_async,
+            _try_configured_fallback_chain,
+        )
+
+        entry = {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        }
+        client = MagicMock()
+        client.base_url = entry["base_url"]
+
+        async def _create(**kwargs):
+            return _DummyResponse()
+
+        client.chat.completions.create = MagicMock(side_effect=_create)
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client",
+            lambda provider, model=None, **kwargs: (client, model),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": [entry]},
+        )
+        fallback_client, fallback_model, label = _try_configured_fallback_chain(
+            task="moa_aggregator",
+            failed_provider="primary",
+        )
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        await _call_fallback_candidate_async(
+            fallback_client,
+            fallback_model,
+            label,
+            task="moa_aggregator",
+            messages=[
+                {"role": "system", "content": "stable prefix"},
+                {"role": "user", "content": "lookup"},
+            ],
+            temperature=None,
+            max_tokens=None,
+            tools=tools,
+            effective_timeout=30.0,
+            effective_extra_body={},
+            reasoning_config=None,
+        )
+
+        wire_tools = client.chat.completions.create.call_args.kwargs["tools"]
+        assert "cache_control" in wire_tools[-1]
+        assert "cache_control" not in tools[-1]

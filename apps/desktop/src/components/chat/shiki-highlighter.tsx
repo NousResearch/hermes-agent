@@ -124,7 +124,8 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   )
 }
 
-const URL_REFERENCE_VALUE_RE = /^https?:\/\/\S+$/i
+// Keep code literals such as `@url:http://` raw: a copyable URL needs a host.
+const URL_REFERENCE_VALUE_RE = /^https?:\/\/[^/\s]\S*$/i
 
 /** Convert URL references back to literal URLs for code-block clipboard text. */
 export function copyableCodeText(code: string): string {

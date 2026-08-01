@@ -19,6 +19,7 @@ import uuid
 from collections import deque
 from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
@@ -2112,8 +2113,14 @@ def _snapshot_primary_runtime(agent):
 
 
 def _init_usage_state(agent):
-    from agent.runtime_cwd import scope_terminal_cwd
-    agent._subdirectory_hints = SubdirectoryHintTracker(working_dir=scope_terminal_cwd() or None)
+    from agent.runtime_cwd import _is_install_tree, scope_terminal_cwd
+    terminal_cwd = scope_terminal_cwd()
+    agent._subdirectory_hints = SubdirectoryHintTracker(
+        working_dir=terminal_cwd or None,
+        allow_install_tree=bool(
+            terminal_cwd and _is_install_tree(Path(terminal_cwd).expanduser())
+        ),
+    )
     _set_defaults(agent, _USAGE_STATE)
 
 

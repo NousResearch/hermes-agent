@@ -1,5 +1,6 @@
 """Regression tests for memory provider selection during AIAgent init."""
 
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -94,12 +95,13 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert "status_callback" not in provider.init_kwargs
 
 
-def test_aiagent_forwards_cwd_to_memory_provider():
+def test_aiagent_forwards_cwd_to_memory_provider(tmp_path):
     """AIAgent should pass resolve_agent_cwd() as cwd to memory providers (#76231)."""
     provider = RecordingMemoryProvider()
     cfg = {"memory": {"provider": "recording"}, "agent": {}}
 
     with (
+        patch.dict(os.environ, {"TERMINAL_CWD": str(tmp_path)}),
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider", return_value=provider),
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
@@ -120,8 +122,7 @@ def test_aiagent_forwards_cwd_to_memory_provider():
         )
 
     assert agent._memory_manager is not None
-    assert "cwd" in provider.init_kwargs
-    assert provider.init_kwargs["cwd"]  # non-empty string
+    assert provider.init_kwargs["cwd"] == str(tmp_path)
 
 
 class CoreShadowProvider:

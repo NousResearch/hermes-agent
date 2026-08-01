@@ -168,7 +168,7 @@ function SidebarSessionRowImpl({
           <span aria-hidden="true" className="arc-border arc-row" />
         )}
         <SidebarRowBody
-          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          className={cn('z-0 pr-12', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {
             triggerHaptic('selection')

@@ -300,6 +300,8 @@ class CodexAppServerSession:
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
         self._interrupt_event = threading.Event()
+        self._active_turn_id: Optional[str] = None
+        self._active_turn_lock = threading.Lock()
         # Pending file-change items, keyed by item id. Populated on
         # item/started for fileChange items; consumed by the approval
         # bridge when codex sends item/fileChange/requestApproval. The
@@ -374,6 +376,8 @@ class CodexAppServerSession:
         if self._closed:
             return
         self._closed = True
+        with self._active_turn_lock:
+            self._active_turn_id = None
         if self._client is not None:
             try:
                 self._client.close()
@@ -394,6 +398,33 @@ class CodexAppServerSession:
         """Idempotent: signal the active turn loop to issue turn/interrupt
         and unwind. Called by AIAgent's _interrupt_requested path."""
         self._interrupt_event.set()
+
+    def request_steer(self, text: str) -> bool:
+        """Append user guidance to the active Codex turn via ``turn/steer``."""
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return False
+        with self._active_turn_lock:
+            turn_id = self._active_turn_id
+            thread_id = self._thread_id
+            client = self._client
+        if not turn_id or not thread_id or client is None:
+            return False
+        try:
+            response = client.request(
+                "turn/steer",
+                {
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": cleaned}],
+                    "expectedTurnId": turn_id,
+                },
+                timeout=10,
+            )
+        except (CodexAppServerError, TimeoutError):
+            logger.debug("turn/steer rejected for active Codex turn", exc_info=True)
+            return False
+        accepted_turn_id = response.get("turnId") if isinstance(response, dict) else None
+        return accepted_turn_id in {None, turn_id}
 
     # ---------- diagnostics ----------
 
@@ -469,11 +500,18 @@ class CodexAppServerSession:
             # Subprocess almost certainly unhealthy — retire so the next
             # turn re-spawns cleanly.
             result.should_retire = True
+            self._interrupt_event.clear()
             return result
         assert self._client is not None and self._thread_id is not None
         result.thread_id = self._thread_id
 
-        self._interrupt_event.clear()
+        # Do not clear here: a hard stop can arrive while ensure_started() is
+        # spawning/initializing the subprocess. Honor it before launching a
+        # Codex turn instead of erasing the signal.
+        if self._interrupt_event.is_set():
+            result.interrupted = True
+            self._interrupt_event.clear()
+            return result
         projector = CodexEventProjector()
 
         user_input_text = _coerce_turn_input_text(user_input)
@@ -505,6 +543,7 @@ class CodexAppServerSession:
                 result.error = self._format_error_with_stderr(
                     "turn/start failed", exc
                 )
+            self._interrupt_event.clear()
             return result
         except TimeoutError as exc:
             # turn/start hanging is a strong signal the subprocess is wedged.
@@ -514,9 +553,12 @@ class CodexAppServerSession:
                 "turn/start timed out", exc
             )
             result.should_retire = True
+            self._interrupt_event.clear()
             return result
 
         result.turn_id = (ts.get("turn") or {}).get("id")
+        with self._active_turn_lock:
+            self._active_turn_id = result.turn_id
         deadline = time.monotonic() + turn_timeout
         turn_complete = False
         # Post-tool watchdog state. last_tool_completion_at is set whenever
@@ -741,6 +783,9 @@ class CodexAppServerSession:
                 )
             result.should_retire = True
 
+        with self._active_turn_lock:
+            self._active_turn_id = None
+        self._interrupt_event.clear()
         return result
 
     def compact_thread(
@@ -1009,6 +1054,18 @@ class CodexAppServerSession:
             )
 
     def _decide_exec_approval(self, params: dict) -> str:
+        """Decide a Codex exec approval request.
+
+        This is protocol-level routing only — it carries NO Hermes
+        approval-mode/timeout logic. The Hermes-side resolution happens
+        upstream: ``agent/codex_runtime.py`` derives
+        ``auto_approve_exec`` from the canonical
+        ``tools.approval.is_approval_bypass_active()`` (which reads
+        ``approvals.mode`` via ``tools.approval._get_approval_mode``),
+        and ``self._approval_callback`` itself runs the shared approval
+        gate (mode + ``approvals.timeout``) in ``tools/approval.py``.
+        Keep it that way — do not re-read approval config here.
+        """
         if self._routing.auto_approve_exec:
             return "accept"
         command = params.get("command") or ""
@@ -1032,6 +1089,12 @@ class CodexAppServerSession:
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
+        """Decide a Codex apply_patch approval request.
+
+        Protocol-level routing only; Hermes approval-mode/timeout
+        resolution is delegated to ``tools/approval.py`` upstream — see
+        the docstring on ``_decide_exec_approval``.
+        """
         if self._routing.auto_approve_apply_patch:
             return "accept"
         if self._approval_callback is not None:
@@ -1186,6 +1249,11 @@ def _approval_choice_to_codex_decision(choice: str) -> str:
     Codex expects 'accept', 'acceptForSession', 'decline', or 'cancel'
     (verified against codex-rs/app-server-protocol/src/protocol/v2/item.rs
     on codex 0.130.0).
+
+    This mapping is Codex-protocol-semantic and intentionally lives here,
+    NOT in tools/approval.py: the Hermes approval mode/timeout resolution
+    and the choice itself come from the shared core (tools/approval.py);
+    only the wire-value translation is local.
     """
     if choice in {"once",}:
         return "accept"

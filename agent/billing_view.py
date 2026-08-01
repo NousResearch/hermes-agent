@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -108,6 +108,22 @@ class CardInfo:
 
 
 @dataclass(frozen=True)
+class PaymentMethodInfo:
+    """The payment method on file. `kind` is "card", "link", or "unknown"
+    — anything else is normalised to "unknown" at parse time, so consumers
+    only ever see fields that belong to the kind they are looking at."""
+
+    kind: str
+    brand: Optional[str] = None
+    last4: Optional[str] = None
+    wallet: Optional[str] = None
+    email: Optional[str] = None
+    resolved_via: Optional[str] = None
+    #: What the server called it, when we did not recognise the kind.
+    raw_kind: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class MonthlyCap:
     limit_usd: Optional[Decimal] = None
     spent_this_month_usd: Optional[Decimal] = None
@@ -150,6 +166,7 @@ class BillingState:
     min_usd: Optional[Decimal] = None
     max_usd: Optional[Decimal] = None
     card: Optional[CardInfo] = None
+    payment_method: Optional[PaymentMethodInfo] = None
     monthly_cap: Optional[MonthlyCap] = None
     auto_reload: Optional[AutoReload] = None
     portal_url: Optional[str] = None
@@ -199,6 +216,41 @@ def _parse_card(raw: Any) -> Optional[CardInfo]:
     if not isinstance(resolved_via, str):
         resolved_via = None
     return CardInfo(brand=brand, last4=last4, resolved_via=resolved_via)
+
+
+def _parse_payment_method(raw: Any) -> Optional[PaymentMethodInfo]:
+    if not isinstance(raw, dict):
+        return None
+    kind = raw.get("kind")
+    if not isinstance(kind, str):
+        return None
+
+    def _optional_string(key: str) -> Optional[str]:
+        value = raw.get(key)
+        return value if isinstance(value, str) else None
+
+    resolved_via = _optional_string("resolvedVia")
+    brand = _optional_string("brand")
+    last4 = _optional_string("last4")
+    # Settle the kind here, the way _parse_card settles a card, so nothing
+    # downstream has to re-check which fields this kind is allowed to have.
+    if kind == "card" and brand and last4:
+        return PaymentMethodInfo(
+            kind="card",
+            brand=brand,
+            last4=last4,
+            wallet=_optional_string("wallet"),
+            resolved_via=resolved_via,
+        )
+    if kind == "link":
+        return PaymentMethodInfo(
+            kind="link",
+            email=_optional_string("email"),
+            resolved_via=resolved_via,
+        )
+    return PaymentMethodInfo(
+        kind="unknown", raw_kind=kind, resolved_via=resolved_via
+    )
 
 
 def _parse_monthly_cap(raw: Any) -> Optional[MonthlyCap]:
@@ -274,6 +326,7 @@ def billing_state_from_payload(
         min_usd=parse_money(bounds.get("minUsd")),
         max_usd=parse_money(bounds.get("maxUsd")),
         card=_parse_card(payload.get("card")),
+        payment_method=_parse_payment_method(payload.get("paymentMethod")),
         monthly_cap=_parse_monthly_cap(payload.get("monthlyCap")),
         auto_reload=_parse_auto_reload(payload.get("autoReload")),
         portal_url=portal_url,

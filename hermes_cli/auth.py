@@ -36,7 +36,7 @@ import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -365,6 +365,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("NVIDIA_API_KEY",),
         base_url_env_var="NVIDIA_BASE_URL",
     ),
+    "ai-gateway": ProviderConfig(
+        id="ai-gateway",
+        name="Vercel AI Gateway",
+        auth_type="api_key",
+        inference_base_url="https://ai-gateway.vercel.sh/v1",
+        api_key_env_vars=("AI_GATEWAY_API_KEY",),
+        base_url_env_var="AI_GATEWAY_BASE_URL",
+    ),
     "opencode-zen": ProviderConfig(
         id="opencode-zen",
         name="OpenCode Zen",
@@ -433,6 +441,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
+    ),
+    "vertex": ProviderConfig(
+        id="vertex",
+        name="Google Vertex AI",
+        auth_type="vertex",
+        # No static inference_base_url: Vertex's endpoint is computed per
+        # request from project_id + region (agent/vertex_adapter.py's
+        # build_vertex_base_url), not a fixed host like the other entries.
+        inference_base_url="",
+        api_key_env_vars=(),  # OAuth2 (service-account JSON / ADC), not a key
+        base_url_env_var="",
     ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
@@ -792,22 +811,14 @@ def is_rate_limited_auth_error(error: Exception) -> bool:
 def _parse_retry_after_seconds(headers: Any) -> Optional[int]:
     """Best-effort parse of a ``Retry-After`` header into whole seconds.
 
-    Supports the delta-seconds form (e.g. ``"120"``). HTTP-date forms and
-    missing/unparseable values return ``None`` rather than guessing.
+    Thin wrapper around :func:`agent.retry_utils.parse_retry_after_seconds`
+    (delta-seconds and HTTP-date forms; negatives clamp to 0; missing or
+    unparseable values return ``None``).
     """
-    if headers is None:
-        return None
-    try:
-        raw = headers.get("retry-after")
-    except Exception:
-        return None
-    if raw is None:
-        return None
-    try:
-        seconds = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return None
-    return seconds if seconds >= 0 else None
+    from agent.retry_utils import parse_retry_after_seconds
+
+    seconds = parse_retry_after_seconds(headers)
+    return None if seconds is None else int(seconds)
 
 
 def format_auth_error(error: Exception) -> str:
@@ -1112,19 +1123,46 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     try:
-        raw = json.loads(auth_file.read_text())
+        raw = json.loads(auth_file.read_text(encoding="utf-8"))
+    except OSError:
+        # The file exists (checked above) but could not be READ: EMFILE under
+        # fd exhaustion, EACCES, EIO, a stalled network mount. None of those
+        # mean the contents are bad, and this module does read-modify-write in
+        # ~15 places, so degrading to an empty store here is one
+        # _save_auth_store() away from erasing every stored credential.
+        # Fail loudly instead and leave the file on disk untouched.
+        logger.warning(
+            "auth: could not read %s, leaving the store on disk untouched "
+            "rather than degrading to an empty one",
+            auth_file, exc_info=True,
+        )
+        raise
     except Exception as exc:
+        # Genuine corruption: unparseable JSON, or bytes that are not UTF-8.
         corrupt_path = auth_file.with_suffix(".json.corrupt")
+        preserved = False
         try:
             import shutil
             shutil.copy2(auth_file, corrupt_path)
+            preserved = True
         except Exception:
-            pass
-        logger.warning(
-            "auth: failed to parse %s (%s) — starting with empty store. "
-            "Corrupt file preserved at %s",
-            auth_file, exc, corrupt_path,
-        )
+            logger.debug(
+                "auth: could not preserve a copy of the corrupt store at %s",
+                corrupt_path, exc_info=True,
+            )
+        if preserved:
+            logger.warning(
+                "auth: failed to parse %s (%s), starting with empty store. "
+                "Corrupt file preserved at %s",
+                auth_file, exc, corrupt_path,
+            )
+        else:
+            # Do not advertise a backup that was never written.
+            logger.warning(
+                "auth: failed to parse %s (%s), starting with empty store. "
+                "A copy could NOT be preserved at %s",
+                auth_file, exc, corrupt_path,
+            )
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     if isinstance(raw, dict) and (
@@ -1447,6 +1485,73 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
+_POOL_STATUS_FIELDS = (
+    "last_status",
+    "last_status_at",
+    "last_error_code",
+    "last_error_reason",
+    "last_error_message",
+    "last_error_reset_at",
+)
+
+
+def _merge_disk_cooldown_state(
+    entry: Dict[str, Any],
+    disk_entry: Optional[Dict[str, Any]],
+    provider_id: str,
+) -> Dict[str, Any]:
+    """Keep a newer on-disk cooldown/quarantine over a stale in-memory one.
+
+    ``write_credential_pool`` callers persist an in-memory snapshot that may
+    predate another process marking the same credential exhausted or dead
+    (last-writer-wins lost update).  Without this merge, process B's later
+    rewrite resurrects a rate-limited key as healthy and both processes
+    resume hammering it.  Adopt the on-disk status fields only when they are
+    strictly more recent (by ``last_status_at``) AND still binding — a DEAD
+    marker, or an EXHAUSTED cooldown that has not yet expired.  Expired
+    cooldowns are not resurrected, so the pool's own expiry-clear (which
+    resets ``last_status_at`` to None) is never overridden.
+    """
+    if not isinstance(disk_entry, dict):
+        return entry
+    try:
+        from agent.credential_pool import (
+            PooledCredential,
+            STATUS_DEAD,
+            STATUS_EXHAUSTED,
+            _exhausted_until,
+            _parse_absolute_timestamp,
+        )
+
+        disk_status = disk_entry.get("last_status")
+        if disk_status not in (STATUS_DEAD, STATUS_EXHAUSTED):
+            return entry
+        # A token change means the caller re-authed/refreshed this entry and
+        # intentionally cleared its status (e.g. _sync_codex_entry_from_
+        # auth_store after a fresh device-code login) — never resurrect the
+        # old cooldown onto fresh credentials.
+        mem_access = entry.get("access_token") or ""
+        disk_access = disk_entry.get("access_token") or ""
+        if mem_access and disk_access and mem_access != disk_access:
+            return entry
+        disk_ts = _parse_absolute_timestamp(disk_entry.get("last_status_at")) or 0.0
+        mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
+        if disk_ts <= mem_ts:
+            return entry
+        if disk_status == STATUS_EXHAUSTED:
+            until = _exhausted_until(
+                PooledCredential.from_dict(provider_id, disk_entry)
+            )
+            if until is None or until <= time.time():
+                return entry
+        merged_entry = dict(entry)
+        for status_field in _POOL_STATUS_FIELDS:
+            merged_entry[status_field] = disk_entry.get(status_field)
+        return merged_entry
+    except Exception:  # pragma: no cover - best-effort merge
+        return entry
+
+
 def write_credential_pool(
     provider_id: str,
     entries: List[Dict[str, Any]],
@@ -1463,6 +1568,10 @@ def write_credential_pool(
     disk but missing from ``entries``. Those were added by another process after
     the caller loaded its in-memory snapshot; without this merge a later
     rotation/exhaustion rewrite drops the concurrent credential.
+
+    For entries present on BOTH sides, status fields are merged by
+    ``last_status_at`` recency via ``_merge_disk_cooldown_state`` so a stale
+    snapshot cannot erase a cooldown/quarantine another process just wrote.
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
     merge does not resurrect them from the on-disk copy.
@@ -1481,12 +1590,24 @@ def write_credential_pool(
         ]
         existing = pool.get(provider_id)
         existing_list = existing if isinstance(existing, list) else []
+        existing_by_id = {
+            entry.get("id"): entry
+            for entry in existing_list
+            if isinstance(entry, dict) and entry.get("id")
+        }
         new_ids = {
             entry.get("id")
             for entry in sanitized_entries
             if isinstance(entry, dict) and entry.get("id")
         }
-        merged: List[Dict[str, Any]] = list(sanitized_entries)
+        merged: List[Dict[str, Any]] = [
+            _merge_disk_cooldown_state(
+                entry, existing_by_id.get(entry.get("id")), provider_id
+            )
+            if isinstance(entry, dict)
+            else entry
+            for entry in sanitized_entries
+        ]
         for disk_entry in existing_list:
             if not isinstance(disk_entry, dict):
                 continue
@@ -1588,7 +1709,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     except Exception:
         pass
 
-    # 2. Check config.yaml model.provider
+    # 2. Check config.yaml model.provider and other explicit provider slots.
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -1597,6 +1718,37 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             cfg_provider = (model_cfg.get("provider") or "").strip().lower()
             if cfg_provider == normalized:
                 return True
+
+        # MoA presets are explicit model selections too.  A user who configured
+        # ``provider: anthropic`` as a MoA advisor/aggregator has opted Hermes
+        # into using Anthropic credentials for that slot even when the main
+        # session model is another provider.  Without this, Claude Code OAuth
+        # entries are pruned/ignored by credential_pool.load_pool("anthropic"),
+        # so MoA Anthropic advisors fail with "no ANTHROPIC_API_KEY" while the
+        # normal model picker says Anthropic is logged in.
+        def _slot_matches_provider(slot):
+            return (
+                isinstance(slot, dict)
+                and (slot.get("provider") or "").strip().lower() == normalized
+            )
+
+        moa_cfg = cfg.get("moa")
+        if isinstance(moa_cfg, dict):
+            for slot in moa_cfg.get("reference_models") or []:
+                if _slot_matches_provider(slot):
+                    return True
+            if _slot_matches_provider(moa_cfg.get("aggregator")):
+                return True
+            presets = moa_cfg.get("presets")
+            if isinstance(presets, dict):
+                for preset in presets.values():
+                    if not isinstance(preset, dict):
+                        continue
+                    for slot in preset.get("reference_models") or []:
+                        if _slot_matches_provider(slot):
+                            return True
+                    if _slot_matches_provider(preset.get("aggregator")):
+                        return True
     except Exception:
         pass
 
@@ -1772,6 +1924,7 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -2203,7 +2356,7 @@ def _log_nous_invoke_jwt_selected(
     access_token: Any,
     sequence_id: Optional[str] = None,
 ) -> None:
-    logger.info("Nous inference auth: using NAS invoke JWT")
+    logger.debug("Nous inference auth: using NAS invoke JWT")
     _oauth_trace(
         "nous_invoke_jwt_selected",
         sequence_id=sequence_id,
@@ -3701,7 +3854,7 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     if not auth_path.is_file():
         return None
     try:
-        payload = json.loads(auth_path.read_text())
+        payload = json.loads(auth_path.read_text(encoding="utf-8"))
         tokens = payload.get("tokens")
         if not isinstance(tokens, dict):
             return None
@@ -3774,6 +3927,34 @@ def resolve_codex_runtime_credentials(
             }
         pool_rate_limit = _codex_pool_rate_limit_status()
         if pool_rate_limit:
+            # Before surfacing the persisted cooldown, ask the Codex usage
+            # endpoint whether the quota actually reset early (banked reset
+            # redeemed, plan upgraded, window reset upstream).  The persisted
+            # ``last_error_reset_at`` can be days in the future while the
+            # account is already usable again — see issue #43747.
+            stale_token = str(pool_rate_limit.get("access_token") or "").strip()
+            if stale_token and _probe_codex_quota_restored(
+                stale_token,
+                base_url=pool_rate_limit.get("base_url"),
+            ):
+                logger.info(
+                    "Codex quota restored upstream — clearing stale pool cooldown(s)."
+                )
+                clear_codex_pool_quota_cooldowns()
+                pool_token = _pool_codex_access_token()
+                if pool_token:
+                    base_url = (
+                        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                        or DEFAULT_CODEX_BASE_URL
+                    )
+                    return {
+                        "provider": "openai-codex",
+                        "base_url": base_url,
+                        "api_key": pool_token,
+                        "source": "credential_pool",
+                        "last_refresh": None,
+                        "auth_mode": "chatgpt",
+                    }
             reset_at = pool_rate_limit.get("reset_at")
             if isinstance(reset_at, (int, float)) and reset_at > time.time():
                 remaining = int(reset_at - time.time())
@@ -3836,6 +4017,190 @@ def resolve_codex_runtime_credentials(
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
     }
+
+
+def _is_codex_rate_limit_shaped(
+    code: Any,
+    reason: Any,
+    message: Any,
+) -> bool:
+    """True when persisted pool-entry error metadata describes a 429/quota stop."""
+    reason_l = str(reason or "").lower()
+    message_l = str(message or "").lower()
+    return (
+        code == 429
+        or "rate_limit" in reason_l
+        or "usage_limit" in reason_l
+        or "quota" in reason_l
+        or "rate limit" in message_l
+        or "usage limit" in message_l
+        or "quota" in message_l
+    )
+
+
+# Throttle for the live Codex quota probe below.  The probe runs on the hot
+# credential-selection path while the pool is exhausted, so without a floor a
+# busy gateway would hammer the usage endpoint on every model/auxiliary call.
+CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS = 300  # 5 minutes
+_codex_quota_probe_cache: Dict[str, Tuple[float, Optional[bool]]] = {}
+_codex_quota_probe_lock = threading.Lock()
+
+
+def _codex_usage_probe_url(base_url: Optional[str]) -> str:
+    """Resolve the Codex usage endpoint for a probe.
+
+    Mirrors the Codex CLI's PathStyle split (codex-rs backend-client, same
+    logic as ``agent.account_usage._codex_backend_urls``): base URLs
+    containing ``/backend-api`` use the ChatGPT ``/wham/usage`` path;
+    everything else uses ``/api/codex/usage``.  Kept local so this low-level
+    auth module doesn't import the auxiliary account-usage module.
+    """
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        normalized = (
+            os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+            or DEFAULT_CODEX_BASE_URL
+        )
+    if normalized.endswith("/codex"):
+        normalized = normalized[: -len("/codex")]
+    prefix = normalized + ("/wham" if "/backend-api" in normalized else "/api/codex")
+    return prefix + "/usage"
+
+
+def _probe_codex_quota_restored(
+    access_token: Any,
+    *,
+    base_url: Optional[str] = None,
+    min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS,
+) -> Optional[bool]:
+    """Ask the Codex usage endpoint whether this account's quota is usable again.
+
+    Hermes persists a Codex 429's ``reset_at`` locally and freezes the
+    credential until it elapses — but the upstream window can reopen EARLY
+    (the user redeems a banked rate-limit reset via the Codex CLI/ChatGPT UI,
+    upgrades their plan, or OpenAI resets the window).  This probe detects
+    that: it GETs the same ``/usage`` endpoint the Codex CLI uses and checks
+    the reported windows.
+
+    Returns:
+      * ``True``  — every reported rate-limit window is below 100% used;
+        the account can serve requests again and stale local cooldowns
+        should be lifted.
+      * ``False`` — a window is still fully used (or the probe itself 429'd);
+        keep the cooldown.
+      * ``None``  — indeterminate (no token, network error, unexpected
+        payload/status); keep the cooldown.
+
+    Probes are throttled per access token (module-local cache) so the hot
+    selection path can fire this freely.
+    """
+    token = str(access_token or "").strip()
+    if not token:
+        return None
+    # Real Codex access tokens are JWTs. Refusing to probe non-JWT tokens
+    # avoids pointless network calls for corrupt/placeholder entries (and
+    # keeps hermetic test fixtures with dummy tokens offline).
+    if not _decode_jwt_claims(token):
+        return None
+    cache_key = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    now = time.monotonic()
+    with _codex_quota_probe_lock:
+        cached = _codex_quota_probe_cache.get(cache_key)
+        if cached is not None and (now - cached[0]) < min_interval_seconds:
+            return cached[1]
+        # Reserve the slot immediately so concurrent selectors don't stampede
+        # the endpoint while this probe is in flight.
+        _codex_quota_probe_cache[cache_key] = (now, None)
+
+    result: Optional[bool] = None
+    try:
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "codex-cli",
+        }
+        # Best-effort ChatGPT-Account-Id from the JWT (the backend requires it
+        # for some account shapes; harmless to omit for others).
+        claims = _decode_jwt_claims(token)
+        account_id = (
+            claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+            if isinstance(claims.get("https://api.openai.com/auth"), dict)
+            else None
+        )
+        if isinstance(account_id, str) and account_id.strip():
+            headers["ChatGPT-Account-Id"] = account_id.strip()
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(_codex_usage_probe_url(base_url), headers=headers)
+        if response.status_code == 200:
+            payload = response.json() or {}
+            rate_limit = payload.get("rate_limit") or {}
+            worst_used: Optional[float] = None
+            for key in ("primary_window", "secondary_window"):
+                used = (rate_limit.get(key) or {}).get("used_percent")
+                if isinstance(used, (int, float)):
+                    worst_used = max(worst_used or 0.0, float(used))
+            if worst_used is not None:
+                result = worst_used < 100.0
+        elif response.status_code == 429:
+            result = False
+    except Exception:
+        logger.debug("Codex quota probe failed", exc_info=True)
+        result = None
+
+    with _codex_quota_probe_lock:
+        _codex_quota_probe_cache[cache_key] = (now, result)
+    return result
+
+
+def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
+    """Clear rate-limit cooldowns on persisted openai-codex pool entries.
+
+    Called after the upstream quota is KNOWN to be restored (a successful
+    ``/usage reset`` redemption, or a positive live probe) so auth.json stops
+    freezing credentials behind a stale ``last_error_reset_at``.  Only lifts
+    ``exhausted`` entries whose error metadata is 429/quota-shaped — DEAD
+    (terminal auth) entries and non-rate-limit failures are untouched.
+
+    When *access_token* is given, only the matching entry is cleared;
+    otherwise every rate-limited entry clears (a redeemed banked reset
+    restores the whole account, and any entry that is genuinely still
+    exhausted just re-freezes with fresh metadata on its next 429).
+
+    Returns the number of entries cleared.
+    """
+    cleared = 0
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            pool = auth_store.get("credential_pool")
+            entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+            if not isinstance(entries, list):
+                return 0
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("last_status") != "exhausted":
+                    continue
+                if access_token and str(entry.get("access_token") or "") != access_token:
+                    continue
+                if not _is_codex_rate_limit_shaped(
+                    entry.get("last_error_code"),
+                    entry.get("last_error_reason"),
+                    entry.get("last_error_message"),
+                ):
+                    continue
+                entry["last_status"] = None
+                entry["last_status_at"] = None
+                entry["last_error_code"] = None
+                entry["last_error_reason"] = None
+                entry["last_error_message"] = None
+                entry["last_error_reset_at"] = None
+                cleared += 1
+            if cleared:
+                _save_auth_store(auth_store)
+    except Exception:
+        logger.debug("Failed to clear Codex pool quota cooldowns", exc_info=True)
+    return cleared
 
 
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
@@ -3905,6 +4270,8 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
                 "reset_at": reset_at,
                 "reason": entry.get("last_error_reason"),
                 "message": entry.get("last_error_message"),
+                "access_token": token.strip(),
+                "base_url": entry.get("base_url"),
             }
     except Exception:
         logger.debug("Codex pool rate-limit lookup failed", exc_info=True)
@@ -4113,7 +4480,16 @@ def _save_xai_oauth_tokens(
     redirect_uri: str = "",
     last_refresh: Optional[str] = None,
     auth_mode: str = "oauth_device_code",
+    set_active: bool = True,
 ) -> None:
+    """Persist xAI OAuth tokens into the auth store.
+
+    When *set_active* is True (default), also promote ``xai-oauth`` to
+    ``active_provider`` — appropriate for intentional model/auth login.
+    Pass ``set_active=False`` for side-tool credential bootstrap (TTS/setup,
+    tools config, dashboard token save, token refresh) so inference routing
+    is unchanged.
+    """
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
@@ -4122,8 +4498,17 @@ def _save_xai_oauth_tokens(
         # grant through _load_provider_state's fallback. When such a profile
         # refreshes the (rotating) grant, we must write the rotated chain back
         # to root too, or root is left holding a revoked refresh token (#43589).
-        write_through_to_root = not _profile_has_own_xai_oauth_state(auth_store)
-        state = _load_provider_state(auth_store, "xai-oauth") or {}
+        # #74339: the old key-presence check (_profile_has_own_xai_oauth_state)
+        # decided write-through based on whether the profile had a
+        # providers.xai-oauth key BEFORE the save — but _store_provider_state
+        # unconditionally creates that key below. Use
+        # _load_provider_state_with_source to learn where the grant was
+        # resolved from and write back only to that source.
+        state, source_path = _load_provider_state_with_source(
+            auth_store, "xai-oauth"
+        )
+        if state is None:
+            state = {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = auth_mode
@@ -4131,10 +4516,24 @@ def _save_xai_oauth_tokens(
             state["discovery"] = discovery
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
-        _save_provider_state(auth_store, "xai-oauth", state)
-        _save_auth_store(auth_store)
-        if write_through_to_root:
+        global_root = _global_auth_file_path()
+        is_from_root = bool(
+            source_path is not None
+            and global_root is not None
+            and _same_path(source_path, global_root)
+        )
+        if is_from_root:
+            # Grant was resolved from root — write back to root only.
+            # Do NOT call _store_provider_state on the profile auth_store
+            # (it would create a shadowing providers.xai-oauth key that
+            # disables write-through on the next refresh — #74339).
             _write_through_xai_oauth_to_global_root(state)
+        else:
+            # Profile genuinely owns this — write to profile store.
+            _store_provider_state(
+                auth_store, "xai-oauth", state, set_active=set_active
+            )
+            _save_auth_store(auth_store)
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
@@ -4469,6 +4868,9 @@ def _refresh_xai_oauth_tokens(
         redirect_uri=redirect_uri,
         last_refresh=refreshed["last_refresh"],
         auth_mode=auth_mode,
+        # Refresh must not flip active_provider — TTS/side tools can refresh
+        # xAI tokens while chat still routes through another provider.
+        set_active=False,
     )
     return updated_tokens
 
@@ -4922,7 +5324,7 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     if not path.is_file():
         return None
     try:
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         logger.debug("Shared Nous auth store at %s is unreadable: %s", path, exc)
         return None
@@ -6166,6 +6568,69 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
     return _snapshot_nous_pool_status()
 
 
+def get_nous_auth_status_local() -> Dict[str, Any]:
+    """Refresh-free Nous auth snapshot for read-only display surfaces.
+
+    Unlike :func:`get_nous_auth_status`, this NEVER calls
+    ``resolve_nous_runtime_credentials()`` and therefore never performs an
+    OAuth refresh POST or consumes a single-use refresh token. It reports the
+    persisted auth-store state, classifying the access token with a local
+    invoke-JWT decode only.
+
+    Use this from status panels, doctor checks, and polled dashboard
+    endpoints. Explicit auth actions (login flows, portal operations that
+    need a live credential) should keep using ``get_nous_auth_status()``.
+
+    ``logged_in`` here means "a persisted login exists that the runtime can
+    use or refresh": a currently-usable invoke JWT, or a refresh token that
+    has not been terminally quarantined. It does not prove the refresh token
+    is still accepted server-side — only a live resolve can do that.
+    """
+    try:
+        state = get_provider_auth_state("nous")
+    except Exception:
+        state = None
+
+    if not state:
+        return _snapshot_nous_pool_status()
+
+    access_token = state.get("access_token")
+    jwt_reason = _nous_invoke_jwt_status(
+        access_token,
+        scope=state.get("scope"),
+        expires_at=state.get("expires_at"),
+    )
+    last_err = state.get("last_auth_error")
+    terminal = bool(
+        isinstance(last_err, dict)
+        and last_err.get("relogin_required")
+        and not (access_token or state.get("refresh_token"))
+    )
+    logged_in = (jwt_reason is None) or (
+        bool(state.get("refresh_token")) and not terminal
+    )
+
+    status: Dict[str, Any] = {
+        "logged_in": logged_in,
+        "portal_base_url": state.get("portal_base_url"),
+        "inference_base_url": state.get("inference_base_url"),
+        "access_token": access_token,
+        "access_expires_at": state.get("expires_at"),
+        "agent_key_expires_at": state.get("agent_key_expires_at"),
+        "has_refresh_token": bool(state.get("refresh_token")),
+        "inference_credential_present": bool(
+            access_token or state.get("agent_key")
+        ),
+        "credential_source": "auth_store",
+        "source": "auth_store_local",
+    }
+    if terminal and isinstance(last_err, dict):
+        status["relogin_required"] = True
+        status["error_code"] = last_err.get("code")
+        status["error"] = last_err.get("message") or "re-login required"
+    return status
+
+
 # Enum values reported on the dashboard /api/status as ``nous_session_valid``.
 # NAS's health sweep re-mints the bootstrap session ONLY on "terminal"; "valid"
 # and "unknown" are no-ops. Keep this set small and stable — NAS parses it with
@@ -6187,7 +6652,9 @@ def get_nous_session_validity() -> str:
         non-terminal error). Never triggers a re-mint.
 
     Determinable with NO working token — it reads local auth-store state only,
-    which is exactly the condition a dead hosted box is in.
+    which is exactly the condition a dead hosted box is in. This function is
+    called by the frequently-polled public ``/api/status`` endpoint, so it must
+    never resolve credentials or perform an OAuth refresh.
 
     ANTI-FLAP CONTRACT: only a *terminal* failure maps to "terminal". A normal
     mid-rotation blip, a transient network error, or a merely-expiring token
@@ -6204,34 +6671,29 @@ def get_nous_session_validity() -> str:
     try:
         state = get_provider_auth_state("nous")
     except Exception:
-        state = None
-
-    if state:
-        last_err = state.get("last_auth_error")
-        if isinstance(last_err, dict) and last_err.get("relogin_required"):
-            # Only terminal while there is no usable credential left. If a later
-            # successful login repopulated tokens, the stale marker must not
-            # keep reporting terminal.
-            if not (state.get("access_token") or state.get("refresh_token")):
-                return NOUS_SESSION_TERMINAL
-
-    try:
-        status = get_nous_auth_status()
-    except Exception:
-        # Status computation itself failed — indeterminate, not terminal.
         return NOUS_SESSION_UNKNOWN
 
-    if status.get("logged_in"):
+    if not state:
+        return NOUS_SESSION_UNKNOWN
+
+    last_err = state.get("last_auth_error")
+    if isinstance(last_err, dict) and last_err.get("relogin_required"):
+        # Only terminal while there is no usable credential left. If a later
+        # successful login repopulated tokens, the stale marker must not
+        # keep reporting terminal.
+        if not (state.get("access_token") or state.get("refresh_token")):
+            return NOUS_SESSION_TERMINAL
+
+    if _nous_invoke_jwt_status(
+        state.get("access_token"),
+        scope=state.get("scope"),
+        expires_at=state.get("expires_at"),
+    ) is None:
         return NOUS_SESSION_VALID
 
-    # Not logged in. Distinguish a terminal (relogin-required) failure from a
-    # transient / indeterminate one. Only the former is actionable by NAS.
-    if status.get("relogin_required"):
-        return NOUS_SESSION_TERMINAL
-
-    # No Nous provider state at all, or a non-terminal not-logged-in condition
-    # (e.g. a transient refresh error that did not set relogin_required). Treat
-    # as unknown so a healthy box mid-blip never triggers a re-mint.
+    # Missing, malformed, expired, or merely expiring credentials are not proof
+    # of a terminal session. Runtime inference/keepalive paths own refreshes;
+    # the health endpoint remains side-effect free and reports indeterminate.
     return NOUS_SESSION_UNKNOWN
 
 
@@ -6820,9 +7282,15 @@ def _prompt_model_selection(
     If *unavailable_models* is provided, those models are shown grayed out
     and unselectable, with an upgrade link to *portal_url*.
     """
-    from hermes_cli.models import _format_price_per_mtok
+    from hermes_cli.models import (
+        _format_price_per_mtok,
+        compute_sale_discount,
+    )
 
     _unavailable = unavailable_models or []
+    # Sale chrome (★ / -N% / was) is Nous Portal-only — never for OpenRouter
+    # or other providers even if pricing.original is somehow present.
+    sale_chrome = (confirm_provider or "").strip().lower() == "nous"
 
     def _confirmed_selection(mid: str) -> Optional[str]:
         if not mid:
@@ -6849,16 +7317,31 @@ def _prompt_model_selection(
 
     # Column-aligned labels when pricing is available
     has_pricing = bool(pricing and any(pricing.get(m) for m in all_models))
-    name_col = max((len(m) for m in all_models), default=0) + 2 if has_pricing else 0
+    # Leave room for a leading "★ " on sale rows (Nous only).
+    name_pad = 3 if sale_chrome else 2
+    name_col = (
+        max((len(m) for m in all_models), default=0) + name_pad
+        if has_pricing
+        else 0
+    )
 
-    # Pre-compute formatted prices and dynamic column widths
-    _price_cache: dict[str, tuple[str, str, str]] = {}
+    # Pre-compute formatted prices and sale chrome.
+    # (inp, out, cache, pct|None, was_inp, was_out)
+    # Sale chrome is drawn as curses/ANSI segments (yellow % / dim "was"),
+    # not baked into a single plain string — curses addnstr would otherwise
+    # render escape bytes literally.
+    _price_cache: dict[str, tuple[str, str, str, int | None, str, str]] = {}
     price_col = 3  # minimum width
     cache_col = 0  # only set if any model has cache pricing
     has_cache = False
+    any_on_sale = False
+    _DIM = "\033[2m"
+    _RESET = "\033[0m"
     if has_pricing:
         for mid in all_models:
             p = pricing.get(mid)  # type: ignore[union-attr]
+            pct: int | None = None
+            was_inp = was_out = ""
             if p:
                 inp = _format_price_per_mtok(p.get("prompt", ""))
                 out = _format_price_per_mtok(p.get("completion", ""))
@@ -6866,26 +7349,68 @@ def _prompt_model_selection(
                 cache = _format_price_per_mtok(cache_read) if cache_read else ""
                 if cache:
                     has_cache = True
+                if sale_chrome:
+                    sale = compute_sale_discount(
+                        p.get("prompt", ""),
+                        p.get("completion", ""),
+                        p.get("original"),
+                    )
+                    if sale is not None:
+                        any_on_sale = True
+                        pct, was_prompt_raw, was_out_raw = sale
+                        was_inp = (
+                            _format_price_per_mtok(was_prompt_raw)
+                            if was_prompt_raw != ""
+                            else "?"
+                        )
+                        was_out = (
+                            _format_price_per_mtok(was_out_raw)
+                            if was_out_raw != ""
+                            else "?"
+                        )
             else:
                 inp, out, cache = "", "", ""
-            _price_cache[mid] = (inp, out, cache)
+            _price_cache[mid] = (inp, out, cache, pct, was_inp, was_out)
             price_col = max(price_col, len(inp), len(out))
             cache_col = max(cache_col, len(cache))
         if has_cache:
             cache_col = max(cache_col, 5)  # minimum: "Cache" header
 
-    def _label(mid):
-        if has_pricing:
-            inp, out, cache = _price_cache.get(mid, ("", "", ""))
-            price_part = f" {inp:>{price_col}}  {out:>{price_col}}"
-            if has_cache:
-                price_part += f"  {cache:>{cache_col}}"
-            base = f"{mid:<{name_col}}{price_part}"
+    def _label_segments(mid):
+        """Build a rich radiolist row: yellow ★/% , dim was, plain prices."""
+        if not has_pricing:
+            segs: list[tuple[str, str | None]] = [(mid, None)]
+            if mid == current_model:
+                segs.append(("  ← currently in use", None))
+            return segs
+
+        inp, out, cache, pct, was_inp, was_out = _price_cache.get(
+            mid, ("", "", "", None, "", "")
+        )
+        on_sale = pct is not None
+        # Reserve 2 columns for "★ " so sale and non-sale names share alignment.
+        star_w = 2
+        if on_sale:
+            name_segs: list[tuple[str, str | None]] = [
+                ("★ ", "yellow"),
+                (f"{mid:<{name_col - star_w}}", None),
+            ]
         else:
-            base = mid
+            name_segs = [(f"{mid:<{name_col}}", None)]
+
+        price_part = f" {inp:>{price_col}}  {out:>{price_col}}"
+        if has_cache:
+            price_part += f"  {cache:>{cache_col}}"
+        segs = [*name_segs, (price_part, None)]
+        if on_sale:
+            segs.append((f"  -{pct}%", "yellow"))
+            segs.append((f"  was {was_inp}/{was_out}", "dim"))
         if mid == current_model:
-            base += "  ← currently in use"
-        return base
+            segs.append(("  ← currently in use", None))
+        return segs
+
+    def _label(mid):
+        return "".join(text for text, _style in _label_segments(mid))
 
     # Default cursor on the current model (index 0 if it was reordered to top)
     default_idx = 0
@@ -6900,11 +7425,11 @@ def _prompt_model_selection(
         header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
         if has_cache:
             header += f"  {'Cache':>{cache_col}}"
-        menu_title += header + "  /Mtok"
-
-    # ANSI escape for dim text
-    _DIM = "\033[2m"
-    _RESET = "\033[0m"
+        # Legend lives on the column-header line so it reads as a key
+        # (★ = on sale), not a fake menu row.
+        menu_title += header + "  $/Mtok"
+        if any_on_sale:
+            menu_title += "  ★ = on sale"
 
     # Try arrow-key menu first, fall back to number input.
     # Uses the shared curses radiolist (ESC/arrow-key handling that works
@@ -6914,7 +7439,7 @@ def _prompt_model_selection(
     try:
         from hermes_cli.curses_ui import curses_radiolist
 
-        choices = [_label(mid) for mid in ordered]
+        choices = [_label_segments(mid) for mid in ordered]
         choices.append("Enter custom model name")
         choices.append("Skip (keep current)")
 
@@ -6928,8 +7453,8 @@ def _prompt_model_selection(
         # screen clear. menu_title already embeds the aligned price header.
         desc_lines: list[str] = []
         if has_pricing:
-            # menu_title is "Select default model:\n<pad><header>  /Mtok"
-            # Keep only the header portion for the description.
+            # menu_title is "Select default model:\n<pad><header>  $/Mtok\n…"
+            # Keep only the header/legend portion for the description.
             header_part = menu_title.split("\n", 1)
             if len(header_part) > 1:
                 desc_lines.extend(header_part[1].splitlines())
@@ -6939,6 +7464,22 @@ def _prompt_model_selection(
             desc_lines.append(f"  ── {unavailable_footer} ──")
         description = "\n".join(desc_lines) if desc_lines else None
 
+        # Search haystacks keep pricing labels visible while adding aliases
+        # for brand-less wire ids (e.g. Kimi Coding `k3` ↔ query "kimi").
+        from hermes_cli.model_search import model_search_text
+
+        model_search_labels = []
+        for mid in ordered:
+            label = _label(mid)
+            haystack = model_search_text(mid)
+            # model_search_text always starts with the wire id; only append when
+            # aliases add tokens beyond the bare id already in the label.
+            model_search_labels.append(
+                label if haystack == mid else f"{label} {haystack}"
+            )
+        model_search_labels.append("Enter custom model name")
+        model_search_labels.append("Skip (keep current)")
+
         idx = curses_radiolist(
             "Select default model:",
             choices,
@@ -6946,6 +7487,7 @@ def _prompt_model_selection(
             cancel_returns=-1,
             description=description,
             searchable=True,
+            search_labels=model_search_labels,
         )
         if idx < 0:
             return None
@@ -6962,11 +7504,18 @@ def _prompt_model_selection(
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
-    # Fallback: numbered list
-    print(menu_title)
+    # Fallback: numbered list (ANSI colors for sale chrome)
+    from hermes_cli.curses_ui import format_radio_item_ansi
+    from hermes_cli.colors import Colors, color
+
+    for line in menu_title.splitlines():
+        if "★" in line:
+            print(line.replace("★", color("★", Colors.YELLOW), 1))
+        else:
+            print(line)
     num_width = len(str(len(ordered) + 2))
     for i, mid in enumerate(ordered, 1):
-        print(f"  {i:>{num_width}}. {_label(mid)}")
+        print(f"  {i:>{num_width}}. {format_radio_item_ansi(_label_segments(mid))}")
     n = len(ordered)
     print(f"  {n + 1:>{num_width}}. Enter custom model name")
     print(f"  {n + 2:>{num_width}}. Skip (keep current)")

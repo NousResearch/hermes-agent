@@ -43,10 +43,10 @@ _TITLE_PROMPT_PINNED_LANGUAGE = (
 def _title_language() -> str:
     """Return configured title language, or empty string to match the user."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
 
         return str(
-            ((load_config() or {}).get("auxiliary") or {})
+            ((load_config_readonly() or {}).get("auxiliary") or {})
             .get("title_generation", {})
             .get("language", "")
         ).strip()
@@ -69,6 +69,27 @@ def _auto_title_enabled() -> bool:
     except Exception:
         logger.debug("Failed to read title_generation.enabled", exc_info=True)
         return True
+
+
+def _summarize_user_message(user_message: str) -> str:
+    """Collapse a slash-skill-expanded turn back to what the user typed.
+
+    A ``/skill`` invocation expands into a message that embeds the whole skill
+    body, so feeding it to the titler verbatim titles the session after the
+    *skill's* prose — "Kick off a task in a fresh isolated git worktree" — not
+    after the user's request. Reuse the canonical scaffolding parser so the
+    model sees ``/work — fix the title leak`` instead.
+    """
+    if not user_message:
+        return ""
+    try:
+        from agent.skill_commands import describe_skill_invocation
+
+        described = describe_skill_invocation(user_message)
+    except Exception:
+        logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
+        return user_message
+    return described if described is not None else user_message
 
 
 def generate_title(
@@ -110,7 +131,7 @@ def generate_title(
             logger.debug("Title runtime validator raised; proceeding", exc_info=True)
 
     # Truncate long messages to keep the request small
-    user_snippet = user_message[:500] if user_message else ""
+    user_snippet = _summarize_user_message(user_message)[:500]
     assistant_snippet = assistant_response[:500] if assistant_response else ""
 
     language = _title_language()
@@ -143,6 +164,11 @@ def generate_title(
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
             title = title[6:].strip()
+        # A title is one line. A model that ignores "return ONLY the title" and
+        # answers the prompt instead (a shell transcript, a bulleted plan) would
+        # otherwise be stored verbatim and truncated mid-command. Keep the first
+        # non-empty line — the closest thing to a title in that response.
+        title = next((line.strip() for line in title.splitlines() if line.strip()), "")
         # Enforce reasonable length
         if len(title) > 80:
             title = title[:77] + "..."

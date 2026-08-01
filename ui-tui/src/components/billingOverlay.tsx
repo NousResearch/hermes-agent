@@ -340,7 +340,7 @@ function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
         <Text color={t.color.label}>Enter a custom amount:</Text>
         <Box>
           <Text color={t.color.label}>{'$'}</Text>
-          <TextInput columns={20} onChange={setCustom} onSubmit={submitCustom} value={custom} />
+          <TextInput color={t.color.text} columns={20} onChange={setCustom} onSubmit={submitCustom} value={custom} />
         </Box>
         {error && <Text color={t.color.error}>{error}</Text>}
         <Text />
@@ -852,6 +852,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
       <Box borderColor={focused ? t.color.accent : t.color.border} borderStyle="round" paddingX={1}>
         <Text color={t.color.label}>{'$'}</Text>
         <TextInput
+          color={t.color.text}
           columns={16}
           focus={focused}
           onChange={onChange}

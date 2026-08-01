@@ -7,13 +7,12 @@ proved gone. Terminal states are immutable.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import threading
 import uuid
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
@@ -27,10 +26,15 @@ _PROCESS_ID = uuid.uuid4().hex
 
 def _connect() -> sqlite3.Connection:
     EXECUTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(EXECUTIONS_FILE, timeout=5)
+    return sqlite3.connect(EXECUTIONS_FILE, timeout=5)
+
+
+def _initialize_schema(conn: sqlite3.Connection) -> None:
+    from hermes_state import apply_wal_with_fallback
+
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    apply_wal_with_fallback(conn, db_label="cron/executions.db")
     conn.execute("PRAGMA synchronous=FULL")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS executions (
@@ -56,11 +60,43 @@ def _connect() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
         "ON executions(status, claimed_at DESC, id DESC)"
     )
-    return conn
+
+
+@contextmanager
+def _transaction() -> Iterator[sqlite3.Connection]:
+    """Open a connection, commit/rollback on exit, always close.
+
+    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back
+    the transaction; it does not close the connection. Relying on that alone
+    leaks a connection (and its WAL/SHM file descriptors) on every call,
+    since closing then depends on the garbage collector. Schema init runs
+    inside the ``try`` too, so a PRAGMA/DDL failure after a successful
+    ``connect()`` still closes the connection instead of leaking it.
+    """
+    with _lock:
+        conn = _connect()
+        try:
+            _initialize_schema(conn)
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _record(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
     return dict(row) if row is not None else None
+
+
+def _emit_execution_state(
+    record: Optional[Dict[str, Any]], *, delivery_outcome: Optional[str] = None
+) -> None:
+    """Project durable state to monitoring without affecting ledger behavior."""
+    try:
+        from agent.monitoring.cron_health import emit_execution_state
+
+        emit_execution_state(record, delivery_outcome=delivery_outcome)
+    except Exception:
+        pass
 
 
 def _process_start_time(pid: int) -> Optional[int]:
@@ -101,7 +137,7 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
@@ -113,13 +149,15 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
         row = conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
         ).fetchone()
-    return _record(row)  # type: ignore[return-value]
+    record = _record(row)
+    _emit_execution_state(record)
+    return record  # type: ignore[return-value]
 
 
 def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
     now = _hermes_now().isoformat()
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions SET status='running', started_at=?
                WHERE id=? AND status='claimed'""",
@@ -127,19 +165,22 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
         )
         if cur.rowcount != 1:
             return None
-        return _record(conn.execute(
+        record = _record(conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
         ).fetchone())
+    _emit_execution_state(record)
+    return record
 
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
+    delivery_outcome: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Write a terminal result once; terminal attempts cannot be rewritten."""
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions SET status=?, finished_at=?, error=?
                WHERE id=? AND status IN ('claimed','running')""",
@@ -148,16 +189,19 @@ def finish_execution(
         if cur.rowcount != 1:
             return None
         _prune_unlocked(conn)
-        return _record(conn.execute(
+        record = _record(conn.execute(
             "SELECT * FROM executions WHERE id=?", (execution_id,)
         ).fetchone())
+    _emit_execution_state(record, delivery_outcome=delivery_outcome)
+    return record
 
 
 def recover_interrupted_executions() -> int:
     """Mark provably abandoned attempts unknown without scheduling retries."""
     now = _hermes_now().isoformat()
     changed = 0
-    with _lock, _connect() as conn:
+    recovered: List[Dict[str, Any]] = []
+    with _transaction() as conn:
         rows = conn.execute(
             """SELECT id, process_id, pid, process_started_at FROM executions
                WHERE status IN ('claimed','running')"""
@@ -176,8 +220,16 @@ def recover_interrupted_executions() -> int:
                  row["id"]),
             )
             changed += cur.rowcount
+            if cur.rowcount:
+                record = _record(conn.execute(
+                    "SELECT * FROM executions WHERE id=?", (row["id"],)
+                ).fetchone())
+                if record is not None:
+                    recovered.append(record)
         if changed:
             _prune_unlocked(conn)
+    for record in recovered:
+        _emit_execution_state(record)
     return changed
 
 
@@ -196,7 +248,7 @@ def list_executions(
         params.append(str(before_claimed_at))
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, min(int(limit), 500)))
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         rows = conn.execute(
             "SELECT * FROM executions" + where
             + " ORDER BY claimed_at DESC, id DESC LIMIT ?",
@@ -216,7 +268,7 @@ def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     if not clean:
         return {}
     placeholders = ",".join("?" for _ in clean)
-    with _lock, _connect() as conn:
+    with _transaction() as conn:
         rows = conn.execute(
             f"""SELECT e.* FROM executions e
                 WHERE e.job_id IN ({placeholders})

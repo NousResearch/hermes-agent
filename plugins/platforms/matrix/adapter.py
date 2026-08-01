@@ -52,11 +52,15 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import array
 import inspect
 import logging
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import sys
 import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
@@ -134,6 +138,140 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
+
+_MATRIX_VOICE_WAVEFORM_BINS = 30
+
+
+def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
+    """Return best-effort Matrix voice metadata for an audio file.
+
+    Matrix clients such as Element render ``m.audio`` events with
+    ``org.matrix.msc3245.voice`` as voice bubbles. They are more reliable when
+    the event also includes duration and MSC1767 waveform metadata. Metadata
+    extraction is deliberately best-effort: media delivery must still work on
+    systems without ffprobe/ffmpeg.
+    """
+    metadata: Dict[str, Any] = {}
+
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                duration = float((result.stdout or "").strip() or 0)
+                if duration > 0:
+                    metadata["duration"] = int(duration * 1000)
+        except Exception:
+            logger.debug("Matrix: failed to probe voice duration for %s", path, exc_info=True)
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-v",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "8000",
+                    "-f",
+                    "s16le",
+                    "-",
+                ],
+                capture_output=True,
+                timeout=15,
+                stdin=subprocess.DEVNULL,
+            )
+            if result.returncode == 0 and result.stdout:
+                samples = array.array("h")
+                samples.frombytes(result.stdout)
+                if sys.byteorder != "little":
+                    samples.byteswap()
+                if samples:
+                    count = len(samples)
+                    waveform = []
+                    for idx in range(_MATRIX_VOICE_WAVEFORM_BINS):
+                        start = idx * count // _MATRIX_VOICE_WAVEFORM_BINS
+                        end = max(start + 1, (idx + 1) * count // _MATRIX_VOICE_WAVEFORM_BINS)
+                        peak = max(abs(value) for value in samples[start:end])
+                        waveform.append(min(1024, int(peak / 32767 * 1024)))
+                    metadata["waveform"] = waveform
+        except Exception:
+            logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
+
+    return metadata
+
+def _matrix_transcode_voice_to_ogg(path: str) -> Optional[str]:
+    """Best-effort transcode of an audio file to Ogg/Opus for MSC3245 delivery.
+
+    Returns the path of a NEW temporary ``.ogg`` file (caller owns cleanup), or
+    ``None`` when ffmpeg is unavailable or fails — callers then send the
+    original file, matching the adapter's previous behaviour. Runs blocking
+    subprocess work; call via ``asyncio.to_thread`` from async code.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    import tempfile
+
+    fd, ogg_path = tempfile.mkstemp(prefix="matrix_voice_", suffix=".ogg")
+    os.close(fd)
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(path),
+                "-acodec",
+                "libopus",
+                "-ac",
+                "1",
+                "-b:a",
+                "48k",
+                "-vbr",
+                "on",
+                "-application",
+                "voip",
+                "-compression_level",
+                "10",
+                ogg_path,
+            ],
+            capture_output=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+        if result.returncode == 0 and os.path.getsize(ogg_path) > 0:
+            return ogg_path
+    except Exception:
+        logger.debug("Matrix: voice transcode to Ogg/Opus failed for %s", path, exc_info=True)
+    try:
+        os.unlink(ogg_path)
+    except OSError:
+        pass
+    return None
+
 
 _MATRIX_BANG_COMMAND_RE = re.compile(
     r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$",
@@ -1937,13 +2075,13 @@ class MatrixAdapter(BasePlatformAdapter):
                         return b"".join(parts), ct, fname
                 raise ValueError("too many redirects")
         except ImportError:
-            import httpx
+            from tools.url_safety import create_ssrf_safe_async_client
 
             _httpx_kw: dict = {}
             if self._proxy_url:
                 _httpx_kw["proxy"] = self._proxy_url
             _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
-            async with httpx.AsyncClient(**_httpx_kw) as http:
+            async with create_ssrf_safe_async_client(**_httpx_kw) as http:
                 async with http.stream(
                     "GET",
                     url,
@@ -2032,16 +2170,47 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Upload an audio file as a voice message (MSC3245 native voice)."""
-        return await self._send_local_file(
-            chat_id,
-            audio_path,
-            "m.audio",
-            caption,
-            reply_to,
-            metadata=metadata,
-            is_voice=True,
-        )
+        """Upload an audio file as a voice message (MSC3245 native voice).
+
+        Matrix voice bubbles require Opus in an Ogg container (MSC3245), but
+        callers can reach this with any audio format — e.g. a model-invoked
+        ``text_to_speech`` result routed through gateway media delivery, not
+        just ``_send_voice_reply``. Enforce the codec at this boundary:
+        transcode non-Ogg input to Ogg/Opus (best-effort — if ffmpeg is
+        unavailable the original file is sent unchanged, preserving the
+        previous behaviour).
+        """
+        converted_path: Optional[str] = None
+        send_path = audio_path
+        if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
+            converted_path = await asyncio.to_thread(
+                _matrix_transcode_voice_to_ogg, audio_path
+            )
+            if converted_path:
+                send_path = converted_path
+        try:
+            return await self._send_local_file(
+                chat_id,
+                send_path,
+                "m.audio",
+                caption,
+                reply_to,
+                # keep the caller's basename (the temp transcode file has a
+                # generated name) so the event body stays meaningful
+                file_name=(
+                    Path(audio_path).with_suffix(".ogg").name
+                    if converted_path
+                    else None
+                ),
+                metadata=metadata,
+                is_voice=True,
+            )
+        finally:
+            if converted_path:
+                try:
+                    os.unlink(converted_path)
+                except OSError:
+                    pass
 
     async def send_video(
         self,
@@ -2055,6 +2224,12 @@ class MatrixAdapter(BasePlatformAdapter):
         return await self._send_local_file(
             chat_id, video_path, "m.video", caption, reply_to, metadata=metadata
         )
+
+    # Template attrs for the shared _format_exec_approval core. Matrix keeps
+    # the smart-deny/scope wording in its local tail (reaction legend), so the
+    # core is used for the header + fence + reason head only.
+    _EA_HEADER = "⚠️ **Dangerous command requires approval**\n"
+    _EA_CMD_BUDGET = 2000
 
     async def send_exec_approval(
         self,
@@ -2072,7 +2247,6 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
-        cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         scope_choices = ""
         if smart_denied:
             scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
@@ -2089,9 +2263,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 reaction_legend_parts.append("♾️ = approve always")
         reaction_legend_parts.append("❎ = deny")
         text = (
-            "⚠️ **Dangerous command requires approval**\n"
-            f"```\n{cmd_preview}\n```\n"
-            f"Reason: {description}\n\n"
+            f"{self._format_exec_approval(command, description)}\n\n"
             f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
             + "\n".join(reaction_legend_parts)
@@ -2293,6 +2465,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         is_voice: bool = False,
+        voice_metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
         if len(data) > self._max_media_bytes:
@@ -2349,6 +2522,17 @@ class MatrixAdapter(BasePlatformAdapter):
         # Add MSC3245 voice flag for native voice messages.
         if is_voice:
             msg_content["org.matrix.msc3245.voice"] = {}
+            duration = (voice_metadata or {}).get("duration")
+            waveform = (voice_metadata or {}).get("waveform")
+            if duration is not None:
+                msg_content["info"]["duration"] = duration
+            if duration is not None or waveform is not None:
+                audio_metadata: Dict[str, Any] = {}
+                if duration is not None:
+                    audio_metadata["duration"] = duration
+                if waveform is not None:
+                    audio_metadata["waveform"] = waveform
+                msg_content["org.matrix.msc1767.audio"] = audio_metadata
 
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
@@ -2397,9 +2581,25 @@ class MatrixAdapter(BasePlatformAdapter):
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
         data = p.read_bytes()
+        # ffprobe/ffmpeg probing is blocking (subprocess timeouts up to 15s) —
+        # run it off the event loop so voice uploads never stall the adapter.
+        voice_metadata = (
+            await asyncio.to_thread(_matrix_voice_metadata_for_file, p)
+            if is_voice
+            else None
+        )
 
         return await self._upload_and_send(
-            room_id, data, fname, ct, msgtype, caption, reply_to, metadata, is_voice
+            room_id,
+            data,
+            fname,
+            ct,
+            msgtype,
+            caption,
+            reply_to,
+            metadata,
+            is_voice,
+            voice_metadata,
         )
 
     # ------------------------------------------------------------------
@@ -4610,7 +4810,7 @@ def interactive_setup() -> None:
     and the static _PLATFORMS["matrix"] dict. CLI helpers are lazy-imported."""
     import shutil
     import sys as _sys
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
     from hermes_cli.cli_output import (
         prompt,
         prompt_yes_no,
@@ -4700,9 +4900,13 @@ def interactive_setup() -> None:
         print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
         print_info("   Room IDs look like !abc123:server (shown in Element room settings)")
         print_info("   You can also set this later by typing /set-home in a Matrix room.")
-        home_room = prompt("Home room ID (leave empty to set later with /set-home)")
+        print_info("Leave blank to clear a previously saved home room (cron / notifications).")
+        home_room = prompt("Home room ID (leave empty to set later with /set-home)").strip()
         if home_room:
             save_env_value("MATRIX_HOME_ROOM", home_room)
+        else:
+            if remove_env_value("MATRIX_HOME_ROOM"):
+                print_info("Home room cleared.")
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:

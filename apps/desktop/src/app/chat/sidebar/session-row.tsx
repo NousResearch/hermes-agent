@@ -1,9 +1,11 @@
 import { useStore } from '@nanostores/react'
+import { memo } from 'react'
 import type * as React from 'react'
 
 import { ProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import { openSession } from '@/app/open-session'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
@@ -11,18 +13,17 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { middleClickHandlers } from '@/lib/middle-click'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $backgroundRunningSessionIds } from '@/store/composer-status'
-import { $unreadFinishedSessionIds } from '@/store/session'
-import { $sessionColorById } from '@/store/session-color'
-import { $attentionSessionIds, $stalledSessionIds, openSessionTile } from '@/store/session-states'
-import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import { $attentionSessionIds } from '@/store/session-states'
+
+import { SessionStatusDot } from '../session-status-dot'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
-import { type SessionDotState, sessionDotState, sessionShowsRunningArc } from './session-row-state'
+import { sessionShowsRunningArc } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -55,7 +56,7 @@ function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   return unit === 'second' ? r.ageNow : `${value}${r[AGE_KEY[unit]]}`
 }
 
-export function SidebarSessionRow({
+function SidebarSessionRowImpl({
   session,
   branchStem,
   isPinned,
@@ -88,22 +89,6 @@ export function SidebarSessionRow({
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
-  // True when the session's most recent turn finished in the background (while
-  // the user was viewing a different session) and hasn't been opened since.
-  const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
-  // True when the turn is still running but the stream has been quiet long
-  // enough to soften the animation. This must never look like an idle row.
-  const isStalled = useStore($stalledSessionIds).includes(session.id)
-  // True when a terminal(background=true) process is alive in this session.
-  const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
-  // The session's resolved color (idle dot tint), read from the ONE shared map
-  // the pane tabs also read — an O(1) lookup, never re-derived per render.
-  const projectColor = useStore($sessionColorById)[session.id] ?? null
-
-  // Resolve the dot's display state once — the four signals are mutually
-  // exclusive by priority, so threading them as booleans through wrappers just
-  // to collapse them at the leaf is backwards.
-  const dotState = sessionDotState({ hasBackground, isStalled, isUnread, isWorking, needsInput })
 
   return (
     <SessionContextMenu
@@ -133,10 +118,9 @@ export function SidebarSessionRow({
               profile={session.profile}
               sessionId={session.id}
               title={title}
-              tooltip={r.actionsFor(title)}
             >
               <Button
-                aria-label={r.actionsFor(title)}
+                aria-label={r.sessionActions}
                 className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
                 size="icon"
                 variant="ghost"
@@ -180,28 +164,25 @@ export function SidebarSessionRow({
         style={style}
         {...rest}
       >
-        {sessionShowsRunningArc({ isWorking, needsInput }) && <span aria-hidden="true" className="arc-border" />}
+        {sessionShowsRunningArc({ isWorking, needsInput }) && (
+          <span aria-hidden="true" className="arc-border arc-row" />
+        )}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
-          // Middle-click = open in a new tab (browser muscle memory). Swallow
-          // the mousedown so Chromium doesn't enter autoscroll mode.
-          onAuxClick={event => {
-            if (event.button === 1) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
-            }
-          }}
+          // Middle-click = open in a new tab (browser muscle memory).
+          {...middleClickHandlers(() => {
+            triggerHaptic('selection')
+            openSession(session.id, () => undefined, 'tab')
+          })}
           onClick={event => {
             const mod = event.metaKey || event.ctrlKey
 
             // ⇧⌘-click → pop into its own window (needs standalone windows).
-            if (mod && event.shiftKey && canOpenSessionWindow()) {
+            if (mod && event.shiftKey) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
+              openSession(session.id, () => undefined, 'window')
 
               return
             }
@@ -211,7 +192,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
+              openSession(session.id, () => undefined, 'tab')
 
               return
             }
@@ -228,7 +209,6 @@ export function SidebarSessionRow({
 
             onResume()
           }}
-          onMouseDown={event => event.button === 1 && event.preventDefault()}
         >
           {reorderable ? (
             <SidebarRowGrab
@@ -237,16 +217,16 @@ export function SidebarSessionRow({
               dragHandleProps={dragHandleProps}
               leadClassName={needsInput ? 'overflow-visible' : undefined}
             >
-              <SessionRowLeadDot
+              <SessionStatusDot
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                dotState={dotState}
-                projectColor={projectColor}
+                session={session}
+                storedSessionId={session.id}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} dotState={dotState} projectColor={projectColor} />
+              <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -268,127 +248,31 @@ export function SidebarSessionRow({
   )
 }
 
-function SessionRowLeadDot({
-  branchStem,
-  dotState = 'idle',
-  className,
-  projectColor
-}: {
-  branchStem?: string
-  dotState?: SessionDotState
-  className?: string
-  projectColor?: null | string
-}) {
+// The sidebar re-renders on every stream tick ($sessions/$workingSessionIds
+// churn), and it stays mounted beneath every overlay — so an unmemoized row
+// re-rendered the whole list (and its Codicon/label/status-dot subtree) on each
+// delta, bleeding churn into Settings, Cron, Profiles, Artifacts, etc.
+//
+// The callback props (onArchive/onResume/…) are fresh closures every render by
+// design (they close over the row's session id), so a default memo never bails.
+// They're pure id-forwarders, though — identical behavior for a given row — so
+// the comparator deliberately ignores them and compares only the DATA that
+// changes what the row paints. A row whose session/selection/working/pin state
+// is unchanged now bails out, even while a sibling session streams.
+function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): boolean {
   return (
-    <span className={cn('flex items-center gap-0.5', className)}>
-      {branchStem ? (
-        <span aria-hidden className="shrink-0 font-mono text-[0.625rem] leading-none text-(--ui-text-quaternary)">
-          {branchStem}
-        </span>
-      ) : null}
-      <SidebarRowDot dotState={dotState} projectColor={projectColor} />
-    </span>
+    a.session === b.session &&
+    a.isPinned === b.isPinned &&
+    a.isSelected === b.isSelected &&
+    a.isWorking === b.isWorking &&
+    a.branchStem === b.branchStem &&
+    a.reorderable === b.reorderable &&
+    a.dragging === b.dragging &&
+    a.showProfile === b.showProfile &&
+    a.dragHandleProps === b.dragHandleProps &&
+    a.className === b.className &&
+    a.style === b.style
   )
 }
 
-// A pure lookup table: each state maps to its className, aria-label, and
-// title. No priority resolution here — the call site already picked one.
-// Label/title are resolved from sidebar.row translations, keyed by name.
-type DotVariant = {
-  ariaLabel?: (r: Translations['sidebar']['row']) => string
-  className: string
-  role?: 'status'
-  title?: (r: Translations['sidebar']['row']) => string
-}
-
-// Shared base for every active dot; idle is smaller and uses its own class.
-const DOT_BASE = 'relative size-1.5 rounded-full'
-
-// Pseudo-element ping ring that scales outward and fades — shared scaffold for
-// the two pulsing dots. The `before:bg-*` color is written inline per variant
-// (NOT interpolated here): Tailwind only generates utilities it can see as
-// complete static strings, so a `before:bg-${color}` template never emits.
-const PING = "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-['']"
-
-const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
-  // Amber steady — a clarify/approval is blocking the turn. Steady (not
-  // pulsing) reads as "your turn", distinct from the accent pulse of a turn.
-  'needs-input': {
-    ariaLabel: r => r.needsInput,
-    className: `${DOT_BASE} quest-glow bg-amber-500`,
-    role: 'status',
-    title: r => r.waitingForAnswer
-  },
-  // Accent pulse — the LLM turn is actively running.
-  working: {
-    ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] ${PING} before:bg-(--ui-accent) before:opacity-70`,
-    role: 'status'
-  },
-  // Quiet accent pulse — the turn is still authoritative-running, but no
-  // stream activity has arrived for the watchdog window.
-  stalled: {
-    ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} bg-(--ui-accent) opacity-70 ${PING} before:bg-(--ui-accent) before:opacity-40`,
-    role: 'status',
-    title: r => r.sessionRunning
-  },
-  // Pulsing gray — a terminal(background=true) process is alive while the LLM
-  // is idle. Gray (not accent) reads as "something chugging along". Brighter
-  // than muted-foreground so it's visible against the sidebar surface.
-  background: {
-    ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} bg-muted-foreground/80 ${PING} before:bg-muted-foreground/80 before:opacity-60`,
-    role: 'status',
-    title: r => r.backgroundRunning
-  },
-  // Steady green — a background session's turn completed and the user hasn't
-  // opened it since. "Something new here, go look."
-  unread: {
-    ariaLabel: r => r.finishedUnread,
-    className: `${DOT_BASE} bg-emerald-500`,
-    role: 'status',
-    title: r => r.finishedUnread
-  },
-  idle: {
-    className: 'size-1 rounded-full bg-(--ui-text-quaternary) opacity-80'
-  }
-}
-
-function SidebarRowDot({
-  dotState,
-  className,
-  projectColor
-}: {
-  dotState: SessionDotState
-  className?: string
-  projectColor?: null | string
-}) {
-  const { t } = useI18n()
-  const r = t.sidebar.row
-
-  // An idle session inherits its project's color (a quiet marker matching the
-  // project row's own color dot). The active states (working / needs-input /
-  // background / unread) own the dot and keep their semantic color, so the
-  // inherited tint never competes with an attention cue.
-  if (dotState === 'idle' && projectColor) {
-    return (
-      <span
-        aria-hidden="true"
-        className={cn('size-1 rounded-full', className)}
-        style={{ backgroundColor: projectColor }}
-      />
-    )
-  }
-
-  const variant = DOT_VARIANTS[dotState]
-
-  return (
-    <span
-      aria-label={variant.ariaLabel?.(r)}
-      className={cn(variant.className, className)}
-      role={variant.role}
-      title={variant.title?.(r)}
-    />
-  )
-}
+export const SidebarSessionRow = memo(SidebarSessionRowImpl, rowPropsEqual)

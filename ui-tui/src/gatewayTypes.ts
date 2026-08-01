@@ -1,4 +1,4 @@
-import type { UsageModelData } from '@hermes/shared/billing'
+import type { BillingBlock, UsageModelData } from '@hermes/shared/billing'
 import type { HermesSkin } from '@hermes/shared/skin'
 
 import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
@@ -9,12 +9,17 @@ export type GatewaySkin = HermesSkin
 
 export interface GatewayCompletionItem {
   display: string
+  /** Completion class, set by the gateway. `skill` covers skill commands and
+   *  skill bundles — the only kind offered for an inline `/skill` reference. */
+  kind?: string
   meta?: string
   text: string
 }
 
 export interface GatewayTranscriptMessage {
   context?: string
+  display_kind?: string
+  display_metadata?: Record<string, unknown>
   name?: string
   role: 'assistant' | 'system' | 'tool' | 'user'
   text?: string
@@ -46,6 +51,7 @@ export interface SlashExecResponse {
 // Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
 export type {
   BillingAutoReload,
+  BillingBlock,
   BillingCardInfo,
   BillingChargeResponse,
   BillingChargeStatusResponse,
@@ -64,8 +70,8 @@ export type {
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
-  | { message?: string; name: string; type: 'skill' }
-  | { message: string; notice?: string; type: 'send' }
+  | { display?: string; message?: string; name: string; type: 'skill' }
+  | { display?: string; message: string; notice?: string; type: 'send' }
   | { message: string; notice?: string; type: 'prefill' }
 
 // ── Config ───────────────────────────────────────────────────────────
@@ -75,6 +81,8 @@ export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   busy_input_mode?: string
   details_mode?: string
+  /** Focus view (/focus) — display-only reduced-output mode. */
+  focus_view?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
@@ -136,6 +144,9 @@ export interface ConfigSetResponse {
   confirm_message?: string
   confirm_required?: boolean
   credential_warning?: string
+  // A model pick made mid-turn is queued and applied at the next turn start,
+  // not live yet — the handler says "next turn" instead of "model → X".
+  deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
   value?: string
@@ -312,6 +323,9 @@ export interface SessionSteerResponse {
 
 export interface PromptSubmitResponse {
   ok?: boolean
+  /** Set when the submitted text was a bare voice stop phrase consumed
+   *  server-side to end the voice chat instead of starting a turn. */
+  voice_stopped?: boolean
 }
 
 export interface BackgroundStartResponse {
@@ -383,6 +397,7 @@ export interface VoiceToggleResponse {
   details?: string
   enabled?: boolean
   record_key?: string
+  stop_hint?: string
   stt_available?: boolean
   tts?: boolean
 }
@@ -390,6 +405,38 @@ export interface VoiceToggleResponse {
 export interface VoiceRecordResponse {
   status?: 'busy' | 'recording' | 'stopped'
   text?: string
+}
+
+// ── Wake word ────────────────────────────────────────────────────────
+
+export interface WakeStartResponse {
+  enabled_persisted?: boolean
+  hint?: string
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
+  reason?: string
+  started?: boolean
+}
+
+export interface WakeStopResponse {
+  disabled_persisted?: boolean
+  reason?: null | string
+  stopped?: boolean
+}
+
+export interface WakeStatusResponse {
+  /** Armed but the mic delivers only silence (macOS backend-permission gap). */
+  audio_silent?: boolean
+  available?: boolean
+  /** Config truth (wake_word.enabled). */
+  enabled?: boolean
+  hint?: string
+  listening?: boolean
+  owned_by_caller?: boolean
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
 }
 
 // ── Tools (TS keeps configure since it resets local history) ─────────
@@ -580,7 +627,16 @@ export type GatewayEvent =
       type: 'billing.step_up.verification'
     }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
-  | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
+  | {
+      payload?: { no_speech_limit?: boolean; stop_phrase?: boolean; text?: string; typed?: boolean }
+      session_id?: string
+      type: 'voice.transcript'
+    }
+  | {
+      payload?: { phrase?: string; profile?: null | string; start_new_session?: boolean }
+      session_id?: string
+      type: 'wake.detected'
+    }
   | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | {
@@ -605,6 +661,16 @@ export type GatewayEvent =
       type: 'moa.reference'
     }
   | { payload?: { aggregator?: string }; session_id?: string; type: 'moa.aggregating' }
+  | {
+      payload?: { label?: string; refs_done?: number; refs_total?: number }
+      session_id?: string
+      type: 'moa.progress'
+    }
+  | {
+      payload?: { aggregator?: string; phase?: string; refs_done?: number; refs_total?: number }
+      session_id?: string
+      type: 'moa.phase'
+    }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {
@@ -660,7 +726,15 @@ export type GatewayEvent =
       type: 'message.interim'
     }
   | {
-      payload?: { reasoning?: string; rendered?: string; response_previewed?: boolean; text?: string; usage?: Usage }
+      payload?: {
+        billing?: BillingBlock
+        failure_reason?: string
+        reasoning?: string
+        rendered?: string
+        response_previewed?: boolean
+        text?: string
+        usage?: Usage
+      }
       session_id?: string
       type: 'message.complete'
     }

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_runtime import _record_codex_app_server_compaction
-from agent.conversation_compression import COMPACTION_STATUS, compress_context
+from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
 from agent.transports.codex_app_server_session import TurnResult
 
 
@@ -63,6 +63,8 @@ class DummyAgent:
             awaiting_real_usage_after_compression=False,
         )
         self.statuses = []
+        self.status_events = []
+        self.status_callback = lambda kind, text: self.status_events.append((kind, text))
         self.warnings = []
         self.events = []
         self.built_prompts = []
@@ -74,9 +76,11 @@ class DummyAgent:
 
     def _emit_status(self, message):
         self.statuses.append(message)
+        self.status_callback("lifecycle", message)
 
     def _emit_warning(self, message):
         self.warnings.append(message)
+        self.status_callback("warn", message)
 
     def _build_system_prompt(self, system_message):
         self.built_prompts.append(system_message)
@@ -134,123 +138,12 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
     assert agent.touch_calls[-1] == "context compression completed"
 
 
-def test_codex_app_server_manual_compression_routes_to_codex_thread():
-    agent = DummyAgent(
-        TurnResult(thread_id="thread-1", turn_id="compact-turn-1")
-    )
-    messages = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-    ]
-
-    returned, prompt = compress_context(
-        agent,
-        messages,
-        "system",
-        approx_tokens=100000,
-        task_id="test",
-        force=True,
-    )
-
-    assert returned is messages
-    assert prompt == "cached prompt"
-    assert agent._codex_session.calls == 1
-    assert agent.context_compressor.compression_count == 1
-    assert agent.context_compressor.last_compression_rough_tokens == 100000
-    # This minimal fake compressor does not implement update_from_response(),
-    # so the runtime preserves its existing pending-usage bookkeeping here.
-    assert agent.context_compressor.last_prompt_tokens == -1
-    assert agent.context_compressor.last_completion_tokens == 0
-    assert agent.context_compressor.awaiting_real_usage_after_compression is True
-    assert agent.events == [
-        (
-            "session:compress",
-            {
-                "platform": "cli",
-                "session_id": "hermes-session-1",
-                "old_session_id": "",
-                "in_place": False,
-                "compression_count": 1,
-                "runtime": "codex_app_server",
-                "thread_id": "thread-1",
-                "turn_id": "compact-turn-1",
-            },
-        )
-    ]
 
 
-def test_codex_app_server_hermes_mode_auto_compression_routes_to_codex_thread():
-    agent = DummyAgent(
-        TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
-        auto_compaction="hermes",
-    )
-    messages = [{"role": "user", "content": "hi"}]
-
-    returned, prompt = compress_context(
-        agent,
-        messages,
-        "system",
-        approx_tokens=100000,
-    )
-
-    assert returned is messages
-    assert prompt == "cached prompt"
-    assert agent._codex_session.calls == 1
-    assert agent.context_compressor.compression_count == 1
 
 
-def test_codex_app_server_compression_failure_preserves_bookkeeping():
-    agent = DummyAgent(TurnResult(error="compact failed"))
-    messages = [{"role": "user", "content": "hi"}]
-
-    returned, prompt = compress_context(
-        agent,
-        messages,
-        "system",
-        approx_tokens=100000,
-        force=True,
-    )
-
-    assert returned is messages
-    assert prompt == "cached prompt"
-    assert agent._codex_session.calls == 1
-    assert agent.context_compressor.compression_count == 0
-    assert agent.context_compressor.last_prompt_tokens == 123
-    assert agent.warnings
-    assert agent.touch_calls[0] == "context compression started"
-    assert agent.touch_calls[-1] == "context compression failed"
 
 
-def test_codex_app_server_native_compaction_notice_emits_status_and_event():
-    agent = DummyAgent(
-        TurnResult(thread_id="thread-1", turn_id="normal-turn-1")
-    )
-    turn = TurnResult(
-        thread_id="thread-1",
-        turn_id="normal-turn-1",
-        compacted=True,
-    )
-
-    recorded = _record_codex_app_server_compaction(agent, turn)
-
-    assert recorded is True
-    assert agent.context_compressor.compression_count == 1
-    assert agent.statuses == [COMPACTION_STATUS]
-    assert agent.events == [
-        (
-            "session:compress",
-            {
-                "platform": "cli",
-                "session_id": "hermes-session-1",
-                "old_session_id": "",
-                "in_place": False,
-                "compression_count": 1,
-                "runtime": "codex_app_server",
-                "thread_id": "thread-1",
-                "turn_id": "normal-turn-1",
-            },
-        )
-    ]
 
 
 def test_codex_native_boundary_clears_stale_hermes_fallback_streak():

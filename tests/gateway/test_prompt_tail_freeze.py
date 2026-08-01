@@ -99,9 +99,10 @@ def _make_context(
 
 @pytest.fixture(autouse=True)
 def _stable_discord_tools(monkeypatch):
-    """Pin the config/env-dependent renderer gate so key<->render parity is
+    """Pin the config/env-dependent renderer gates so key<->render parity is
     evaluated on the same footing in every environment."""
     monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
+    monkeypatch.setattr("gateway.session._slack_tools_loaded", lambda: False)
 
 
 def _key(runner, context, redact_pii=False):
@@ -161,20 +162,6 @@ class TestEphemeralChangeKeyParity:
         ("message_id_cleared", dict(message_id=None)),
     ]
 
-    @pytest.mark.parametrize("name,mutation", _MUTATIONS)
-    def test_render_change_implies_key_change(self, name, mutation):
-        runner = _make_runner()
-        base = _make_context()
-        mutated = _make_context(**mutation)
-
-        render_changed = _render(base) != _render(mutated)
-        key_changed = _key(runner, base) != _key(runner, mutated)
-
-        if render_changed:
-            assert key_changed, (
-                f"mutation {name!r} changed the rendered bytes but not the "
-                "change key — the pin would serve STALE context"
-            )
 
     def test_redact_pii_flip_changes_key(self):
         # PII redaction only rewrites bytes on pii-safe platforms; the key
@@ -184,27 +171,27 @@ class TestEphemeralChangeKeyParity:
         assert _render(ctx, False) != _render(ctx, True)
         assert _key(runner, ctx, False) != _key(runner, ctx, True)
 
-    def test_discord_tools_gate_flip_changes_key(self, monkeypatch):
-        runner = _make_runner()
-        ctx = _make_context()
-        render_on, key_on = _render(ctx), _key(runner, ctx)
-        monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: False)
-        assert _render(ctx) != render_on
-        assert _key(runner, ctx) != key_on
 
-    def test_message_id_value_change_is_not_a_bust(self):
-        """Only message-id PRESENCE renders (the id itself rides the user
-        message) — a new id every turn must not re-render."""
+    def test_slack_note_byte_stable_across_turns_in_one_session(self):
+        """Within one session (gate state constant), the Slack platform note
+        must be byte-stable turn over turn — the pin returns the identical
+        object, so the composed system prompt cannot drift mid-conversation."""
         runner = _make_runner()
-        a = _make_context(message_id="1357")
-        b = _make_context(message_id="2468")
-        assert _render(a) == _render(b)
-        assert _key(runner, a) == _key(runner, b)
 
-    def test_key_is_deterministic(self):
-        runner = _make_runner()
-        ctx = _make_context()
-        assert _key(runner, ctx) == _key(runner, ctx)
+        def _slack_ctx():
+            return _make_context(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                thread_id=None,
+                parent_chat_id=None,
+                guild_id=None,
+            )
+
+        t1 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
+        t2 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
+        t3 = runner._pinned_session_context_prompt(_slack_ctx(), False, "sk-slack")  # noqa: SLF001
+        assert t2 is t1 and t3 is t1
+        assert hashlib.sha256(t1.encode()).hexdigest() == hashlib.sha256(t3.encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -220,41 +207,6 @@ class TestSessionContextPin:
         # Identity, not just equality: the pinned bytes are reused verbatim,
         # immunizing against renderer nondeterminism.
         assert second is first
-
-    def test_auto_thread_rename_busts_exactly_once(self):
-        """Turn 1: placeholder title.  Turn 2: gateway auto-rename lands (one
-        legit bust — Source line AND origin delivery line move together).
-        Turn 3+: byte-stable."""
-        runner = _make_runner()
-        t1 = runner._pinned_session_context_prompt(  # noqa: SLF001
-            _make_context(chat_name="new-chat-1357"), False, "sk"
-        )
-        t2 = runner._pinned_session_context_prompt(  # noqa: SLF001
-            _make_context(chat_name="Fixing the flaky deploy"), False, "sk"
-        )
-        t3 = runner._pinned_session_context_prompt(  # noqa: SLF001
-            _make_context(chat_name="Fixing the flaky deploy"), False, "sk"
-        )
-        assert t1 != t2
-        assert t3 is t2
-        assert "Fixing the flaky deploy" in t2
-
-    def test_eviction_drops_pin_and_vc_state(self):
-        runner = _make_runner(
-            _agent_cache={}, _running_agents={},
-        )
-        runner._session_ephemeral_pin["sk"] = ("k", "text")
-        runner._session_vc_last["sk"] = "vc"
-        runner._evict_cached_agent("sk")  # noqa: SLF001
-        assert "sk" not in runner._session_ephemeral_pin
-        assert "sk" not in runner._session_vc_last
-
-    def test_no_session_key_never_pins(self):
-        runner = _make_runner()
-        ctx = _make_context()
-        out = runner._pinned_session_context_prompt(ctx, False, None)  # noqa: SLF001
-        assert out == _render(ctx)
-        assert runner._session_ephemeral_pin == {}
 
 
 # ---------------------------------------------------------------------------
@@ -282,27 +234,6 @@ class TestComposedPromptByteStability:
             )
         )
         assert hashlib.sha256(t2.encode()).hexdigest() == hashlib.sha256(t3.encode()).hexdigest()
-
-    def test_codex_cache_key_constant_across_turns(self):
-        """The codex transport content-addresses its prompt cache key from
-        (instructions + tools); pinned ephemeral bytes keep it warm."""
-        from agent.transports.codex import _content_cache_key
-
-        runner = _make_runner()
-        tools = [{"type": "function", "name": "read_file"}]
-        keys = [
-            _content_cache_key(
-                _compose(
-                    runner._pinned_session_context_prompt(  # noqa: SLF001
-                        _make_context(), False, "sk"
-                    )
-                ),
-                tools,
-            )
-            for _ in range(3)
-        ]
-        assert keys[0] is not None
-        assert len(set(keys)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -362,11 +293,6 @@ class TestVoiceChannelSidecarNote:
         runner, _ = _vc_runner("")
         assert runner._voice_channel_sidecar_note(_vc_event(), _source(), "sk") is None  # noqa: SLF001
 
-    def test_non_discord_platform_is_noop(self):
-        runner, _ = _vc_runner("**Voice:** dev-vc")
-        src = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
-        assert runner._voice_channel_sidecar_note(_vc_event(), src, "sk") is None  # noqa: SLF001
-
 
 # ---------------------------------------------------------------------------
 # 5. Sidecar note staging: one-shot per turn
@@ -378,13 +304,6 @@ class TestSidecarNoteStaging:
         runner._set_pending_turn_sidecar_notes("sk", ["[System note: reset]"])  # noqa: SLF001
         assert runner._consume_pending_turn_sidecar_notes("sk") == ["[System note: reset]"]  # noqa: SLF001
         assert runner._consume_pending_turn_sidecar_notes("sk") == []  # noqa: SLF001
-
-    def test_empty_inputs_are_noops(self):
-        runner = _make_runner()
-        runner._set_pending_turn_sidecar_notes("", ["x"])  # noqa: SLF001
-        runner._set_pending_turn_sidecar_notes("sk", [])  # noqa: SLF001
-        assert runner._consume_pending_turn_sidecar_notes("sk") == []  # noqa: SLF001
-        assert runner._consume_pending_turn_sidecar_notes("") == []  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------

@@ -487,6 +487,8 @@ def _op_version(binary: Path) -> str:
             [str(binary), "--version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if res.returncode == 0:
@@ -508,13 +510,17 @@ def _op_whoami(
     cmd = [str(binary), "whoami"]
     if account:
         cmd += ["--account", account]
-    env = os.environ.copy()
+    # 1Password CLI child: intentionally receives the service-account token —
+    # no scrub, no HOME rewrite (op stores auth state under the real home).
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env.setdefault("NO_COLOR", "1")
     if token_value:
         env["OP_SERVICE_ACCOUNT_TOKEN"] = token_value
     try:
         res = subprocess.run(
-            cmd, env=env, capture_output=True, text=True, timeout=10
+            cmd, env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

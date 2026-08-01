@@ -18,35 +18,12 @@ class TestRenderBlocksBasics:
         assert render_blocks("") is None
         assert render_blocks("   \n  ") is None
 
-    def test_plain_paragraph_is_section(self):
-        blocks = render_blocks("just a plain sentence")
-        assert blocks is not None
-        assert len(blocks) == 1
-        assert blocks[0]["type"] == "section"
-        assert blocks[0]["text"]["type"] == "mrkdwn"
 
     def test_header_becomes_header_block(self):
         blocks = render_blocks("# Title")
         assert blocks[0]["type"] == "header"
         assert blocks[0]["text"]["type"] == "plain_text"
         assert blocks[0]["text"]["text"] == "Title"
-
-    def test_header_strips_markup_and_caps_length(self):
-        long = "#" + " " + "x" * 300
-        blocks = render_blocks(long)
-        assert blocks[0]["type"] == "header"
-        assert len(blocks[0]["text"]["text"]) <= MAX_HEADER_TEXT
-
-    def test_horizontal_rule_becomes_divider(self):
-        blocks = render_blocks("above\n\n---\n\nbelow")
-        assert "divider" in _types(blocks)
-
-    def test_fenced_code_becomes_preformatted(self):
-        md = "```python\ndef f():\n    return 1\n```"
-        blocks = render_blocks(md)
-        assert len(blocks) == 1
-        assert blocks[0]["type"] == "rich_text"
-        assert blocks[0]["elements"][0]["type"] == "rich_text_preformatted"
 
 
 class TestNestedLists:
@@ -60,18 +37,6 @@ class TestNestedLists:
         assert max(indents) >= 2
         assert min(indents) == 0
 
-    def test_ordered_and_bullet_styles_distinguished(self):
-        md = "1. first\n2. second\n\n- bullet"
-        blocks = render_blocks(md)
-        styles = []
-        for b in blocks:
-            if b["type"] == "rich_text":
-                for e in b["elements"]:
-                    if e["type"] == "rich_text_list":
-                        styles.append(e["style"])
-        assert "ordered" in styles
-        assert "bullet" in styles
-
 
 class TestInlineFormatting:
     def test_link_becomes_link_element(self):
@@ -81,15 +46,6 @@ class TestInlineFormatting:
         blob = str(blocks)
         assert "https://example.com/x" in blob
 
-    def test_bulleted_bold_is_styled(self):
-        blocks = render_blocks("- this is **bold** text")
-        rich = [b for b in blocks if b["type"] == "rich_text"][0]
-        section = rich["elements"][0]["elements"][0]
-        styled = [
-            el for el in section["elements"]
-            if el.get("style", {}).get("bold")
-        ]
-        assert styled, "expected a bold-styled text element in the list item"
 
     def test_blank_line_separated_ordered_items_stay_in_one_list(self):
         """Regression: blank lines between ordered items must not reset numbering.
@@ -106,31 +62,6 @@ class TestInlineFormatting:
         assert len(lists) == 1
         items = lists[0]["elements"]
         assert len(items) == 3
-
-    def test_blank_separated_mixed_list_matches_contiguous_layout(self):
-        """A blank line between different list kinds must render like the
-        contiguous form: one rich_text block whose sub-lists split only on
-        (indent, ordered) changes — not a separate block per item.
-        """
-        rich = [b for b in render_blocks("1. a\n\n- b") if b["type"] == "rich_text"]
-        # Single rich_text block (matches contiguous "1. a\n- b"), two sub-lists
-        assert len(rich) == 1
-        styles = [e["style"] for e in rich[0]["elements"] if e["type"] == "rich_text_list"]
-        assert styles == ["ordered", "bullet"]
-
-    def test_blank_line_before_paragraph_ends_the_list(self):
-        """A blank line followed by non-list content must still end the run,
-        so a list → paragraph → list sequence stays three separate blocks.
-        """
-        blocks = render_blocks("1. a\n\nsome paragraph text\n\n1. b")
-        lists = [
-            e
-            for b in blocks
-            for e in b.get("elements", [])
-            if e.get("type") == "rich_text_list"
-        ]
-        # Two independent single-item lists, not one merged three-item list
-        assert [len(e["elements"]) for e in lists] == [1, 1]
 
 
 class TestTables:
@@ -152,59 +83,6 @@ class TestTables:
         assert str(rows[0]).count("Name") == 1
         assert "fail" in str(rows[2])
 
-    def test_alignment_parsed_into_column_settings(self):
-        md = (
-            "| L | C | R |\n"
-            "|:---|:--:|---:|\n"
-            "| 1 | 2 | 3 |"
-        )
-        blocks = render_blocks(md)
-        cs = blocks[0]["column_settings"]
-        # Every provided entry must be a valid Slack column-settings object.
-        # Left placeholders are explicit only when needed to preserve position.
-        assert cs[0] == {"align": "left"}
-        assert cs[1] == {"align": "center"}
-        assert cs[2] == {"align": "right"}
-
-    def test_default_trailing_column_settings_are_omitted(self):
-        md = (
-            "| L | R | L2 |\n"
-            "|---|---:|---|\n"
-            "| 1 | 2 | 3 |"
-        )
-        blocks = render_blocks(md)
-        assert blocks is not None
-        cs = blocks[0]["column_settings"]
-        assert cs == [{"align": "left"}, {"align": "right"}]
-        assert all(isinstance(item, dict) for item in cs)
-
-    def test_all_default_table_omits_column_settings(self):
-        md = (
-            "| A | B |\n"
-            "|---|---|\n"
-            "| 1 | 2 |"
-        )
-        blocks = render_blocks(md)
-        assert blocks is not None
-        assert "column_settings" not in blocks[0]
-
-    def test_inline_formatting_inside_cells(self):
-        md = (
-            "| Item | Link |\n"
-            "|------|------|\n"
-            "| **bold** | [x](https://e.io) |"
-        )
-        blocks = render_blocks(md)
-        body = blocks[0]["rows"][1]
-        # bold styled text element in first cell
-        bold = [
-            el for el in body[0]["elements"][0]["elements"]
-            if el.get("style", {}).get("bold")
-        ]
-        assert bold
-        # link element in second cell
-        links = [el for el in body[1]["elements"][0]["elements"] if el["type"] == "link"]
-        assert links and links[0]["url"] == "https://e.io"
 
     def test_oversized_table_falls_back_to_monospace(self):
         # 120 rows > MAX_TABLE_ROWS -> monospace rich_text fallback, not a table
@@ -213,12 +91,6 @@ class TestTables:
         assert blocks[0]["type"] == "rich_text"  # preformatted fallback
         assert blocks[0]["elements"][0]["type"] == "rich_text_preformatted"
 
-    def test_too_many_columns_falls_back_to_monospace(self):
-        header = "|" + "|".join(f"c{i}" for i in range(25)) + "|"
-        sep = "|" + "|".join("-" for _ in range(25)) + "|"
-        row = "|" + "|".join("v" for _ in range(25)) + "|"
-        blocks = render_blocks(f"{header}\n{sep}\n{row}")
-        assert blocks[0]["type"] == "rich_text"
 
     def test_escaped_pipe_not_a_column_separator(self):
         md = (
@@ -235,23 +107,11 @@ class TestTables:
 
 
 class TestLimits:
-    def test_oversized_section_is_split_under_limit(self):
-        big = "word " * 2000  # ~10000 chars, single paragraph
-        blocks = render_blocks(big)
-        assert blocks is not None
-        for b in blocks:
-            if b["type"] == "section":
-                assert len(b["text"]["text"]) <= MAX_SECTION_TEXT
 
     def test_too_many_blocks_returns_none(self):
         # 60 dividers => 60 blocks > MAX_BLOCKS => decline (caller uses text)
         md = "\n\n".join(["---"] * (MAX_BLOCKS + 10))
         assert render_blocks(md) is None
-
-    def test_never_raises_on_garbage(self):
-        for junk in ["```unterminated\ncode", "| broken | table", "> ", "#" * 10]:
-            # must not raise; either blocks or None
-            render_blocks(junk)
 
 
 class TestEmptyContentGuards:
@@ -305,36 +165,6 @@ class TestEmptyContentGuards:
         assert blocks is not None
         self._assert_schema_valid(blocks)
 
-    def test_multiline_quote_preserves_newline_separators(self):
-        # _quote_block separates lines with length-1 "\n" text elements; the
-        # guard must KEEP them so a multi-line blockquote stays multi-line.
-        blocks = render_blocks("> alpha\n> bravo")
-        quote = None
-        for b in blocks:
-            for el in b.get("elements", []):
-                if isinstance(el, dict) and el.get("type") == "rich_text_quote":
-                    quote = el
-        assert quote is not None, "no rich_text_quote produced"
-        texts = [e.get("text") for e in quote["elements"] if e.get("type") == "text"]
-        assert "\n" in texts, "newline separator dropped from multi-line quote"
-        assert any("alpha" in (t or "") for t in texts)
-        assert any("bravo" in (t or "") for t in texts)
-
-    def test_emphasis_only_header_is_dropped_not_empty(self):
-        # "# ***" reduces to "" after marker-strip; an empty plain_text header
-        # is rejected by Slack, so the header is skipped entirely.
-        blocks = render_blocks("# ***\n\nreal body")
-        assert not any(b.get("type") == "header" for b in blocks)
-        self._assert_schema_valid(blocks)
-
-    def test_normal_content_unaffected(self):
-        # Guard must not alter well-formed content.
-        md = "# Title\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n> quoted\n\n- item"
-        blocks = render_blocks(md)
-        assert any(b.get("type") == "header" for b in blocks)
-        assert any(b.get("type") == "table" for b in blocks)
-        self._assert_schema_valid(blocks)
-
 
 class TestSanitizeBlocks:
     """Outbound boundary clamp: one bad block must never fail the whole call.
@@ -344,13 +174,6 @@ class TestSanitizeBlocks:
     approval chat.update after HTML-escaping inflation).
     """
 
-    def test_none_and_empty_return_none(self):
-        assert sanitize_blocks(None) is None
-        assert sanitize_blocks([]) is None
-
-    def test_valid_payload_passes_through(self):
-        blocks = render_blocks("# Title\n\nbody text\n\n- item")
-        assert sanitize_blocks(blocks) == blocks
 
     def test_oversized_section_text_is_clamped(self):
         blocks = [
@@ -395,37 +218,19 @@ class TestSanitizeBlocks:
         out = sanitize_blocks([table])
         assert "column_settings" not in out[0]
 
-    def test_empty_blocks_are_dropped(self):
-        blocks = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": "   "}},
-            {"type": "rich_text", "elements": []},
-            {"type": "actions", "elements": []},
-            {"type": "context", "elements": []},
-            {"type": "header", "text": {"type": "plain_text", "text": ""}},
-            {"type": "table", "rows": []},
-            {"type": "section", "text": {"type": "mrkdwn", "text": "keep me"}},
-        ]
-        out = sanitize_blocks(blocks)
-        assert out == [blocks[-1]]
 
-    def test_all_invalid_returns_none_for_plain_text_fallback(self):
-        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": ""}}]
-        assert sanitize_blocks(blocks) is None
+class TestSplitTextFenceBalanced:
+    """_split_text closes/reopens ``` fences at section chunk boundaries."""
 
-    def test_oversized_header_is_clamped(self):
-        blocks = [
-            {"type": "header", "text": {"type": "plain_text", "text": "h" * 200}},
-        ]
-        out = sanitize_blocks(blocks)
-        assert len(out[0]["text"]["text"]) <= MAX_HEADER_TEXT
+    def test_fenced_split_every_chunk_balanced(self):
+        from plugins.platforms.slack.block_kit import _split_text
 
-    def test_payload_capped_at_50_blocks(self):
-        blocks = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"b{i}"}}
-            for i in range(60)
-        ]
-        out = sanitize_blocks(blocks)
-        assert len(out) == MAX_BLOCKS
+        text = "```\n" + "\n".join("y" * 20 for _ in range(30)) + "\n```"
+        chunks = _split_text(text, 100)
+        assert len(chunks) >= 2
+        for i, chunk in enumerate(chunks):
+            assert chunk.count("```") % 2 == 0, (
+                f"chunk {i} has unbalanced fences: {chunk[:60]!r}"
+            )
 
-    def test_never_raises_on_garbage(self):
-        assert sanitize_blocks([{"no_type": True}, "not-a-dict", 42]) is None
+

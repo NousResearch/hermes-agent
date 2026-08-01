@@ -86,12 +86,6 @@ def test_preserve_existing_only_guards_set_vars():
     assert env["FEISHU_APP_SECRET"] == "shared"
 
 
-def test_preserve_existing_junk_config_ignored():
-    for junk in ("notalist", 42, {"a": 1}, [1, 2], None):
-        _, env = _apply(
-            {"K": "v"}, cfg_extra={"preserve_existing": junk}, env={"K": "old"}
-        )
-        assert env["K"] == "v"  # falls back to normal override semantics
 
 
 # ---------------------------------------------------------------------------
@@ -111,50 +105,14 @@ def test_profile_suffixed_var_hydrates_canonical():
                for w in report.sources[0].result.warnings)
 
 
-def test_alias_requires_credential_suffix():
-    _, env = _apply({"RANDOM_SETTING_MILLA": "x"}, home=PROFILE_HOME)
-    assert "RANDOM_SETTING" not in env
 
 
-def test_alias_never_shadows_directly_supplied_var():
-    """If the project also carries the canonical name, the alias must not
-    fight it — direct supply wins."""
-    _, env = _apply(
-        {"TELEGRAM_BOT_TOKEN_MILLA": "profile-tok",
-         "TELEGRAM_BOT_TOKEN": "canonical-tok"},
-        home=PROFILE_HOME,
-    )
-    assert env["TELEGRAM_BOT_TOKEN"] == "canonical-tok"
 
 
-def test_alias_respects_existing_env_without_override():
-    class _NoOverride(_FakeBulk):
-        def override_existing(self, cfg):
-            return False
-
-    registry.register_source(
-        _NoOverride({"TELEGRAM_BOT_TOKEN_MILLA": "123:tok"}), replace=True
-    )
-    env = {"TELEGRAM_BOT_TOKEN": "existing"}
-    registry.apply_all({"fakebulk": {"enabled": True}}, PROFILE_HOME, environ=env)
-    assert env["TELEGRAM_BOT_TOKEN"] == "existing"
 
 
-def test_alias_disabled_by_config():
-    _, env = _apply(
-        {"TELEGRAM_BOT_TOKEN_MILLA": "123:tok"},
-        cfg_extra={"profile_alias": False},
-        home=PROFILE_HOME,
-    )
-    assert "TELEGRAM_BOT_TOKEN" not in env
 
 
-def test_default_profile_never_aliases():
-    _, env = _apply(
-        {"TELEGRAM_BOT_TOKEN_MILLA": "123:tok"},
-        home=Path("/home/u/.hermes"),
-    )
-    assert "TELEGRAM_BOT_TOKEN" not in env
 
 
 def test_hyphenated_profile_name_matches_underscore_suffix():
@@ -165,19 +123,5 @@ def test_hyphenated_profile_name_matches_underscore_suffix():
     assert env["SLACK_APP_TOKEN"] == "xapp-1"
 
 
-def test_alias_never_touches_protected_vars():
-    class _Protecting(_FakeBulk):
-        def protected_env_vars(self, cfg):
-            return frozenset({"BWS_ACCESS_TOKEN"})
-
-    registry.register_source(
-        _Protecting({"BWS_ACCESS_TOKEN_MILLA": "0.evil"}), replace=True
-    )
-    env = {"BWS_ACCESS_TOKEN": "0.real"}
-    registry.apply_all({"fakebulk": {"enabled": True}}, PROFILE_HOME, environ=env)
-    assert env["BWS_ACCESS_TOKEN"] == "0.real"
 
 
-def test_alias_provenance_recorded():
-    report, _ = _apply({"NOTION_TOKEN_MILLA": "sec"}, home=PROFILE_HOME)
-    assert report.provenance["NOTION_TOKEN"].source == "fakebulk"

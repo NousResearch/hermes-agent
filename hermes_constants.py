@@ -1250,6 +1250,30 @@ OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 
+# ─── Venv layout ─────────────────────────────────────────────────────────────
+
+def venv_bin_dir(venv_dir) -> Path:
+    """Directory holding a venv's executables (``Scripts`` / ``bin``).
+
+    Single source of truth for venv layout. This was open-coded in seven
+    places across four files using three different Windows predicates
+    (``platform.system()``, ``is_windows()``, ``_is_windows()``); each new
+    call site had to re-derive it, and #76091 shipped an eighth copy because
+    the correct behaviour lived 2400 lines away in another function.
+
+    The path is returned unconditionally — callers legitimately differ on
+    whether a missing venv is an error, so existence checking stays with them.
+    """
+    return Path(venv_dir) / ("Scripts" if sys.platform == "win32" else "bin")
+
+
+def venv_python_path(venv_dir) -> Path:
+    """Path to the Python interpreter inside *venv_dir* (may not exist)."""
+    return venv_bin_dir(venv_dir) / (
+        "python.exe" if sys.platform == "win32" else "python"
+    )
+
+
 # ─── Partial-update diagnostics ──────────────────────────────────────────────
 
 # Top-level packages/modules that ship as part of Hermes itself. An ImportError

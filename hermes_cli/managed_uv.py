@@ -384,9 +384,9 @@ def update_managed_uv(
 
 
 def _venv_python(venv_dir: Path) -> Path:
-    if platform.system() == "Windows":
-        return venv_dir / "Scripts" / "python.exe"
-    return venv_dir / "bin" / "python"
+    from hermes_constants import venv_python_path
+
+    return venv_python_path(venv_dir)
 
 
 def _remove_tree(path: Path, *, boundary: Path) -> None:

@@ -463,6 +463,16 @@ DEFAULT_CONFIG = {
     # small so a slow/dead server adds little to first-response latency.
     "mcp_discovery_timeout": 1.5,
 
+    # Single-query (``hermes -q/-z "..."``) variant of mcp_discovery_timeout.
+    # In one-shot mode there is only ONE turn, so the between-turns late-binding
+    # refresh never runs: a server that misses the small interactive bound is
+    # invisible to the LLM for the whole session.  This larger bound gives slow
+    # cold-start servers (npx, uvx, remote HTTP) a chance to land in the one
+    # tool snapshot.  ``thread.join(timeout)`` returns the instant discovery
+    # completes, so reachable servers only wait for their real handshake time
+    # while unavailable servers remain bounded.
+    "mcp_single_query_discovery_timeout": 15.0,
+
     # MCP runtime behavior (distinct from the per-server definitions in
     # mcp_servers: and from the auxiliary.mcp side-LLM task settings).
     "mcp": {

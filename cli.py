@@ -18126,6 +18126,10 @@ def main(
     
     # Handle single query mode
     if query or image:
+        # One-shot mode: no between-turns MCP late-binding refresh, so the
+        # agent must wait the full MCP cold-start bound before its first
+        # (and only) tool snapshot. See #51316.
+        cli._single_query_mode = True
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
         try:

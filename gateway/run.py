@@ -18962,17 +18962,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if rename_thread is None:
             return
         target_thread_id = relay_info[0] if relay_info else str(source.thread_id)
+        # Relay lane (relay_info present): ask the CONNECTOR to enforce the
+        # no-clobber guard from its own created-name memory — the gateway
+        # can't reliably reproduce the thread's initial name byte-for-byte
+        # (normalization drift silently declined every rename before this).
+        # Native-marker lane keeps the legacy string guard.
+        use_connector_guard = relay_info is not None
         guard_name = (
-            relay_info[1]
-            if relay_info
+            None
+            if use_connector_guard
             else getattr(source, "auto_thread_initial_name", None)
         )
         thread_name = self._sanitize_discord_thread_title(title)
+        logger.info(
+            "discord auto-thread rename: thread=%s lane=%s new_title=%r",
+            target_thread_id,
+            "relay" if use_connector_guard else "native",
+            thread_name,
+        )
         try:
-            await rename_thread(
+            renamed = await rename_thread(
                 target_thread_id,
                 thread_name,
+                prefer_connector_created=use_connector_guard,
                 only_if_current_name=guard_name,
+            )
+            logger.info(
+                "discord auto-thread rename result: thread=%s applied=%s",
+                target_thread_id,
+                bool(renamed),
             )
         except Exception:
             logger.debug("Failed to rename Discord auto-thread for generated session title", exc_info=True)

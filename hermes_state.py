@@ -1119,7 +1119,56 @@ def preflight_db_writability(
             _ensure_writable(p)
 
 
-def _db_opens_cleanly(db_path: Path) -> Optional[str]:
+class DBHealthProbeTimeout(Exception):
+    """``_db_opens_cleanly`` hit the wall-clock deadline it was given.
+
+    **This is not a corruption signal.** The probe was cancelled part-way
+    through, so nothing at all is known about the database's health — a
+    healthy-but-large ``state.db`` reaches this path purely because
+    ``PRAGMA integrity_check`` is O(file size). Callers must report it as
+    "health check skipped" and must never escalate it to
+    :func:`repair_state_db_schema`, which backs up and rewrites the file
+    (its last strategy drops the whole ``messages_fts%`` schema and
+    ``VACUUM``s).
+
+    Raised only when a caller passes ``deadline_seconds``; the default
+    ``None`` keeps every existing caller on the original blocking contract.
+    """
+
+
+# SQLite VM instructions between progress-handler callbacks. Small enough
+# that a long ``PRAGMA integrity_check`` polls the deadline continuously
+# (measured: ~400 callbacks in 0.04s on a 36 MB state.db), large enough that
+# the handler costs nothing on a normal probe.
+_PROBE_PROGRESS_INSTRUCTIONS = 1000
+
+
+class _ProbeDeadline:
+    """Progress handler that aborts the running statement past a deadline.
+
+    Returning a non-zero value from a ``set_progress_handler`` callback makes
+    SQLite abandon the statement in flight and raise
+    ``sqlite3.OperationalError("interrupted")``. Unlike a thread timeout this
+    genuinely cancels the scan instead of merely stopping the caller from
+    waiting on it.
+    """
+
+    __slots__ = ("expires_at", "fired")
+
+    def __init__(self, seconds: float) -> None:
+        self.expires_at = time.monotonic() + seconds
+        self.fired = False
+
+    def __call__(self) -> int:
+        if time.monotonic() >= self.expires_at:
+            self.fired = True
+            return 1
+        return 0
+
+
+def _db_opens_cleanly(
+    db_path: Path, *, deadline_seconds: Optional[float] = None
+) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
@@ -1129,8 +1178,43 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     ``integrity_check`` passing while every ``INSERT INTO messages`` fails
     through the FTS triggers — is reported as unhealthy rather than slipping
     past as a false "ok" (#50502).
+
+    ``deadline_seconds`` (keyword-only, default ``None`` = unbounded, the
+    historical behaviour) installs a SQLite progress handler that interrupts
+    the scan once the wall clock runs out and raises
+    :class:`DBHealthProbeTimeout`. The timeout is raised, never returned, so
+    it can never be mistaken for the "unhealthy reason" string that drives
+    destructive repair (#72441).
     """
+    deadline = (
+        _ProbeDeadline(deadline_seconds) if deadline_seconds is not None else None
+    )
     conn = sqlite3.connect(str(db_path), isolation_level=None)
+    if deadline is not None:
+        conn.set_progress_handler(deadline, _PROBE_PROGRESS_INSTRUCTIONS)
+    try:
+        reason = _run_db_health_probe(conn)
+    finally:
+        conn.close()
+    if deadline is not None and deadline.fired:
+        # An aborted statement surfaces as OperationalError("interrupted"),
+        # which is a sqlite3.DatabaseError and would otherwise be returned as
+        # a corruption reason by one of the handlers below. Report the
+        # cancellation instead — the DB was only read, never judged.
+        raise DBHealthProbeTimeout(
+            "state.db health probe exceeded its "
+            f"{deadline_seconds:g}s deadline; the database was not modified "
+            "and its health is unknown"
+        )
+    return reason
+
+
+def _run_db_health_probe(conn: sqlite3.Connection) -> Optional[str]:
+    """Run the health-probe statements on an already-open connection.
+
+    Split out of :func:`_db_opens_cleanly` so the connection prologue (and any
+    deadline installed on it) is owned by the caller.
+    """
     try:
         # Best-effort tokenizer load: a DB carrying the messages_fts_cjk
         # index needs the cjk_unicode61 extension before any statement can
@@ -1241,8 +1325,6 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         return None
     except sqlite3.DatabaseError as exc:
         return str(exc)
-    finally:
-        conn.close()
 
 
 def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:

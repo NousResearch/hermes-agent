@@ -703,6 +703,59 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+# Wall-clock budget for the read-only state.db health probes in `run_doctor`
+# (#72441). `PRAGMA integrity_check` walks every page of the file, so on a
+# large state.db the probe runs for minutes with no output and no way out.
+# Module-level so tests can monkeypatch it; deliberately NOT a config key or a
+# CLI flag — diagnostics should not need tuning to terminate.
+_STATE_DB_PROBE_DEADLINE_S = 30.0
+
+# Extra slack given to the abandonable boundary on top of the SQLite deadline,
+# so the in-statement cancellation is what normally stops the probe (it closes
+# its connection on the way out) and the thread boundary only fires for work
+# SQLite cannot interrupt at all — a `connect()` or page read wedged in an
+# uninterruptible I/O syscall, e.g. a hung network mount.
+_STATE_DB_PROBE_ABANDON_GRACE_S = 5.0
+
+
+def _run_abandonable(fn, timeout_s: float):
+    """Run ``fn`` on a daemon worker, abandoning it if it outlives the timeout.
+
+    Raises ``TimeoutError`` when ``fn`` has not returned in ``timeout_s``;
+    otherwise returns its result (or re-raises its exception unchanged, so
+    callers keep their existing error handling).
+
+    Two deliberate choices, both load-bearing:
+
+    * ``shutdown(wait=False)`` in a ``finally``, never
+      ``with ThreadPoolExecutor(...) as pool``. The context-manager form calls
+      ``shutdown(wait=True)`` on exit, which blocks until the worker finishes —
+      that would make the timeout merely delay the warning instead of bounding
+      the command.
+    * ``DaemonThreadPoolExecutor`` rather than the stdlib pool. Stdlib workers
+      are registered in ``concurrent.futures.thread._threads_queues``, whose
+      atexit hook joins every worker unconditionally *even after*
+      ``shutdown(wait=False)`` — so an abandoned worker would just move the
+      hang to interpreter exit (see ``tools/daemon_pool.py``).
+    """
+    from concurrent.futures import TimeoutError as _FutureTimeoutError
+
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+
+    pool = DaemonThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="hermes-doctor-state-db"
+    )
+    try:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=max(timeout_s, 0.0))
+        except _FutureTimeoutError:
+            future.cancel()
+            raise TimeoutError(f"probe did not finish within {timeout_s:g}s")
+    finally:
+        pool.shutdown(wait=False)
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1499,21 +1552,69 @@ def run_doctor(args):
     if state_db_path.exists():
         try:
             import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
-            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
-            count = cursor.fetchone()[0]
-            conn.close()
-            check_ok(f"{_DHH}/state.db exists ({count} sessions)")
 
-            # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
+            # FTS write-health probe (#50502): `SELECT COUNT(*)` below succeeds
             # even when the FTS index is corrupt and every message write fails
             # through the triggers. `_db_opens_cleanly` now drives a rolled-back
             # write so this otherwise-silent corruption class is surfaced (and
             # repaired in place with --fix).
-            from hermes_state import _db_opens_cleanly, repair_state_db_schema
+            #
+            # Both reads run under a wall-clock bound (#72441): the probe's
+            # `PRAGMA integrity_check` is O(file size), so on a large state.db
+            # `hermes doctor` used to stall here indefinitely with no output.
+            from hermes_state import (
+                DBHealthProbeTimeout,
+                _db_opens_cleanly,
+                repair_state_db_schema,
+            )
 
-            _write_reason = _db_opens_cleanly(state_db_path)
-            if _write_reason is not None:
+            def _read_state_db_health():
+                conn = sqlite3.connect(str(state_db_path))
+                try:
+                    sessions = conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                    ).fetchone()[0]
+                finally:
+                    conn.close()
+                try:
+                    reason = _db_opens_cleanly(
+                        state_db_path,
+                        deadline_seconds=_STATE_DB_PROBE_DEADLINE_S,
+                    )
+                except DBHealthProbeTimeout:
+                    return sessions, None, True
+                return sessions, reason, False
+
+            try:
+                count, _write_reason, _probe_timed_out = _run_abandonable(
+                    _read_state_db_health,
+                    _STATE_DB_PROBE_DEADLINE_S + _STATE_DB_PROBE_ABANDON_GRACE_S,
+                )
+            except TimeoutError:
+                # SQLite could not even be interrupted (wedged syscall). The
+                # worker is abandoned, not joined; the session count is unknown.
+                count, _write_reason, _probe_timed_out = None, None, True
+
+            if count is not None:
+                check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+
+            if _probe_timed_out:
+                # A deadline is NOT a corruption verdict: nothing is known
+                # about this database, so the repair path below must not run.
+                # Escalating a timeout to repair_state_db_schema() would send a
+                # healthy-but-large state.db into a rewrite that drops the
+                # messages_fts% schema and VACUUMs.
+                check_warn(
+                    f"{_DHH}/state.db health check timed out after "
+                    f"{_STATE_DB_PROBE_DEADLINE_S:g}s — skipped",
+                    "(the database was not modified; this is not a corruption verdict)",
+                )
+                issues.append(
+                    "state.db health check timed out — the database is large or on "
+                    "slow storage. Run 'hermes sessions repair --check-only' when you "
+                    "can let it run to completion."
+                )
+            elif _write_reason is not None:
                 check_warn(
                     f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",
                     f"({_write_reason})",

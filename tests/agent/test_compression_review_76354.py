@@ -34,8 +34,13 @@ from agent.conversation_compression import (
 
 
 def _drain_admission_slots():
-    """Placeholder until bounded admission (F6) lands in a later commit."""
-    return
+    """Best-effort wait for pool admission slots to free between tests."""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        with cc._compress_admission_lock:
+            if cc._compress_admitted_count == 0:
+                return
+        time.sleep(0.02)
 
 
 class TestF1CommitOverrunWhileHung:
@@ -265,3 +270,142 @@ class TestF4CooldownClearOrdering:
         fake2._compression_cancelled_check = staticmethod(lambda: False)
         ContextCompressor._clear_compression_failure_cooldown(fake2)
         assert fake2._summary_failure_cooldown_until == 0.0
+
+
+class TestF6ExecutorSaturation:
+    def test_saturated_pool_fails_fast_and_never_runs_stale_job(self):
+        """4 blocked summaries + 5th submission fails fast; recovery does not
+        run the refused job."""
+        _drain_admission_slots()
+        release = threading.Event()
+        started = threading.Barrier(5, timeout=10)  # 4 workers + main
+
+        def blocked_worker(fence: CompressionCommitFence):
+            started.wait()
+            assert release.wait(timeout=30)
+            return ([], "done")
+
+        hosts = []
+        results = {}
+
+        def host(i):
+            results[i] = run_compress_context_with_progress_timeout(
+                worker=blocked_worker,
+                messages=[{"role": "user", "content": f"m{i}"}],
+                system_prompt_fallback=f"fb{i}",
+                idle_timeout_seconds=0.05,
+                total_ceiling_seconds=0.1,
+            )
+
+        try:
+            for i in range(4):
+                t = threading.Thread(target=host, args=(i,), name=f"sat-{i}")
+                t.start()
+                hosts.append(t)
+            started.wait()  # all 4 workers occupy the pool
+            for t in hosts:
+                t.join(timeout=5)  # hosts time out; workers stay wedged
+                assert not t.is_alive()
+
+            # All 4 slots still admitted (workers blocked).
+            with cc._compress_admission_lock:
+                assert cc._compress_admitted_count == 4
+
+            fifth_ran = threading.Event()
+
+            def fifth_worker(fence):
+                fifth_ran.set()
+                return ([], "5th")
+
+            fifth_msgs = [{"role": "user", "content": "fifth"}]
+            t0 = time.monotonic()
+            msgs, prompt = run_compress_context_with_progress_timeout(
+                worker=fifth_worker,
+                messages=fifth_msgs,
+                system_prompt_fallback="fifth-fallback",
+                idle_timeout_seconds=5.0,
+                total_ceiling_seconds=5.0,
+            )
+            elapsed = time.monotonic() - t0
+            # ── Assert while the 4 workers are STILL wedged ───────────────
+            assert not release.is_set()
+            assert elapsed < 1.0, (
+                f"saturated submission must fail fast, took {elapsed:.2f}s"
+            )
+            assert msgs is fifth_msgs
+            assert prompt == "fifth-fallback"
+            assert not fifth_ran.is_set()
+        finally:
+            release.set()
+
+        # Worker recovery: slots free, and the refused fifth job never runs.
+        _drain_admission_slots()
+        time.sleep(0.1)
+        assert not fifth_ran.is_set(), (
+            "recovered workers must not run the refused stale job"
+        )
+        # Recovery restores service: a new submission is admitted and runs.
+        msgs, prompt = run_compress_context_with_progress_timeout(
+            worker=lambda fence: ([{"role": "user", "content": "ok"}], "ok"),
+            messages=[{"role": "user", "content": "after"}],
+            system_prompt_fallback="fb",
+            idle_timeout_seconds=1.0,
+            total_ceiling_seconds=2.0,
+        )
+        assert prompt == "ok"
+        _drain_admission_slots()
+
+    def test_cancelled_fence_skips_summary_work_before_start(self):
+        """A stale job whose fence was already cancelled never runs summary.
+
+        Drives compress_context's pre-summary fence gate directly: the fence
+        is cancelled BEFORE dispatch, so the expensive compress() call must
+        not run and the transcript must come back unchanged.
+        """
+        import os
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+        import tempfile
+
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as td:
+            db = SessionDB(db_path=Path(td) / "state.db")
+            session_id = "F6_PRESTART_FENCE"
+            db.create_session(session_id, source="cli")
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                from run_agent import AIAgent
+
+                agent = AIAgent(
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    model="test/model",
+                    quiet_mode=True,
+                    session_db=db,
+                    session_id=session_id,
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+            compressor = MagicMock()
+            compressor.compress.return_value = [
+                {"role": "user", "content": "should-not-run"}
+            ]
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            compressor._last_aux_model_failure_model = None
+            compressor._last_aux_model_failure_error = None
+            agent.context_compressor = compressor
+            agent._cached_system_prompt = "sys"
+
+            fence = CompressionCommitFence()
+            assert fence.cancel_before_commit() is True
+
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+            returned, _sp = agent._compress_context(
+                messages, "sys", approx_tokens=120_000, commit_fence=fence
+            )
+
+            compressor.compress.assert_not_called()
+            assert returned is messages
+            # The cancelled attempt must not leave the durable lock held.
+            assert db.get_compression_lock_holder(session_id) is None

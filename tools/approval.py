@@ -542,15 +542,25 @@ def _match_user_deny_rule(command: str) -> str | None:
         return None
     if not deny_patterns:
         return None
-    globs = [p.strip() for p in deny_patterns
+    globs = [(p.strip(), p.strip().lower()) for p in deny_patterns
              if isinstance(p, str) and p.strip()]
     if not globs:
         return None
     for command_variant in _command_detection_variants(command):
-        candidate = command_variant.lower().strip()
-        for pattern in globs:
-            if fnmatch.fnmatchcase(candidate, pattern.lower()):
-                return pattern
+        candidates = [command_variant]
+        candidates.extend(
+            _shell_command_segment(command_variant, start)
+            for start, _, _ in _iter_shell_command_word_spans(command_variant)
+        )
+        seen_candidates: set[str] = set()
+        for raw_candidate in candidates:
+            candidate = raw_candidate.lower().strip()
+            if not candidate or candidate in seen_candidates:
+                continue
+            seen_candidates.add(candidate)
+            for pattern, normalized_pattern in globs:
+                if fnmatch.fnmatchcase(candidate, normalized_pattern):
+                    return pattern
     return None
 
 
@@ -1958,6 +1968,28 @@ def _iter_shell_command_word_spans(command: str):
                 pos = word_end
                 continue
             break
+
+
+def _shell_command_segment(command: str, start: int) -> str:
+    """Return one executable candidate bounded by shell control syntax."""
+    quote: str | None = None
+    escaped = False
+    index = start
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char in ";&|\n)}":
+            break
+        index += 1
+    return command[start:index]
 
 
 def _command_detection_variants(command: str):

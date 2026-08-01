@@ -88,6 +88,9 @@ def test_blank_returns_raw_without_provider_call(monkeypatch):
 def test_happy_path_uses_one_strict_bounded_call(monkeypatch):
     resolver_calls = _install_provider(monkeypatch)
     completion_calls = []
+    monkeypatch.setattr(
+        "tools.transcript_cleanup._SYSTEM_PROMPT", "built-in cleanup prompt"
+    )
 
     def complete(**kwargs):
         completion_calls.append(kwargs)
@@ -107,6 +110,10 @@ def test_happy_path_uses_one_strict_bounded_call(monkeypatch):
     assert request["model"] == "openai/gpt-4o-mini"
     assert request["temperature"] == 0
     assert request["timeout"] == 5
+    assert request["messages"][0] == {
+        "role": "system",
+        "content": "built-in cleanup prompt",
+    }
     schema = request["response_format"]["json_schema"]
     assert request["response_format"]["type"] == "json_schema"
     assert schema["strict"] is True
@@ -119,6 +126,95 @@ def test_happy_path_uses_one_strict_bounded_call(monkeypatch):
         "required": ["cleaned_text", "confidence"],
         "additionalProperties": False,
     }
+
+
+def test_configured_prompt_file_replaces_default_prompt(tmp_path, monkeypatch):
+    _install_provider(monkeypatch)
+    prompt_file = tmp_path / "cleanup-prompt.txt"
+    prompt_file.write_text("Custom cleanup prompt. Return JSON.", encoding="utf-8")
+    completion_calls = []
+
+    def complete(**kwargs):
+        completion_calls.append(kwargs)
+        return _response('{"cleaned_text":"Hello.","confidence":0.99}')
+
+    result = cleanup_transcript(
+        "hello",
+        "topic",
+        _config(prompt_file=str(prompt_file)),
+        completion_create=complete,
+    )
+
+    assert result.text == "Hello."
+    assert completion_calls[0]["messages"][0] == {
+        "role": "system",
+        "content": "Custom cleanup prompt. Return JSON.",
+    }
+
+
+def test_relative_prompt_file_resolves_under_hermes_home(tmp_path, monkeypatch):
+    _install_provider(monkeypatch)
+    monkeypatch.setattr("tools.transcript_cleanup.get_hermes_home", lambda: tmp_path)
+    prompt_file = tmp_path / "prompts" / "cleanup.txt"
+    prompt_file.parent.mkdir()
+    prompt_file.write_text("Profile-local cleanup prompt.", encoding="utf-8")
+    completion_calls = []
+
+    def complete(**kwargs):
+        completion_calls.append(kwargs)
+        return _response('{"cleaned_text":"Hello.","confidence":0.99}')
+
+    cleanup_transcript(
+        "hello",
+        "topic",
+        _config(prompt_file="prompts/cleanup.txt"),
+        completion_create=complete,
+    )
+
+    assert completion_calls[0]["messages"][0]["content"] == (
+        "Profile-local cleanup prompt."
+    )
+
+
+def test_unreadable_prompt_file_fails_open_before_provider_call(monkeypatch, tmp_path):
+    def unexpected(*args, **kwargs):
+        pytest.fail("provider should not be resolved")
+
+    monkeypatch.setattr(
+        "tools.transcript_cleanup.resolve_provider_client", unexpected
+    )
+    missing = tmp_path / "missing-prompt.txt"
+
+    result = cleanup_transcript(
+        "raw transcript",
+        "topic",
+        _config(prompt_file=str(missing)),
+    )
+
+    assert result.text == "raw transcript"
+    assert result.applied is False
+    assert result.reason == "prompt_error"
+
+
+def test_blank_prompt_file_fails_open_before_provider_call(monkeypatch, tmp_path):
+    def unexpected(*args, **kwargs):
+        pytest.fail("provider should not be resolved")
+
+    monkeypatch.setattr(
+        "tools.transcript_cleanup.resolve_provider_client", unexpected
+    )
+    prompt_file = tmp_path / "blank-prompt.txt"
+    prompt_file.write_text("  \n", encoding="utf-8")
+
+    result = cleanup_transcript(
+        "raw transcript",
+        "topic",
+        _config(prompt_file=str(prompt_file)),
+    )
+
+    assert result.text == "raw transcript"
+    assert result.applied is False
+    assert result.reason == "prompt_error"
 
 
 def test_unchanged_text_is_not_applied(monkeypatch):

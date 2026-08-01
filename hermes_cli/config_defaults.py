@@ -1748,6 +1748,7 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "provider": "openrouter",
             "model": "openai/gpt-4o-mini",
+            "prompt_file": "",
             "timeout_seconds": 5,
             "minimum_confidence": 0.90,
             "max_topic_context_chars": 1000,

@@ -169,13 +169,13 @@ ps aux | grep hermes
 # Kill duplicate processes, keep only one
 ```
 
-### Check 4: Permissions on jobs.json
+### Check 4: Permissions on the cron store
 
-Jobs are stored in `~/.hermes/cron/jobs.json`. If this file is not readable/writable by your user, the scheduler will fail silently:
+Job definitions are stored in `~/.hermes/cron/jobs.json` and live run state in `~/.hermes/cron/runtime.db`. If either file is not readable/writable by your user, the scheduler will fail silently:
 
 ```bash
-ls -la ~/.hermes/cron/jobs.json
-chmod 600 ~/.hermes/cron/jobs.json   # Your user should own it
+ls -la ~/.hermes/cron/jobs.json ~/.hermes/cron/runtime.db
+chmod 600 ~/.hermes/cron/jobs.json ~/.hermes/cron/runtime.db   # Your user should own them
 ```
 
 ---

@@ -52,9 +52,12 @@ Before the split, scheduler-owned fields lived in `jobs.json` alongside the
 definitions. A legacy combined store migrates automatically on first load:
 runtime fields move into `runtime.db` first, then the cleaned definitions are
 rewritten — no schedules, counters, status, or claims are lost. Runtime rows
-are bound to their definition generation by content digests; a restored or
-edited definition whose digest no longer matches rejects stale claims and
-resets cadence-derived state instead of trusting it.
+record a content digest of their definition's cadence (schedule,
+`repeat.times`, `enabled`). When that digest no longer matches — a restored
+or edited cadence — stale fire/run claims are dropped and cadence-derived
+state (`next_run_at`, the repeat counter, any tombstone) is reset instead of
+trusted; non-cadence edits (for example a prompt rewrite) leave runtime state
+intact.
 
 ### Job Lifecycle States
 

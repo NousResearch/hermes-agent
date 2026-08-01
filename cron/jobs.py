@@ -1122,7 +1122,6 @@ def _reconcile_runtime_state(
     """Bind runtime to its definition and reset stale cadence/terminal state."""
     reconciled = copy.deepcopy(state)
     definition_digest, schedule_digest = _definition_digests(definition)
-    prior_definition_digest = reconciled.get(_RUNTIME_DEFINITION_DIGEST)
     prior_schedule_digest = reconciled.get(_RUNTIME_SCHEDULE_DIGEST)
 
     if prior_schedule_digest and prior_schedule_digest != schedule_digest:
@@ -1827,14 +1826,19 @@ def list_jobs(
 
     ``include_terminal=True`` also returns runtime-tombstoned declarations
     (state ``completed``) so operators can inspect, remove, or revive them.
+    A completed declaration is listed on the terminal opt-in alone — the
+    disabled filter only applies to live jobs, so a tombstoned job whose
+    stored ``enabled`` flag happens to be false (hand-edited store, migration)
+    cannot hide from the completed listing.
     """
-    jobs = [
-        _normalize_job_record(job)
-        for job in load_jobs()
-        if include_terminal or not job.get("runtime_tombstone")
-    ]
-    if not include_disabled:
-        jobs = [j for j in jobs if j.get("enabled", True)]
+    jobs = []
+    for job in load_jobs():
+        tombstoned = bool(job.get("runtime_tombstone"))
+        if tombstoned and not include_terminal:
+            continue
+        if not tombstoned and not include_disabled and not job.get("enabled", True):
+            continue
+        jobs.append(_normalize_job_record(job))
     try:
         from cron.executions import latest_executions
 
@@ -1885,6 +1889,18 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 schedule_changed or bool({"repeat", "enabled"}.intersection(updates))
             )
             if reviving and not schedule_changed:
+                # A completed one-shot's run time is in the past by
+                # definition — a repeat/enabled edit alone can never
+                # reschedule it. Say what the revive actually needs instead
+                # of the generic "time is in the past" error below.
+                if updated.get("schedule", {}).get("kind") == "once":
+                    raise ValueError(
+                        f"Cron job '{updated.get('name', job_id)}' is a "
+                        "completed one-shot whose run time "
+                        f"{updated.get('schedule', {}).get('run_at', 'unknown')} "
+                        "is in the past — reviving it requires a new schedule "
+                        "(pass schedule=... alongside repeat/enabled)."
+                    )
                 updated["next_run_at"] = None
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
@@ -2021,9 +2037,12 @@ def remove_job(job_id: str) -> bool:
 
     Removal is the supported way to drop a runtime-tombstoned declaration, so
     terminal records must stay reachable here even though live lookup hides
-    them.
+    them. Resolution is live-first so a live job wins a name tie with a
+    completed namesake instead of the reference turning ambiguous.
     """
-    job = resolve_job_ref(job_id, include_terminal=True)
+    job = resolve_job_ref(job_id)
+    if not job:
+        job = resolve_job_ref(job_id, include_terminal=True)
     if not job:
         return False
     canonical_id = job["id"]

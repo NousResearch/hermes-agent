@@ -236,6 +236,45 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     assert "Failed to create job: boom" in out
 
 
+class TestCronEditRevive:
+    """`hermes cron edit <job-id> --repeat N` is the documented revive path
+    for a completed job — the CLI pre-resolve must reach terminal records."""
+
+    def test_edit_revives_completed_job(self, tmp_cron_dir, capsys):
+        from cron.jobs import get_job, mark_job_run
+
+        job = create_job(prompt="One time sweep", schedule="every 1h", repeat=1)
+        assert mark_job_run(job["id"], success=True) is True
+        assert get_job(job["id"]) is None  # completed — hidden from live lookup
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=3,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                add_skills=None,
+                remove_skills=None,
+                script=None,
+                workdir=None,
+                no_agent=None,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "not found" not in out.lower()
+
+        revived = get_job(job["id"])
+        assert revived is not None  # visible to the live surface again
+        assert revived["repeat"]["times"] == 3
+        assert revived["repeat"]["completed"] == 0
+
+
 class TestCronListCompleted:
     """`hermes cron list --all` must surface completed (runtime-tombstoned)
     declarations with a terminal badge instead of a stale next-run time; the

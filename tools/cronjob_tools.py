@@ -580,7 +580,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "paused_reason": job.get("paused_reason"),
     }
     tombstone = job.get("runtime_tombstone")
-    if tombstone:
+    if isinstance(tombstone, dict):
         result["completed_reason"] = tombstone.get("reason")
         result["completed_at"] = tombstone.get("at")
     if job.get("script"):
@@ -710,7 +710,9 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             _heartbeat_stop.set()
             if _heartbeat_thread is not None:
                 _heartbeat_thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
-        refreshed = get_job(job_id) or {}
+        # include_terminal: a final run tombstones the job; without it the
+        # empty-dict fallback misreports a successful last run as failed.
+        refreshed = get_job(job_id, include_terminal=True) or {}
         ok = refreshed.get("last_status") == "ok"
         return {
             "claimed": True,
@@ -803,12 +805,15 @@ def cronjob(
             if base_url_error:
                 return tool_error(base_url_error, success=False)
 
-            # Validate context_from references existing jobs
+            # Validate context_from references existing jobs. Completed
+            # (runtime-tombstoned) upstreams are valid: fire-time injection
+            # reads the persisted output directory, not live job state, so a
+            # finished one-shot collector is a natural chaining source.
             if context_from:
                 from cron.jobs import get_job as _get_job
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
-                    if not _get_job(ref_id):
+                    if not _get_job(ref_id, include_terminal=True):
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
                             "Use cronjob(action='list') to see available jobs.",
@@ -869,10 +874,15 @@ def cronjob(
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         try:
-            # Management actions must reach completed (runtime-tombstoned)
-            # declarations too — remove and revive-via-update are the supported
-            # exits from the terminal state. Live-only actions are gated below.
-            job = resolve_job_ref(job_id, include_terminal=True)
+            # Live-first, terminal fallback: a live job must always win a name
+            # tie with a retained completed namesake — management-by-name must
+            # not turn ambiguous just because a finished one-shot shares the
+            # name. Completed declarations stay reachable when nothing shadows
+            # them: remove and revive-via-update are the supported exits from
+            # the terminal state. Live-only actions are gated below.
+            job = resolve_job_ref(job_id)
+            if not job:
+                job = resolve_job_ref(job_id, include_terminal=True)
         except AmbiguousJobReference as exc:
             return json.dumps(
                 {
@@ -882,6 +892,7 @@ def cronjob(
                         {
                             "id": m["id"],
                             "name": m.get("name"),
+                            "state": m.get("state"),
                             "schedule": m.get("schedule_display"),
                             "next_run_at": m.get("next_run_at"),
                         }
@@ -900,7 +911,9 @@ def cronjob(
 
         job_was_completed = bool(job.get("runtime_tombstone"))
         if job_was_completed and normalized in {"pause", "resume", "run", "run_now", "trigger"}:
-            tombstone = job.get("runtime_tombstone") or {}
+            tombstone = job.get("runtime_tombstone")
+            if not isinstance(tombstone, dict):
+                tombstone = {}
             return tool_error(
                 f"Cron job '{job['name']}' has completed "
                 f"(reason: {tombstone.get('reason', 'unknown')}, "
@@ -953,7 +966,10 @@ def cronjob(
             if exec_result.get("claimed", False):
                 _notify_provider_jobs_changed_safe()
             # Re-read so the response reflects the post-run last_run_at/last_status.
-            result = _format_job(get_job(job_id) or {"id": job_id})
+            # include_terminal: a run that exhausts the repeat limit tombstones
+            # the job — report the real completed record, not a fabricated
+            # schedulable one.
+            result = _format_job(get_job(job_id, include_terminal=True) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)
             result["execution_success"] = exec_result.get("success", False)
             if not exec_result.get("claimed", False):
@@ -1020,9 +1036,12 @@ def cronjob(
                 else:
                     refs = [str(j).strip() for j in context_from if str(j).strip()]
                 if refs:
+                    # Completed upstreams stay valid here for the same reason
+                    # as the create path: their persisted output is what gets
+                    # injected at fire time.
                     from cron.jobs import get_job as _get_job
                     for ref_id in refs:
-                        if not _get_job(ref_id):
+                        if not _get_job(ref_id, include_terminal=True):
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
                                 "Use cronjob(action='list') to see available jobs.",

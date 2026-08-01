@@ -741,3 +741,170 @@ class TestCompletedJobManagement:
             assert result["success"] is False, action
             assert "completed" in result["error"], action
             assert "revive" in result["error"], action
+
+    def test_completed_upstream_is_a_valid_context_from_source(self):
+        # Fire-time context injection reads the persisted output directory,
+        # not live job state, so a finished one-shot collector is a natural
+        # chaining source — create and update must accept the reference.
+        upstream_id = self._completed_job(name="collector")
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Digest the collector output",
+                schedule="every 1h",
+                context_from=[upstream_id],
+            )
+        )
+        assert created["success"] is True
+
+        digest_id = created["job_id"]
+        updated = json.loads(
+            cronjob(action="update", job_id=digest_id, context_from=[upstream_id])
+        )
+        assert updated["success"] is True
+
+    def test_nonexistent_context_from_still_rejected(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Digest",
+                schedule="every 1h",
+                context_from=["deadbeef0000"],
+            )
+        )
+        assert result["success"] is False
+        assert "not found" in result["error"]
+
+    def test_live_job_wins_name_tie_with_completed_namesake(self):
+        # Retained completed declarations must not make name-based management
+        # of a live namesake ambiguous: resolution is live-first, with the
+        # terminal fallback only when no live job matches.
+        self._completed_job(name="report")
+        created = json.loads(
+            cronjob(action="create", prompt="Live report", schedule="every 2h", name="report")
+        )
+        assert created["success"] is True
+        live_id = created["job_id"]
+
+        paused = json.loads(cronjob(action="pause", job_id="report"))
+        assert paused["success"] is True
+        assert paused["job"]["job_id"] == live_id
+
+        removed = json.loads(cronjob(action="remove", job_id="report"))
+        assert removed["success"] is True
+        assert removed["removed_job"]["id"] == live_id
+
+        # The completed namesake is untouched and still retained.
+        listing = json.loads(cronjob(action="list", include_completed=True))
+        assert listing["count"] == 1
+        assert listing["jobs"][0]["state"] == "completed"
+
+    def test_completed_twins_ambiguity_payload_shows_state(self):
+        self._completed_job(name="twin")
+        self._completed_job(name="twin")
+        result = json.loads(cronjob(action="remove", job_id="twin"))
+        assert result["success"] is False
+        assert len(result["matches"]) == 2
+        assert all(m["state"] == "completed" for m in result["matches"])
+
+    def test_final_run_reports_completed_shape(self, monkeypatch):
+        # A run that exhausts the repeat limit tombstones the job; the
+        # response must report the real completed record, not fall back to a
+        # fabricated schedulable {'id': ...} shape.
+        import tools.cronjob_tools as ct
+        from cron.jobs import mark_job_run
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Final sweep",
+                schedule="every 1h",
+                repeat=1,
+                name="finisher",
+            )
+        )
+        job_id = created["job_id"]
+
+        def _fake_execute(job):
+            assert mark_job_run(job["id"], success=True) is True
+            return {"claimed": True, "success": True, "error": None}
+
+        monkeypatch.setattr(ct, "_execute_job_now", _fake_execute)
+        result = json.loads(cronjob(action="run", job_id=job_id))
+        assert result["success"] is True
+        assert result["job"]["state"] == "completed"
+        assert result["job"]["completed_reason"] == "repeat_limit"
+        assert result["job"]["name"] == "finisher"
+
+    def test_enabled_only_update_revives_into_paused(self):
+        # The enabled leg of revive-by-cadence-edit (reachable via gateway
+        # PATCH, which drives update_job directly): tombstone cleared,
+        # counter re-armed, job parked as paused until resumed.
+        from cron.jobs import get_job, update_job
+
+        job_id = self._completed_job()
+        update_job(job_id, {"enabled": False})
+        rec = get_job(job_id, include_terminal=True)
+        assert not rec.get("runtime_tombstone")
+        assert rec["state"] == "paused"
+        assert rec["repeat"]["completed"] == 0
+
+    def test_enabled_true_noop_keeps_job_completed(self):
+        # Setting enabled to its current value changes no cadence digest, so
+        # the tombstone must survive.
+        from cron.jobs import get_job, update_job
+
+        job_id = self._completed_job()
+        update_job(job_id, {"enabled": True})
+        rec = get_job(job_id, include_terminal=True)
+        assert rec.get("runtime_tombstone")
+        assert rec["state"] == "completed"
+
+    def test_repeat_only_revive_of_completed_oneshot_says_needs_schedule(self):
+        # A completed one-shot's run time is in the past by definition; a
+        # repeat-only revive must say a new schedule is required instead of
+        # the generic "time is in the past" error.
+        from datetime import datetime, timedelta, timezone
+
+        from cron.jobs import mark_job_run
+
+        soon = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="One shot",
+                schedule=soon,
+                repeat=1,
+                name="once-only",
+            )
+        )
+        assert created["success"] is True
+        job_id = created["job_id"]
+        assert mark_job_run(job_id, success=True) is True
+
+        result = json.loads(cronjob(action="update", job_id=job_id, repeat=3))
+        assert result["success"] is False
+        assert "requires a new schedule" in result["error"]
+
+    def test_disabled_completed_job_listed_on_completed_opt_in_alone(self):
+        # A hand-edited or migrated store can hold a declaration that is both
+        # tombstoned and enabled=False. The completed opt-in alone must list
+        # it — the disabled filter applies to live jobs only.
+        from cron.jobs import save_jobs
+
+        save_jobs([
+            {
+                "id": "deadcafe0000",
+                "name": "old-sweeper",
+                "prompt": "sweep",
+                "enabled": False,
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "repeat": {"times": 1, "completed": 1},
+                "runtime_tombstone": {"reason": "repeat_limit", "at": "2026-08-01T00:00:00+00:00"},
+            }
+        ])
+
+        listing = json.loads(cronjob(action="list", include_completed=True))
+        assert listing["count"] == 1
+        assert listing["jobs"][0]["state"] == "completed"

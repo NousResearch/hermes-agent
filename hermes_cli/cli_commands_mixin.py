@@ -1601,7 +1601,9 @@ class CLICommandsMixin:
                 print("(._.) Usage: /cron edit <job_id> [--schedule ...] [--prompt ...] [--skill ...]")
                 return
             job_id = positionals[0]
-            existing = get_job(job_id)
+            # include_terminal: editing a completed job is the documented
+            # revive path; the downstream update handles the semantics.
+            existing = get_job(job_id, include_terminal=True)
             if not existing:
                 print(f"(._.) Job not found: {job_id}")
                 return

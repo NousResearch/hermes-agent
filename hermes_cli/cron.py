@@ -122,7 +122,7 @@ def cron_list(show_all: bool = False):
         # A runtime-tombstoned job's stored next_run_at predates its
         # completion; showing it as an upcoming run would be misleading.
         tombstone = job.get("runtime_tombstone")
-        if tombstone:
+        if isinstance(tombstone, dict):
             next_run = (
                 f"— completed {tombstone.get('at', '?')} "
                 f"({tombstone.get('reason', '?')})"
@@ -385,7 +385,12 @@ def cron_edit(args):
     from cron.jobs import AmbiguousJobReference, resolve_job_ref
 
     try:
+        # Live-first, terminal fallback: a live job always wins a name tie
+        # with a retained completed namesake, while a completed job stays
+        # editable (the documented revive path) when nothing shadows it.
         job = resolve_job_ref(args.job_id)
+        if not job:
+            job = resolve_job_ref(args.job_id, include_terminal=True)
     except AmbiguousJobReference as exc:
         print(color(str(exc), Colors.RED))
         for m in exc.matches:

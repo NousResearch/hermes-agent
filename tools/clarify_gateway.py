@@ -169,11 +169,11 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
     """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None:
+        if entry is None or entry.event.is_set():
             return False
-    entry.response = str(response) if response is not None else ""
-    entry.event.set()
-    return True
+        entry.response = str(response) if response is not None else ""
+        entry.event.set()
+        return True
 
 
 def get_pending_for_session(

@@ -42,6 +42,16 @@ class TestClarifyPrimitive:
         result = cm.wait_for_response("id1", timeout=10.0)
         assert result == "B"
 
+    def test_first_resolution_wins(self):
+        """A late cancellation must not overwrite an already-selected choice."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("id-race", "sk-race", "Pick one", ["A", "B"])
+
+        assert cm.resolve_gateway_clarify("id-race", "A") is True
+        assert cm.resolve_gateway_clarify("id-race", "") is False
+        assert entry.response == "A"
+
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
         from tools import clarify_gateway as cm

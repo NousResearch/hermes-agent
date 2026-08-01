@@ -834,10 +834,19 @@ def init_agent(
     agent._use_prompt_caching, agent._use_native_cache_layout = (
         agent._anthropic_prompt_cache_policy()
     )
+    agent._cache_disabled = False
     # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from
     # config.yaml under prompt_caching.cache_ttl; unknown values keep "5m".
     # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
     # sessions with >5-minute pauses between turns (#14971).
+    #
+    # Setting cache_ttl to a falsy value (false / null / "off" / "disabled" /
+    # "no" / "none") disables prompt caching entirely. This is useful for
+    # OAuth subscription users where cache writes bill against "extra usage"
+    # or for third-party proxies that inject their own cache_control markers
+    # (#13477). The disable propagates through anthropic_prompt_cache_policy()
+    # and restore_primary_runtime() so it survives /model switches and
+    # fallback re-derivation (#33555).
     agent._cache_ttl = "5m"
     try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
@@ -846,6 +855,15 @@ def init_agent(
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
+        elif (
+            _ttl is False
+            or _ttl is None
+            or str(_ttl).lower() in ("off", "false", "disabled", "no", "none")
+        ):
+            agent._use_prompt_caching = False
+            agent._use_native_cache_layout = False
+            agent._cache_ttl = None
+            agent._cache_disabled = True
     except Exception:
         pass
 

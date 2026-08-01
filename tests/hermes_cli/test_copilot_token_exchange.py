@@ -134,3 +134,56 @@ class TestDeriveBaseUrlFromProxyEp:
 
         api_token, _, base_url = exchange_copilot_token("gho_test")
         assert base_url is None
+
+
+class TestJwtDiskStoreBounds:
+    """The on-disk JWT store must go through one bounded read everywhere."""
+
+    def _store_path(self, tmp_path, monkeypatch):
+        import hermes_cli.copilot_auth as mod
+        path = tmp_path / mod._JWT_DISK_FILENAME
+        monkeypatch.setattr(mod, "_jwt_disk_path", lambda: path)
+        return path
+
+    def test_read_jwt_store_rejects_oversized_file(self, tmp_path, monkeypatch):
+        import hermes_cli.copilot_auth as mod
+
+        path = self._store_path(tmp_path, monkeypatch)
+        path.write_text("x" * (mod._JWT_DISK_MAX_BYTES + 1))
+        assert mod._read_jwt_store(path) is None
+        # Load path treats it as unusable → caller re-exchanges.
+        assert mod._load_jwt_from_disk("deadbeef") is None
+
+    def test_read_jwt_store_rejects_non_dict_and_malformed(self, tmp_path, monkeypatch):
+        import hermes_cli.copilot_auth as mod
+
+        path = self._store_path(tmp_path, monkeypatch)
+        path.write_text("[1, 2, 3]")
+        assert mod._read_jwt_store(path) is None
+        path.write_text("{not json")
+        assert mod._read_jwt_store(path) is None
+
+    def test_evict_ignores_oversized_store(self, tmp_path, monkeypatch):
+        """Eviction on an oversized store must not parse or rewrite it."""
+        import hermes_cli.copilot_auth as mod
+
+        path = self._store_path(tmp_path, monkeypatch)
+        blob = "x" * (mod._JWT_DISK_MAX_BYTES + 1)
+        path.write_text(blob)
+        mod.evict_cached_exchanged_token("gho_whatever")
+        # Untouched — bounded read refused it before any rewrite.
+        assert path.read_text() == blob
+
+    def test_save_discards_oversized_store_instead_of_merging(self, tmp_path, monkeypatch):
+        """Saving over a corrupt/oversized store starts fresh rather than
+        re-serializing the oversized content back out."""
+        import json as _json
+        import time as _time
+        import hermes_cli.copilot_auth as mod
+
+        path = self._store_path(tmp_path, monkeypatch)
+        path.write_text("x" * (mod._JWT_DISK_MAX_BYTES + 1))
+        mod._save_jwt_to_disk("fp1", "tid=fresh", _time.time() + 1800, None)
+        store = _json.loads(path.read_text())
+        assert set(store) == {"fp1"}
+        assert store["fp1"]["api_token"] == "tid=fresh"

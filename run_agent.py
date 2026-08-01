@@ -1485,6 +1485,21 @@ class AIAgent:
             or "models.github.ai" in self._base_url_lower
         )
 
+    def _is_copilot_provider(self) -> bool:
+        """True when the active provider is GitHub Copilot, however spelled.
+
+        ``self.provider`` is not always the normalized slug: ``/model`` and
+        profile configs can leave the alias ``github-copilot`` (or ``github``)
+        in place — a single session log can show both ``provider=copilot`` and
+        ``provider=github-copilot`` for the same account. A bare
+        ``provider == "copilot"`` gate silently skips credential recovery for
+        the alias spellings, so this is the single owner of the check; the
+        Copilot base URL is accepted as a fallback signal.
+        """
+        if (self.provider or "").strip().lower() in {"copilot", "github-copilot", "github"}:
+            return True
+        return self._is_copilot_url()
+
     def _anthropic_prompt_cache_policy(
         self,
         *,
@@ -5161,7 +5176,7 @@ class AIAgent:
         then mint a new one) so the retry carries a valid IDE token. Mirrors the
         400 stale-credential recovery; the caller enforces the single-shot guard.
         """
-        if self.provider != "copilot":
+        if not self._is_copilot_provider():
             return False
 
         try:
@@ -5225,7 +5240,7 @@ class AIAgent:
         rebuild the shared client. Single-shot (guarded by the caller) so a
         genuinely unavailable model can't loop.
         """
-        if self.provider != "copilot":
+        if not self._is_copilot_provider():
             return False
 
         try:

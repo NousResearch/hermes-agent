@@ -559,6 +559,41 @@ class TestResolveSkillCommandKey:
             assert resolve_skill_command_key("git_helper") == "/git-helper"
             assert resolve_skill_command_key("git-helper") == "/git-helper"
 
+    def test_telegram_collision_menu_entry_dispatches_to_same_skill(self, tmp_path):
+        """The registered menu label and inbound dispatch must choose one skill.
+
+        This crosses the real menu builder and resolver boundary: Telegram
+        receives only ``git_helper`` after sanitization, so its description and
+        the skill invoked when that token comes back must both belong to the
+        lexicographically first canonical key.
+        """
+        from hermes_cli.commands import telegram_menu_commands
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            patch("agent.skill_utils.get_disabled_skill_names", return_value=set()),
+        ):
+            hyphen = tmp_path / "hyphen"
+            hyphen.mkdir()
+            (hyphen / "SKILL.md").write_text(
+                "---\nname: git-helper\ndescription: Hyphen winner.\n---\n\nBody.\n"
+            )
+            underscore = tmp_path / "underscore"
+            underscore.mkdir()
+            (underscore / "SKILL.md").write_text(
+                "---\nname: git_helper\ndescription: Underscore runner-up.\n---\n\nBody.\n"
+            )
+
+            commands = scan_skill_commands()
+            menu, _hidden = telegram_menu_commands(max_commands=100)
+            matching = [(name, desc) for name, desc in menu if name == "git_helper"]
+            resolved = resolve_skill_command_key("git_helper")
+
+        assert matching == [("git_helper", "Hyphen winner.")]
+        assert resolved == "/git-helper"
+        assert commands[resolved]["name"] == "git-helper"
+
     def test_unknown_command_returns_none(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "claude-code")

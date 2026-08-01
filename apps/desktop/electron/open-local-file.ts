@@ -27,29 +27,21 @@ const openWithPreview = (target: string): Promise<string | null> =>
 /**
  * Open a local file for the user, degrading gracefully when the OS can't.
  *
- * On macOS, `shell.openPath` dispatches to the LaunchServices default handler
- * for the file type. When that association is a stale/broken binding — commonly
- * a `com.adobe.pdf` entry left behind after Adobe Acrobat is removed or
- * relocated — opening a PDF fails even though `open -a Preview <file>` works. So
- * for macOS PDFs we try Preview (bundled with macOS, bypasses a broken default
- * handler) first, then fall back to the default handler, then reveal the file in
- * the system file manager. All other files use the default handler directly, as
- * before.
+ * `shell.openPath` dispatches to the OS default handler for the file type, so we
+ * try it first for every file — this honors the user's chosen PDF application
+ * (Acrobat, PDF Expert, etc.) rather than overriding it. Only when `openPath`
+ * reports a non-empty error for a macOS PDF do we reach for Preview: a failed
+ * open on macOS commonly means a stale/broken LaunchServices association —
+ * typically a `com.adobe.pdf` entry left behind after Adobe Acrobat is removed
+ * or relocated — where `open -a Preview <file>` still works. Preview is bundled
+ * with macOS and bypasses that broken default. If Preview also fails (and for
+ * any other failed open), we reveal the file in the system file manager.
  */
 export async function openLocalFile(localPath: string, deps: OpenLocalFileDeps): Promise<void> {
   const platform = deps.platform ?? process.platform
   const log = deps.log ?? (() => undefined)
   const tryPreview = deps.openWithMacPreview ?? openWithPreview
-
-  if (platform === 'darwin' && path.extname(localPath).toLowerCase() === '.pdf') {
-    const previewError = await tryPreview(localPath)
-
-    if (!previewError) {
-      return
-    }
-
-    log(`[file] Preview open failed: ${previewError}; trying default handler`)
-  }
+  const isMacPdf = platform === 'darwin' && path.extname(localPath).toLowerCase() === '.pdf'
 
   let openError: string
 
@@ -65,7 +57,19 @@ export async function openLocalFile(localPath: string, deps: OpenLocalFileDeps):
     return
   }
 
-  log(`[file] openPath failed: ${openError}; revealing in folder instead`)
+  if (isMacPdf) {
+    log(`[file] openPath failed: ${openError}; trying Preview`)
+
+    const previewError = await tryPreview(localPath)
+
+    if (!previewError) {
+      return
+    }
+
+    log(`[file] Preview open failed: ${previewError}; revealing in folder instead`)
+  } else {
+    log(`[file] openPath failed: ${openError}; revealing in folder instead`)
+  }
 
   try {
     deps.showItemInFolder(localPath)

@@ -459,6 +459,20 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "sensitive system path" in result["error"]
 
+    def test_macos_private_var_carveouts(self):
+        """macOS temp dirs under /private/var must not be blanket-blocked,
+        while the genuinely-sensitive /private/var subtrees still are."""
+        from tools.file_tools import _check_sensitive_path
+
+        # $TMPDIR / /tmp / /var/folders realpath into these on macOS.
+        assert _check_sensitive_path("/private/var/folders/xy/T/tmp.txt") is None
+        assert _check_sensitive_path("/private/var/tmp/build.log") is None
+        # Sensitive subtrees remain blocked.
+        assert _check_sensitive_path("/private/var/db/secret") is not None
+        assert _check_sensitive_path("/private/var/root/x") is not None
+        # /etc (and its macOS /private/etc mirror) stay blocked.
+        assert _check_sensitive_path("/private/etc/hosts") is not None
+
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")

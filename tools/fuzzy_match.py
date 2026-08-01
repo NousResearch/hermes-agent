@@ -83,6 +83,13 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     if not old_string:
         return content, 0, None, "old_string cannot be empty"
 
+    if not old_string.strip():
+        # A whitespace-only old_string matches trivially (a blank line, run of
+        # spaces, etc.) and, when it recurs, either mass-replaces under
+        # replace_all or raises a hard-to-diagnose ambiguity error. It's never
+        # a meaningful anchor — reject it so the caller provides real context.
+        return content, 0, None, "old_string is only whitespace — provide non-blank text to match"
+
     if old_string == new_string:
         return content, 0, None, "old_string and new_string are identical"
 

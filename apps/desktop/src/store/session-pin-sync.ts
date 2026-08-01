@@ -22,7 +22,8 @@
 
 import { setSessionPinnedRemote } from '@/hermes'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
-import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { $messagingSessions, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import type { SessionInfo } from '@/types/hermes'
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
@@ -34,8 +35,56 @@ const pending = new Set<string>()
 // the request's own lifetime is the guard, so nothing can leave one open.
 const unconfirmed = new Map<string, boolean>()
 
-function profileFor(pinId: string): null | string | undefined {
-  return $sessions.get().find(row => sessionMatchesStoredId(row, pinId))?.profile
+interface PinSyncConversation {
+  pinId: string
+  representative: SessionInfo
+  rows: SessionInfo[]
+}
+
+/** One identity group per durable conversation across both sidebar slices. */
+function pinSyncConversations(): PinSyncConversation[] {
+  const byPinId = new Map<string, PinSyncConversation>()
+
+  for (const row of [...$sessions.get(), ...$messagingSessions.get()]) {
+    const pinId = sessionPinId(row)
+    const existing = byPinId.get(pinId)
+
+    if (!existing) {
+      byPinId.set(pinId, { pinId, representative: row, rows: [row] })
+
+      continue
+    }
+
+    existing.rows.push(row)
+
+    const existingHasPin = typeof existing.representative.pinned === 'boolean'
+    const rowHasPin = typeof row.pinned === 'boolean'
+
+    if (
+      (!existingHasPin && rowHasPin) ||
+      (existingHasPin === rowHasPin && row.id === pinId && existing.representative.id !== pinId)
+    ) {
+      existing.representative = row
+    }
+  }
+
+  return [...byPinId.values()]
+}
+
+function rowFor(conversations: PinSyncConversation[], storedId: string): SessionInfo | undefined {
+  for (const conversation of conversations) {
+    const row = conversation.rows.find(entry => sessionMatchesStoredId(entry, storedId))
+
+    if (row) {
+      return row
+    }
+  }
+
+  return undefined
+}
+
+function profileFor(conversations: PinSyncConversation[], pinId: string): null | string | undefined {
+  return rowFor(conversations, pinId)?.profile
 }
 
 /** PATCH the flag, guarding reads against pages that predate the write. */
@@ -60,10 +109,23 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
  * time we reconcile — it gets marked as mirrored rather than echoed straight
  * back as a redundant PATCH.
  */
-function pullRemotePins(): void {
+function pullRemotePins(conversations: PinSyncConversation[]): void {
   const local = new Set($pinnedSessionIds.get())
 
-  for (const row of $sessions.get()) {
+  for (const conversation of conversations) {
+    const { pinId, representative: row, rows } = conversation
+
+    const pinnedValues = new Set(
+      rows.map(entry => entry.pinned).filter((pinned): pinned is boolean => typeof pinned === 'boolean')
+    )
+
+    // Both slices are filtered views of the same backend data; neither is more
+    // authoritative. If overlapping rows disagree, preserve local state until
+    // a later refresh converges instead of choosing a synthetic winner.
+    if (pinnedValues.size > 1) {
+      continue
+    }
+
     // A backend without the flag has no opinion; never act on `undefined`.
     if (typeof row.pinned !== 'boolean') {
       continue
@@ -71,11 +133,12 @@ function pullRemotePins(): void {
 
     // Pins are keyed on the durable lineage root so they survive compression
     // tip rotation; the row may surface under either identity.
-    const pinId = sessionPinId(row)
-    const heldLocally = local.has(pinId) || local.has(row.id)
+    const heldId = local.has(pinId) ? pinId : rows.find(entry => local.has(entry.id))?.id
+    const heldLocally = heldId !== undefined
 
     // A write of ours the page hasn't caught up to yet is newer than the page.
-    const awaited = unconfirmed.has(pinId) ? unconfirmed.get(pinId) : unconfirmed.get(row.id)
+    const awaitedId = [pinId, ...rows.map(entry => entry.id)].find(id => unconfirmed.has(id))
+    const awaited = awaitedId === undefined ? undefined : unconfirmed.get(awaitedId)
 
     if (awaited !== undefined && awaited !== row.pinned) {
       continue
@@ -85,10 +148,13 @@ function pullRemotePins(): void {
       pinSession(pinId)
       // Already true server-side; record it so the push pass doesn't re-PATCH.
       mirrored.add(pinId)
-    } else if (!row.pinned && heldLocally) {
-      unpinSession(local.has(pinId) ? pinId : row.id)
+    } else if (!row.pinned && heldId !== undefined) {
+      unpinSession(heldId)
       mirrored.delete(pinId)
-      mirrored.delete(row.id)
+
+      for (const entry of rows) {
+        mirrored.delete(entry.id)
+      }
     }
   }
 }
@@ -99,7 +165,9 @@ function reconcile(): void {
     return
   }
 
-  pullRemotePins()
+  const conversations = pinSyncConversations()
+
+  pullRemotePins(conversations)
 
   const current = new Set($pinnedSessionIds.get())
 
@@ -108,7 +176,7 @@ function reconcile(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
-      void writePin(id, false, profileFor(id)).catch(() => {})
+      void writePin(id, false, profileFor(conversations, id)).catch(() => {})
     }
   }
 
@@ -120,9 +188,9 @@ function reconcile(): void {
   }
 
   // Flush whatever we can resolve now; unresolved ids (row not loaded yet)
-  // retry on the next $sessions change.
+  // retry on the next session-list change.
   for (const id of [...pending]) {
-    const row = $sessions.get().find(entry => sessionMatchesStoredId(entry, id))
+    const row = rowFor(conversations, id)
 
     if (!row) {
       continue
@@ -143,4 +211,5 @@ export function watchSessionPins(): void {
   reconcile()
   $pinnedSessionIds.listen(reconcile)
   $sessions.listen(reconcile)
+  $messagingSessions.listen(reconcile)
 }

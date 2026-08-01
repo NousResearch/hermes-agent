@@ -11,7 +11,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 import { $pinnedSessionIds } from '@/store/layout'
-import { $sessions } from '@/store/session'
+import { $messagingSessions, $sessions } from '@/store/session'
 
 import { watchSessionPins } from './session-pin-sync'
 
@@ -29,12 +29,14 @@ beforeAll(() => {
 
 beforeEach(() => {
   $sessions.set([])
+  $messagingSessions.set([])
   $pinnedSessionIds.set([])
   patch.mockClear()
 })
 
 afterEach(() => {
   $sessions.set([])
+  $messagingSessions.set([])
   $pinnedSessionIds.set([])
 })
 
@@ -71,6 +73,18 @@ describe('watchSessionPins', () => {
     expect(patch).toHaveBeenCalledWith('c', true, 'p2')
   })
 
+  it('flushes a pending pin from a messaging row with its profile', async () => {
+    $pinnedSessionIds.set(['pending-message'])
+    await flush()
+    expect(patch).not.toHaveBeenCalled()
+
+    $messagingSessions.set([row('pending-message', { profile: 'chat-profile', source: 'telegram' })])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('pending-message', true, 'chat-profile')
+  })
+
   it('matches a pin id against the lineage root', async () => {
     // pin id is the lineage root; the live row carries it as _lineage_root_id.
     $sessions.set([row('tip', { _lineage_root_id: 'root' })])
@@ -92,9 +106,82 @@ describe('watchSessionPins', () => {
 
     expect(patch).not.toHaveBeenCalled()
   })
+
+  it('writes once when both stores represent the same durable conversation', async () => {
+    $sessions.set([row('local-tip', { _lineage_root_id: 'shared-pin' })])
+    $messagingSessions.set([row('message-tip', { _lineage_root_id: 'shared-pin', source: 'telegram' })])
+    $pinnedSessionIds.set(['shared-pin'])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('shared-pin', true, undefined)
+  })
+
+  it('resolves a pending tip id after its lineage is deduplicated', async () => {
+    $pinnedSessionIds.set(['legacy-tip'])
+    $sessions.set([row('legacy-root', { profile: 'root-profile' })])
+    $messagingSessions.set([
+      row('legacy-tip', {
+        _lineage_root_id: 'legacy-root',
+        profile: 'message-profile',
+        source: 'telegram'
+      })
+    ])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('legacy-tip', true, 'message-profile')
+  })
 })
 
 describe('watchSessionPins remote pull', () => {
+  it('adopts a messaging pin on its durable root without echoing a PATCH', async () => {
+    $messagingSessions.set([row('message-tip', { _lineage_root_id: 'message-root', pinned: true, source: 'telegram' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['message-root'])
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('deduplicates a split lineage without discarding its authoritative pin', async () => {
+    $sessions.set([row('shared-root')])
+    $messagingSessions.set([row('shared-tip', { _lineage_root_id: 'shared-root', pinned: true, source: 'telegram' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['shared-root'])
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('defers remote reconciliation when duplicate rows carry conflicting pin values', async () => {
+    $sessions.set([row('conflict-tip', { _lineage_root_id: 'conflict-root', pinned: true })])
+    $messagingSessions.set([row('conflict-root', { pinned: false, source: 'telegram' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['conflict-root'])
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('leaves an unpinned renderer unpinned when conflicting rows arrive in reverse order', async () => {
+    $messagingSessions.set([row('reverse-root', { pinned: false, source: 'telegram' })])
+    $sessions.set([row('reverse-tip', { _lineage_root_id: 'reverse-root', pinned: true })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual([])
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('reconciles when either session slice updates', async () => {
+    $sessions.set([row('local-remote', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual(['local-remote'])
+
+    $messagingSessions.set([row('message-remote', { pinned: true, source: 'telegram' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).toEqual(['local-remote', 'message-remote'])
+    expect(patch).not.toHaveBeenCalled()
+  })
+
   it('adopts a pin another app made', async () => {
     $sessions.set([row('remote', { pinned: true })])
     await flush()
@@ -164,5 +251,42 @@ describe('watchSessionPins remote pull', () => {
     await flush()
 
     expect($pinnedSessionIds.get()).not.toContain('race')
+  })
+
+  it('guards a messaging pin from a stale page while its write is in flight', async () => {
+    let settle: (v: { ok: boolean }) => void = () => {}
+
+    patch.mockImplementationOnce(() => new Promise(resolve => (settle = resolve)))
+
+    $messagingSessions.set([row('message-race-tip', { _lineage_root_id: 'message-race-root', source: 'telegram' })])
+    $pinnedSessionIds.set(['message-race-tip'])
+    await flush()
+    expect(patch).toHaveBeenCalledWith('message-race-tip', true, undefined)
+
+    $messagingSessions.set([
+      row('message-race-tip', {
+        _lineage_root_id: 'message-race-root',
+        pinned: false,
+        source: 'telegram'
+      })
+    ])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('message-race-tip')
+
+    settle({ ok: true })
+    await flush()
+    await flush()
+
+    $messagingSessions.set([
+      row('message-race-tip', {
+        _lineage_root_id: 'message-race-root',
+        pinned: false,
+        source: 'telegram'
+      }),
+      row('another-message', { source: 'telegram' })
+    ])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('message-race-tip')
   })
 })

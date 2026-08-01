@@ -377,8 +377,9 @@ def _slack_tools_loaded() -> bool:
          process-wide, this only inspects the small, purpose-built MCP
          server-name map.
 
-    Returns False (safe default — keeps the stale-API disclaimer) on any
-    error so a bad config can never silently promise tools the agent lacks.
+    Returns False when no dedicated model tool is detected or on any error.
+    The caller then directs the agent to the authenticated deployment
+    skill/CLI/helper route without claiming a dedicated tool is loaded.
     """
     try:
         from tools.mcp_tool import get_registered_mcp_server_names
@@ -592,11 +593,9 @@ def build_session_context_prompt(
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
-        # Inject the Slack capability note only when the agent actually has
-        # Slack tools loaded this session — native `slack` toolset opt-in,
-        # or a connected MCP server that has registered Slack tools.
-        # Otherwise keep the stale-API disclaimer honest so we never
-        # promise tools the agent lacks. Mirrors the Discord pattern below.
+        # Native/MCP detection selects the preferred interface; it does not
+        # disable the authenticated Slack API route exposed by deployment
+        # skills/CLIs/helpers through existing tools.
         if _slack_tools_loaded():
             lines.append("")
             lines.append(
@@ -610,12 +609,16 @@ def build_session_context_prompt(
         else:
             lines.append("")
             lines.append(
-                "**Platform notes:** You are running inside Slack. "
-                "You do NOT have access to Slack-specific APIs — you cannot search "
-                "channel history, pin/unpin messages, manage channels, or list users. "
-                "Do not promise to perform these actions. The gateway may inline the "
-                "current message's Slack block/attachment payload when available, but "
-                "you still cannot call Slack APIs yourself."
+                "**Platform notes:** You are running inside Slack. Slack API "
+                "access remains available through the deployment's authenticated "
+                "integration path. No dedicated native or MCP Slack tool is loaded, "
+                "so consult the loaded Slack skill, CLI, or helper and invoke its "
+                "documented operations through the existing tools. Use only "
+                "operations and targets authorized by that interface, and verify "
+                "writes by reading back the result. Do not claim Slack API access "
+                "is unavailable merely because a dedicated model tool is absent. "
+                "The gateway may inline the current message's Slack block/attachment "
+                "payload when available."
             )
         if context.shared_multi_user_session:
             lines.append(

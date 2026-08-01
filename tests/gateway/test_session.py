@@ -156,8 +156,8 @@ class TestBuildSessionContextPrompt:
         # Static pointer tells the agent where the volatile id actually lives.
         assert "provided per-turn in the incoming user message" in p1
 
-    def test_slack_prompt_no_tools_shows_disclaimer(self):
-        """Without slack toolset loaded, prompt must show the stale-API disclaimer."""
+    def test_slack_prompt_without_detected_tools_preserves_api_access(self):
+        """Native/MCP detection must not disable the deployment's Slack API route."""
         from unittest.mock import patch
         config = GatewayConfig(
             platforms={
@@ -175,11 +175,17 @@ class TestBuildSessionContextPrompt:
         with patch("gateway.session._slack_tools_loaded", return_value=False):
             prompt = build_session_context_prompt(ctx)
 
-        assert "Slack" in prompt
-        assert "cannot search" in prompt.lower()
-        assert "pin" in prompt.lower()
-        assert "current message's slack block/attachment payload" in prompt.lower()
-        assert "you can" not in prompt.lower() or "you cannot" in prompt.lower()
+        normalized = prompt.lower()
+        assert "slack" in normalized
+        assert "slack api access remains available" in normalized
+        assert "skill, cli, or helper" in normalized
+        assert "documented operations" in normalized
+        assert "operations and targets authorized" in normalized
+        assert "verify writes by reading back" in normalized
+        assert "current message's slack block/attachment payload" in normalized
+        assert "no native or mcp slack tool" not in normalized
+        assert "you do not have access to slack-specific apis" not in normalized
+        assert "you still cannot call slack apis yourself" not in normalized
 
 
     def test_slack_tools_loaded_detects_real_mcp_registration(self):

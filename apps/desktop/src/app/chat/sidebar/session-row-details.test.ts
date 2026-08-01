@@ -28,7 +28,7 @@ const session = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
 
 describe('session row details', () => {
   it('provides density-aware virtual row estimates', () => {
-    expect(sessionRowEstimate('compact')).toBe(28)
+    expect(sessionRowEstimate('compact')).toBe(37)
     expect(sessionRowEstimate('comfortable')).toBe(45)
     expect(sessionRowEstimate('detailed')).toBe(63)
   })

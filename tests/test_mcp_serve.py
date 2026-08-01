@@ -287,12 +287,14 @@ class TestHelpers:
         assert _coerce_int(-5, default=50, minimum=1, maximum=200) == 1
 
     def test_coerce_int_handles_infinity_and_nan(self):
-        """int() raises OverflowError (not ValueError) for a float infinity.
-        MCP's JSON-RPC transport is plain json.loads(), which accepts bare
-        Infinity/-Infinity/NaN by default, so a client sending
-        {"limit": Infinity} reaches this call with a literal inf float --
-        must fall back to default like any other unparseable value, not
-        raise past the tool boundary."""
+        """int() raises OverflowError (not ValueError) for a float infinity,
+        so the bare (TypeError, ValueError) guard violated this helper's
+        documented "returns default if value cannot be converted" contract.
+
+        Note: through the FastMCP SDK path, int-typed tool parameters are
+        currently shielded by pydantic's finite_number validation (see
+        TestE2ENonFiniteArguments), so this is defense-in-depth for direct
+        callers and any future dict/Any-typed parameter."""
         from mcp_serve import _coerce_int
 
         assert _coerce_int(float("inf"), default=50, minimum=1, maximum=200) == 50
@@ -537,6 +539,42 @@ def _event_loop():
     asyncio.set_event_loop(loop)
     yield loop
     loop.close()
+
+
+class TestE2ENonFiniteArguments:
+    """SDK-path verification of the non-finite argument story (both layers).
+
+    Empirically: a raw JSON-RPC envelope containing a bare ``Infinity`` token
+    IS accepted by the MCP SDK's pydantic envelope parsing and delivers a
+    literal ``float('inf')`` into the decoded ``arguments`` dict — but
+    FastMCP's per-tool argument validation then rejects it for int-typed
+    parameters with a clean ``finite_number`` error before the tool body
+    runs. ``_coerce_int()``'s OverflowError guard is therefore
+    defense-in-depth behind pydantic, not a live wire crash. These tests pin
+    down BOTH layers so a regression in either (SDK envelope tightening, or
+    argument validation loosening) becomes visible.
+    """
+
+    def test_envelope_parsing_admits_bare_infinity(self):
+        mcp_types = pytest.importorskip("mcp.types", reason="MCP SDK not installed")
+        raw = (
+            '{"jsonrpc":"2.0","id":1,"method":"tools/call",'
+            '"params":{"name":"conversations_list","arguments":{"limit":Infinity}}}'
+        )
+        msg = mcp_types.JSONRPCMessage.model_validate_json(raw)
+        limit = msg.root.params["arguments"]["limit"]
+        assert limit == float("inf")  # non-finite crosses the envelope intact
+
+    def test_tool_argument_validation_rejects_infinity_before_tool_body(
+        self, mcp_server_e2e, _event_loop
+    ):
+        server, _ = mcp_server_e2e
+        with pytest.raises(Exception) as excinfo:
+            _run_tool(server, "conversations_list", {"limit": float("inf")})
+        # Rejected cleanly at argument validation — never an OverflowError
+        # escaping from the tool body.
+        assert not isinstance(excinfo.value, OverflowError)
+        assert "finite" in str(excinfo.value).lower()
 
 
 class TestE2EConversationsList:

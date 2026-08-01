@@ -118,6 +118,38 @@ async def test_rename_thread_parent_chat_and_gating():
     assert gated_stub.sent == []
 
 
+@pytest.mark.asyncio
+async def test_rename_thread_prefers_connector_owned_guard():
+    """The relay lane sends only_if_connector_created (connector resolves the
+    no-clobber guard from its own created-name memory) instead of the fragile
+    cross-repo only_if_current_name string."""
+    adapter, stub = _adapter()
+    ok = await adapter.rename_thread(
+        "th9", "Real Session Title", prefer_connector_created=True
+    )
+    assert ok is True
+    action = stub.sent[-1]
+    assert action["op"] == "thread_rename"
+    assert action["only_if_connector_created"] is True
+    # The fragile string guard is NOT sent when the connector owns the check.
+    assert "only_if_current_name" not in action
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_connector_guard_takes_precedence_over_string():
+    """prefer_connector_created wins even if a legacy string is also passed."""
+    adapter, stub = _adapter()
+    await adapter.rename_thread(
+        "th9",
+        "Title",
+        prefer_connector_created=True,
+        only_if_current_name="ignored initial words",
+    )
+    action = stub.sent[-1]
+    assert action["only_if_connector_created"] is True
+    assert "only_if_current_name" not in action
+
+
 # ── the relay semantic-rename lane (marker parity) ───────────────────────
 
 
@@ -291,8 +323,15 @@ async def test_title_rename_polls_feedback_that_arrives_late():
     adapter, stub_conn = _adapter()
     renames: list = []
 
-    async def rename_thread(thread_id, name, *, only_if_current_name=None, parent_chat_id=None):
-        renames.append((thread_id, name, only_if_current_name))
+    async def rename_thread(
+        thread_id,
+        name,
+        *,
+        only_if_current_name=None,
+        prefer_connector_created=False,
+        parent_chat_id=None,
+    ):
+        renames.append((thread_id, name, prefer_connector_created))
         return True
 
     adapter.rename_thread = rename_thread  # type: ignore[method-assign]
@@ -308,7 +347,9 @@ async def test_title_rename_polls_feedback_that_arrives_late():
         src, "sess1", "Debugging the flux capacitor"
     )
     await task
-    assert renames == [("th-9", "Debugging the flux capacitor", "Initial words")]
+    # Relay lane uses the connector-owned guard (prefer_connector_created=True),
+    # not the fragile cross-repo initial-name string.
+    assert renames == [("th-9", "Debugging the flux capacitor", True)]
 
 
 @pytest.mark.asyncio

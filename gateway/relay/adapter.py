@@ -2060,6 +2060,7 @@ class RelayAdapter(BasePlatformAdapter):
         name: str,
         *,
         only_if_current_name: Optional[str] = None,
+        prefer_connector_created: bool = False,
         parent_chat_id: Optional[str] = None,
     ) -> bool:
         """Best-effort thread rename via the connector's `thread_rename` op.
@@ -2068,10 +2069,15 @@ class RelayAdapter(BasePlatformAdapter):
         called by the SAME semantic-rename lane (run.py
         _rename_discord_auto_thread_for_session_title), which fires only for
         sources carrying the connector-stamped auto-thread markers.
-        ``only_if_current_name`` crosses the wire; the CONNECTOR enforces the
-        no-clobber guard (it owns the platform read), failing safe on
-        platforms that can't read the current name. ``parent_chat_id`` is
-        the containing chat where the caller knows it (Telegram needs it);
+
+        No-clobber guard: prefer ``prefer_connector_created=True``, which asks
+        the CONNECTOR to enforce the guard from ITS OWN created-name memory
+        (only_if_connector_created) — the gateway no longer has to reproduce
+        the thread's initial name byte-for-byte, which drifted on any
+        normalization difference and silently declined every relay rename.
+        ``only_if_current_name`` is the legacy string guard, kept for the
+        native-marker lane and older connectors. ``parent_chat_id`` is the
+        containing chat where the caller knows it (Telegram needs it);
         defaults to the thread id itself (Discord ignores chat_id).
         """
         if self._transport is None or not self.descriptor.supports_op("thread_rename"):
@@ -2087,7 +2093,9 @@ class RelayAdapter(BasePlatformAdapter):
             "thread_name": cleaned[:100],
             "metadata": self._with_scope(chat_id, None),
         }
-        if only_if_current_name is not None:
+        if prefer_connector_created:
+            action["only_if_connector_created"] = True
+        elif only_if_current_name is not None:
             action["only_if_current_name"] = str(only_if_current_name)
         try:
             result = await self._transport.send_outbound(

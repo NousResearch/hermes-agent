@@ -13,10 +13,10 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SKILL_DIR = ROOT / "skills" / "research" / "autoresearch"
+SKILL_DIR = ROOT / "optional-skills" / "research" / "autoresearch"
 
 
-def test_autoresearch_ships_as_a_bundled_research_skill() -> None:
+def test_autoresearch_ships_as_a_complete_research_skill() -> None:
     required = {
         "SKILL.md",
         "scripts/_util.py",
@@ -37,18 +37,25 @@ def test_autoresearch_ships_as_a_bundled_research_skill() -> None:
     assert not missing, f"missing autoresearch files: {missing}"
 
 
-def test_no_user_facing_token_budget_controls() -> None:
-    inspected = [
-        path
-        for path in SKILL_DIR.rglob("*")
-        if path.is_file() and path.suffix in {".md", ".py"}
-    ]
-    combined = "\n".join(path.read_text(encoding="utf-8") for path in inspected).lower()
+def test_state_init_rejects_max_tokens_and_persists_no_token_limit(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    rejected = run_script(
+        "state.py", "init", run_dir, "Goal", "knowledge", "Scope", 3, "--max-tokens", "10000"
+    )
+    assert rejected.returncode != 0
+    assert not (run_dir / "status.json").exists()
 
-    forbidden = ("max_tokens", "max-tokens", "max tokens", "tokens_exceeded")
-    found = [term for term in forbidden if term in combined]
+    clean = run_script(
+        "state.py", "init", run_dir, "Goal", "knowledge", "Scope", 3,
+    )
+    assert clean.returncode == 0, clean.stderr
 
-    assert not found, f"maintainer-rejected token controls remain: {found}"
+    config_path = run_dir / "config.json"
+    assert config_path.is_file()
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "max_tokens" not in config
+    assert config["max_experiments_hard_cap"] == 3
+    assert config["max_duration_minutes"] == 180
 
 
 def test_skill_metadata_and_modern_section_order() -> None:

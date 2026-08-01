@@ -1,5 +1,5 @@
-import { getSession } from '@/hermes'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
+import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'

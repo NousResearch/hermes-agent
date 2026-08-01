@@ -38,7 +38,12 @@ from hermes_cli.observability.shared_metrics_efficiency import record_cache_brea
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
-from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
+from agent.turn_api_call import (
+    handle_api_interrupt,
+    handle_llm_execution_blocked,
+    nous_rate_limit_guard,
+    perform_api_call,
+)
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, failed_turn_notice, site_copy
@@ -56,6 +61,7 @@ from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
+from hermes_cli.middleware import LLMExecutionBlocked
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
@@ -1521,6 +1527,8 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
         except InterruptedError:
             if _run_phase(handle_api_interrupt, agent, s).action == "break":
                 return None
+        except LLMExecutionBlocked as blocked:
+            return _run_phase(handle_llm_execution_blocked, agent, s, blocked=blocked).result
         except Exception as api_error:
             _ae = _run_phase(handle_api_error, agent, s, api_error=api_error)
             if _ae.action == "return":

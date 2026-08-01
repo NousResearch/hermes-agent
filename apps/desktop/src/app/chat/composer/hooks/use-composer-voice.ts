@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
+import { chatMessageText, collectUnspokenTurnSpeech, latestSpokenReply } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -61,7 +61,14 @@ export function useComposerVoice({
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
+  // Id-based "spoken" marker for the voice-conversation path: its live speech
+  // session binds to a specific message id for the turn, and the turn's bubbles
+  // keep their ids while streaming (see collectUnspokenTurnSpeech).
   const lastSpokenIdRef = useRef<string | null>(null)
+  // Content-fingerprint "spoken" marker for the auto-speak path. Message ids
+  // are rewritten by the post-turn hydrate (assistant-stream-* → persisted),
+  // so an id check would re-read the same reply; the fingerprint survives.
+  const lastSpokenFingerprintRef = useRef<string | null>(null)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
 
   const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
@@ -74,23 +81,8 @@ export function useComposerVoice({
   /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
   const pendingResponse = () => {
     const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
 
-    if (!last || last.id === lastSpokenIdRef.current) {
-      return null
-    }
-
-    const text = chatMessageText(last).trim()
-
-    if (!text) {
-      return null
-    }
-
-    return {
-      id: last.id,
-      pending: Boolean(last.pending),
-      text
-    }
+    return latestSpokenReply(messages, lastSpokenFingerprintRef.current)
   }
 
   /**
@@ -106,6 +98,7 @@ export function useComposerVoice({
 
     if (last) {
       lastSpokenIdRef.current = last.id
+      lastSpokenFingerprintRef.current = chatMessageText(last).trim()
     }
   }
 

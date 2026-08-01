@@ -171,6 +171,54 @@ export function chatMessageText(message: ChatMessage): string {
     .join('')
 }
 
+/**
+ * Content fingerprint of an assistant reply for spoken-reply dedupe.
+ *
+ * Message ids are NOT stable across a hydration boundary: during streaming the
+ * bubble carries a runtime id (`assistant-stream-<ts>-<seq>`), and the post-turn
+ * hydrateFromStoredSession rebuild replaces it with a persisted id
+ * (`<timestamp>-<index>-<role>`). An id-based "already spoken" check then
+ * misses the same reply and reads it aloud a second time. The trimmed text
+ * survives the id rewrite, so fingerprint on it instead.
+ */
+export function speechFingerprint(message: ChatMessage): string {
+  return chatMessageText(message).trim()
+}
+
+/**
+ * Resolve the latest assistant reply for auto-speak, skipping a reply whose
+ * content fingerprint was already spoken. Returns a stable identity usable as
+ * an ambient-cue key (the fingerprint itself, not the volatile message id).
+ */
+export function latestSpokenReply(
+  messages: ChatMessage[],
+  lastSpokenFingerprint: string | null
+): { id: string; pending: boolean; text: string } | null {
+  const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+  if (!last) {
+    return null
+  }
+
+  const text = chatMessageText(last).trim()
+
+  if (!text) {
+    return null
+  }
+
+  const fingerprint = text
+
+  if (fingerprint === lastSpokenFingerprint) {
+    return null
+  }
+
+  return {
+    id: fingerprint,
+    pending: Boolean(last.pending),
+    text
+  }
+}
+
 export interface UnspokenTurnSpeech {
   /** First unspoken assistant bubble — stable for the turn, the live speech session binds to it. */
   id: string

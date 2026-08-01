@@ -8,6 +8,7 @@ import {
   appendReasoningPart,
   chatMessageText,
   collectUnspokenTurnSpeech,
+  latestSpokenReply,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
   reasoningPart,
@@ -1132,5 +1133,59 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
+  })
+})
+
+describe('latestSpokenReply', () => {
+  const assistant = (id: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    id,
+    role: 'assistant',
+    parts: text ? [{ type: 'text', text }] : [],
+    ...extra
+  })
+
+  it('returns the latest assistant reply with its fingerprint as identity', () => {
+    const reply = latestSpokenReply([assistant('stream-1', 'Hello there.')], null)
+
+    expect(reply).not.toBeNull()
+    expect(reply?.id).toBe('Hello there.')
+    expect(reply?.text).toBe('Hello there.')
+    expect(reply?.pending).toBe(false)
+  })
+
+  it('skips a reply whose fingerprint was already spoken — even when its id changed', () => {
+    // Streaming bubble id…
+    const streaming = [assistant('assistant-stream-123-1', 'The answer is 42.')]
+    expect(latestSpokenReply(streaming, null)?.id).toBe('The answer is 42.')
+
+    // …hydrated rebuild with the SAME content but a persisted id: the
+    // fingerprint matches, so auto-speak must not read it aloud again.
+    const hydrated = [assistant('1720000000000-0-assistant', 'The answer is 42.')]
+    expect(latestSpokenReply(hydrated, 'The answer is 42.')).toBeNull()
+  })
+
+  it('still reads a NEW reply after an old one was spoken', () => {
+    const messages = [assistant('a1', 'First reply.'), assistant('a2', 'Second reply.')]
+    const first = latestSpokenReply(messages, null)
+
+    expect(first?.id).toBe('Second reply.')
+
+    // Consumed the latest; the same list is now fully spoken.
+    expect(latestSpokenReply(messages, 'Second reply.')).toBeNull()
+  })
+
+  it('ignores hidden and empty assistant bubbles', () => {
+    const messages = [
+      assistant('a1', 'hidden note', { hidden: true }),
+      assistant('a2', ''),
+      assistant('a3', 'Real reply.')
+    ]
+
+    expect(latestSpokenReply(messages, null)?.id).toBe('Real reply.')
+    expect(latestSpokenReply([assistant('a1', 'hidden', { hidden: true })], null)).toBeNull()
+  })
+
+  it('reports pending while the reply is still streaming', () => {
+    expect(latestSpokenReply([assistant('a1', 'Partial…', { pending: true })], null)?.pending).toBe(true)
   })
 })

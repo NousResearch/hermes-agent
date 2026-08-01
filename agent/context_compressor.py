@@ -1393,6 +1393,7 @@ class ContextCompressor(ContextEngine):
             "protected_head_tokens": None,
             "protected_tail_tokens": None,
             "middle_window_tokens": None,
+            "prellm_skip_count": 0,
             "aux_prompt_tokens": None,
             "aux_output_reservation": None,
             "aux_provider": "",
@@ -5892,7 +5893,11 @@ This compaction should PRIORITISE preserving all information related to the focu
           1. Prune old tool results (cheap pre-pass, no LLM call)
           2. Protect head messages (system prompt + first exchange)
           3. Find tail boundary by token budget (~20K tokens of recent context)
-          4. Summarize middle turns with structured LLM prompt
+          4. Summarize middle turns with structured LLM prompt (skipped
+             pre-LLM when the middle is below
+             ``_FEASIBILITY_SKIP_MIDDLE_FRACTION`` of the threshold after a
+             prior real-usage ineffectiveness strike — the deterministic
+             fallback drop recovers the negligible savings instead)
           5. On re-compression, iteratively update the previous summary
 
         Blank platform-echo user rows trailing the latest actionable user
@@ -5912,7 +5917,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                 everything else.  Inspired by Claude Code's ``/compact``.
             force: If True, clear any active summary-failure cooldown before
                 running so a manual ``/compress`` can retry immediately after
-                an auto-compression abort.  Auto-compress callers pass False.
+                an auto-compression abort, and bypass the pre-LLM feasibility
+                skip so an explicit user request always exercises the full
+                summary path.  Auto-compress callers pass False.
             memory_context: Optional provider-supplied context to preserve in
                 the summary prompt. Whitespace-only values are ignored.
         """
@@ -6203,7 +6210,6 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
 
         # Phase 3: Generate structured summary
-        summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
 
         # Pre-LLM feasibility check: if the middle section is too small to
         # yield meaningful token savings, skip the expensive LLM summarization
@@ -6226,7 +6232,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         # handling paths are always exercised on explicit user request.
         feasibility_skip = False
         if not force and self._ineffective_compression_count >= 1:
-            middle_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+            # _record_compression_regions already estimated this exact window
+            # into the telemetry dict above; reuse it so the log line and
+            # telemetry can never disagree. The regions helper no-ops when the
+            # telemetry attr isn't a dict, so fall back to a fresh estimate
+            # when the key is absent/None (0 is a legitimate value).
+            middle_tokens = telemetry.get("middle_window_tokens")
+            if middle_tokens is None:
+                middle_tokens = estimate_messages_tokens_rough(turns_to_summarize)
             if middle_tokens < int(
                 self.threshold_tokens * _FEASIBILITY_SKIP_MIDDLE_FRACTION
             ):
@@ -6248,6 +6261,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         if feasibility_skip:
             summary = None  # No LLM call; Phase 4 inserts the deterministic fallback
         else:
+            # Deriving the auto focus topic scans recent user turns — only pay
+            # for it when a summary will actually be generated.
+            summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
             summary = self._generate_summary(
                 turns_to_summarize,
                 focus_topic=summary_focus_topic,

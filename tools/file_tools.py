@@ -641,7 +641,13 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/", "/private/var/",
+    "/private/etc/",
+    # macOS: /private/var mirrors /var. Block the sensitive subtrees, NOT the
+    # whole thing — a blanket "/private/var/" refused every legitimate temp-file
+    # write, because $TMPDIR, /tmp, and /var/folders all realpath() into
+    # /private/var/folders/... on macOS (and _resolve_path_for_task resolves
+    # symlinks), and /private/var/tmp is a normal temp dir.
+    "/private/var/db/", "/private/var/root/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 

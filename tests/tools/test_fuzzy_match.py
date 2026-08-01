@@ -11,6 +11,20 @@ class TestExactMatch:
         assert count == 1
         assert new == "hi world"
 
+    def test_whitespace_only_old_string_rejected(self):
+        """A whitespace-only old_string is not a meaningful anchor."""
+        content = "alpha\n   \nbeta\n"
+        new, count, _, err = fuzzy_find_and_replace(content, "   ", "XXX")
+        assert count == 0
+        assert err is not None
+        assert "whitespace" in err
+        assert new == content  # untouched
+
+    def test_empty_old_string_rejected(self):
+        new, count, _, err = fuzzy_find_and_replace("abc", "", "x")
+        assert count == 0
+        assert err is not None
+
 
     def test_multiline_exact(self):
         content = "line1\nline2\nline3"

@@ -203,6 +203,10 @@ async def test_session_fork_persists_stable_branch_provenance(adapter, session_d
         "fork-provenance-source",
         "api_server",
         model="test-model",
+        model_config={
+            "max_iterations": 17,
+            "reasoning_config": {"effort": "high"},
+        },
     )
     session_db.append_message(source_id, "user", "Explore the first path")
     session_db.append_message(source_id, "assistant", "Initial answer")
@@ -228,6 +232,8 @@ async def test_session_fork_persists_stable_branch_provenance(adapter, session_d
         model_config = json.loads(model_config)
 
     assert model_config.get("_branched_from") == source_id
+    assert model_config["max_iterations"] == 17
+    assert model_config["reasoning_config"] == {"effort": "high"}
 
 
 # ---------------------------------------------------------------------------

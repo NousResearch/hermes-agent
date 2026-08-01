@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -30,6 +30,62 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     gateway_run._clear_planned_restart_notification()
 
     assert gateway_run._planned_restart_notification_pending() is False
+
+
+@pytest.mark.asyncio
+async def test_service_restart_writes_planned_startup_marker(tmp_path, monkeypatch):
+    """SIGUSR1's service restart path must create the next-boot notice marker."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_pending.json"
+
+    runner, _adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.01
+    runner.adapters = {}
+
+    with (
+        patch.object(
+            gateway_run.GatewayRunner,
+            "_drain_active_agents",
+            new_callable=AsyncMock,
+            return_value=([], False),
+        ),
+        patch.object(gateway_run.GatewayRunner, "_finalize_shutdown_agents"),
+        patch.object(gateway_run.GatewayRunner, "_update_runtime_status"),
+        patch("gateway.status.remove_pid_file"),
+        patch("tools.process_registry.process_registry") as process_registry,
+        patch("tools.terminal_tool.cleanup_all_environments"),
+        patch("tools.browser_tool.cleanup_all_browsers"),
+    ):
+        process_registry.kill_all = MagicMock()
+        assert runner.request_restart(via_service=True) is True
+        restart_task = runner._restart_task
+        assert restart_task is not None
+        await restart_task
+
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["via_service"] is True
+    assert gateway_run._planned_restart_notification_pending() is True
+
+
+@pytest.mark.asyncio
+async def test_planned_startup_marker_is_consumed_exactly_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_pending.json"
+    marker.write_text("{}", encoding="utf-8")
+
+    runner, _adapter = make_restart_runner()
+    send_mock = AsyncMock(return_value=set())
+    monkeypatch.setattr(runner, "_send_home_channel_startup_notifications", send_mock)
+    send_planned_notification = getattr(
+        runner,
+        "_send_planned_restart_startup_notification",
+    )
+
+    assert await send_planned_notification() is True
+    assert await send_planned_notification() is False
+
+    send_mock.assert_awaited_once_with(skip_targets=None)
+    assert marker.exists() is False
 
 
 # ── _handle_restart_command writes .restart_notify.json ──────────────────

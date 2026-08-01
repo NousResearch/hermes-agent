@@ -264,7 +264,186 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    @staticmethod
+    def _patch_external_restart(monkeypatch, calls):
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 4242)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: calls.append(("terminate", pid, force)),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda timeout, force_after=None: calls.append(
+                ("wait-for-exit", timeout, force_after)
+            )
+            or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kwargs: calls.append(("run", cmd, kwargs))
+            or SimpleNamespace(returncode=0),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_clear_launchd_unsupported_marker",
+            lambda: calls.append(("clear",)),
+        )
 
+    def test_external_restart_waits_for_managed_gateway_replacement(self, monkeypatch):
+        """A managed gateway must exit and be replaced before reporting success."""
+        calls = []
+        self._patch_external_restart(monkeypatch, calls)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {4242})
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_service_restart",
+            lambda previous_pid, timeout=30.0: calls.append(
+                ("wait-for-replacement", previous_pid, timeout)
+            )
+            or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda *args, **kwargs: pytest.fail("must not fall back to SIGTERM"),
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("must not kickstart a verified replacement"),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [
+            ("graceful", 4242, 17.0),
+            ("wait-for-replacement", 4242, 30.0),
+            ("clear",),
+        ]
+
+    def test_external_restart_skips_sigusr1_for_detached_gateway(self, monkeypatch):
+        """A PID not owned by launchd must retain the hard recovery path."""
+        calls = []
+        self._patch_external_restart(monkeypatch, calls)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda *args, **kwargs: pytest.fail("must not signal a detached gateway"),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert ("terminate", 4242, False) in calls
+        assert (
+            "run",
+            ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"],
+            {"check": True, "timeout": 90},
+        ) in calls
+        assert calls[-1] == ("clear",)
+
+    def test_external_restart_falls_back_when_gateway_does_not_exit(self, monkeypatch):
+        """Signal delivery without old-PID exit must not be reported as success."""
+        calls = []
+        self._patch_external_restart(monkeypatch, calls)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {4242})
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_service_restart",
+            lambda *args, **kwargs: pytest.fail("must not wait for replacement before old PID exits"),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert calls[0] == ("graceful", 4242, 17.0)
+        assert ("terminate", 4242, False) in calls
+        assert any(call[0] == "run" for call in calls)
+        assert calls[-1] == ("clear",)
+
+    def test_external_restart_falls_back_when_launchd_does_not_replace_pid(self, monkeypatch):
+        """Old-PID exit without a managed replacement must trigger kickstart."""
+        calls = []
+        self._patch_external_restart(monkeypatch, calls)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {4242})
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_service_restart",
+            lambda previous_pid, timeout=30.0: calls.append(
+                ("wait-for-replacement", previous_pid, timeout)
+            )
+            or False,
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert calls[:2] == [
+            ("graceful", 4242, 17.0),
+            ("wait-for-replacement", 4242, 30.0),
+        ]
+        assert ("terminate", 4242, False) in calls
+        assert any(call[0] == "run" for call in calls)
+        assert calls[-1] == ("clear",)
+
+    def test_ancestor_restart_keeps_async_fast_path(self, monkeypatch):
+        """A gateway child must not wait for its parent gateway to exit."""
+        calls = []
+        self._patch_external_restart(monkeypatch, calls)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_service_pids",
+            lambda: pytest.fail("ancestor path must return before launchd ownership checks"),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [("clear",)]
+
+    def test_wait_for_launchd_restart_requires_a_new_managed_pid(self, monkeypatch):
+        service_pids = iter(({4242}, {5252}))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: next(service_pids))
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: 0.0)
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _: None)
+
+        wait_for_restart = getattr(gateway_cli, "_wait_for_launchd_service_restart")
+        assert wait_for_restart(
+            previous_pid=4242,
+            timeout=1.0,
+        ) is True
+
+    def test_wait_for_launchd_restart_times_out_on_old_pid(self, monkeypatch):
+        monotonic = iter((0.0, 0.0, 2.0))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {4242})
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: next(monotonic))
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _: None)
+
+        wait_for_restart = getattr(gateway_cli, "_wait_for_launchd_service_restart")
+        assert wait_for_restart(
+            previous_pid=4242,
+            timeout=1.0,
+        ) is False
 
     def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
         """#43842: when the refresh runs inside the gateway's own process tree,

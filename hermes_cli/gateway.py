@@ -249,27 +249,6 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def _signal_gateway_sigusr1_restart(pid: int) -> bool:
-    """Signal a *known* gateway PID to perform its graceful SIGUSR1 restart.
-
-    Unlike :func:`_request_gateway_self_restart`, this does not require the
-    gateway to be an ancestor of the caller. ``launchd_restart()`` already
-    holds a verified gateway PID from :func:`get_running_pid`, so it is safe
-    to signal it directly. Delivering SIGUSR1 triggers the gateway's internal
-    ``restart_signal_handler`` -> ``request_restart(via_service=True)``: the
-    gateway drains in-flight runs, writes the ``.restart_pending.json`` marker
-    (so the next boot broadcasts "♻️ Gateway online"), then exits for launchd's
-    KeepAlive to respawn it. Returns True if the signal was delivered.
-    """
-    if not hasattr(signal, "SIGUSR1"):
-        return False
-    try:
-        os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded above
-    except (ProcessLookupError, PermissionError, OSError):
-        return False
-    return True
-
-
 def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
 
@@ -4452,6 +4431,21 @@ def _wait_for_gateway_exit(
     return True
 
 
+def _wait_for_launchd_service_restart(
+    *,
+    previous_pid: int,
+    timeout: float = 30.0,
+) -> bool:
+    """Wait until launchd owns a replacement PID for the current profile."""
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while time.monotonic() < deadline:
+        managed_pids = _get_service_pids()
+        if any(pid > 0 and pid != previous_pid for pid in managed_pids):
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -4464,18 +4458,39 @@ def launchd_restart():
             print("✓ Service restart requested")
             _clear_launchd_unsupported_marker()
             return
-        if pid is not None and _signal_gateway_sigusr1_restart(pid):
-            # Graceful drain-and-restart requested via SIGUSR1 (the gateway's
-            # own restart handler). launchd's KeepAlive respawns the gateway on
-            # exit, and the gateway writes .restart_pending.json so the next
-            # boot emits the "♻️ Gateway online" home-channel notice — matching
-            # the Linux systemd SIGUSR1 path. On macOS `hermes update` is not a
-            # child of the gateway, so the ancestor-guarded self-restart above
-            # is skipped and we previously fell through to SIGTERM, which never
-            # writes that marker (hence no "Gateway online" message).
-            print("✓ Service restart requested")
-            _clear_launchd_unsupported_marker()
-            return
+        if pid is not None and pid in _get_service_pids():
+            # External callers (notably the desktop updater) are outside the
+            # gateway process tree, so the asynchronous ancestor path above is
+            # unavailable. Only signal a PID that launchd proves it owns, wait
+            # for the old process to drain and exit, then require a replacement
+            # launchd PID before reporting success. A detached gateway must use
+            # the hard recovery path below or SIGUSR1 would stop it permanently.
+            print(
+                f"→ Restarting gateway (PID {pid}) — draining in-flight runs "
+                f"(up to {drain_timeout:.0f}s)..."
+            )
+            graceful_exit = _graceful_restart_via_sigusr1(
+                pid,
+                drain_timeout + 5.0,
+            )
+            if graceful_exit:
+                replaced = _wait_for_launchd_service_restart(
+                    previous_pid=pid,
+                    timeout=30.0,
+                )
+                if replaced:
+                    print("✓ Service restarted")
+                    _clear_launchd_unsupported_marker()
+                    return
+                print(
+                    "⚠ launchd did not publish a replacement gateway PID — "
+                    "falling back to kickstart"
+                )
+            else:
+                print(
+                    f"⚠ Gateway did not exit after the {drain_timeout:.0f}s drain — "
+                    "falling back to launchd restart"
+                )
         if pid is not None:
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway

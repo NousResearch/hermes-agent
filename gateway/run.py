@@ -10976,13 +10976,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # paths). Chat-originated /restart already has a precise reply target
         # in .restart_notify.json, so keep that lifecycle in the originating
         # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
-                _clear_planned_restart_notification()
+        await self._send_planned_restart_startup_notification(
+            pending=planned_restart_notification_pending,
+        )
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -20334,6 +20330,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         return delivered
+
+    async def _send_planned_restart_startup_notification(
+        self,
+        *,
+        pending: Optional[bool] = None,
+    ) -> bool:
+        """Consume one planned-restart marker and notify home channels once."""
+        if pending is None:
+            pending = _planned_restart_notification_pending()
+        if not pending:
+            return False
+        try:
+            await self._send_home_channel_startup_notifications(skip_targets=None)
+        finally:
+            _clear_planned_restart_notification()
+        return True
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

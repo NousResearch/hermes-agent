@@ -3474,8 +3474,45 @@ def _normalize_managed_eol(git_cmd, repo_root):
             return None
         return {p for p in out.stdout.split("\0") if p}
 
+    def _real_dirty():
+        out = subprocess.run(
+            probe + ["diff", "-z", "--ignore-cr-at-eol", "--numstat"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if out.returncode != 0:
+            return None
+        # Whitespace-ignore flags are inert under ``--name-only`` (every
+        # differing path is listed regardless), so the set of files that
+        # still differ after ignoring CRLF-at-EOL is read from ``--numstat``
+        # records, which drop files whose only change is CRLF-at-EOL.
+        if not out.stdout:
+            return set()
+        if not out.stdout.endswith("\0"):
+            return None
+        records = out.stdout.split("\0")[:-1]
+        dirty = set()
+        i = 0
+        while i < len(records):
+            fields = records[i].split("\t", 2)
+            if len(fields) != 3:
+                return None
+            if fields[2]:
+                dirty.add(fields[2])
+                i += 1
+                continue
+            # With ``-z``, a rename/copy has an empty path field followed by
+            # separate NUL-framed preimage and postimage paths. ``--name-only``
+            # reports the postimage, so retain that path for the set difference.
+            if i + 2 >= len(records) or not records[i + 1] or not records[i + 2]:
+                return None
+            dirty.add(records[i + 2])
+            i += 3
+        return dirty
+
     def _eol_only():
-        all_dirty, real_dirty = _dirty(), _dirty("--ignore-cr-at-eol")
+        all_dirty, real_dirty = _dirty(), _real_dirty()
         if all_dirty is None or real_dirty is None:
             return None
         return all_dirty - real_dirty

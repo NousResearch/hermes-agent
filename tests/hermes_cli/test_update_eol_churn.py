@@ -127,6 +127,40 @@ def test_real_edits_survive_even_when_line_endings_also_flipped(tmp_path: Path) 
     assert _autocrlf(repo) == "false"
 
 
+def test_real_rename_survives_with_rename_detection(tmp_path: Path) -> None:
+    repo = _managed_repo(
+        tmp_path,
+        {
+            "churn.py": b"y = 2\n",
+            "before.py": b"line 1\nline 2\nline 3\nline 4\n",
+        },
+    )
+    _git(repo, "config", "diff.renames", "true")
+    (repo / "before.py").rename(repo / "after.py")
+    (repo / "after.py").write_bytes(
+        b"line 1\r\nline 2\r\nline 3\r\nline 4\r\nreal edit\r\n"
+    )
+    _git(repo, "add", "--intent-to-add", "after.py")
+
+    numstat = _git(
+        repo,
+        "-c",
+        "core.autocrlf=false",
+        "diff",
+        "-z",
+        "--ignore-cr-at-eol",
+        "--numstat",
+    ).stdout
+    assert numstat.endswith("\t\0before.py\0after.py\0")
+
+    _normalize_managed_eol(GIT_CMD, repo)
+
+    assert not (repo / "before.py").exists()
+    assert (repo / "after.py").read_bytes().endswith(b"real edit\r\n")
+    assert _dirty(repo) == {"after.py"}
+    assert _autocrlf(repo) == "false"
+
+
 def test_pin_alone_is_written_when_there_is_no_churn(tmp_path: Path) -> None:
     repo = _managed_repo(tmp_path, {"a.py": b"x = 1\n"})
     (repo / "a.py").write_bytes(b"x = 1\n")

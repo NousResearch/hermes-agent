@@ -1293,13 +1293,20 @@ def _profile_home(profile: str | None) -> Path | None:
         ):
             raise ValueError("invalid profile name")
         home = Path(profiles_mod.get_profile_dir(canon))
+        # Already the launch profile? No override needed.
+        if home.resolve() == Path(_hermes_home).resolve():
+            return None
+        # The resolve/exists calls stay inside the try: a name the filesystem
+        # cannot even stat (e.g. an embedded NUL raises ValueError) is an
+        # unknown profile, not a server error — it must fail closed as 4028,
+        # never escape as a generic exception (the stdio entry loop has no
+        # dispatch backstop).
+        if (home / "state.db").exists() or home.exists():
+            return home
+    except _UnknownProfileError:
+        raise
     except Exception:
         raise _UnknownProfileError(name) from None
-    # Already the launch profile? No override needed.
-    if home.resolve() == Path(_hermes_home).resolve():
-        return None
-    if (home / "state.db").exists() or home.exists():
-        return home
     raise _UnknownProfileError(name)
 
 
@@ -1798,6 +1805,15 @@ def handle_request(req: dict) -> dict | None:
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
     try:
+        # Validate a request-scoped profile BEFORE the handler runs. Guarding
+        # only at the consumption sites is not enough: handlers that consult
+        # live-session state first would answer from launch-profile data ahead
+        # of the profile check (session.status via _session_db, session.delete's
+        # active-session refusal, complete.path's session-cwd short-circuit).
+        # Validating here makes every current and future method fail closed
+        # with no per-handler ordering rules.
+        if isinstance(params, dict) and (params.get("profile") or "").strip():
+            _profile_home(params.get("profile"))
         return fn(rid, params)
     except _UnknownProfileError as exc:
         # Fail closed: a request that names a profile absent on this host must

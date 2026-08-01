@@ -15600,10 +15600,11 @@ def test_complete_path_unknown_profile_without_cwd_fails_closed(monkeypatch, tmp
     assert resp["error"]["message"] == _C2_MSG.format(name="beta")
 
 
-def test_complete_path_unknown_profile_with_cwd_succeeds(monkeypatch, tmp_path):
-    """complete.path with an explicit valid cwd + unknown profile SUCCEEDS — the
-    profile is never consulted (params['cwd'] short-circuits _completion_cwd), so
-    autocomplete on every keystroke must not be broken."""
+def test_complete_path_unknown_profile_with_cwd_fails_closed(monkeypatch, tmp_path):
+    """complete.path with an unknown profile fails closed even with an explicit
+    cwd — the central pre-handler validation runs before any cwd short-circuit.
+    (A request naming an absent profile is a client bug; answering it from ANY
+    directory listing would still be answering for a profile that isn't there.)"""
     _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -15614,8 +15615,103 @@ def test_complete_path_unknown_profile_with_cwd_succeeds(monkeypatch, tmp_path):
             "params": {"word": "@", "profile": "beta", "cwd": str(workspace)},
         }
     )
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == _C2_MSG.format(name="beta")
+
+
+def test_complete_path_known_profile_with_cwd_succeeds(monkeypatch, tmp_path):
+    """Autocomplete on every keystroke must keep working for REAL profiles: a
+    known non-launch profile + explicit cwd completes normally."""
+    _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    resp = server.handle_request(
+        {
+            "id": "cp3",
+            "method": "complete.path",
+            "params": {"word": "@", "profile": "alpha", "cwd": str(workspace)},
+        }
+    )
     assert "error" not in resp
     assert isinstance(resp["result"]["items"], list)
+
+
+def test_complete_path_unknown_profile_session_cwd_fails_closed(monkeypatch, tmp_path):
+    """complete.path must not leak a live session's workspace listing: a known
+    session_id whose cwd points at the launch workspace + an unknown profile →
+    4028, never a directory listing (the session-cwd short-circuit in
+    _completion_cwd runs only after the central profile validation)."""
+    _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
+    launch_ws = tmp_path / "launch-ws"
+    launch_ws.mkdir()
+    (launch_ws / "config.yaml").write_text("secret: launch\n", encoding="utf-8")
+    monkeypatch.setitem(server._sessions, "livesid", {"cwd": str(launch_ws)})
+    try:
+        resp = server.handle_request(
+            {
+                "id": "cp4",
+                "method": "complete.path",
+                "params": {"word": "config", "session_id": "livesid", "profile": "beta"},
+            }
+        )
+    finally:
+        server._sessions.pop("livesid", None)
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == _C2_MSG.format(name="beta")
+
+
+def test_session_status_unknown_profile_fails_closed(monkeypatch, tmp_path):
+    """session.status consults the live session's DB first — an unknown profile
+    must 4028 BEFORE that lookup answers with launch-profile metadata."""
+    _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
+    opened = _spy_launch_db(monkeypatch)
+    monkeypatch.setitem(server._sessions, "livesid", {"session_key": "k-live"})
+    try:
+        resp = server.handle_request(
+            {
+                "id": "st1",
+                "method": "session.status",
+                "params": {"session_id": "livesid", "profile": "beta"},
+            }
+        )
+    finally:
+        server._sessions.pop("livesid", None)
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == _C2_MSG.format(name="beta")
+    assert opened["launch_db"] is False
+
+
+def test_session_delete_unknown_profile_active_key_fails_closed(monkeypatch, tmp_path):
+    """session.delete's 'cannot delete an active session' (4023) refusal must
+    not run ahead of profile validation — answering 4023 for an unknown profile
+    would leak WHICH launch-session keys are live."""
+    _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
+    monkeypatch.setitem(server._sessions, "livesid", {"session_key": "k-active"})
+    try:
+        resp = server.handle_request(
+            {
+                "id": "d2",
+                "method": "session.delete",
+                "params": {"session_id": "k-active", "profile": "beta"},
+            }
+        )
+    finally:
+        server._sessions.pop("livesid", None)
+    assert resp["error"]["code"] == 4028
+    assert resp["error"]["message"] == _C2_MSG.format(name="beta")
+
+
+def test_profile_home_unstatable_name_fails_closed(monkeypatch, tmp_path):
+    """A name the filesystem cannot stat (embedded NUL) is an unknown profile,
+    not a server error — it must not escape as ValueError (the stdio entry
+    loop has no dispatch backstop, so an escape would kill the gateway)."""
+    _setup_synthetic_profiles_c2(monkeypatch, tmp_path, present=("alpha",))
+    with pytest.raises(server._UnknownProfileError):
+        server._profile_home("bad\x00name")
+    resp = server.handle_request(
+        {"id": "n1", "method": "session.list", "params": {"profile": "bad\x00name"}}
+    )
+    assert resp["error"]["code"] == 4028
 
 
 def test_unknown_profile_message_echoes_only_client_string(monkeypatch, tmp_path):

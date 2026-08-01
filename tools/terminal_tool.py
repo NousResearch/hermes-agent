@@ -2468,10 +2468,10 @@ def terminal_tool(
                     "output": "",
                     "exit_code": 1,
                     "error": (
-                        "Blocked: launchctl submit creates a persistent KeepAlive job "
-                        "and is unsafe from inside the gateway process. Use Hermes cron "
-                        "for one-shot delayed work, or install an explicit LaunchAgent "
-                        "from a separate shell."
+                        "Blocked: launchctl submit/bootstrap registers a persistent "
+                        "KeepAlive job and is unsafe from inside the gateway process. "
+                        "Use Hermes cron for one-shot delayed work, or install an "
+                        "explicit LaunchAgent from a separate shell."
                     ),
                     "status": "error",
                 }, ensure_ascii=False)

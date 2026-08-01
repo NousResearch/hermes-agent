@@ -35,6 +35,37 @@ class TestGatewayLifecyclePattern:
     def test_hermes_gateway_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
 
+    @pytest.mark.parametrize("text", [
+        # #62891: a blocked direct restart/kill laundered through a NEW
+        # launchd keepalive job wrapping a helper script, instead of a
+        # direct kickstart/unload/stop/restart on the existing service.
+        "launchctl submit -l ai.hermes.gateway-hard-restart-no-photon-notice -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh",
+        "launchctl submit -l hermes-gateway-restart-helper -- /bin/sh helper.sh",
+        # bootstrap loads an arbitrary plist — same laundering shape.
+        "launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway.restart-once.plist",
+        # The exact reported shape: split across shell line-continuations
+        # (`\` immediately followed by a newline). `[^\n]*` alone can't span
+        # that, so the verb and the gateway-label token land on different
+        # physical lines unless continuations are normalized first.
+        (
+            "launchctl submit \\\n"
+            "  -l ai.hermes.gateway-hard-restart-no-photon-notice \\\n"
+            "  -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh"
+        ),
+    ])
+    def test_launchctl_submit_bootstrap_commands(self, text):
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    def test_line_continuation_does_not_bridge_unrelated_lines(self):
+        # A backslash-newline is only normalized when it's a real shell
+        # continuation. Two genuinely separate lines of a longer prompt
+        # (no trailing backslash) must not be bridged into a false match.
+        text = (
+            "this restarts the payment gateway\n"
+            "unrelated hermes note on the next line"
+        )
+        assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
+
 
     @pytest.mark.parametrize("text", [
         "restart the server application",
@@ -55,6 +86,11 @@ class TestGatewayLifecyclePattern:
         # hermes token).
         "launchctl unload ai.hermes.update-checker.plist",
         "launchctl restart ai.hermes.daemon",
+        # `submit` on an unrelated launchd label must not match the text
+        # pattern (a cron PROMPT is prose fed to an LLM). The execution-aware
+        # `contains_launchctl_submit_command` handles neutral-label submits
+        # at the terminal/cron-script chokepoints instead.
+        "launchctl submit -l com.example.backup -- /bin/sh backup.sh",
         "systemctl restart hermes-meta.service",
         "systemctl restart hermes-cron-helper",
         # Regression (#30728 follow-up): legit prompts that merely mention an
@@ -234,6 +270,10 @@ class TestTerminalToolGatewayLifecycleGuard:
         "systemctl stop hermes-gateway.service",
         "hermes gateway restart",
         "launchctl kickstart gui/501/ai.hermes.gateway",
+        # #62891 exact reported shape and its bootstrap sibling.
+        "launchctl submit -l ai.hermes.gateway-hard-restart-no-photon-notice -- /bin/sh ~/.hermes/scripts/hard_restart_gateway_no_photon_notice.sh",
+        "launchctl submit -l com.foo -- /path/gateway",
+        "launchctl bootstrap gui/501 ~/Library/LaunchAgents/ai.hermes.gateway.restart-once.plist",
         "pkill -f hermes.*gateway",
     ])
     def test_blocks_lifecycle_commands_inside_gateway(self, monkeypatch, cmd):
@@ -286,6 +326,51 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
         assert "KeepAlive" in result["error"]
+
+    @pytest.mark.parametrize("command", [
+        # Neutral, non-hermes label: label-independent detection is the point
+        # (#62891 second reproduction used `ai.hermes.svc-reload-tmp`).
+        "launchctl submit -l com.foo -- /path/gateway",
+        "launchctl submit -l ai.hermes.svc-reload-tmp -- /bin/sh /tmp/h-svc-reload.sh",
+        # bootstrap variant: loads an arbitrary plist as a persistent job.
+        "launchctl bootstrap gui/501 /tmp/com.foo.plist",
+    ])
+    def test_blocks_neutral_label_submit_and_bootstrap(self, monkeypatch, command):
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+
+        result = json.loads(tt.terminal_tool(command=command))
+
+        assert result["exit_code"] == 1
+        assert "KeepAlive" in result["error"]
+
+    @pytest.mark.parametrize("command", [
+        "launchctl submit -l com.foo -- /path/gateway",
+        "launchctl bootstrap gui/501 /tmp/com.foo.plist",
+    ])
+    def test_submit_and_bootstrap_allowed_outside_gateway(self, monkeypatch, command):
+        """The label-independent block applies only inside the gateway process."""
+        import tools.terminal_tool as tt
+
+        calls = []
+
+        class _FakeEnv:
+            env = {}
+
+            def execute(self, cmd, **kwargs):
+                calls.append(cmd)
+                return {"output": "", "returncode": 0}
+
+        self._patch_env(monkeypatch, _FakeEnv(), inside_gateway=False)
+        monkeypatch.setattr(
+            tt, "_check_all_guards", lambda cmd, env, **kwargs: {"approved": True}
+        )
+
+        result = json.loads(tt.terminal_tool(command=command))
+
+        assert result["exit_code"] == 0
+        assert calls == [command]
 
     def test_blocks_launchctl_submit_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
@@ -507,6 +592,21 @@ class TestLifecycleGuardModule:
         script.write_text(
             "#!/bin/bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n"
         )
+        with pytest.raises(GatewayLifecycleBlocked):
+            check_gateway_lifecycle("clean prompt", str(script))
+
+    @pytest.mark.parametrize("line", [
+        # #62891: neutral labels defeat any label-anchored regex, so cron
+        # scripts get the same label-independent submit/bootstrap block.
+        "launchctl submit -l com.foo -- /path/gateway",
+        "launchctl bootstrap gui/501 /tmp/com.foo.plist",
+    ])
+    def test_script_with_neutral_label_submit_or_bootstrap_raises(
+        self, tmp_path, line
+    ):
+        from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
+        script = tmp_path / "persistent.sh"
+        script.write_text(f"#!/bin/bash\n{line}\n")
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("clean prompt", str(script))
 

@@ -13,7 +13,6 @@ import {
   HUD_SURFACE,
   HUD_TEXT
 } from '@/app/floating-hud'
-import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { codiconIcon } from '@/components/ui/codicon'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
@@ -52,7 +51,6 @@ import {
   SlidersHorizontal,
   Starmap,
   Sun,
-  Terminal,
   Users,
   Wrench,
   Zap
@@ -771,14 +769,6 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
                 }
               ]
             : []),
-          {
-            action: 'view.showTerminal',
-            icon: Terminal,
-            id: 'nav-terminal',
-            keywords: ['terminal', 'shell', 'console'],
-            label: t.keybinds.actions['view.showTerminal'],
-            run: () => setTerminalTakeover(true)
-          },
           {
             action: 'nav.settings',
             icon: Settings,

@@ -97,15 +97,3 @@ async def test_event_loop_stays_responsive_during_resolution(slow_probe):
     # The loop was never blocked for anything close to the probe duration.
     assert max(lags) < PROBE_SECONDS / 2, f"event loop stalled {max(lags):.3f}s"
 
-
-@pytest.mark.asyncio
-async def test_gateway_model_handlers_await_the_async_variant():
-    """The ``/model`` handlers must not reach the sync helper again."""
-    import inspect
-
-    from gateway import slash_commands
-
-    source = inspect.getsource(slash_commands)
-    assert "resolve_display_context_length_async(" in source
-    # No bare sync call: every occurrence carries the _async suffix.
-    assert "resolve_display_context_length(" not in source

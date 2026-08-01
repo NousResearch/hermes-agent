@@ -1840,7 +1840,11 @@ class GatewaySlashCommandsMixin:
                                 enrich_model_switch_warnings_for_gateway,
                             )
 
-                            enrich_model_switch_warnings_for_gateway(
+                            # Offload: merge_preflight_compression_warning()
+                            # calls the sync resolve_display_context_length()
+                            # provider probe ladder — must not run on the loop.
+                            await asyncio.to_thread(
+                                enrich_model_switch_warnings_for_gateway,
                                 result,
                                 _self,
                                 session_key=_session_key,
@@ -2145,7 +2149,11 @@ class GatewaySlashCommandsMixin:
                 enrich_model_switch_warnings_for_gateway,
             )
 
-            enrich_model_switch_warnings_for_gateway(
+            # Offload: merge_preflight_compression_warning() calls the sync
+            # resolve_display_context_length() provider probe ladder — must
+            # not run on the loop.
+            await asyncio.to_thread(
+                enrich_model_switch_warnings_for_gateway,
                 result,
                 self,
                 session_key=session_key,

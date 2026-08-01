@@ -17,6 +17,7 @@ import types
 import unittest
 from unittest.mock import MagicMock, patch
 
+from agent.credential_pool import CredentialPool, PooledCredential
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -1005,6 +1006,23 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         result = _resolve_child_credential_pool("openrouter", parent)
         self.assertIs(result, mock_pool)
 
+    def test_same_provider_different_endpoint_refuses_parent_pool(self):
+        """An Azure child must not lease an api.openai.com parent pool."""
+        parent = _make_mock_parent()
+        parent.provider = "openai-api"
+        parent.base_url = "https://azure.example.com/openai/v1"
+        parent_pool = MagicMock()
+        parent_pool.provider = "openai-api"
+        parent_entry = MagicMock(runtime_base_url="https://api.openai.com/v1")
+        parent_pool.entries.return_value = [parent_entry]
+        parent._credential_pool = parent_pool
+
+        with patch("agent.credential_pool.load_pool", return_value=None):
+            result = _resolve_child_credential_pool(
+                "openai-api", parent, parent.base_url
+            )
+        self.assertIsNone(result)
+
     # --- Custom-endpoint identity resolution (issue #7833) ---
 
 
@@ -1038,6 +1056,28 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 
 class TestChildCredentialLeasing(unittest.TestCase):
+    def test_credential_pool_lease_filter_cannot_select_wrong_endpoint(self):
+        """Endpoint filtering wins over normal least-leased pool selection."""
+        wrong = PooledCredential(
+            provider="openai-api", id="wrong", label="wrong", auth_type="api_key",
+            priority=0, source="manual", access_token="wrong",
+            base_url="https://api.openai.com/v1",
+        )
+        right = PooledCredential(
+            provider="openai-api", id="right", label="right", auth_type="api_key",
+            priority=1, source="manual", access_token="right",
+            base_url="https://azure.example.com/openai/v1",
+        )
+        pool = CredentialPool("openai-api", [wrong, right])
+
+        leased = pool.acquire_lease(
+            entry_filter=lambda entry: entry.runtime_base_url
+            == "https://azure.example.com/openai/v1"
+        )
+
+        self.assertEqual(leased, "right")
+        self.assertEqual(pool.current().id, "right")
+
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 

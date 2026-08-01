@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
@@ -2215,15 +2215,22 @@ class CredentialPool:
                 logger.info("credential pool: rotated to %s", _next_label)
             return next_entry
 
-    def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
-        """Acquire a soft lease on a credential.
+    def acquire_lease(
+        self,
+        credential_id: Optional[str] = None,
+        *,
+        entry_filter: Optional[Callable[[PooledCredential], bool]] = None,
+    ) -> Optional[str]:
+        """Acquire a soft lease on an available credential.
 
-        If a specific credential_id is provided, lease that entry directly.
-        Otherwise prefer the least-leased available credential, using priority as
-        a stable tie-breaker. When every credential is already at the soft cap,
-        still return the least-leased one instead of blocking.
+        ``entry_filter`` narrows automatic selection without weakening normal
+        rotation. Callers that bind a pool to a more specific runtime, such as
+        a delegated Azure child sharing an ``openai-api`` provider name, can
+        require an endpoint-compatible entry before a lease is acquired.
         """
-        chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
+        chosen_id, pending_refresh = self._acquire_lease_under_lock(
+            credential_id, entry_filter=entry_filter
+        )
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Mirror select(): if nothing was leasable but we just refreshed
@@ -2237,7 +2244,10 @@ class CredentialPool:
         return chosen_id
 
     def _acquire_lease_under_lock(
-        self, credential_id: Optional[str],
+        self,
+        credential_id: Optional[str],
+        *,
+        entry_filter: Optional[Callable[[PooledCredential], bool]] = None,
     ) -> Tuple[Optional[str], List[tuple]]:
         """Run lease acquisition under the lock, returning id + pending refreshes."""
         with self._lock:
@@ -2246,7 +2256,15 @@ class CredentialPool:
                 self._current_id = credential_id
                 return credential_id, []
 
-            available, pending_refresh = self._available_entries(clear_expired=True, refresh=True)
+            available, pending_refresh = self._available_entries(
+                clear_expired=True, refresh=True
+            )
+            if entry_filter is not None:
+                try:
+                    available = [entry for entry in available if entry_filter(entry)]
+                except Exception as exc:
+                    logger.warning("credential pool: lease entry filter failed: %s", exc)
+                    return None, pending_refresh
             if not available:
                 return None, pending_refresh
 

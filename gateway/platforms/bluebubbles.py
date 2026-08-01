@@ -235,10 +235,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
         self._message_dedup = MessageDeduplicator(ttl_seconds=300)
         self._inflight_message_ids: Dict[str, asyncio.Future] = {}
-        # Never remove a same-URL registration unless this adapter can prove
-        # independent ownership. BlueBubbles POST is idempotent by URL, so a
-        # returned ID alone is not ownership proof.
-        self._owned_webhook_ids: set[str] = set()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -473,7 +469,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     self._api_url(f"/api/v1/webhook/{webhook_id}")
                 )
                 response.raise_for_status()
-                self._owned_webhook_ids.discard(str(webhook_id))
             except Exception as exc:
                 removed_all = False
                 logger.warning(
@@ -482,65 +477,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
         return removed_all
 
-    async def _claim_created_webhook(
-        self,
-        response: Dict[str, Any],
-        webhook_url: str,
-        expected_events: List[str],
-        prior_ids: set[str],
-    ) -> Optional[str]:
-        """Claim a webhook only after POST and independent readback agree."""
-        status = response.get("status", 0)
-        data = response.get("data")
-        if not isinstance(status, int) or not 200 <= status < 300:
-            return None
-        if not isinstance(data, dict) or data.get("id") is None:
-            return None
-
-        webhook_id = str(data["id"])
-        if webhook_id in prior_ids:
-            return None
-        returned_url = data.get("url")
-        if returned_url is not None and returned_url != webhook_url:
-            return None
-        returned_events = data.get("events")
-        if returned_events is not None and set(returned_events) != set(
-            expected_events
-        ):
-            return None
-
-        current = await self._find_registered_webhooks(webhook_url)
-        if current is None:
-            return None
-        if not any(
-            str(webhook.get("id")) == webhook_id
-            and set(webhook.get("events") or []) == set(expected_events)
-            for webhook in current
-        ):
-            return None
-
-        self._owned_webhook_ids.add(webhook_id)
-        return webhook_id
-
     async def _post_webhook_registration(
-        self,
-        payload: Dict[str, Any],
-        prior_ids: Optional[set[str]] = None,
+        self, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Let POST and ownership readback settle before cancellation escapes."""
-        prior_ids = set(prior_ids or ())
-
-        async def post_and_reconcile() -> Dict[str, Any]:
-            response = await self._api_post("/api/v1/webhook", payload)
-            await self._claim_created_webhook(
-                response,
-                str(payload["url"]),
-                list(payload["events"]),
-                prior_ids,
-            )
-            return response
-
-        post = asyncio.create_task(post_and_reconcile())
+        """Let an ambiguous idempotent POST settle before cancellation escapes."""
+        post = asyncio.create_task(self._api_post("/api/v1/webhook", payload))
         try:
             return await asyncio.shield(post)
         except asyncio.CancelledError as cancelled:
@@ -601,14 +542,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                 rollback_exc,
                             )
                 return False
-            self._owned_webhook_ids.discard(str(webhook_id))
             removed.append(webhook)
 
         try:
-            response = await self._post_webhook_registration(
-                payload,
-                prior_ids={str(webhook["id"]) for webhook in existing},
-            )
+            response = await self._post_webhook_registration(payload)
             status = response.get("status", 0)
             data = response.get("data")
             returned_events = data.get("events") if isinstance(data, dict) else None
@@ -716,14 +653,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 "[bluebubbles] webhook already registered: %s",
                 self._webhook_register_url_for_log,
             )
-            keep = next(
-                (
-                    webhook
-                    for webhook in exact
-                    if str(webhook.get("id")) in self._owned_webhook_ids
-                ),
-                exact[0],
-            )
+            keep = exact[0]
             stale = [webhook for webhook in existing if webhook is not keep]
             if stale:
                 await self._remove_registered_webhooks(stale)
@@ -754,31 +684,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return False
 
     async def _unregister_webhook(self) -> bool:
-        """Remove only registrations independently proven to be owned here."""
-        if not self.client:
-            return False
-        removed = False
-        for webhook_id in list(self._owned_webhook_ids):
-            try:
-                response = await self.client.delete(
-                    self._api_url(f"/api/v1/webhook/{webhook_id}")
-                )
-                response.raise_for_status()
-            except Exception as exc:
-                logger.debug(
-                    "[bluebubbles] failed to unregister owned webhook %s: %s",
-                    webhook_id,
-                    exc,
-                )
-                continue
-            self._owned_webhook_ids.discard(webhook_id)
-            removed = True
-        if removed:
-            logger.info(
-                "[bluebubbles] webhook unregistered: %s",
-                self._webhook_register_url_for_log,
-            )
-        return removed
+        """Keep the fixed-URL registration durable across gateway reconnects.
+
+        BlueBubbles POST is idempotent by URL, so neither its response nor a
+        subsequent lookup can prove which concurrent process created the row.
+        Deleting it on disconnect could remove another process's registration.
+        """
+        return False
 
     # ------------------------------------------------------------------
     # Chat GUID resolution

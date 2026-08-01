@@ -1573,7 +1573,6 @@ class TestBlueBubblesWebhookRegistration:
         assert registrations == [
             {"id": 8, "url": url, "events": ["new-message"]}
         ]
-        assert adapter._owned_webhook_ids == {"8"}
 
     @pytest.mark.asyncio
     async def test_reused_registration_is_not_owned_or_removed_on_disconnect(
@@ -1601,7 +1600,7 @@ class TestBlueBubblesWebhookRegistration:
         assert deleted == []
 
     @pytest.mark.asyncio
-    async def test_cancelled_fresh_registration_is_claimed_then_removed(
+    async def test_cancelled_fresh_registration_remains_durable(
         self, monkeypatch
     ):
         adapter = _make_adapter(monkeypatch)
@@ -1640,12 +1639,11 @@ class TestBlueBubblesWebhookRegistration:
         with pytest.raises(asyncio.CancelledError):
             await registration
 
-        assert adapter._owned_webhook_ids == {"8"}
-        assert await adapter._unregister_webhook() is True
-        assert deleted == [adapter._api_url("/api/v1/webhook/8")]
+        assert await adapter._unregister_webhook() is False
+        assert deleted == []
 
     @pytest.mark.asyncio
-    async def test_cancelled_registration_post_claims_readback_owner_for_cleanup(
+    async def test_cancelled_registration_post_leaves_durable_replacement(
         self, monkeypatch
     ):
         adapter = _make_adapter(monkeypatch)
@@ -1688,12 +1686,8 @@ class TestBlueBubblesWebhookRegistration:
         with pytest.raises(asyncio.CancelledError):
             await registration
 
-        assert adapter._owned_webhook_ids == {"8"}
-        assert await adapter._unregister_webhook() is True
-        assert deleted == [
-            adapter._api_url("/api/v1/webhook/7"),
-            adapter._api_url("/api/v1/webhook/8"),
-        ]
+        assert await adapter._unregister_webhook() is False
+        assert deleted == [adapter._api_url("/api/v1/webhook/7")]
 
     @pytest.mark.asyncio
     async def test_partial_stale_delete_failure_restores_when_url_is_empty(
@@ -1792,7 +1786,6 @@ class TestBlueBubblesWebhookRegistration:
                 "events": ["new-message", "updated-message"],
             }
         ]
-        assert adapter._owned_webhook_ids == set()
 
     @pytest.mark.asyncio
     async def test_register_reconciles_replacement_committed_before_timeout(
@@ -1835,7 +1828,6 @@ class TestBlueBubblesWebhookRegistration:
         assert registrations == [
             {"id": 8, "url": url, "events": ["new-message"]}
         ]
-        assert adapter._owned_webhook_ids == set()
 
     @pytest.mark.asyncio
     async def test_register_does_not_delete_unexpected_post_failure_owner(
@@ -1879,10 +1871,9 @@ class TestBlueBubblesWebhookRegistration:
         assert registrations == [
             {"id": 8, "url": url, "events": ["updated-message"]}
         ]
-        assert adapter._owned_webhook_ids == set()
 
     @pytest.mark.asyncio
-    async def test_connect_cancellation_cleans_owned_registration_and_listener(
+    async def test_connect_cancellation_cleans_listener_without_deleting_hook(
         self, monkeypatch
     ):
         adapter = _make_adapter(monkeypatch, webhook_port="0")
@@ -1894,13 +1885,11 @@ class TestBlueBubblesWebhookRegistration:
             return {"status": 200}
 
         async def cancelled_registration():
-            adapter._owned_webhook_ids.add("8")
             raise asyncio.CancelledError
 
         async def tracking_unregister():
             cleanup_calls.append("unregister")
-            adapter._owned_webhook_ids.clear()
-            return True
+            return False
 
         monkeypatch.setattr(adapter, "_api_get", fake_api_get)
         monkeypatch.setattr(adapter, "_register_webhook", cancelled_registration)
@@ -1910,15 +1899,81 @@ class TestBlueBubblesWebhookRegistration:
             await adapter.connect()
 
         assert cleanup_calls == ["unregister"]
-        assert adapter._owned_webhook_ids == set()
         assert adapter.client is None
         assert adapter._runner is None
+
+    @pytest.mark.asyncio
+    async def test_fresh_concurrent_winner_is_never_deleted(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        registrations = []
+        deleted = []
+        adapter.client = self._mock_client()
+        original_delete = adapter.client.delete
+
+        async def fake_find(candidate_url):
+            return [item for item in registrations if item["url"] == candidate_url]
+
+        async def concurrent_winner(path, payload):
+            winner = {"id": 99, **payload}
+            registrations.append(winner)
+            return {"status": 200, "data": winner}
+
+        async def tracking_delete(*args, **kwargs):
+            deleted.append(args[0])
+            return await original_delete(*args, **kwargs)
+
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", fake_find)
+        monkeypatch.setattr(adapter, "_api_post", concurrent_winner)
+        adapter.client.delete = tracking_delete
+
+        assert await adapter._register_webhook() is True
+        assert await adapter._unregister_webhook() is False
+        assert deleted == []
+        assert registrations == [
+            {"id": 99, "url": url, "events": ["new-message"]}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_migration_concurrent_winner_is_never_deleted(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        registrations = [
+            {"id": 7, "url": url, "events": ["updated-message"]}
+        ]
+        deleted = []
+        adapter.client = self._mock_client()
+        original_delete = adapter.client.delete
+
+        async def fake_find(candidate_url):
+            return [item for item in registrations if item["url"] == candidate_url]
+
+        async def tracking_delete(*args, **kwargs):
+            deleted.append(args[0])
+            registrations.clear()
+            return await original_delete(*args, **kwargs)
+
+        async def concurrent_winner(path, payload):
+            winner = {"id": 99, **payload}
+            registrations.append(winner)
+            return {"status": 200, "data": winner}
+
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", fake_find)
+        monkeypatch.setattr(adapter, "_api_post", concurrent_winner)
+        adapter.client.delete = tracking_delete
+
+        assert await adapter._register_webhook() is True
+        assert await adapter._unregister_webhook() is False
+        assert deleted == [adapter._api_url("/api/v1/webhook/7")]
+        assert registrations == [
+            {"id": 99, "url": url, "events": ["new-message"]}
+        ]
 
     # -- _unregister_webhook --
 
 
-    def test_unregister_removes_only_owned_registrations(self, monkeypatch):
-        """Disconnect removes proven ownership, never same-URL rows by guess."""
+    def test_unregister_preserves_durable_registration(self, monkeypatch):
+        """Disconnect never deletes an ambiguous fixed-URL registration."""
         import asyncio
 
         adapter = _make_adapter(monkeypatch)
@@ -1927,25 +1982,14 @@ class TestBlueBubblesWebhookRegistration:
         async def mock_delete(*args, **kwargs):
             deleted_urls.append(args[0] if args else "")
 
-            class Response:
-                def raise_for_status(self):
-                    return None
-
-            return Response()
-
         adapter.client = self._mock_client()
         adapter.client.delete = mock_delete
-        adapter._owned_webhook_ids = {"1", "2"}
 
         ok = asyncio.get_event_loop().run_until_complete(
             adapter._unregister_webhook()
         )
 
-        assert ok is True
-        assert adapter._owned_webhook_ids == set()
-        assert set(deleted_urls) == {
-            adapter._api_url("/api/v1/webhook/1"),
-            adapter._api_url("/api/v1/webhook/2"),
-        }
+        assert ok is False
+        assert deleted_urls == []
 
 

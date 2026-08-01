@@ -286,6 +286,19 @@ class TestHelpers:
         assert _coerce_int(999, default=50, minimum=1, maximum=200) == 200
         assert _coerce_int(-5, default=50, minimum=1, maximum=200) == 1
 
+    def test_coerce_int_handles_infinity_and_nan(self):
+        """int() raises OverflowError (not ValueError) for a float infinity.
+        MCP's JSON-RPC transport is plain json.loads(), which accepts bare
+        Infinity/-Infinity/NaN by default, so a client sending
+        {"limit": Infinity} reaches this call with a literal inf float --
+        must fall back to default like any other unparseable value, not
+        raise past the tool boundary."""
+        from mcp_serve import _coerce_int
+
+        assert _coerce_int(float("inf"), default=50, minimum=1, maximum=200) == 50
+        assert _coerce_int(float("-inf"), default=50, minimum=1, maximum=200) == 50
+        assert _coerce_int(float("nan"), default=50, minimum=1, maximum=200) == 50
+
     def test_load_sessions_index_empty(self, sessions_dir, monkeypatch):
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)

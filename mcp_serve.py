@@ -225,8 +225,13 @@ def _coerce_int(
     Returns default if value cannot be converted to int.
     """
     try:
+        # OverflowError (not ValueError) is what int() raises for a float
+        # infinity. MCP's JSON-RPC transport is plain json.loads(), which
+        # accepts bare Infinity/-Infinity/NaN by default (a non-standard but
+        # long-standing Python extension), so a client sending
+        # {"limit": Infinity} reaches this call with a literal inf float.
         coerced = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         coerced = default
     return max(minimum, min(coerced, maximum))
 

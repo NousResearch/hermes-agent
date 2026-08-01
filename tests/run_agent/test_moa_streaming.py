@@ -90,6 +90,29 @@ def test_create_streams_aggregator_when_requested(monkeypatch, tmp_path):
     assert agg["tools"] is not None
 
 
+def test_build_moa_facade_ignores_fallback_model_name_when_restoring(monkeypatch, tmp_path):
+    """A fallback restore must not turn the temporary fallback model name into
+    a MoA preset. Sessions that drifted to e.g. deepseek-v4-flash previously
+    crashed on restore with MoAPresetNotFoundError because build_moa_facade()
+    reused agent.model as the preset (#MoA restore path).
+    """
+    home = tmp_path / ".hermes"
+    _write_cfg(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent.moa_loop import build_moa_facade
+
+    agent = SimpleNamespace(
+        provider="moa",
+        model="deepseek-v4-flash",
+        tool_progress_callback=None,
+    )
+
+    client = build_moa_facade(agent, None)
+
+    assert client.chat.completions.preset_name == "review"
+
+
 def test_create_wraps_completed_aggregator_response_as_delta_chunk(monkeypatch, tmp_path):
     """When an aggregator adapter returns a completed response despite
     stream=True (Codex Responses compatibility shape), MoA must return a

@@ -1226,11 +1226,19 @@ class _CodexCompletionsAdapter:
 
             event_stream = self._client.responses.create(**stream_kwargs)
             try:
-                final = _consume_codex_event_stream(
-                    event_stream,
-                    model=resp_kwargs.get("model"),
-                    on_event=_on_each_event,
-                )
+                # Some Codex-compatible hosts accept ``stream=True`` but return
+                # a completed Responses object instead of an SSE iterator. Do
+                # not hand that object to the event consumer: typed Responses
+                # (and compatibility shims such as SimpleNamespace) are not
+                # event streams and may not be iterable at all.
+                if hasattr(event_stream, "output"):
+                    final = event_stream
+                else:
+                    final = _consume_codex_event_stream(
+                        event_stream,
+                        model=str(resp_kwargs.get("model") or model),
+                        on_event=_on_each_event,
+                    )
             finally:
                 close_fn = getattr(event_stream, "close", None)
                 if callable(close_fn):
@@ -8110,6 +8118,16 @@ def call_llm(
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
+        if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
+            # CodexAuxiliaryClient (openai-codex, xai-oauth, and any other
+            # Responses-shim provider) consumes the provider stream internally
+            # and returns a completed response object. Routing that nested
+            # MoA stream through Relay's generic managed stream makes the
+            # manager iterate the completed SimpleNamespace itself (#55933).
+            # Return the provider call directly; the MoA facade converts a
+            # completed response into a one-chunk delta iterator at its
+            # boundary.
+            return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(
             client,
             kwargs,

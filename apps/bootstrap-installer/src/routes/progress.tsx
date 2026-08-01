@@ -255,6 +255,7 @@ function formatDuration(ms: number): string {
   if (ms < 60000) {
     return `${(ms / 1000).toFixed(1)}s`
   }
+
   const m = Math.floor(ms / 60000)
   const s = Math.round((ms % 60000) / 1000)
 
@@ -268,6 +269,7 @@ function formatElapsed(ms: number): string {
   if (s < 60) {
     return `${s}s`
   }
+
   const m = Math.floor(s / 60)
 
   return `${m}:${String(s - m * 60).padStart(2, '0')}`

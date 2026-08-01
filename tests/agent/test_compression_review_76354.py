@@ -409,3 +409,38 @@ class TestF6ExecutorSaturation:
             assert returned is messages
             # The cancelled attempt must not leave the durable lock held.
             assert db.get_compression_lock_holder(session_id) is None
+
+
+class TestS3IdleChargedFromLastProgress:
+    def test_silence_cannot_approach_double_idle_timeout(self):
+        """Progress early in an interval must not extend silence to ~2x idle."""
+        _drain_admission_slots()
+        idle = 0.4
+        release = threading.Event()
+
+        def worker(fence: CompressionCommitFence):
+            time.sleep(0.05)
+            fence.touch_progress()  # early progress, then total silence
+            assert release.wait(timeout=10)
+            return ([], "late")
+
+        t0 = time.monotonic()
+        try:
+            msgs, prompt = run_compress_context_with_progress_timeout(
+                worker=worker,
+                messages=[{"role": "user", "content": "a"}],
+                system_prompt_fallback="fb",
+                idle_timeout_seconds=idle,
+                total_ceiling_seconds=5.0,
+            )
+        finally:
+            elapsed = time.monotonic() - t0
+            release.set()
+        assert prompt == "fb"
+        # Old behavior waited a full interval from the CHECK (~2x idle ≈
+        # 0.85s+). New behavior times out ~idle after the last progress
+        # (~0.45s). Allow generous slack while still excluding ~2x.
+        assert elapsed < idle * 1.8, (
+            f"silence exceeded ~2x idle budget shape: {elapsed:.2f}s"
+        )
+        _drain_admission_slots()

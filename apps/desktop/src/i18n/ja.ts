@@ -322,6 +322,8 @@ export const ja = defineLocale({
       reactionsTitle: 'メッセージリアクション',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
+      composerPopoutTitle: 'フローティング入力欄',
+      composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',

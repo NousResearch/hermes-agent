@@ -354,6 +354,8 @@ export interface Translations {
       backdropDesc: string
       reactionsTitle: string
       reactionsDesc: string
+      composerPopoutTitle: string
+      composerPopoutDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string

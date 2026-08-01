@@ -313,6 +313,8 @@ export const zhHant = defineLocale({
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
+      composerPopoutTitle: '懸浮輸入框',
+      composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
       embedsTitle: '內嵌預覽',
       embedsDesc:
         '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',

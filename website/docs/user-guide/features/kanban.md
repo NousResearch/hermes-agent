@@ -904,6 +904,30 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+### Multi-profile setups: delivery is profile-owned
+
+In a one-gateway-per-profile deployment (one dispatcher, separate gateway
+processes for `writer`, `admin`, etc. — see the [multi-gateway
+guide](https://github.com/NousResearch/hermes-agent/blob/main/docs/kanban/multi-gateway.md)),
+dispatch and delivery have separate owners:
+
+- **Dispatch stays single-owner.** Exactly one gateway keeps
+  `kanban.dispatch_in_gateway: true` and runs the dispatcher; every other
+  gateway sets it to `false`.
+- **Notification delivery is profile-owned.** Every gateway — including
+  non-dispatch ones — runs the notifier and polls only subscriptions stamped
+  with a profile whose platform adapters it hosts. A task created from the
+  `writer` profile's Telegram gets its `completed`/`blocked` message delivered
+  by the `writer` gateway, even though the `default` gateway did the
+  dispatching.
+- **Legacy subscriptions** created before profile stamping (no
+  `notifier_profile` on the row) are delivered only by the gateway that holds
+  the actual dispatcher singleton lock, so two gateways never race for them.
+
+Duplicate delivery across gateways is prevented by the atomic per-event claim
+in the board DB. No relays, credential sharing, or extra dispatchers are
+needed — each profile gateway simply delivers through its own adapters.
+
 ## Runs — one row per attempt
 
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.

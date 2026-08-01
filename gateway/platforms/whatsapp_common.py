@@ -134,6 +134,29 @@ class WhatsAppBehaviorMixin:
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _dm_allowlist_env_keys(self) -> tuple[str, ...]:
+        """Env vars that carry the live DM allowlist for this adapter.
+
+        Pairing approve/revoke mutates the documented ``*_ALLOWED_USERS`` var
+        in-process. Intake must prefer that live carrier over the construction
+        snapshot in ``_allow_from`` so sole-entry revocation takes effect
+        without a gateway restart.
+        """
+        return ("WHATSAPP_ALLOWED_USERS",)
+
+    def _live_dm_allow_from(self) -> set[str]:
+        """Allowlist currently enforced for DM intake / strict DM auth.
+
+        When a pairing-synced env allowlist key is present in ``os.environ``,
+        that value is authoritative (including the empty set after the last
+        entry is cleared but before the key is removed). Otherwise fall back
+        to the adapter snapshot seeded at construction from config/env.
+        """
+        for key in self._dm_allowlist_env_keys():
+            if key in os.environ:
+                return self._coerce_allow_list(os.environ.get(key, ""))
+        return set(self._allow_from or ())
+
     # ------------------------------------------------------------------ JID helpers
     @staticmethod
     def _normalize_whatsapp_id(value: Optional[str]) -> str:
@@ -214,7 +237,7 @@ class WhatsAppBehaviorMixin:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(sender_id, self._allow_from)
+            return self._matches_whatsapp_allowlist(sender_id, self._live_dm_allow_from())
         if self._dm_policy == "open":
             return self._open_dm_opted_in()
         return False
@@ -227,7 +250,7 @@ class WhatsAppBehaviorMixin:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(principal, self._allow_from)
+            return self._matches_whatsapp_allowlist(principal, self._live_dm_allow_from())
         if self._dm_policy == "pairing":
             return True
         if self._dm_policy == "open":

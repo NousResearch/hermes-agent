@@ -408,7 +408,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        # Prefer config.extra, then the documented WHATSAPP_ALLOWED_USERS env
+        # (setup wizard / pairing mirror). Construction seeds the snapshot;
+        # intake re-reads the live env via ``_live_dm_allow_from``.
+        self._allow_from = self._coerce_allow_list(
+            config.extra.get("allow_from")
+            or config.extra.get("allowFrom")
+            or os.getenv("WHATSAPP_ALLOWED_USERS")
+        )
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
         read_receipts = config.extra.get("send_read_receipts", False)

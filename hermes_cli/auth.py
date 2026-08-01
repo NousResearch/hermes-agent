@@ -1139,7 +1139,11 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         raise
     except Exception as exc:
         # Genuine corruption: unparseable JSON, or bytes that are not UTF-8.
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
+        # Timestamp the backup so a second corruption event (e.g. a stray
+        # write racing this read) can't silently clobber a prior backup that
+        # might still hold recoverable data.
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        corrupt_path = auth_file.with_name(f"{auth_file.name}.corrupt.{timestamp}")
         preserved = False
         try:
             import shutil

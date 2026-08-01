@@ -1252,6 +1252,43 @@ AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 # ─── Partial-update diagnostics ──────────────────────────────────────────────
 
+# Top-level packages/modules that ship as part of Hermes itself. An ImportError
+# naming one of these means our own tree is inconsistent; anything else is a
+# third-party problem with different remediation. Single source of truth —
+# `hermes_cli.update_cmd`'s post-update probe consumes this same set so the
+# guard that BLOCKS and the hint that EXPLAINS can never disagree.
+FIRST_PARTY_MODULE_ROOTS = frozenset(
+    {
+        "agent",
+        "acp_adapter",
+        "cli",
+        "cron",
+        "gateway",
+        "model_tools",
+        "plugins",
+        "providers",
+        "tools",
+        "toolsets",
+        "run_agent",
+        "tui_gateway",
+        "utils",
+    }
+)
+
+
+def is_first_party_module(name: str | None) -> bool:
+    """True when *name* is a module that ships with Hermes.
+
+    Matches on the first dotted segment against an exact set — a substring or
+    ``startswith`` test would also claim third-party ``agents``, ``agentops``,
+    and ``toolsets_x``.
+    """
+    root = str(name).split(".")[0] if name else ""
+    if not root:
+        return False
+    return root in FIRST_PARTY_MODULE_ROOTS or root.startswith("hermes_")
+
+
 def partial_update_hint(exc: BaseException) -> list[str]:
     """Return recovery guidance lines when *exc* looks like a half-updated tree.
 
@@ -1276,13 +1313,7 @@ def partial_update_hint(exc: BaseException) -> list[str]:
     if isinstance(exc, ModuleNotFoundError):
         return []
     name = getattr(exc, "name", None)
-    # Compare the first dotted segment against an exact set: a bare
-    # ``startswith`` would also match third-party ``agents``, ``agentops``,
-    # ``toolsets``, etc. and blame our updater for their import errors.
-    root = str(name).split(".")[0] if name else ""
-    if root not in {"tools", "agent", "gateway", "plugins", "providers"} and not (
-        root == "cli" or root.startswith("hermes_") or root == "hermes"
-    ):
+    if not is_first_party_module(name):
         return []
     return [
         "",

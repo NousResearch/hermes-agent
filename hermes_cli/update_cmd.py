@@ -195,6 +195,8 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
 
     Returns ``(ok, failing_module, error_message)``.
     """
+    from hermes_constants import FIRST_PARTY_MODULE_ROOTS
+
     probe = (
         "import importlib, sys\n"
         "for name in %r:\n"
@@ -202,12 +204,11 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
         "        importlib.import_module(name)\n"
         "    except ModuleNotFoundError as exc:\n"
         # A missing *third-party* module means dependencies aren't installed
-        # yet (this guard can run before the dependency sync on the git path),
-        # not a skewed checkout. Only treat it as breakage when the missing
-        # module is one of ours.
+        # yet, not a skewed checkout. Only our own packages count as breakage.
+        # The root set is injected from hermes_constants so this can't drift
+        # from the hint the user is shown (they disagreed once already).
         "        missing = (getattr(exc, 'name', '') or '').split('.')[0]\n"
-        "        if missing in ('tools', 'agent', 'gateway', 'plugins', 'providers') \\\n"
-        "                or missing.startswith('hermes'):\n"
+        "        if missing in %r or missing.startswith('hermes_'):\n"
         "            sys.stdout.write(name + '\\n' + str(exc))\n"
         "            raise SystemExit(3)\n"
         "    except ImportError as exc:\n"
@@ -215,7 +216,8 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
         "        raise SystemExit(3)\n"
         "    except Exception:\n"
         "        pass\n"  # non-import errors (config/env) aren't update breakage
-        "raise SystemExit(0)\n" % (_UPDATE_CRITICAL_MODULES,)
+        "raise SystemExit(0)\n"
+        % (_UPDATE_CRITICAL_MODULES, tuple(sorted(FIRST_PARTY_MODULE_ROOTS)))
     )
     try:
         interpreter = sys.executable

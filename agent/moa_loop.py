@@ -1691,6 +1691,16 @@ class MoAChatCompletions:
             # plan_cache_sections_for_destination never mutates its inputs
             # and always returns request-local copies, so the prepared
             # state stays canonical.
+            # Tri-state: only pass a bool when a live agent snapshot exists.
+            # Prepared-aggregator facades built via __new__ have no _agent;
+            # getattr(self._agent, ...) raises and bool(None-agent) would
+            # force False and suppress the planner's config fallback (#76085).
+            _agent = getattr(self, "_agent", None)
+            _cache_disabled = (
+                getattr(_agent, "_cache_disabled", None)
+                if _agent is not None
+                else None
+            )
             agg_messages, tools = plan_cache_sections_for_destination(
                 planning_messages,
                 tools,
@@ -1698,9 +1708,7 @@ class MoAChatCompletions:
                 base_url=agg_runtime.get("base_url") or "",
                 api_mode=agg_runtime.get("api_mode") or "",
                 model=agg_runtime.get("model") or "",
-                cache_disabled=bool(
-                    getattr(self._agent, "_cache_disabled", False)
-                ),
+                cache_disabled=_cache_disabled,
             )
             if guidance:
                 _attach_reference_guidance(agg_messages, str(guidance))

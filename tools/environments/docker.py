@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -843,6 +844,8 @@ class DockerEnvironment(BaseEnvironment):
     across container restarts.
     """
 
+    _profile_scoped_passthrough = True
+
     def __init__(
         self,
         image: str,
@@ -872,6 +875,7 @@ class DockerEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
+        self._init_unset_passthrough_names: tuple[str, ...] = ()
         self._container_id: Optional[str] = None
         self._labels: dict[str, str] = {}
         self._image: str = ""
@@ -1488,9 +1492,7 @@ class DockerEnvironment(BaseEnvironment):
             self._container_id = result.stdout.strip()
             logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
-        # Build the init-time env forwarding args (used only by init_session
-        # to inject host env vars into the snapshot; subsequent commands get
-        # them from the snapshot file).
+        # Build the init-time env forwarding args used to seed the snapshot.
         self._init_env_args = self._build_init_env_args()
 
         # Initialize session snapshot inside the container
@@ -1499,15 +1501,41 @@ class DockerEnvironment(BaseEnvironment):
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.
 
-        These are used once during init_session() so that export -p captures
-        them into the snapshot.  Subsequent execute() calls don't need -e flags.
+        These are used during init_session() so that export -p captures the
+        configured environment and the current profile's forwarded values.
         """
+        passthrough_env, unset_names = self._resolve_passthrough_env()
         exec_env: dict[str, str] = dict(self._env)
+        exec_env.update(passthrough_env)
+        for name in unset_names:
+            exec_env.pop(name, None)
+        self._init_unset_passthrough_names = tuple(sorted(unset_names))
 
+        args = []
+        for key in sorted(exec_env):
+            args.extend(["-e", f"{key}={exec_env[key]}"])
+        return args
+
+    def _build_passthrough_env(self) -> dict[str, str]:
+        """Resolve forwarded host variables through the active profile scope."""
+        return self._resolve_passthrough_env()[0]
+
+    def _resolve_passthrough_env(self) -> tuple[dict[str, str], set[str]]:
+        """Return forwarded values and scoped names that must be unset."""
+        exec_env: dict[str, str] = {}
         explicit_forward_keys = set(self._forward_env)
         passthrough_keys: set[str] = set()
+        resolve_passthrough_value = None
+        multiplex_active = False
+        is_global_env = lambda _name: False  # noqa: E731
         try:
-            from tools.env_passthrough import get_all_passthrough
+            from tools.env_passthrough import (
+                get_all_passthrough,
+                resolve_passthrough_value,
+            )
+            from agent.secret_scope import _is_global_env, is_multiplex_active as _is_multiplex_active
+            is_global_env = _is_global_env
+            multiplex_active = _is_multiplex_active()
             passthrough_keys = set(get_all_passthrough())
         except Exception:
             pass
@@ -1521,17 +1549,28 @@ class DockerEnvironment(BaseEnvironment):
         }
         forward_keys = explicit_forward_keys | (_implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
+        unset_names: set[str] = set()
         for key in sorted(forward_keys):
-            value = os.getenv(key)
-            if not value:
-                value = hermes_env.get(key)
-            if value:
+            value = os.getenv(key) or hermes_env.get(key)
+            if resolve_passthrough_value is not None:
+                value = resolve_passthrough_value(key, value)
+            if value is not None:
                 exec_env[key] = value
+            elif multiplex_active and not is_global_env(key) and _ENV_VAR_NAME_RE.fullmatch(key):
+                unset_names.add(key)
+        return exec_env, unset_names
 
+    def _build_runtime_env_args_with_unsets(self) -> tuple[list[str], tuple[str, ...]]:
+        """Build runtime forwarding args plus names absent from the active scope."""
+        passthrough_env, unset_names = self._resolve_passthrough_env()
         args = []
-        for key in sorted(exec_env):
-            args.extend(["-e", f"{key}={exec_env[key]}"])
-        return args
+        for key in sorted(passthrough_env):
+            args.extend(["-e", f"{key}={passthrough_env[key]}"])
+        return args, tuple(sorted(unset_names))
+
+    def _build_runtime_env_args(self) -> list[str]:
+        """Build only dynamic forwarded values for a non-login command."""
+        return self._build_runtime_env_args_with_unsets()[0]
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
@@ -1542,10 +1581,21 @@ class DockerEnvironment(BaseEnvironment):
         if stdin_data is not None:
             cmd.append("-i")
 
-        # Only inject -e env args during init_session (login=True).
-        # Subsequent commands get env vars from the snapshot.
+        # Init seeds the snapshot. Profile-scoped passthrough values are also
+        # injected on every later command because this container can be shared
+        # by multiple routed profiles in one gateway process.
+        unset_names: tuple[str, ...] = ()
         if login:
             cmd.extend(self._init_env_args)
+        elif self._profile_scoped_passthrough:
+            runtime_args, unset_names = self._build_runtime_env_args_with_unsets()
+            cmd.extend(runtime_args)
+
+        if login:
+            unset_names = getattr(self, "_init_unset_passthrough_names", ())
+        if unset_names:
+            quoted_names = " ".join(shlex.quote(name) for name in unset_names)
+            cmd_string = f"unset {quoted_names} 2>/dev/null || true\n{cmd_string}"
 
         cmd.extend([self._container_id])
 

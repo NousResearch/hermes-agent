@@ -1081,7 +1081,7 @@ def init_agent(
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
     elif agent.provider == "moa":
-        from agent.moa_loop import build_moa_facade
+        from agent.moa_loop import build_moa_facade, resolve_moa_preset_name
         agent.api_mode = "chat_completions"
 
         # build_moa_facade wires the reference relay that routes
@@ -1094,7 +1094,9 @@ def init_agent(
         # cache-safe — display-only events, they never touch the message
         # history. The factory is shared with the fallback-restore/recovery
         # paths so a restored facade keeps emitting these events (#53802).
-        agent.client = build_moa_facade(agent, agent.model)
+        preset = resolve_moa_preset_name(agent, agent.model)
+        agent.model = preset
+        agent.client = build_moa_facade(agent, preset)
         agent._client_kwargs = {}
         agent.api_key = api_key or "moa-virtual-provider"
         agent.base_url = "moa://local"

@@ -4,12 +4,12 @@ import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
 import {
+  getComposerModeSource,
   getComposerSelectionGeneration,
-  getCurrentModelSource,
   setAvailablePersonalities,
-  setCurrentFastMode,
+  setCurrentFastModeFromDefault,
   setCurrentPersonality,
-  setCurrentReasoningEffort,
+  setCurrentReasoningEffortFromDefault,
   setCurrentServiceTier,
   setDefaultReasoningEffort,
   setIntroPersonality
@@ -94,15 +94,20 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         // rendering/applying Hermes' built-in medium over the user's config.
         setDefaultReasoningEffort(reasoning)
 
-        const shouldSeedComposer =
-          !activeSessionIdRef.current &&
-          getComposerSelectionGeneration() === selectionGeneration &&
-          (force || getCurrentModelSource() !== 'manual')
+        // Seed effort/Fast independently of model ownership. A manual model
+        // pick must not unlock a config refresh to wipe an explicit Fast/effort
+        // choice — and a manual Fast must not be collapsed by a model-only seed.
+        const canSeedModes =
+          !activeSessionIdRef.current && getComposerSelectionGeneration() === selectionGeneration
 
-        if (shouldSeedComposer) {
-          setCurrentReasoningEffort(reasoning)
-          setCurrentFastMode(FAST_TIERS.has(tier.toLowerCase()))
+        if (canSeedModes && (force || getComposerModeSource('effort') !== 'manual')) {
+          setCurrentReasoningEffortFromDefault(reasoning)
         }
+
+        if (canSeedModes && (force || getComposerModeSource('fast') !== 'manual')) {
+          setCurrentFastModeFromDefault(FAST_TIERS.has(tier.toLowerCase()))
+        }
+
 
         setCurrentServiceTier(prev => (activeSessionIdRef.current ? prev : tier))
 

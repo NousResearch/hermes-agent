@@ -22,6 +22,36 @@ from rich.markup import escape as _escape
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
+    def _apply_session_route_from_meta(self, session_meta: dict | None) -> None:
+        """Re-apply sticky route identity stored on the session row before agent build.
+
+        Resume previously restored transcript + cwd only, so a MoA/standalone
+        selection made in that chat was silently replaced by the process-global
+        default. Apply opaque model/provider (and optional base_url/api_mode)
+        from the sessions row when present.
+        """
+        from hermes_cli.session_route import route_from_session_row
+
+        route = route_from_session_row(session_meta)
+        if not route:
+            return
+        model = route.get("model")
+        provider = route.get("provider")
+        if model:
+            self.model = model
+        if provider:
+            self.provider = provider
+            # Keep requested_provider aligned so runtime resolution does not
+            # second-guess the restored sticky identity.
+            if hasattr(self, "requested_provider"):
+                self.requested_provider = provider
+        base_url = route.get("base_url")
+        if base_url:
+            self.base_url = base_url
+        api_mode = route.get("api_mode")
+        if api_mode:
+            self.api_mode = api_mode
+
     def _ensure_runtime_credentials(self) -> bool:
         """
         Ensure runtime credentials are resolved before agent use.
@@ -326,6 +356,7 @@ class CLIAgentSetupMixin:
                         f"({msg_count} user message{'s' if msg_count != 1 else ''}, {len(restored)} total messages)"
                     )
                 self._restore_session_cwd(session_meta, quiet=_quiet_mode)
+                self._apply_session_route_from_meta(session_meta)
             else:
                 if _quiet_mode:
                     print(
@@ -336,6 +367,8 @@ class CLIAgentSetupMixin:
                     ChatConsole().print(
                         f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
                     )
+                # Empty-message resume still restores sticky route identity.
+                self._apply_session_route_from_meta(session_meta)
             # Re-open the session (clear ended_at so it's active again)
             try:
                 self._session_db._conn.execute(
@@ -537,12 +570,15 @@ class CLIAgentSetupMixin:
                 f"{len(restored)} total messages)[/]"
             )
             self._restore_session_cwd(session_meta)
+            self._apply_session_route_from_meta(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(
                 f"[{accent_color}]Session {self.session_id} found but has no "
                 f"messages. Starting fresh.[/]"
             )
+            # Still restore sticky route when the row exists without messages.
+            self._apply_session_route_from_meta(session_meta)
             return False
 
         # Re-open the session (clear ended_at so it's active again)

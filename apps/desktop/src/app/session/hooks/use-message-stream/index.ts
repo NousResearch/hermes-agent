@@ -530,6 +530,47 @@ export function useMessageStream({
 
         if (streamId && prev.some(m => m.id === streamId)) {
           nextMessages = prev.map(m => (m.id === streamId ? completeMessage(m) : m))
+
+          // Post-seal trailing deltas mint a NEW stream bubble after
+          // finalizeInterimAssistantMessage clears streamId. Completing onto
+          // that stream alone would leave the sealed interim beside the final
+          // (double bubble). When this turn sealed an interim, drop earlier
+          // sealed interim rows that the final continues/covers — same-turn
+          // continuity, not distinct pre-tool narration.
+          if (interimBoundaryPending && finalText) {
+            // Only the most recent sealed interim can be same-turn continuity
+            // with a post-seal stream bubble. Do not scan the whole thread —
+            // older multi-segment narration must stay (Claude peer R9).
+            const lastInterimIndex = (() => {
+              for (let i = nextMessages.length - 1; i >= 0; i -= 1) {
+                const message = nextMessages[i]
+
+                if (message.id === streamId) {
+                  continue
+                }
+
+                if (message.role === 'assistant' && !message.hidden && message.interim) {
+                  return i
+                }
+              }
+
+              return -1
+            })()
+
+            if (lastInterimIndex >= 0) {
+              const sealed = nextMessages[lastInterimIndex]
+              const sealedText = chatMessageText(sealed).trim()
+              const covered =
+                Boolean(sealedText) &&
+                (finalText === sealedText ||
+                  finalText.startsWith(sealedText) ||
+                  sealedText.startsWith(finalText))
+
+              if (covered || !sealedText) {
+                nextMessages = nextMessages.filter((_, index) => index !== lastInterimIndex)
+              }
+            }
+          }
         } else {
           const fallbackIndex = [...prev]
             .reverse()

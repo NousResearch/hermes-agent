@@ -855,7 +855,14 @@ def classify_api_error(
     from agent.errors import MoAPresetNotFoundError
 
     if isinstance(error, MoAPresetNotFoundError):
-        return _result(FailoverReason.model_not_found, retryable=False)
+        # Missing/renamed preset is deterministic config drift. Never fall
+        # back to a different standalone model — that is silent route
+        # replacement of the user's MoA selection.
+        return _result(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=False,
+        )
 
     # ── 3. Error code classification ────────────────────────────────
 

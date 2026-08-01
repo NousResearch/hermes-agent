@@ -1158,6 +1158,10 @@ class CLICommandsMixin:
                     "max_iterations": self.max_turns,
                     "reasoning_config": self.reasoning_config,
                     "_branched_from": parent_session_id,
+                    "model": self.model,
+                    "provider": getattr(self, "provider", None),
+                    "base_url": getattr(self, "base_url", None) or None,
+                    "api_mode": getattr(self, "api_mode", None) or None,
                 },
                 parent_session_id=parent_session_id,
             )

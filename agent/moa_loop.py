@@ -2191,6 +2191,65 @@ class MoAClient:
         )
 
 
+def resolve_moa_preset_name(agent, requested: Any = None) -> str:
+    """Return a configured MoA preset name for agent construction.
+
+    Prefer ``requested`` (or ``agent.model``) when it names a real preset.
+    On drift / missing name, return ``default_preset`` when that preset
+    exists — **without mutating** ``agent.model`` (callers decide whether to
+    adopt the resolved name). Always logs a warning on the fallback path so
+    sticky-route recovery is never silent. Raise
+    :class:`MoAPresetNotFoundError` only when no usable preset exists.
+
+    Construction call sites must use this *before* :func:`build_moa_facade`
+    so fail-closed facade lookup never sees a transport-drift model id.
+    Callers that need a hard miss (tests / explicit user errors) may still
+    pass a raw missing name straight to :func:`build_moa_facade`.
+    """
+    from agent.errors import MoAPresetNotFoundError
+    from hermes_cli.config import load_config
+    from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
+
+    try:
+        moa_cfg = normalize_moa_config(load_config().get("moa") or {})
+    except Exception as exc:
+        raise MoAPresetNotFoundError(
+            f"MoA preset could not be resolved ({type(exc).__name__}: {exc})."
+        ) from exc
+
+    presets = moa_cfg.get("presets") or {}
+    name = str(
+        requested if requested is not None else getattr(agent, "model", None) or ""
+    ).strip()
+
+    if name and name in presets:
+        return name
+
+    default = str(moa_cfg.get("default_preset") or DEFAULT_MOA_PRESET_NAME).strip()
+    if default in presets:
+        logger.warning(
+            "MoA preset %r not configured; re-aligning construction to default preset %r",
+            name or "(empty)",
+            default,
+        )
+        try:
+            buffer_status = getattr(agent, "_buffer_status", None)
+            if callable(buffer_status):
+                buffer_status(
+                    f"⚠️ MoA preset {name!r} not found; using default {default!r}."
+                )
+        except Exception:
+            pass
+        return default
+
+    available = ", ".join(sorted(presets)) or "(none)"
+    raise MoAPresetNotFoundError(
+        f"MoA preset '{name or '(empty)'}' was not found. "
+        f"Available presets: {available}. "
+        f"Run `hermes moa list` to inspect configured presets."
+    )
+
+
 def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
     """Build the MoA facade client for ``agent``, wiring the reference relay.
 
@@ -2268,17 +2327,36 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
     if resolved_preset is None and getattr(agent, "provider", None) == "moa":
         resolved_preset = getattr(agent, "model", None)
 
-    resolved_preset = str(resolved_preset or "default")
-    try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
+    resolved_preset = str(resolved_preset or "").strip()
+    from agent.errors import MoAPresetNotFoundError
+    from hermes_cli.config import load_config
+    from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
 
+    try:
         moa_cfg = normalize_moa_config(load_config().get("moa") or {})
         presets = moa_cfg.get("presets") or {}
-        if resolved_preset not in presets:
-            resolved_preset = moa_cfg.get("default_preset") or "default"
-    except Exception:
-        resolved_preset = "default"
+    except Exception as exc:
+        raise MoAPresetNotFoundError(
+            f"MoA preset '{resolved_preset or '(empty)'}' could not be resolved "
+            f"({type(exc).__name__}: {exc})."
+        ) from exc
+
+    if not resolved_preset:
+        # Construction without a name may seed the factory default only.
+        resolved_preset = str(
+            moa_cfg.get("default_preset") or DEFAULT_MOA_PRESET_NAME
+        ).strip()
+    if resolved_preset not in presets:
+        # Fail closed: never silently run a different MoA route (or the
+        # factory default under a user's selected name). Callers that
+        # recover from transport drift must re-align agent.model to a
+        # real preset before invoking this factory.
+        available = ", ".join(sorted(presets)) or "(none)"
+        raise MoAPresetNotFoundError(
+            f"MoA preset '{resolved_preset}' was not found. "
+            f"Available presets: {available}. "
+            f"Run `hermes moa list` to inspect configured presets."
+        )
 
     return MoAClient(
         resolved_preset,

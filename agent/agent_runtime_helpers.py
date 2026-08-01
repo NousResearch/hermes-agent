@@ -1311,9 +1311,11 @@ def try_recover_primary_transport(
             # via _create_openai_client would raise "api_key client option
             # must be set". Recreate the facade through the shared factory so
             # the reference_callback relay survives recovery (#53802).
-            from agent.moa_loop import build_moa_facade
+            from agent.moa_loop import build_moa_facade, resolve_moa_preset_name
 
-            agent.client = build_moa_facade(agent, agent.model)
+            preset = resolve_moa_preset_name(agent, getattr(agent, "model", None))
+            agent.model = preset
+            agent.client = build_moa_facade(agent, preset)
         else:
             agent.client = agent._create_openai_client(
                 dict(rt["client_kwargs"]),
@@ -1490,9 +1492,13 @@ def restore_primary_runtime(agent) -> bool:
             # shared factory so the restored facade keeps the reference_callback
             # relay wired at init — a bare MoAClient() would silently stop
             # emitting moa.reference/moa.aggregating display events (#53802).
-            from agent.moa_loop import build_moa_facade
+            from agent.moa_loop import build_moa_facade, resolve_moa_preset_name
 
-            agent.client = build_moa_facade(agent, agent.model)
+            # Transport drift may leave provider=moa with a non-preset model id.
+            # Re-align sticky identity before rebuild.
+            preset = resolve_moa_preset_name(agent, getattr(agent, "model", None))
+            agent.model = preset
+            agent.client = build_moa_facade(agent, preset)
             agent._anthropic_client = None
         elif agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -2372,7 +2378,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 )
         # ── Build new client ──
         if (new_provider or "").strip().lower() == "moa":
-            from agent.moa_loop import build_moa_facade
+            from agent.moa_loop import build_moa_facade, resolve_moa_preset_name
 
             # The MoA virtual provider speaks only chat.completions via the
             # MoAClient facade — the aggregator's real transport
@@ -2389,7 +2395,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent.api_key = api_key or "moa-virtual-provider"
             agent.base_url = "moa://local"
             agent._client_kwargs = {}
-            agent.client = build_moa_facade(agent, agent.model)
+            preset = resolve_moa_preset_name(agent, agent.model)
+            agent.model = preset
+            agent.client = build_moa_facade(agent, preset)
         elif api_mode == "anthropic_messages":
             from agent.anthropic_adapter import (
                 build_anthropic_client,

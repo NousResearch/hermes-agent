@@ -247,12 +247,14 @@ def _slot_problem(slot: Any) -> str | None:
 def validate_moa_payload(raw: Any) -> list[str]:
     """Return the problems ``normalize_moa_config`` would silently paper over.
 
-    ``normalize_moa_config`` is deliberately tolerant: at *read* time a
-    hand-edited config must degrade to defaults rather than crash the agent.
-    That same tolerance at *write* time is a corruption engine — a client that
-    sends a half-filled slot gets its whole preset silently replaced with the
-    hardcoded defaults (#64156). API write paths call this first and reject
-    invalid payloads loudly instead of saving something the user never chose.
+    ``normalize_moa_config`` is deliberately crash-safe at *read* time, but it
+    must not rewrite a *named user preset* into hardcoded factory defaults
+    (sticky-route corruption). Factory defaults apply only when seeding an
+    empty/missing MoA config. At *write* time, even that tolerance is a
+    corruption engine — a client that sends a half-filled slot must not get
+    its preset silently replaced with factory defaults (#64156). API write
+    paths call this first and reject invalid payloads loudly instead of
+    saving something the user never chose.
 
     Returns a list of human-readable problems; empty means safe to save.
     """
@@ -310,9 +312,20 @@ def _default_preset() -> dict[str, Any]:
     }
 
 
-def _normalize_preset(raw: Any) -> dict[str, Any]:
+def _normalize_preset(raw: Any, *, seed_factory_defaults: bool = False) -> dict[str, Any]:
+    """Normalize one MoA preset.
+
+    ``seed_factory_defaults=True`` is only for factory seed paths (empty MoA
+    config becoming the built-in ``default`` preset). Named user presets and
+    explicitly present empty/invalid slots must **not** be silently rewritten
+    into hardcoded factory GPT/product reference stacks — that is the sticky
+    route corruption class (read-time counterpart of #64156 write corruption).
+    """
     if not isinstance(raw, dict):
         raw = {}
+
+    refs_key_present = "reference_models" in raw
+    aggregator_key_present = "aggregator" in raw
 
     raw_refs = raw.get("reference_models")
     # reference_models may be a JSON string (hand-edited config.yaml) or a list.
@@ -322,16 +335,31 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         except (json.JSONDecodeError, ValueError):
             raw_refs = []
     if not isinstance(raw_refs, list):
-        # A hand-edited scalar / single mapping (or a bad type) must degrade to
-        # defaults instead of crashing the iteration, mirroring the tolerance
-        # for the scalar fields below (reference_temperature / max_tokens).
+        # A hand-edited scalar / single mapping (or a bad type) must not crash
+        # iteration. Mirror the tolerance for scalar fields below
+        # (reference_temperature / max_tokens) without inventing a different
+        # user's route identity.
         raw_refs = [raw_refs] if isinstance(raw_refs, dict) else []
     refs = [_clean_slot(item, include_enabled=True) for item in raw_refs]
     refs = [item for item in refs if item is not None]
     if not refs:
-        refs = _default_reference_models()
+        # Seed factory defaults only when building a brand-new factory preset
+        # from an absent reference_models key. An explicit empty list, wiped
+        # slots, or a named user preset stays empty (fail closed) rather than
+        # appearing as a healthy factory GPT stack under the user's name.
+        if seed_factory_defaults and not refs_key_present:
+            refs = _default_reference_models()
+        else:
+            refs = []
 
-    aggregator = _clean_slot(raw.get("aggregator")) or deepcopy(DEFAULT_MOA_AGGREGATOR)
+    cleaned_aggregator = _clean_slot(raw.get("aggregator"))
+    if cleaned_aggregator is not None:
+        aggregator = cleaned_aggregator
+    elif seed_factory_defaults and not aggregator_key_present:
+        aggregator = deepcopy(DEFAULT_MOA_AGGREGATOR)
+    else:
+        # Missing/invalid under user ownership: empty mapping, not factory ID.
+        aggregator = {}
 
     return {
         "enabled": _coerce_bool(raw.get("enabled"), True),
@@ -384,11 +412,18 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         for name, preset in presets_raw.items():
             clean_name = str(name or "").strip()
             if clean_name:
-                presets[clean_name] = _normalize_preset(preset)
+                # Named presets are user-owned route identity — never seed
+                # factory GPT/product defaults into them on read.
+                presets[clean_name] = _normalize_preset(
+                    preset, seed_factory_defaults=False
+                )
 
-    # Legacy flat config becomes the default preset.
+    # Legacy flat / empty config becomes the factory default preset only when
+    # no named presets exist. Seed factory defaults solely on that path.
     if not presets:
-        presets[DEFAULT_MOA_PRESET_NAME] = _normalize_preset(raw)
+        presets[DEFAULT_MOA_PRESET_NAME] = _normalize_preset(
+            raw, seed_factory_defaults=True
+        )
 
     default_name = str(raw.get("default_preset") or "").strip()
     if not default_name or default_name not in presets:

@@ -164,7 +164,8 @@ def create_kanban_triage(slug, title, html_section):
     priority = extract_effort(html_section)
     if card and card.get("recommendation", {}).get("priority"):
         try:
-            priority = str(int(card["recommendation"]["priority"] // 3 + 1))
+            raw = card["recommendation"]["priority"]
+            priority = str(int(int(raw) // 3 + 1))
         except (ValueError, TypeError, ZeroDivisionError):
             pass
     cmd = [

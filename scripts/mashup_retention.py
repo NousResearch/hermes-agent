@@ -57,6 +57,8 @@ def archive_proposals(cutoff: datetime) -> int:
 def archive_blog_stream(path: Path, cutoff: datetime) -> tuple[int, int]:
     if not path.exists():
         return 0, 0
+    # Operate on the resolved real file; never replace a symlink with a file.
+    path = path.resolve()
     archive_path = path.with_name(path.name.replace(".jsonl", ".archive.jsonl"))
     original = path.read_text(encoding="utf-8", errors="replace")
     fresh, stale = [], []

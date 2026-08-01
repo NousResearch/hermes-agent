@@ -99,6 +99,19 @@ class TestArchiveBlogStream:
         assert stale == 1
         assert "not-json" in (blog / "builder.archive.jsonl").read_text()
 
+    def test_symlink_preserved(self, env):
+        """Retention must not replace a symlinked stream with a regular file."""
+        hermes, blog = env
+        target = blog / "real-ai.jsonl"
+        target.write_text(json.dumps(_fresh_entry()) + "\n", encoding="utf-8")
+        link = blog / "ai.jsonl"
+        import os
+        os.symlink(target, link)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+        mr.archive_blog_stream(link, cutoff)
+        assert link.is_symlink(), "symlink was replaced by a regular file"
+        assert target.exists()
+
 
 class TestMain:
     def test_main_exits_zero(self, env, capsys, monkeypatch):

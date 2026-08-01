@@ -174,6 +174,64 @@ class TestBlueBubblesConnectionLifecycle:
         runner.cleanup.assert_awaited_once()
         client.aclose.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_listener_bind_failure_cleans_client_and_runner(self, monkeypatch):
+        from aiohttp import web
+
+        adapter = _make_adapter(monkeypatch)
+        client = AsyncMock()
+        runner = AsyncMock()
+        site = AsyncMock()
+        site.start.side_effect = OSError("address already in use")
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.httpx.AsyncClient",
+            lambda **kwargs: client,
+        )
+        monkeypatch.setattr(web, "AppRunner", lambda *args, **kwargs: runner)
+        monkeypatch.setattr(web, "TCPSite", lambda *args, **kwargs: site)
+        monkeypatch.setattr(
+            adapter,
+            "_api_get",
+            AsyncMock(side_effect=[{"status": 200}, {"data": {}}]),
+        )
+
+        assert await adapter.connect() is False
+        assert adapter.client is None
+        assert adapter._runner is None
+        runner.cleanup.assert_awaited_once()
+        client.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_listener_start_cancellation_cleans_client_and_runner(
+        self, monkeypatch
+    ):
+        from aiohttp import web
+
+        adapter = _make_adapter(monkeypatch)
+        client = AsyncMock()
+        runner = AsyncMock()
+        site = AsyncMock()
+        site.start.side_effect = asyncio.CancelledError
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.httpx.AsyncClient",
+            lambda **kwargs: client,
+        )
+        monkeypatch.setattr(web, "AppRunner", lambda *args, **kwargs: runner)
+        monkeypatch.setattr(web, "TCPSite", lambda *args, **kwargs: site)
+        monkeypatch.setattr(
+            adapter,
+            "_api_get",
+            AsyncMock(side_effect=[{"status": 200}, {"data": {}}]),
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter.connect()
+
+        assert adapter.client is None
+        assert adapter._runner is None
+        runner.cleanup.assert_awaited_once()
+        client.aclose.assert_awaited_once()
+
 
 class TestBlueBubblesHelpers:
     def test_check_requirements(self, monkeypatch):
@@ -1515,7 +1573,7 @@ class TestBlueBubblesWebhookRegistration:
         assert registrations == [
             {"id": 8, "url": url, "events": ["new-message"]}
         ]
-        assert adapter._owned_webhook_ids == set()
+        assert adapter._owned_webhook_ids == {"8"}
 
     @pytest.mark.asyncio
     async def test_reused_registration_is_not_owned_or_removed_on_disconnect(
@@ -1543,22 +1601,36 @@ class TestBlueBubblesWebhookRegistration:
         assert deleted == []
 
     @pytest.mark.asyncio
-    async def test_cancelled_fresh_registration_post_settles_without_claiming_owner(
+    async def test_cancelled_fresh_registration_is_claimed_then_removed(
         self, monkeypatch
     ):
         adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
         started = asyncio.Event()
         release = asyncio.Event()
-        posted = []
-        adapter.client = self._mock_client(get_response={"status": 200, "data": []})
+        registrations = []
+        deleted = []
+        adapter.client = self._mock_client()
+        original_delete = adapter.client.delete
+
+        async def fake_find(candidate_url):
+            return [item for item in registrations if item["url"] == candidate_url]
 
         async def delayed_post(path, payload):
-            posted.append((path, payload))
             started.set()
             await release.wait()
-            return {"status": 200, "data": {"id": 8, **payload}}
+            created = {"id": 8, **payload}
+            registrations.append(created)
+            return {"status": 200, "data": created}
 
-        adapter._api_post = delayed_post
+        async def tracking_delete(*args, **kwargs):
+            deleted.append(args[0])
+            return await original_delete(*args, **kwargs)
+
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", fake_find)
+        monkeypatch.setattr(adapter, "_api_post", delayed_post)
+        adapter.client.delete = tracking_delete
+
         registration = asyncio.create_task(adapter._register_webhook())
         await started.wait()
         registration.cancel()
@@ -1568,17 +1640,12 @@ class TestBlueBubblesWebhookRegistration:
         with pytest.raises(asyncio.CancelledError):
             await registration
 
-        assert posted == [
-            (
-                "/api/v1/webhook",
-                {"url": adapter._webhook_register_url, "events": ["new-message"]},
-            )
-        ]
-        assert adapter._owned_webhook_ids == set()
-        assert await adapter._unregister_webhook() is False
+        assert adapter._owned_webhook_ids == {"8"}
+        assert await adapter._unregister_webhook() is True
+        assert deleted == [adapter._api_url("/api/v1/webhook/8")]
 
     @pytest.mark.asyncio
-    async def test_cancelled_registration_post_does_not_claim_ambiguous_owner(
+    async def test_cancelled_registration_post_claims_readback_owner_for_cleanup(
         self, monkeypatch
     ):
         adapter = _make_adapter(monkeypatch)
@@ -1621,9 +1688,12 @@ class TestBlueBubblesWebhookRegistration:
         with pytest.raises(asyncio.CancelledError):
             await registration
 
-        assert adapter._owned_webhook_ids == set()
-        assert await adapter._unregister_webhook() is False
-        assert deleted == [adapter._api_url("/api/v1/webhook/7")]
+        assert adapter._owned_webhook_ids == {"8"}
+        assert await adapter._unregister_webhook() is True
+        assert deleted == [
+            adapter._api_url("/api/v1/webhook/7"),
+            adapter._api_url("/api/v1/webhook/8"),
+        ]
 
     @pytest.mark.asyncio
     async def test_partial_stale_delete_failure_restores_when_url_is_empty(

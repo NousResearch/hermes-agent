@@ -345,9 +345,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # BlueBubbles webhook API cannot send custom headers. Do not let
         # aiohttp access logs write that request target to agent.log.
         self._runner = web.AppRunner(app, access_log=None)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
-        await site.start()
+        try:
+            await self._runner.setup()
+            site = web.TCPSite(
+                self._runner, self.webhook_host, self.webhook_port
+            )
+            await site.start()
+        except asyncio.CancelledError:
+            await asyncio.shield(self._cleanup_local_resources())
+            raise
+        except Exception as exc:
+            logger.error(
+                "[bluebubbles] failed to start webhook listener on %s:%s: %s",
+                self.webhook_host,
+                self.webhook_port,
+                exc,
+            )
+            await self._cleanup_local_resources()
+            return False
         logger.info(
             "[bluebubbles] webhook listening on http://%s:%s%s",
             self.webhook_host,
@@ -382,12 +397,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     async def _cleanup_local_resources(self) -> None:
         """Close local HTTP resources without changing server registrations."""
-        if self.client:
-            await self.client.aclose()
-            self.client = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
+        client, self.client = self.client, None
+        if client:
+            try:
+                await client.aclose()
+            except Exception as exc:
+                logger.debug("[bluebubbles] HTTP client cleanup failed: %s", exc)
+
+        runner, self._runner = self._runner, None
+        if runner:
+            try:
+                await runner.cleanup()
+            except Exception as exc:
+                logger.debug("[bluebubbles] webhook runner cleanup failed: %s", exc)
         self._mark_disconnected()
 
     @property
@@ -460,11 +482,65 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
         return removed_all
 
+    async def _claim_created_webhook(
+        self,
+        response: Dict[str, Any],
+        webhook_url: str,
+        expected_events: List[str],
+        prior_ids: set[str],
+    ) -> Optional[str]:
+        """Claim a webhook only after POST and independent readback agree."""
+        status = response.get("status", 0)
+        data = response.get("data")
+        if not isinstance(status, int) or not 200 <= status < 300:
+            return None
+        if not isinstance(data, dict) or data.get("id") is None:
+            return None
+
+        webhook_id = str(data["id"])
+        if webhook_id in prior_ids:
+            return None
+        returned_url = data.get("url")
+        if returned_url is not None and returned_url != webhook_url:
+            return None
+        returned_events = data.get("events")
+        if returned_events is not None and set(returned_events) != set(
+            expected_events
+        ):
+            return None
+
+        current = await self._find_registered_webhooks(webhook_url)
+        if current is None:
+            return None
+        if not any(
+            str(webhook.get("id")) == webhook_id
+            and set(webhook.get("events") or []) == set(expected_events)
+            for webhook in current
+        ):
+            return None
+
+        self._owned_webhook_ids.add(webhook_id)
+        return webhook_id
+
     async def _post_webhook_registration(
-        self, payload: Dict[str, Any]
+        self,
+        payload: Dict[str, Any],
+        prior_ids: Optional[set[str]] = None,
     ) -> Dict[str, Any]:
-        """Let an ambiguous same-URL POST settle before cancellation escapes."""
-        post = asyncio.create_task(self._api_post("/api/v1/webhook", payload))
+        """Let POST and ownership readback settle before cancellation escapes."""
+        prior_ids = set(prior_ids or ())
+
+        async def post_and_reconcile() -> Dict[str, Any]:
+            response = await self._api_post("/api/v1/webhook", payload)
+            await self._claim_created_webhook(
+                response,
+                str(payload["url"]),
+                list(payload["events"]),
+                prior_ids,
+            )
+            return response
+
+        post = asyncio.create_task(post_and_reconcile())
         try:
             return await asyncio.shield(post)
         except asyncio.CancelledError as cancelled:
@@ -529,7 +605,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             removed.append(webhook)
 
         try:
-            response = await self._api_post("/api/v1/webhook", payload)
+            response = await self._post_webhook_registration(
+                payload,
+                prior_ids={str(webhook["id"]) for webhook in existing},
+            )
             status = response.get("status", 0)
             data = response.get("data")
             returned_events = data.get("events") if isinstance(data, dict) else None

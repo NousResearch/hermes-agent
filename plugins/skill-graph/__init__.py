@@ -700,7 +700,7 @@ def _call_llm_for_enrichment(prompt: str) -> dict[str, Any] | None:
             logger.warning("skill-graph: enrichment skipped — no provider with API key configured")
             return None
 
-        # Resolve model: enrichment config → main agent model → deepseek-chat
+        # Resolve model: enrichment config → main agent model → deepseek-v4-flash
         try:
             config = load_config()
             sg_config2 = config.get("skills", {}).get("config", {}).get("skill-graph", {})
@@ -712,9 +712,9 @@ def _call_llm_for_enrichment(prompt: str) -> dict[str, Any] | None:
                 if main_model:
                     model_name = main_model
             if not model_name:
-                model_name = "deepseek-chat"
+                model_name = "deepseek-v4-flash"
         except Exception:
-            model_name = "deepseek-chat"
+            model_name = "deepseek-v4-flash"
 
         logger.debug("skill-graph: enrichment using provider=%s model=%s",
                      provider_name, model_name)

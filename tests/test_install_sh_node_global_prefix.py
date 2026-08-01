@@ -56,3 +56,44 @@ def test_node_bootstrap_redirects_bundled_npm_global_prefix_to_link_dir() -> Non
     assert "heal_managed_node()" in text
     assert "_nb_managed_tool_broken" in text
     assert "for tool in node npm npx" in text
+
+
+def _run_predicate(hermes_home: Path, tool: str) -> int:
+    """Source node-bootstrap.sh and invoke _nb_managed_tool_broken for tool.
+
+    Returns the predicate's exit status (0 == broken/heal-worthy)."""
+    import subprocess
+
+    script = (
+        f'HERMES_HOME={hermes_home!s}; '
+        f'. "{NODE_BOOTSTRAP}"; '
+        f'_nb_managed_tool_broken "{tool}"'
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+    ).returncode
+
+
+def test_absent_managed_sibling_is_heal_worthy(tmp_path: Path) -> None:
+    """A managed Node tree with node present but npm/npx entirely absent must
+    be treated as broken so heal_managed_node() redownloads the pinned tarball.
+    Previously the predicate only reported broken when a present probe failed
+    --version, so a fully missing sibling slipped through to a PATH fallback."""
+    node_dir = tmp_path / "node" / "bin"
+    node_dir.mkdir(parents=True)
+    node_bin = node_dir / "node"
+    node_bin.write_text('#!/bin/sh\necho v20.0.0\n')
+    node_bin.chmod(0o755)
+
+    # node itself is present and runnable -> not broken.
+    assert _run_predicate(tmp_path, "node") != 0
+    # npm/npx are entirely absent from an existing managed tree -> heal-worthy.
+    assert _run_predicate(tmp_path, "npm") == 0
+    assert _run_predicate(tmp_path, "npx") == 0
+
+
+def test_absent_sibling_without_managed_tree_is_not_heal_worthy(tmp_path: Path) -> None:
+    """Absence must stay a no-op when there is no managed Node tree at all, so
+    systems relying on PATH-provided node/npm are not forced into a download."""
+    assert _run_predicate(tmp_path, "npm") != 0

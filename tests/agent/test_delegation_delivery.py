@@ -23,7 +23,9 @@ from agent.delegation_inject import (
 )
 from tools import async_delegation as ad
 from tools import delegate_tool
+from tools.budget_config import BudgetConfig
 from tools.process_registry import process_registry
+from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -285,6 +287,132 @@ def test_consumed_tool_boundary_inject_acknowledges_without_removing_carrier():
 
     assert "accepted audit" in messages[0]["content"]
     assert _event_state(delegation_id, "task:0") == ("delivered", 1)
+
+
+def test_large_tool_boundary_inject_uses_canonical_spill_budget():
+    delegation_id = _record()
+    huge_summary = "HUGE_CHILD_REPORT:" + ("x" * 250_000)
+    assert ad.publish_batch_child_completion(
+        delegation_id, 0, _child(0, huge_summary)
+    )
+    agent = _tool_boundary_agent()
+    messages = [
+        {
+            "role": "tool",
+            "name": "terminal",
+            "tool_call_id": "tc-large-carrier",
+            "content": "original tool result",
+        }
+    ]
+    env = MagicMock()
+    env.execute.return_value = {"output": "", "returncode": 0}
+    env.get_temp_dir.return_value = ""
+    budget = BudgetConfig(
+        default_result_size=10_000,
+        turn_budget=20_000,
+        preview_size=512,
+    )
+    # Force the in-sandbox stdin-write path: upstream tool_result_storage
+    # prefers the host-side spillover dir and, for remote backends, a
+    # bind-mount probe — neither routes the payload through env.execute
+    # stdin. This test pins the carrier contract on the stdin write.
+    with patch(
+        "tools.tool_result_storage._is_host_side_env", return_value=False
+    ), patch(
+        "tools.tool_result_storage._sandbox_visible_spillover_path",
+        return_value=None,
+    ):
+        assert attach_ready_injects_to_tool_results(
+            agent,
+            messages,
+            num_tool_msgs=1,
+            storage_env=env,
+            budget_config=budget,
+        ) == 1
+
+    assert len(messages[0]["content"]) <= budget.default_result_size
+    assert PERSISTED_OUTPUT_TAG in messages[0]["content"]
+    assert delegation_id in messages[0]["content"]
+    assert env.execute.call_count == 1
+    persisted_report = env.execute.call_args.kwargs["stdin_data"]
+    assert "HUGE_CHILD_REPORT:" in persisted_report
+    assert persisted_report.endswith("x" * 1_000)
+    assert len(persisted_report) > len(huge_summary)
+
+
+def test_oversized_inject_without_storage_defers_without_claim_or_truncation():
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(
+        delegation_id, 0, _child(0, "FULL_REPORT_MUST_SURVIVE" + ("x" * 20_000))
+    )
+    agent = _tool_boundary_agent()
+    messages = [
+        {"role": "tool", "tool_call_id": "tc-no-env", "content": "ORIGINAL"}
+    ]
+    budget = BudgetConfig(
+        default_result_size=8_000,
+        turn_budget=16_000,
+        preview_size=512,
+    )
+
+    assert attach_ready_injects_to_tool_results(
+        agent,
+        messages,
+        num_tool_msgs=1,
+        storage_env=None,
+        budget_config=budget,
+    ) == 0
+
+    assert messages == [
+        {"role": "tool", "tool_call_id": "tc-no-env", "content": "ORIGINAL"}
+    ]
+    assert _event_state(delegation_id, "task:0") == ("pending", 0)
+    assert any(
+        event.get("delegation_id") == delegation_id for event in _queue_contents()
+    )
+
+
+def test_attach_exception_after_carrier_mutation_restores_target_and_requeues():
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(
+        delegation_id, 0, _child(0, "FAULT_INJECTED_EVIDENCE")
+    )
+
+    class RaisingSessionAgent:
+        session_id = "parent-session"
+        _active_turn_id = "turn-current"
+        _session_messages = []
+
+        @property
+        def _pending_delegation_inject_claims(self):
+            return []
+
+        @_pending_delegation_inject_claims.setter
+        def _pending_delegation_inject_claims(self, _value):
+            raise RuntimeError("fault after carrier mutation")
+
+    messages = [{
+        "role": "tool",
+        "tool_call_id": "tc",
+        "content": "ORIGINAL_CONTENT",
+        "display_metadata": {"risk": "keep"},
+    }]
+
+    with pytest.raises(RuntimeError, match="fault after carrier mutation"):
+        attach_ready_injects_to_tool_results(
+            RaisingSessionAgent(), messages, num_tool_msgs=1
+        )
+
+    assert messages == [{
+        "role": "tool",
+        "tool_call_id": "tc",
+        "content": "ORIGINAL_CONTENT",
+        "display_metadata": {"risk": "keep"},
+    }]
+    assert _event_state(delegation_id, "task:0") == ("pending", 1)
+    assert any(
+        event.get("delegation_id") == delegation_id for event in _queue_contents()
+    )
 
 
 def test_tool_carrier_preserves_provider_roles_and_existing_prefix_items():
@@ -797,6 +925,109 @@ def test_run_conversation_persists_tool_carrier_before_provider_error(
     heartbeat = agent._delegation_inject_claim_heartbeat
     heartbeat["thread"].join(timeout=1)
     assert not heartbeat["thread"].is_alive()
+
+
+def test_persisted_bounded_carrier_survives_production_compressor_payload(
+    tmp_path,
+):
+    from agent.context_compressor import ContextCompressor
+    from agent.tool_executor import _flush_session_db_after_tool_progress
+
+    agent = _make_loop_agent(tmp_path)
+    agent._active_turn_id = "turn-current"
+    agent._pending_delegation_inject_claims = []
+    agent._incremental_persistence_failed = False
+    delegation_id = _record(
+        turn_id="turn-current",
+        parent_session_id=agent.session_id,
+    )
+    huge_summary = "COMPRESSOR_CARRIER_EVIDENCE:" + ("z" * 250_000)
+    assert ad.publish_batch_child_completion(
+        delegation_id, 0, _child(0, huge_summary)
+    )
+
+    messages = [{"role": "system", "content": "system"}]
+    for index in range(8):
+        messages.extend(
+            [
+                {"role": "user", "content": f"old user {index}"},
+                {"role": "assistant", "content": f"old assistant {index}"},
+            ]
+        )
+    messages.extend(
+        [
+            {"role": "user", "content": "current task"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc-compress",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_call_id": "tc-compress",
+                "content": "tool boundary complete",
+            },
+        ]
+    )
+    env = MagicMock()
+    env.execute.return_value = {"output": "", "returncode": 0}
+    env.get_temp_dir.return_value = ""
+    budget = BudgetConfig(
+        default_result_size=10_000,
+        turn_budget=20_000,
+        preview_size=512,
+    )
+    # Force the in-sandbox stdin-write path (see the carrier-budget test
+    # above): host-side spillover and the bind-mount probe bypass stdin.
+    with patch(
+        "tools.tool_result_storage._is_host_side_env", return_value=False
+    ), patch(
+        "tools.tool_result_storage._sandbox_visible_spillover_path",
+        return_value=None,
+    ):
+        assert _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage="persist bounded carrier before compression",
+            storage_env=env,
+            budget_config=budget,
+        )
+    assert _event_state(delegation_id, "task:0") == ("delivered", 1)
+
+    durable = agent._session_db.get_messages_as_conversation(agent.session_id)
+    assert PERSISTED_OUTPUT_TAG in str(durable)
+    assert delegation_id in str(durable)
+    assert "COMPRESSOR_CARRIER_EVIDENCE:" in env.execute.call_args.kwargs["stdin_data"]
+
+    compressor = ContextCompressor(
+        model="test/model",
+        provider="openai",
+        base_url="https://example.invalid/v1",
+        api_key="test-key",
+        config_context_length=100_000,
+        protect_first_n=3,
+        protect_last_n=3,
+        summary_target_ratio=0.10,
+        quiet_mode=True,
+    )
+    compressor.threshold_tokens = 2_000
+    compressor.tail_token_budget = 1_000
+    compressor._generate_summary = lambda *_args, **_kwargs: "compressed old context"
+
+    compressed = compressor.compress(durable, current_tokens=80_000, force=True)
+    provider_payload = AIAgent._sanitize_api_messages(deepcopy(compressed))
+
+    assert compressor._last_compression_made_progress is True
+    assert delegation_id in str(provider_payload)
+    assert PERSISTED_OUTPUT_TAG in str(provider_payload)
+    assert len(provider_payload[-1]["content"]) <= budget.default_result_size
 
 
 def test_same_turn_claim_conflict_defers_pending_event(monkeypatch):

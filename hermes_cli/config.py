@@ -4782,8 +4782,12 @@ def set_config_value(key: str, value: str, force: bool = False):
         key: Dotted config path (e.g. ``terminal.backend``).
         value: String value (auto-coerced to bool/int/float when matching).
         force: When True, skip the unknown-key warning — useful for scripted
-            writes of keys the running version doesn't recognize yet. The CLI
-            exposes this via ``hermes config set --force``.
+            writes of keys the running version doesn't recognize yet — AND
+            authorize destructive replacement of a mapping section by a
+            scalar (e.g. ``--force model gpt-x`` replaces the whole ``model:``
+            mapping). Without --force, scalar writes over mapping sections are
+            refused (bare ``model`` is redirected to ``model.default``). The
+            CLI exposes this via ``hermes config set --force``.
     """
     if is_managed():
         managed_error("set configuration values")
@@ -5089,7 +5093,8 @@ def config_command(args):
             print("  hermes config set terminal.backend docker")
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             print()
-            print("  --force: skip the unknown-key notice for unrecognized keys")
+            print("  --force: skip the unknown-key notice for unrecognized keys,")
+            print("           and allow a scalar to replace a whole mapping section")
             sys.exit(1)
         set_config_value(key, value, force=force)
 

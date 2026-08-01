@@ -378,7 +378,7 @@ class TestLaunchdServiceRecovery:
         assert calls[-1] == ("clear",)
 
     def test_external_restart_falls_back_when_launchd_does_not_replace_pid(self, monkeypatch):
-        """Old-PID exit without a managed replacement must trigger kickstart."""
+        """Old-PID exit without a replacement must kickstart without re-signaling."""
         calls = []
         self._patch_external_restart(monkeypatch, calls)
         monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {4242})
@@ -402,8 +402,12 @@ class TestLaunchdServiceRecovery:
             ("graceful", 4242, 17.0),
             ("wait-for-replacement", 4242, 30.0),
         ]
-        assert ("terminate", 4242, False) in calls
-        assert any(call[0] == "run" for call in calls)
+        assert not any(call[0] in {"terminate", "wait-for-exit"} for call in calls)
+        assert (
+            "run",
+            ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"],
+            {"check": True, "timeout": 90},
+        ) in calls
         assert calls[-1] == ("clear",)
 
     def test_ancestor_restart_keeps_async_fast_path(self, monkeypatch):

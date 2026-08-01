@@ -4486,6 +4486,9 @@ def launchd_restart():
                     "⚠ launchd did not publish a replacement gateway PID — "
                     "falling back to kickstart"
                 )
+                # The old gateway has already exited. Do not signal its numeric
+                # PID again after the replacement wait; it may have been reused.
+                pid = None
             else:
                 print(
                     f"⚠ Gateway did not exit after the {drain_timeout:.0f}s drain — "

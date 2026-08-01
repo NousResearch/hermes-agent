@@ -245,8 +245,37 @@ def test_moa_preset_not_found_never_triggers_provider_fallback():
     assert result.retryable is False
     assert result.should_fallback is False
 
-def test_resolve_moa_preset_name_realigns_drift_to_default(tmp_path, monkeypatch):
-    """Construction helper must re-align non-preset model ids under provider=moa."""
+def test_resolve_moa_preset_name_fails_closed_without_recovery_flag(tmp_path, monkeypatch):
+    """Missing selected preset must raise so facade fail-closed is reachable (T1)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "moa:\n"
+        "  default_preset: factory-default\n"
+        "  presets:\n"
+        "    factory-default:\n"
+        "      reference_models:\n"
+        "        - {provider: provider-alpha, model: opaque-a}\n"
+        "      aggregator: {provider: provider-beta, model: opaque-b}\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from types import SimpleNamespace
+
+    import pytest
+
+    from agent.errors import MoAPresetNotFoundError
+    from agent.moa_loop import resolve_moa_preset_name
+
+    agent = SimpleNamespace(provider="moa", model="deleted-user-preset", tool_progress_callback=None)
+    with pytest.raises(MoAPresetNotFoundError):
+        resolve_moa_preset_name(agent, agent.model)
+    # Default path must not mutate agent.model either.
+    assert agent.model == "deleted-user-preset"
+
+
+def test_resolve_moa_preset_name_realigns_only_when_recovery_flagged(tmp_path, monkeypatch):
+    """allow_default_realign=True is recovery-only (transport drift rebuild)."""
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text(
@@ -265,7 +294,9 @@ def test_resolve_moa_preset_name_realigns_drift_to_default(tmp_path, monkeypatch
     from agent.moa_loop import build_moa_facade, resolve_moa_preset_name
 
     agent = SimpleNamespace(provider="moa", model="deepseek-v4-flash", tool_progress_callback=None)
-    preset = resolve_moa_preset_name(agent, agent.model)
+    preset = resolve_moa_preset_name(
+        agent, agent.model, allow_default_realign=True
+    )
     assert preset == "factory-default"
     # Helper must not mutate agent.model; caller adopts.
     assert agent.model == "deepseek-v4-flash"

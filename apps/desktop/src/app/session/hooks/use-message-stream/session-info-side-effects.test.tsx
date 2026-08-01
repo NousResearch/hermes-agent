@@ -6,7 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
-import { setCurrentModel, setCurrentProvider } from '@/store/session'
+import { writeKey } from '@/lib/storage'
+import {
+  $currentFastMode,
+  $currentReasoningEffort,
+  getComposerModeSource,
+  hasPersistedComposerFastMode,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
+  snapshotPersistedComposerFastMode
+} from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
@@ -66,12 +77,29 @@ beforeEach(() => {
   queryClient = new QueryClient()
   setCurrentModel('')
   setCurrentProvider('')
+  writeKey('hermes.desktop.composer.fast', null)
+  writeKey('hermes.desktop.composer.fast-source', null)
+  writeKey('hermes.desktop.composer.reasoning-effort', null)
+  writeKey('hermes.desktop.composer.reasoning-effort-source', null)
+  setCurrentFastMode(false)
+  // clear durable after setting — leave absent for provenance tests
+  writeKey('hermes.desktop.composer.fast', null)
+  writeKey('hermes.desktop.composer.fast-source', null)
+  setCurrentReasoningEffort('')
+  writeKey('hermes.desktop.composer.reasoning-effort', null)
+  writeKey('hermes.desktop.composer.reasoning-effort-source', null)
+  $currentFastMode.set(false)
+  $currentReasoningEffort.set('')
 })
 
 afterEach(() => {
   cleanup()
   setCurrentModel('')
   setCurrentProvider('')
+  writeKey('hermes.desktop.composer.fast', null)
+  writeKey('hermes.desktop.composer.fast-source', null)
+  writeKey('hermes.desktop.composer.reasoning-effort', null)
+  writeKey('hermes.desktop.composer.reasoning-effort-source', null)
   vi.useRealTimers()
   vi.restoreAllMocks()
 })
@@ -156,3 +184,46 @@ describe('message.complete sidebar refresh coalescing', () => {
     expect(refreshSessions).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('session.info Fast/effort provenance (T2)', () => {
+  it('paints Fast/effort without persisting or marking manual', async () => {
+    await mountStream()
+
+    // Establish durable manual intent first.
+    setCurrentFastMode(true)
+    setCurrentReasoningEffort('high')
+    expect(hasPersistedComposerFastMode()).toBe(true)
+    expect(getComposerModeSource('fast')).toBe('manual')
+    expect(getComposerModeSource('effort')).toBe('manual')
+    expect(snapshotPersistedComposerFastMode()).toBe(true)
+
+    // Heartbeat / session.info runtime paint must not steal ownership.
+    sessionInfo(ACTIVE_SID, {
+      fast: false,
+      model: 'm1',
+      reasoning_effort: 'low',
+      running: true
+    })
+
+    expect($currentFastMode.get()).toBe(false)
+    expect($currentReasoningEffort.get()).toBe('low')
+    // Durable keys + provenance unchanged.
+    expect(snapshotPersistedComposerFastMode()).toBe(true)
+    expect(hasPersistedComposerFastMode()).toBe(true)
+    expect(getComposerModeSource('fast')).toBe('manual')
+    expect(getComposerModeSource('effort')).toBe('manual')
+  })
+
+  it('does not create Fast persistence from an absent baseline', async () => {
+    await mountStream()
+    expect(hasPersistedComposerFastMode()).toBe(false)
+
+    sessionInfo(ACTIVE_SID, { fast: true, model: 'm1', running: true })
+
+    expect($currentFastMode.get()).toBe(true)
+    expect(hasPersistedComposerFastMode()).toBe(false)
+    expect(snapshotPersistedComposerFastMode()).toBeNull()
+    expect(getComposerModeSource('fast')).not.toBe('manual')
+  })
+})
+

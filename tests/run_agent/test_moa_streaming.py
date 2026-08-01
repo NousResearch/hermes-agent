@@ -112,8 +112,14 @@ def test_build_moa_facade_ignores_fallback_model_name_when_restoring(monkeypatch
     with pytest.raises(MoAPresetNotFoundError):
         build_moa_facade(agent, agent.model)
 
-    # Construction/restore path uses the shared resolver (production contract).
-    preset = resolve_moa_preset_name(agent, agent.model)
+    # Default resolve must fail-closed for non-preset model ids (T1).
+    with pytest.raises(MoAPresetNotFoundError):
+        resolve_moa_preset_name(agent, agent.model)
+
+    # Recovery rebuild path may realign with the explicit flag.
+    preset = resolve_moa_preset_name(
+        agent, agent.model, allow_default_realign=True
+    )
     agent.model = preset
     client = build_moa_facade(agent, preset)
 

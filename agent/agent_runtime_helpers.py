@@ -1313,7 +1313,15 @@ def try_recover_primary_transport(
             # the reference_callback relay survives recovery (#53802).
             from agent.moa_loop import build_moa_facade, resolve_moa_preset_name
 
-            preset = resolve_moa_preset_name(agent, getattr(agent, "model", None))
+            # Transient recovery rebuild: allow default realign only here.
+            preset = resolve_moa_preset_name(
+                agent,
+                getattr(agent, "model", None),
+                allow_default_realign=True,
+            )
+            # Intentional permanent adopt: the requested id is not a configured
+            # preset (transport drift / deleted config). There is nothing valid
+            # to restore *to*; sticky identity becomes the recovery default.
             agent.model = preset
             agent.client = build_moa_facade(agent, preset)
         else:
@@ -1496,7 +1504,15 @@ def restore_primary_runtime(agent) -> bool:
 
             # Transport drift may leave provider=moa with a non-preset model id.
             # Re-align sticky identity before rebuild.
-            preset = resolve_moa_preset_name(agent, getattr(agent, "model", None))
+            # Transient recovery rebuild: allow default realign only here.
+            preset = resolve_moa_preset_name(
+                agent,
+                getattr(agent, "model", None),
+                allow_default_realign=True,
+            )
+            # Intentional permanent adopt: the requested id is not a configured
+            # preset (transport drift / deleted config). There is nothing valid
+            # to restore *to*; sticky identity becomes the recovery default.
             agent.model = preset
             agent.client = build_moa_facade(agent, preset)
             agent._anthropic_client = None

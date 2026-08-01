@@ -1,25 +1,37 @@
 /**
- * Sends committed IME/dead-key text when xterm does not emit onData.
+ * Delays an IME/dead-key commit just long enough for xterm to emit onData.
  *
- * Some browser/layout combinations leave xterm's CompositionHelper without an
- * onData callback. The DOM compositionend event is the authoritative commit.
- * If xterm does emit the same bytes afterwards, consume that one duplicate.
+ * xterm is authoritative when it emits the commit. Browsers/layouts where it
+ * does not emit onData still forward the compositionend text on the next turn.
  */
 export function createPtyCompositionForwarder(send: (data: string) => void) {
-  let pendingDuplicate: string | null = null;
+  let pending: string | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearPending = () => {
+    pending = null;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
 
   return {
-    onCompositionEnd(data: string) {
+    onCompositionEnd(data: string | null) {
       if (!data) return;
-      pendingDuplicate = data;
-      send(data);
+      clearPending();
+      pending = data;
+      timer = setTimeout(() => {
+        const committed = pending;
+        clearPending();
+        if (committed) send(committed);
+      }, 0);
     },
-    shouldForwardTerminalData(data: string) {
-      if (data === pendingDuplicate) {
-        pendingDuplicate = null;
-        return false;
+    noteTerminalData(data: string) {
+      if (pending && data.startsWith(pending)) {
+        clearPending();
       }
-      return true;
     },
+    dispose: clearPending,
   };
 }

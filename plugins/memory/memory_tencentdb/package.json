@@ -1,6 +1,6 @@
 {
   "name": "@tencentdb-agent-memory/memory-tencentdb",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Four-layer local memory system plugin for OpenClaw — auto-captures, structures, and profiles conversational knowledge using local LLM + SQLite vector search (L0→L1→L2→L3 pipeline)",
   "type": "module",
   "main": "./dist/index.mjs",
@@ -94,7 +94,6 @@
     "@opentelemetry/sdk-trace-base": "^2.7.1",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "@tencentdb-agent-memory/memory-sdk-ts": "^1.0.0",
-    "@tencentdb-agent-memory/memory-tencentdb": "^1.0.1",
     "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
     "ai": "^6.0.164",
     "crc-32": "^1.2.2",
@@ -112,7 +111,7 @@
     "@opentelemetry/context-async-hooks": "^2.7.1",
     "@opentelemetry/exporter-logs-otlp-grpc": "^0.218.0",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.218.0",
-    "cos-nodejs-sdk-v5": "^2.15.4",
+    "cos-nodejs-sdk-v5": "^3.0.0",
     "ioredis": "^5.10.1",
     "kafkajs": "^2.2.4",
     "opik": "^1.11.14"

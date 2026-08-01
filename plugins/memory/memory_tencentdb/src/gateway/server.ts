@@ -67,6 +67,7 @@ import type { TimerScanner } from "../services/timer-scanner.js";
 import type { PipelineWorker } from "../services/pipeline-worker.js";
 import type { StatefulPipelineManager } from "../utils/stateful-pipeline-manager.js";
 import type { PipelineLogger } from "../utils/pipeline-factory.js";
+import { createLocalTimerTask } from "./timer-routing.js";
 
 const TAG = "[tdai-gateway]";
 const VERSION = "0.1.0";
@@ -1134,63 +1135,13 @@ export class TdaiGateway {
       type: backendType,
       local: backendType === "local" ? {
         onTimerExpired: (entry) => {
-          // Parse timer member by prefix: "offload-{type}:{instanceId}:{sessionId}[:{extra}]"
-          // or legacy "session:L2_schedule"
           const member = entry.member;
-          let taskType: string;
-          let instanceId: string;
-          let sessionId: string;
-
-          const firstColon = member.indexOf(":");
-          const prefix = firstColon > 0 ? member.slice(0, firstColon) : member;
-
-          if (prefix === "offload-l1" || prefix === "offload-l15" || prefix === "offload-l2") {
-            taskType = prefix;
-            // Format: "offload-{type}:{instanceId}:{sessionId}[:{mmdFile}]"
-            // instanceId is the segment right after the prefix
-            const rest = member.slice(firstColon + 1);
-            const instanceEnd = rest.indexOf(":");
-            if (instanceEnd > 0) {
-              instanceId = rest.slice(0, instanceEnd);
-              sessionId = rest.slice(instanceEnd + 1);
-            } else {
-              instanceId = this.config.instanceId ?? "default";
-              sessionId = rest;
-            }
-            // For offload-l2: strip trailing ":{mmdFile}" from sessionId
-            // (mmdFile is extracted separately from timerMember in the executor)
-            if (prefix === "offload-l2" && sessionId.endsWith(".mmd")) {
-              const lastColon = sessionId.lastIndexOf(":");
-              if (lastColon > 0) {
-                sessionId = sessionId.slice(0, lastColon);
-              }
-            }
-          } else {
-            // Legacy format: "sessionId:L2_schedule" or "sessionId:L1_idle"
-            const lastColon = member.lastIndexOf(":");
-            const suffix = lastColon >= 0 ? member.slice(lastColon + 1) : "";
-            sessionId = lastColon >= 0 ? member.slice(0, lastColon) : member;
-            taskType = suffix === "L2_schedule" ? "offload-l2" : suffix === "L1_idle" ? "offload-l1" : "L3";
-            instanceId = this.config.instanceId ?? "default";
-          }
-          const now = Date.now();
-          // Extract targetMmdFile from member for offload-l2 (needed by pipeline-worker lockKey)
-          let targetMmdFile: string | undefined;
-          if (taskType === "offload-l2") {
-            const mmdMatch = member.match(/(\d+-[^:]+\.mmd)$/);
-            if (mmdMatch) targetMmdFile = mmdMatch[1];
-          }
-          const task = {
-            id: `${taskType}-${sessionId}-${now}`,
-            type: taskType as any,
-            instanceId,
-            sessionId,
-            priority: 0,
-            createdAt: now,
-            data: { triggeredBy: "timer_scanner", timerMember: member, instanceId, targetMmdFile },
-          };
+          const task = createLocalTimerTask({
+            entry,
+            defaultInstanceId: this.config.instanceId ?? "default",
+          });
           this.stateBackend!.enqueueTask(task).then(() => {
-            this.logger.info(`[local-timer] Timer fired: ${member} → enqueued ${taskType} task`);
+            this.logger.info(`[local-timer] Timer fired: ${member} → enqueued ${task.type} task`);
           }).catch((err) => {
             this.logger.error(`[local-timer] Failed to enqueue task for ${member}: ${err instanceof Error ? err.message : String(err)}`);
           });

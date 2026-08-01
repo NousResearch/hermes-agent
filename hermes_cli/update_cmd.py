@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from hermes_constants import venv_python_path
 
 logger = logging.getLogger(__name__)
 
@@ -222,9 +223,7 @@ def _validate_critical_modules_import(root) -> tuple[bool, str | None, str | Non
     try:
         interpreter = sys.executable
         try:
-            bin_dir = "Scripts" if _m()._is_windows() else "bin"
-            python_name = "python.exe" if _m()._is_windows() else "python"
-            venv_python = Path(root) / "venv" / bin_dir / python_name
+            venv_python = venv_python_path(Path(root) / "venv")
             if venv_python.exists():
                 interpreter = str(venv_python)
         except Exception:
@@ -622,6 +621,64 @@ def _atomic_replace_dir(src: str, dst: str) -> None:
     if os.path.exists(backup):
         shutil.rmtree(backup, ignore_errors=True)
 
+
+def _stage_replacement(src: str, dst: str) -> str:
+    """Copy *src* to a sibling staging dir for *dst*; return the staging path.
+
+    Phase 1 of the two-phase replace. Touches nothing live, so a failure here
+    leaves the whole install untouched.
+    """
+    staging = f"{dst}.hermes-update-staging"
+    backup = f"{dst}.hermes-update-old"
+    for leftover in (staging, backup):
+        if os.path.exists(leftover):
+            shutil.rmtree(leftover, ignore_errors=True)
+    shutil.copytree(src, staging)
+    return staging
+
+
+def _commit_staged_replacements(staged: list[tuple[str, str]]) -> None:
+    """Phase 2: swap every staged dir into place, rolling back all on failure.
+
+    ``_atomic_replace_dir`` makes each *individual* directory swap safe, but
+    the ZIP update replaces ~70 top-level entries in a loop, and nothing made
+    the loop atomic *as a whole*. A failure partway left some entries at the
+    new version and the rest at the old one — every file valid Python, the
+    combination unbootable (issue #76104; the ``ImportError`` in #76091 and
+    the field report in #63717 are both this).
+
+    Splitting stage-all-then-swap-all shrinks the failure window from "the
+    duration of a full tree copy" to "the duration of N renames", and makes
+    the remaining window recoverable: if a rename fails we restore every
+    entry already swapped, so the tree lands wholly new or wholly old.
+    """
+    swapped: list[tuple[str, str]] = []  # (dst, backup) in swap order
+    try:
+        for staging, dst in staged:
+            backup = f"{dst}.hermes-update-old"
+            if os.path.exists(dst):
+                os.rename(dst, backup)
+                swapped.append((dst, backup))
+            else:
+                swapped.append((dst, ""))
+            os.rename(staging, dst)
+    except OSError:
+        # Undo every swap already made so the install stays self-consistent.
+        for dst, backup in reversed(swapped):
+            try:
+                if os.path.exists(dst):
+                    shutil.rmtree(dst, ignore_errors=True)
+                if backup and os.path.exists(backup):
+                    os.rename(backup, dst)
+            except OSError:
+                pass  # best-effort; the raise below reports the real failure
+        raise
+    # All swaps succeeded — drop the backups (best-effort, never fatal).
+    for _dst, backup in swapped:
+        if backup and os.path.exists(backup):
+            shutil.rmtree(backup, ignore_errors=True)
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -700,19 +757,46 @@ def _update_via_zip(args):
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
         preserve = {"venv", "node_modules", ".git", ".env"}
-        update_count = 0
-        for item in os.listdir(extracted):
-            if item in preserve:
-                continue
+        entries = [i for i in os.listdir(extracted) if i not in preserve]
+
+        # Two-phase replace (#76104). Phase 1 copies every directory into a
+        # sibling staging dir without touching anything live; phase 2 swaps
+        # them all in with same-filesystem renames and rolls back every swap
+        # if any one fails. Replacing entries one-at-a-time (the previous
+        # shape) meant an interruption partway left `agent/` new and `tools/`
+        # stale — all files valid, the tree unbootable.
+        #
+        # Staging costs a second copy of the tree on disk. Check up front so
+        # we fail with a clear message instead of running out mid-swap.
+        need = sum(
+            os.path.getsize(os.path.join(dirpath, f))
+            for entry in entries
+            for dirpath, _dirs, files in os.walk(os.path.join(extracted, entry))
+            for f in files
+            if os.path.isfile(os.path.join(dirpath, f))
+        )
+        free = shutil.disk_usage(str(_m().PROJECT_ROOT)).free
+        if free < need * 2:
+            raise RuntimeError(
+                f"not enough free disk space to stage the update safely "
+                f"(need ~{need * 2 // (1024 * 1024)} MB, have "
+                f"{free // (1024 * 1024)} MB)"
+            )
+
+        staged: list[tuple[str, str]] = []
+        plain_files: list[tuple[str, str]] = []
+        for item in entries:
             src = os.path.join(extracted, item)
             dst = os.path.join(str(_m().PROJECT_ROOT), item)
             if os.path.isdir(src):
-                # Atomic-ish replace: never leave dst half-deleted if the copy
-                # fails partway (the failure mode behind #49145 on Windows).
-                _atomic_replace_dir(src, dst)
+                staged.append((_stage_replacement(src, dst), dst))
             else:
-                shutil.copy2(src, dst)
-            update_count += 1
+                plain_files.append((src, dst))
+
+        _commit_staged_replacements(staged)
+        for src, dst in plain_files:
+            shutil.copy2(src, dst)
+        update_count = len(staged) + len(plain_files)
 
         print(f"✓ Updated {update_count} items from ZIP")
 
@@ -2636,9 +2720,7 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     healthy so a probe failure can't force needless reinstalls.
     """
     venv_dir = _m().PROJECT_ROOT / "venv"
-    python_name = "python.exe" if _m()._is_windows() else "python"
-    bin_dir = "Scripts" if _m()._is_windows() else "bin"
-    venv_python = venv_dir / bin_dir / python_name
+    venv_python = venv_python_path(venv_dir)
     if not venv_python.exists():
         # No venv interpreter at all. In a dev checkout that's normal (the
         # dev may run hermes from any interpreter), so report healthy to
@@ -3724,10 +3806,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # repair after the old venv was moved aside) needs the venv
                 # recreated before dependencies can be installed into it.
                 venv_python_missing = not (
-                    _m().PROJECT_ROOT
-                    / "venv"
-                    / ("Scripts" if _m()._is_windows() else "bin")
-                    / ("python.exe" if _m()._is_windows() else "python")
+                    venv_python_path(_m().PROJECT_ROOT / "venv")
                 ).exists()
                 if venv_python_missing and repair_uv:
                     print("→ Recreating virtual environment...")

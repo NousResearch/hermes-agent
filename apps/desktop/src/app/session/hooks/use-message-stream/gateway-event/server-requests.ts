@@ -8,11 +8,13 @@ import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
+import { playApprovalSound } from '@/lib/completion-sound'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { notify } from '@/store/notifications'
 import {
   receiveApprovalRequest,
   setSecretRequest,
@@ -241,6 +243,20 @@ const approval: Handler = ctx => {
   markNeedsInput(ctx)
 
   if (!request.replayed) {
+    // OS notifications can be silently swallowed by macOS (ad-hoc signed
+    // builds never enter the notification registry), so a blocked approval
+    // may otherwise go completely unnoticed while the user is in another
+    // session or another app. The WebAudio cue and the in-app toast need no
+    // macOS permission, so they are the reliable attention channel. The
+    // native notification is still dispatched for builds where it works.
+    playApprovalSound(sessionId || undefined)
+    notify({
+      durationMs: 0,
+      kind: 'warning',
+      message: command || description,
+      title: translateNow('notifications.native.approvalTitle')
+    })
+
     dispatchNativeNotification({
       actions: [
         {

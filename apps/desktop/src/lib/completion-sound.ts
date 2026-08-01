@@ -441,6 +441,60 @@ export function playCompletionSound(dedupeKey?: string) {
   void ownsAmbientCue(`sound:${dedupeKey}`).then(owns => owns && play())
 }
 
+// Attention cue for approval/input requests — deliberately distinct from the
+// completion chime: three short high beeps on a rising figure. Runs through
+// the same warm signal chain as the completion variants, but the pattern reads
+// as "action needed" rather than "done". Unlike OS notifications, WebAudio
+// needs no macOS permission, so this is the reliable channel for surfacing a
+// blocked approval even when the system swallows native notifications (ad-hoc
+// signed builds, TCC, etc.).
+export function playApprovalSound(dedupeKey?: string) {
+  if ($hapticsMuted.get()) {
+    return
+  }
+
+  const play = () => {
+    const ac = getAudioContext()
+
+    if (!ac) {
+      return
+    }
+
+    const master = ac.createGain()
+    const tone = ac.createBiquadFilter()
+    tone.type = 'lowpass'
+    tone.frequency.setValueAtTime(3800, ac.currentTime)
+    tone.Q.setValueAtTime(0.32, ac.currentTime)
+    master.gain.setValueAtTime(0.48, ac.currentTime)
+    master.connect(tone)
+
+    const dry = ac.createGain()
+    dry.gain.setValueAtTime(0.88, ac.currentTime)
+    tone.connect(dry)
+    dry.connect(ac.destination)
+
+    const reverb = makeReverb(ac)
+    const wet = ac.createGain()
+    wet.gain.setValueAtTime(0.34, ac.currentTime)
+    tone.connect(reverb)
+    reverb.connect(wet)
+    wet.connect(ac.destination)
+
+    const t0 = ac.currentTime + 0.01
+
+    // Rising three-note attention figure (C6 → G5 → C6), tight and bright.
+    voice(ac, master, t0, { freq: C6, dur: 0.14, gain: 0.05, attack: 0.005, type: 'sine' })
+    voice(ac, master, t0 + 0.16, { freq: G5, dur: 0.14, gain: 0.042, attack: 0.005, type: 'sine' })
+    voice(ac, master, t0 + 0.32, { freq: C6, dur: 0.28, gain: 0.055, attack: 0.006, type: 'sine' })
+  }
+
+  if (!dedupeKey) {
+    return play()
+  }
+
+  void ownsAmbientCue(`approval:${dedupeKey}`).then(owns => owns && play())
+}
+
 interface AirPuffSpec {
   decay: number
   freq: number

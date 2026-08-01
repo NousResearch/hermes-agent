@@ -15,6 +15,12 @@ CHANNEL_ID = "1507448577784283367"
 PROPOSALS_DIR = HERMES_HOME / "runbooks" / "proposals"
 STATE = HERMES_HOME / "state" / "proposal-approval-state.json"
 
+# Idea-card index: proposals/<date>/idea-index.jsonl (one JSON object per line).
+# Phase 2 three-gate flow:
+#   GATE 2 (pitch): idea flagged pitch:true -> pitch.md generated
+#   GATE 3 (prototype): explicit approval -> prototype.md + pitch.md attached
+IDEA_INDEX_NAME = "idea-index.jsonl"
+
 DRY_RUN = False
 
 
@@ -69,6 +75,9 @@ def parse_command(content):
     reject = re.search(r"!reject\s+([a-zA-Z0-9][-a-zA-Z0-9._]+)", content)
     if reject:
         return ("reject", reject.group(1).strip().rstrip("."))
+    pitch = re.search(r"!pitch\s+([a-zA-Z0-9][-a-zA-Z0-9._]+)", content)
+    if pitch:
+        return ("pitch", pitch.group(1).strip().rstrip("."))
     return (None, None)
 
 
@@ -105,18 +114,59 @@ def extract_effort(html_section):
     return "2"
 
 
+def find_idea_card(slug):
+    """Look up the idea card for a slug across idea-index.jsonl files (newest first).
+
+    Returns (card_dict, index_path) or (None, None).
+    """
+    if not PROPOSALS_DIR.exists():
+        return None, None
+    for idx in sorted(PROPOSALS_DIR.rglob(IDEA_INDEX_NAME), reverse=True):
+        for line in idx.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                card = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if card.get("slug") == slug:
+                return card, idx
+    return None, None
+
+
+def artifact_paths(idx_path, slug):
+    """Resolve pitch.md / prototype.md for a slug inside its proposals/<date> dir."""
+    base = idx_path.parent if idx_path is not None else PROPOSALS_DIR
+    return base / f"{slug}-pitch.md", base / f"{slug}-prototype.md"
+
+
 def create_kanban_triage(slug, title, html_section):
     key = f"proposal-{slug}-{datetime.now(TZ).strftime(chr(37)+chr(89)+chr(45)+chr(37)+chr(109)+chr(45)+chr(37)+chr(100))}"
+    # Phase 2: attach GATE 2 (pitch) + GATE 3 (prototype) artifacts when present
+    card, idx = find_idea_card(slug)
+    attachments = ""
+    if idx is not None:
+        pitch_path, proto_path = artifact_paths(idx, slug)
+        for label, p in (("pitch", pitch_path), ("prototype", proto_path)):
+            if p.exists():
+                attachments += f"\n---\n\n## {label.capitalize()} ({p.name})\n\n{p.read_text(encoding='utf-8', errors='replace')}\n"
     body = (
         f"Approved proposal from research mashup review.\n\n"
         f"---\n\n"
         f"{html_section}\n\n"
+        f"{attachments}"
         f"---\n\n"
         f"Slug: `{slug}`\n"
         f"Approved via Discord by Sahil.\n"
         f"Route through Kensei Intake then Orchestrator then Octacon for build.\n"
     )
     priority = extract_effort(html_section)
+    if card and card.get("recommendation", {}).get("priority"):
+        try:
+            priority = str(int(card["recommendation"]["priority"] // 3 + 1))
+        except (ValueError, TypeError, ZeroDivisionError):
+            pass
     cmd = [
         "hermes", "kanban", "create", title,
         "--triage", "--priority", priority,
@@ -203,6 +253,26 @@ def main():
         elif action == "reject":
             rejected_ids.add(slug)
             actions.append(f"rejected: {slug}")
+        elif action == "pitch":
+            # GATE 2: mark idea as pitch-worthy; NO kanban task (prototype gate)
+            card, idx = find_idea_card(slug)
+            if card is not None and idx is not None:
+                card["pitch"] = True
+                card["pitch_requested_at"] = datetime.now(TZ).isoformat()
+                # rewrite index line in place
+                lines = idx.read_text(encoding="utf-8").splitlines()
+                for i, line in enumerate(lines):
+                    try:
+                        c = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if c.get("slug") == slug:
+                        lines[i] = json.dumps(card)
+                        break
+                idx.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+                actions.append(f"pitched: {slug} (pitch.md generation queued)")
+            else:
+                print(f"warn: !pitch {slug} but no idea card found")
         if new_last is None or int(mid) > int(new_last):
             new_last = mid
 

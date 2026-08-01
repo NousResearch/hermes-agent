@@ -208,6 +208,34 @@ describe('SidebarSessionRow', () => {
     vi.useRealTimers()
   })
 
+  it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Hermes doctor health check results' })}
+        unread={false}
+      />
+    )
+
+    const kebab = screen.getByRole('button', { name: 'Session actions' })
+    expect(tipTrigger(kebab)).toBeNull()
+  })
+
+  it('allows a long session title to wrap to two lines instead of applying single-line truncation', () => {
+    const title = 'Fix background process exit error during Hermes auto-update'
+    renderRow(makeSession({ title }))
+
+    const label = screen.getByText(title)
+    expect(label.className).toContain('line-clamp-2')
+    expect(label.className).not.toContain('truncate')
+  })
+
   // Full-title tooltip on hover (#83000-class ask): the label is a tooltip
   // trigger, but the tip only opens when the title is actually truncated.
   describe('full-title overflow tooltip', () => {

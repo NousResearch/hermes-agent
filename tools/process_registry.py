@@ -1929,6 +1929,50 @@ class ProcessRegistry:
         with self._lock:
             return any(not s.exited for s in self._running.values())
 
+    def snapshot_running_ids(self, task_id: str) -> frozenset[str]:
+        """Capture running process IDs owned by ``task_id``.
+
+        Gateway turns use this as a boundary marker: if a turn times out, only
+        processes absent from its starting snapshot belong to the abandoned
+        turn. Older session processes must survive because background tasks
+        intentionally span successful turns.
+        """
+        with self._lock:
+            return frozenset(
+                s.id
+                for s in self._running.values()
+                if s.task_id == task_id and not s.exited
+            )
+
+    def kill_started_since(
+        self,
+        task_id: str,
+        baseline_ids,
+        *,
+        source: str,
+    ) -> int:
+        """Kill processes created for ``task_id`` after a prior snapshot."""
+        baseline = frozenset(baseline_ids or ())
+        with self._lock:
+            targets = [
+                s
+                for s in self._running.values()
+                if s.task_id == task_id and s.id not in baseline and not s.exited
+            ]
+
+        killed = 0
+        for session in targets:
+            result = self.kill_process(
+                session.id,
+                source=source,
+                # Abandoned-turn output must not enqueue a synthetic follow-up
+                # that revives work the timeout deliberately stopped.
+                consume_output=True,
+            )
+            if result.get("status") in {"killed", "already_exited"}:
+                killed += 1
+        return killed
+
     def kill_all(self, task_id: str = None) -> int:
         """Kill all running processes, optionally filtered by task_id. Returns count killed."""
         with self._lock:

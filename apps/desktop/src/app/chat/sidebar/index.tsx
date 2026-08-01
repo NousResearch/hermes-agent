@@ -3,7 +3,7 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
@@ -46,6 +46,7 @@ import {
   $sidebarSessionOrderManual,
   $sidebarWorkspaceOrderIds,
   $sidebarWorkspaceParentOrderIds,
+  filterVisibleProjects,
   pinSession,
   SESSION_SEARCH_FOCUS_EVENT,
   setPinnedSessionOrder,
@@ -130,6 +131,7 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
+import { buildSessionByAnyId } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
@@ -393,24 +395,12 @@ export function ChatSidebar({
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
 
-  // Index sessions by both their live id and their lineage-root id so a pin
-  // stored as the pre-compression root resolves to the live continuation tip.
-  const sessionByAnyId = useMemo(() => {
-    const map = new Map<string, SessionInfo>()
-
-    // Cron sessions are listed separately but can still be pinned, so index
-    // them too — otherwise a pinned cron job can't resolve into the Pinned
-    // section. Recents take precedence on id collisions (set last).
-    for (const s of [...cronSessions, ...visibleSessions]) {
-      map.set(s.id, s)
-
-      if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
-        map.set(s._lineage_root_id, s)
-      }
-    }
-
-    return map
-  }, [visibleSessions, cronSessions])
+  // Index sessions by every id a pin might be stored under — recents, cron,
+  // AND messaging, since all three can be pinned (see session-index.ts).
+  const sessionByAnyId = useMemo(
+    () => buildSessionByAnyId(visibleSessions, cronSessions, messagingSessions),
+    [visibleSessions, cronSessions, messagingSessions]
+  )
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -620,23 +610,19 @@ export function ChatSidebar({
       return []
     }
 
-    const dismissed = new Set(dismissedAutoProjects)
-
     const sorted = sortProjectsForOverview(
-      projectTree
-        .filter(node => !(node.isAuto && dismissed.has(node.id)))
-        .map(project =>
-          excludeProjectSessions(
-            {
-              ...project,
-              // Home is synthetic, so its name is ours to translate — every other
-              // label is a repo basename or a name the user typed.
-              label: project.isNoProject ? s.projects.home : project.label,
-              repos: orderRepos(project.repos)
-            },
-            isPinnedSession
-          )
-        ),
+      filterVisibleProjects(projectTree, dismissedAutoProjects).map(project =>
+        excludeProjectSessions(
+          {
+            ...project,
+            // Home is synthetic, so its name is ours to translate — every other
+            // label is a repo basename or a name the user typed.
+            label: project.isNoProject ? s.projects.home : project.label,
+            repos: orderRepos(project.repos)
+          },
+          isPinnedSession
+        )
+      ),
       activeProjectId
     )
 

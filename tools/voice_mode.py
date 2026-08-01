@@ -529,6 +529,155 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
 
 
 # ============================================================================
+# Thinking sound — calm ambient "blub blub" while the agent works
+# ============================================================================
+# During a voice conversation the agent can think / run tools for minutes with
+# zero audio, which reads as "it died". A quiet, repeating pair of soft water-
+# bubble blips fills that gap. Fully synthesized with numpy (no binary asset),
+# volume-scaled by voice.beep_volume, gated by voice.thinking_sound (default
+# on), and macOS-TCC-safe: sounddevice OUTPUT is gated there
+# (_sounddevice_output_allowed), and spawning afplay every second would churn
+# subprocesses, so on macOS the thinking sound is skipped silently.
+
+# The host's *should_play* callback decides when blips are allowed; the
+# module-level output ref-count below tracks when real audio (TTS sentences,
+# file playback) is actually flowing so hosts have an accurate signal.
+
+_audio_output_active_count = 0
+_audio_output_lock = threading.Lock()
+
+
+def mark_audio_output_active(active: bool) -> None:
+    """Reference-count real audio output (TTS/file playback).
+
+    Playback paths bracket their work with ``mark_audio_output_active(True)``
+    / ``(False)`` so ``is_audio_output_active()`` reflects whether speech
+    audio is leaving the speakers RIGHT NOW — unlike the per-turn TTS-done
+    events, which stay 'busy' for a whole turn even while the pipeline is
+    silently waiting for text.
+    """
+    global _audio_output_active_count
+    with _audio_output_lock:
+        _audio_output_active_count = max(
+            0, _audio_output_active_count + (1 if active else -1)
+        )
+
+
+def is_audio_output_active() -> bool:
+    """True while TTS/file audio is actually playing on the speakers."""
+    with _audio_output_lock:
+        return _audio_output_active_count > 0
+
+
+_thinking_lock = threading.Lock()
+_thinking_stop: Optional[threading.Event] = None
+
+
+def thinking_sound_enabled() -> bool:
+    """Config gate: ``voice.thinking_sound`` (default True)."""
+    try:
+        from hermes_cli.config import load_config
+        from utils import is_truthy_value
+
+        voice_cfg = load_config().get("voice", {})
+        if isinstance(voice_cfg, dict):
+            return is_truthy_value(
+                voice_cfg.get("thinking_sound", True), default=True
+            )
+    except Exception:
+        pass
+    return True
+
+
+def _synth_thinking_blip(np, frequency: float) -> "Any":
+    """One soft 'blub': short sine with a gentle downward pitch glide and a
+    smooth attack/decay envelope (no clicks), low-volume."""
+    duration = 0.16
+    n = int(SAMPLE_RATE * duration)
+    t = np.linspace(0, duration, n, endpoint=False)
+    # Downward glide (water-drop feel): freq → 0.72*freq over the blip.
+    glide = np.linspace(1.0, 0.72, n)
+    phase = 2 * np.pi * np.cumsum(frequency * glide) / SAMPLE_RATE
+    tone = np.sin(phase)
+    # Soften harmonics (cheap low-pass feel): add a quieter octave-down sine.
+    tone = 0.8 * tone + 0.2 * np.sin(phase / 2.0)
+    # Envelope: quick-but-smooth attack, long exponential-ish decay.
+    attack = int(0.02 * SAMPLE_RATE)
+    env = np.ones(n)
+    env[:attack] = np.linspace(0.0, 1.0, attack)
+    env *= np.exp(-t * 14.0)
+    volume = _get_beep_volume() * 0.5  # deliberately quieter than the beeps
+    return (tone * env * volume * 32767).astype(np.int16)
+
+
+def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
+    """Daemon loop: play alternating-pitch blips every ~0.8-1.2s until *stop*.
+
+    Skips a blip (without stopping) whenever *should_play* returns False —
+    e.g. TTS audio started flowing or the mic re-armed. macOS: sounddevice
+    output is TCC-gated, and per-second afplay subprocess churn is worse
+    than silence, so the loop exits immediately there.
+    """
+    if not _sounddevice_output_allowed():
+        return
+    try:
+        sd, np = _import_audio()
+    except (ImportError, OSError):
+        return
+
+    import random
+
+    pitches = (392.0, 329.6)  # G4 / E4 — calm, low, alternating
+    blips = [_synth_thinking_blip(np, p) for p in pitches]
+    i = 0
+    while not stop.is_set():
+        try:
+            if should_play is None or should_play():
+                blip = blips[i % len(blips)]
+                sd.play(blip, samplerate=SAMPLE_RATE)
+                stop.wait(len(blip) / SAMPLE_RATE + 0.02)
+                sd.stop()
+                i += 1
+        except Exception as e:
+            logger.debug("Thinking sound blip failed: %s", e)
+            return
+        stop.wait(0.8 + random.random() * 0.4)
+
+
+def start_thinking_sound(should_play=None) -> bool:
+    """Start the ambient thinking sound (idempotent).
+
+    *should_play* is polled before each blip; return False to skip while
+    speech audio flows or the mic is capturing. Returns True when the loop
+    was started (or already running), False when disabled/unavailable.
+    """
+    global _thinking_stop
+    if not thinking_sound_enabled():
+        return False
+    with _thinking_lock:
+        if _thinking_stop is not None and not _thinking_stop.is_set():
+            return True  # already running
+        stop = threading.Event()
+        _thinking_stop = stop
+    threading.Thread(
+        target=_thinking_sound_loop,
+        args=(stop, should_play),
+        daemon=True,
+        name="voice-thinking-sound",
+    ).start()
+    return True
+
+
+def stop_thinking_sound() -> None:
+    """Stop the ambient thinking sound instantly (idempotent)."""
+    global _thinking_stop
+    with _thinking_lock:
+        stop, _thinking_stop = _thinking_stop, None
+    if stop is not None:
+        stop.set()
+
+
+# ============================================================================
 # Termux Audio Recorder
 # ============================================================================
 class TermuxAudioRecorder:
@@ -1161,6 +1310,21 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
     return cleaned in stop_phrases
 
 
+def voice_stop_hint() -> str:
+    """One-line 'Say "stop" to end the voice chat.' hint for voice-mode start.
+
+    Sources the phrase from ``voice.stop_phrases`` (first entry) so a custom
+    phrase renders correctly; returns "" when stop phrases are disabled
+    (``stop_phrases: []``) so surfaces show no hint at all. Every surface
+    that announces voice-mode start (CLI /voice on, TUI, desktop) uses this
+    one owner instead of hardcoding the wording.
+    """
+    phrases = _load_voice_stop_phrases()
+    if not phrases:
+        return ""
+    return f'Say "{phrases[0]}" to end the voice chat.'
+
+
 # ============================================================================
 # STT dispatch
 # ============================================================================
@@ -1187,10 +1351,18 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     if not result.get("success") and "File too large" in result.get("error", ""):
         result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
 
-    # Filter out Whisper hallucinations (common on silent/near-silent audio)
-    if result.get("success") and is_whisper_hallucination(result.get("transcript", "")):
-        logger.info("Filtered Whisper hallucination: %r", result["transcript"])
-        return {"success": True, "transcript": "", "filtered": True}
+    # Filter out Whisper hallucinations (common on silent/near-silent audio).
+    # A configured voice-chat stop phrase is checked FIRST and always survives:
+    # phrases like "bye" or "okay" overlap the hallucination blocklist/repeat
+    # regex, and swallowing them here would make saying "bye" (when configured
+    # as a stop phrase) silently fail to end the voice chat.
+    if result.get("success"):
+        raw_transcript = result.get("transcript", "")
+        if is_whisper_hallucination(raw_transcript) and not is_voice_stop_phrase(
+            raw_transcript
+        ):
+            logger.info("Filtered Whisper hallucination: %r", result["transcript"])
+            return {"success": True, "transcript": "", "filtered": True}
 
     # Providers that flag no_speech (empty transcript) failed to hear words,
     # not to transcribe — treat like silence so the voice loop re-listens
@@ -1390,6 +1562,16 @@ def play_audio_file(file_path: str) -> bool:
     Returns:
         ``True`` if playback succeeded, ``False`` otherwise.
     """
+    # Ref-count real speaker output for the whole call so the thinking-sound
+    # loop (and any other ambient cue) knows audio is flowing right now.
+    mark_audio_output_active(True)
+    try:
+        return _play_audio_file_impl(file_path)
+    finally:
+        mark_audio_output_active(False)
+
+
+def _play_audio_file_impl(file_path: str) -> bool:
     global _active_playback
 
     if not os.path.isfile(file_path):
@@ -1591,9 +1773,18 @@ def listen_for_speech(
     trip_blocks = max(1, sustained_ms // 30)
     endpoint_blocks = max(1, endpoint_silence_ms // 30)
     max_blocks = max(1, max_utterance_ms // 30)
-    floor_samples: List[float] = []
+
+    # Rolling floor window: continuously tracks TTS speaker-bleed volume
+    # throughout playback, not just the first calibration_ms.  This is the
+    # key fix for false barge-in — a one-shot calibration freezes a floor
+    # from the opening TTS passage, but later louder passages exceed the
+    # stale floor and false-trigger.  The rolling window keeps the floor
+    # current so only genuinely louder-than-playback speech trips the VAD.
+    floor_window: "deque[float]" = deque(maxlen=max(calib_blocks, 100))  # ~3s rolling
     pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
     consecutive = 0
+    min_floor = 0.0  # baseline from initial calibration; floor never drops below this
+    block_idx = 0  # block counter for diagnostic logging
 
     try:
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block) as stream:
@@ -1602,15 +1793,79 @@ def listen_for_speech(
                 rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
                 if capture:
                     pre_roll.append(data.copy())
-                if len(floor_samples) < calib_blocks:
-                    floor_samples.append(rms)
+                block_idx += 1
+
+                # Wait for at least calib_blocks before evaluating.  During
+                # the initial warmup we always feed the window so calibration
+                # has data to work with.
+                if len(floor_window) < calib_blocks:
+                    floor_window.append(rms)
                     continue
-                trigger = max(float(threshold or SILENCE_RMS_THRESHOLD * 2), float(np.median(floor_samples)) * 3.5)
+
+                # Lock a minimum floor from the initial calibration samples.
+                # During inter-sentence pauses the rolling window can flush
+                # with near-silence, collapsing the 90th-percentile floor
+                # toward zero and false-triggering on the next rising
+                # sentence.  min_floor keeps the trigger from ever dropping
+                # below the baseline TTS playback level established during
+                # the initial calibration_ms window.
+                #
+                # If the grace period ended during an inter-sentence gap the
+                # calibration samples near-silence.  Locking a near-zero
+                # floor sets the trigger so low that TTS blocks exceed it,
+                # are excluded from the rolling window (rms >= trigger), and
+                # the floor freezes — guaranteeing a false trigger the moment
+                # TTS resumes.  Clamp min_floor to SILENCE_RMS_THRESHOLD * 2
+                # (400 RMS) so the 8x multiplier yields a trigger of at least
+                # (500-2000 RMS) stays below it and feeds the rolling window,
+                # while genuine speech (3000-8000 RMS) can still trip it.
+                if min_floor == 0.0 and len(floor_window) >= calib_blocks:
+                    _pct90 = float(np.percentile(list(floor_window), 90))
+                    min_floor = max(_pct90, SILENCE_RMS_THRESHOLD * 2)
+                else:
+                    _pct90 = float(np.percentile(list(floor_window), 90))
+
+                # Use the 90th percentile of the ROLLING window for the
+                # noise floor so the trigger reflects the loudest parts of
+                # recent playback — not a frozen snapshot from TTS onset.
+                _floor = max(_pct90, min_floor)
+                # 8.0x multiplier: TTS speaker bleed has wide
+                # volume variation between sentences and within sentences.
+                # At 5x, louder TTS passages exceed the trigger, get
+                # excluded from the floor window, and create a low-stale
+                # floor that false-triggers on the next loud passage.
+                # 8x gives enough headroom for TTS dynamics to stay below
+                # the trigger and get absorbed into the rolling floor.
+                trigger = max(float(threshold or SILENCE_RMS_THRESHOLD * 2), _floor * 8.0)
+                # Ceiling: never let the trigger exceed 4000 RMS, otherwise
+                # a very loud TTS passage would push the trigger so high
+                # that genuine speech (which is typically 3000–8000 RMS)
+                # couldn't trip it.
+                trigger = min(trigger, 4000.0)
+
+                # Only feed the floor window with blocks that are NOT above
+                # the current trigger — speech blocks would inflate the floor
+                # and make the trigger unreachable.
+                if rms < trigger:
+                    floor_window.append(rms)
+
                 consecutive = consecutive + 1 if rms >= trigger else 0
+                if consecutive > 0:
+                    logger.debug(
+                        "VAD above-trigger: block=%d rms=%.0f floor=%.0f trigger=%.0f "
+                        "consec=%d/%d min_floor=%.0f window_len=%d",
+                        block_idx, rms, _floor, trigger, consecutive,
+                        trip_blocks, min_floor, len(floor_window),
+                    )
                 if consecutive < trip_blocks:
                     continue
 
                 # Tripped — the user is talking over playback.
+                logger.info(
+                    "VAD TRIPPED: block=%d rms=%.0f floor=%.0f trigger=%.0f "
+                    "consec=%d min_floor=%.0f — cutting TTS playback",
+                    block_idx, rms, _floor, trigger, consecutive, min_floor,
+                )
                 if on_trigger:
                     try:
                         on_trigger()
@@ -1634,6 +1889,245 @@ def listen_for_speech(
     except Exception as e:
         logger.debug("Barge-in listener failed: %s", e)
     return None if capture else False
+
+
+# ============================================================================
+# Full-duplex agent-turn listener
+# ============================================================================
+#
+# One listener for the WHOLE agent turn in continuous voice mode: armed the
+# moment an utterance is submitted, disarmed when the turn is fully done
+# (response + TTS finished). It replaces the scattered per-playback barge
+# monitors, which had two class-level failures:
+#
+#   1. HALF-DUPLEX GAP: the monitor only spawned when TTS playback started,
+#      so during LLM generation (seconds to minutes) there was NO microphone
+#      listener at all — the user could not interject by voice.
+#   2. PLAYBACK DEAFNESS: the monitor calibrated its noise floor WHILE the
+#      speaker was already blasting TTS, baking speaker bleed into the floor;
+#      with an 8x multiplier the trigger became unreachable for normal speech,
+#      and requiring a full second of strictly CONSECUTIVE 30ms blocks above
+#      trigger meant any intra-word dip reset the counter.
+#
+# This listener calibrates against the QUIET room at turn start (before any
+# playback exists), freezes that baseline through playback (never calibrating
+# against its own speaker bleed), and trips on a windowed majority of blocks
+# instead of a strict consecutive run.
+
+# Minimum trigger while TTS audio is flowing. Speaker bleed reaching the mic
+# through air at conversational volume is typically well under this (a few
+# hundred RMS at arm's length; ~1000-1400 with loud speakers close to the
+# mic), while direct speech at normal distance measures 3000-8000 RMS.
+PLAYBACK_MIN_TRIGGER = 1500.0
+
+# Absolute trigger ceiling — a noisy room must never push the trigger above
+# what normal speech (3000-8000 RMS) can reach.
+TRIGGER_CEILING = 4000.0
+
+# Default trigger multiplier over the quiet-room floor. The old 8x default
+# only made sense when the floor was (wrongly) calibrated against active TTS
+# bleed; against a genuine quiet-room baseline (typically 50-300 RMS) the
+# synthetic-frame tests show 3x separates speech from ambient cleanly while
+# staying reachable (300 RMS floor * 3 = 900 trigger vs 3000+ RMS speech).
+DEFAULT_BARGE_MULTIPLIER = 3.0
+
+
+def _voice_debug_enabled() -> bool:
+    return os.environ.get("HERMES_VOICE_DEBUG", "").strip() == "1"
+
+
+def _vad_log(msg: str) -> None:
+    """VAD decision-point diagnostic — always logger.debug, plus stderr when
+    HERMES_VOICE_DEBUG=1 so live hardware tuning doesn't need a log tail."""
+    logger.debug(msg)
+    if _voice_debug_enabled():
+        try:
+            print(f"[voice-vad] {msg}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+
+def full_duplex_listen(
+    should_stop: Callable[[], bool],
+    is_playing: Optional[Callable[[], bool]] = None,
+    on_trigger: Optional[Callable[[str], None]] = None,
+    multiplier: Optional[float] = None,
+    sustained_ms: int = 300,
+    calibration_ms: int = 450,
+    grace_ms: int = 500,
+    pre_roll_ms: int = 1200,
+    endpoint_silence_ms: int = 1250,
+    max_utterance_ms: int = 30_000,
+) -> Optional[str]:
+    """Listen across an ENTIRE agent turn; return the captured interruption.
+
+    Runs from utterance-submit to turn-complete. Two phases, decided per
+    30ms block by *is_playing* (usually ``is_audio_output_active``):
+
+    * ``generation`` — no TTS audio flowing. The room is quiet; the first
+      *calibration_ms* establish the noise floor (pre-playback calibration).
+      Trigger = quiet_floor x *multiplier* (clamped to a sane minimum), i.e.
+      ordinary speech detection.
+    * ``playback`` — TTS audio flowing. The quiet baseline is HELD (never
+      recalibrated against speaker bleed); the trigger is additionally
+      clamped up to ``PLAYBACK_MIN_TRIGGER`` so bleed alone can't trip it,
+      and a *grace_ms* window after playback first starts suppresses trips
+      from the playback onset transient.
+
+    Detection is a windowed majority — >=80% of the last *sustained_ms*
+    worth of blocks above trigger (with the current block above) — so
+    intra-word energy dips don't reset progress the way the old strictly-
+    consecutive counter did.
+
+    On detection ``on_trigger(phase)`` fires (cut TTS / interrupt the turn),
+    then capture continues from the rolling *pre_roll_ms* buffer until
+    *endpoint_silence_ms* of quiet, and the WAV path is returned. Returns
+    ``None`` when *should_stop* ends the turn without speech.
+    """
+    try:
+        sd, np = _import_audio()
+    except (ImportError, OSError):
+        return None
+
+    from collections import deque
+
+    block = int(SAMPLE_RATE * 0.03)  # 30ms blocks
+    calib_blocks = max(1, calibration_ms // 30)
+    trip_blocks = max(1, sustained_ms // 30)
+    trip_needed = max(1, int(round(trip_blocks * 0.8)))
+    grace_blocks = max(0, grace_ms // 30)
+    endpoint_blocks = max(1, endpoint_silence_ms // 30)
+    max_blocks = max(1, max_utterance_ms // 30)
+    mult = float(multiplier) if multiplier else DEFAULT_BARGE_MULTIPLIER
+
+    ambient: "deque[float]" = deque(maxlen=100)  # ~3s of quiet-phase RMS
+    pre_roll: deque = deque(maxlen=max(1, pre_roll_ms // 30))
+    recent_above: "deque[bool]" = deque(maxlen=trip_blocks)
+    quiet_floor = float(SILENCE_RMS_THRESHOLD)
+    floor_locked = False
+    playing_prev = False
+    playback_seen = False
+    grace_remaining = 0
+    blocks_since_playback = 10_000
+    block_idx = 0
+
+    try:
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE, channels=1, dtype="int16", blocksize=block
+        ) as stream:
+            while not should_stop():
+                data, _ = stream.read(block)
+                rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                pre_roll.append(data.copy())
+                block_idx += 1
+
+                playing = bool(is_playing()) if is_playing is not None else False
+
+                # Pre-playback calibration: the listener arms at utterance
+                # submit, before any TTS exists, so the first calib_blocks
+                # sample the actual quiet room — NOT speaker bleed.
+                if not floor_locked:
+                    if not playing:
+                        ambient.append(rms)
+                    if len(ambient) >= calib_blocks or playing:
+                        pct90 = (
+                            float(np.percentile(list(ambient), 90))
+                            if ambient
+                            else float(SILENCE_RMS_THRESHOLD)
+                        )
+                        quiet_floor = max(pct90, float(SILENCE_RMS_THRESHOLD))
+                        floor_locked = True
+                        _vad_log(
+                            f"calibrated quiet floor={quiet_floor:.0f} "
+                            f"(pct90={pct90:.0f}, {len(ambient)} blocks, "
+                            f"mult={mult:g})"
+                        )
+                    if not floor_locked:
+                        continue
+
+                # Playback phase transitions: grace only when playback starts
+                # after a real gap (>=1s), so inter-sentence flapping of the
+                # audio-active flag can't chain grace windows together and
+                # swallow a genuine interjection.
+                if playing and not playing_prev:
+                    if not playback_seen or blocks_since_playback > 33:
+                        grace_remaining = grace_blocks
+                        _vad_log(
+                            f"playback started (block={block_idx}) — "
+                            f"grace {grace_blocks * 30}ms"
+                        )
+                    playback_seen = True
+                playing_prev = playing
+                blocks_since_playback = 0 if playing else blocks_since_playback + 1
+
+                # Trigger: quiet baseline x multiplier, phase-clamped.
+                trigger = quiet_floor * mult
+                if playing:
+                    trigger = max(trigger, PLAYBACK_MIN_TRIGGER)
+                else:
+                    trigger = max(trigger, float(SILENCE_RMS_THRESHOLD) * 2)
+                trigger = min(trigger, TRIGGER_CEILING)
+
+                # Keep the quiet floor current with ambient drift — but ONLY
+                # while nothing is playing (never absorb speaker bleed) and
+                # the block isn't speech.
+                if not playing and rms < trigger:
+                    ambient.append(rms)
+                    if ambient:
+                        quiet_floor = max(
+                            float(np.percentile(list(ambient), 90)),
+                            float(SILENCE_RMS_THRESHOLD),
+                        )
+
+                above = rms >= trigger
+                if above and grace_remaining > 0:
+                    _vad_log(
+                        f"grace suppression: block={block_idx} rms={rms:.0f} "
+                        f"trigger={trigger:.0f} ({grace_remaining} blocks left)"
+                    )
+                    above = False
+                if grace_remaining > 0:
+                    grace_remaining -= 1
+
+                recent_above.append(above)
+                if rms >= trigger * 0.5:
+                    _vad_log(
+                        f"block={block_idx} rms={rms:.0f} floor={quiet_floor:.0f} "
+                        f"trigger={trigger:.0f} above={above} "
+                        f"window={sum(recent_above)}/{trip_needed} "
+                        f"phase={'playback' if playing else 'generation'}"
+                    )
+
+                if not (above and sum(recent_above) >= trip_needed):
+                    continue
+
+                phase = "playback" if playing else "generation"
+                _vad_log(
+                    f"TRIPPED ({phase}): block={block_idx} rms={rms:.0f} "
+                    f"floor={quiet_floor:.0f} trigger={trigger:.0f} "
+                    f"window={sum(recent_above)}/{len(recent_above)}"
+                )
+                if on_trigger:
+                    try:
+                        on_trigger(phase)
+                    except Exception as e:
+                        logger.debug("full-duplex trigger callback failed: %s", e)
+
+                # Capture until the user goes quiet. Playback was cut by
+                # on_trigger, so plain silence endpointing works.
+                frames: List[Any] = list(pre_roll)
+                quiet = 0
+                for _ in range(max_blocks):
+                    data, _ = stream.read(block)
+                    frames.append(data.copy())
+                    rms = float(np.sqrt(np.mean(data.astype(np.float64) ** 2)))
+                    quiet = quiet + 1 if rms < SILENCE_RMS_THRESHOLD else 0
+                    if quiet >= endpoint_blocks:
+                        break
+                return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+    except Exception as e:
+        logger.debug("Full-duplex listener failed: %s", e)
+    return None
 
 
 # ============================================================================

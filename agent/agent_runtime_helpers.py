@@ -249,11 +249,41 @@ def sanitize_tool_call_arguments(
     *,
     logger=None,
     session_id: str = None,
+    cursor: Optional[dict] = None,
 ) -> int:
-    """Repair corrupted assistant tool-call argument JSON in-place."""
+    """Repair corrupted assistant tool-call argument JSON in-place.
+
+    ``cursor`` (optional) is a caller-owned dict used to skip re-validating
+    messages already validated on a previous call.  It stores, under
+    ``"prefix"``, the exact message *objects* (strong references) validated
+    last time, in order.  On the next call, the longest contiguous prefix of
+    ``messages`` whose objects are ``is``-identical to the stored prefix is
+    skipped; scanning starts at the first divergence (conservative: any
+    reordering, truncation, compression rewrite, or mid-list insertion breaks
+    identity at that index and everything from there is re-scanned).
+
+    Safety argument for skipping: a message in the matched prefix was fully
+    scanned before — every tool_call argument was either already valid JSON
+    or was rewritten to ``"{}"`` (valid).  The only code paths that mutate
+    ``function["arguments"]`` on live history dicts between calls are the
+    surrogate / non-ASCII sanitizers, which substitute characters *inside*
+    JSON string values and cannot invalidate JSON syntax.  Compression,
+    repair, undo, and steer paths replace or reorder message dicts, which
+    breaks the identity match and forces a re-scan.  Holding strong
+    references (the objects themselves, not ``id()``s) makes address reuse
+    aliasing (#50372-style) impossible.
+    """
     log = logger or logging.getLogger(__name__)
     if not isinstance(messages, list):
         return 0
+
+    start_index = 0
+    if cursor is not None:
+        prev_prefix = cursor.get("prefix")
+        if isinstance(prev_prefix, list):
+            limit = min(len(prev_prefix), len(messages))
+            while start_index < limit and messages[start_index] is prev_prefix[start_index]:
+                start_index += 1
 
     repaired = 0
     marker = _ra().AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
@@ -275,7 +305,7 @@ def sanitize_tool_call_arguments(
             existing_text = str(existing)
         tool_msg["content"] = f"{marker}\n{existing_text}"
 
-    message_index = 0
+    message_index = start_index
     while message_index < len(messages):
         msg = messages[message_index]
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -355,6 +385,12 @@ def sanitize_tool_call_arguments(
                 repaired += 1
 
         message_index += 1
+
+    if cursor is not None:
+        # Strong references to the exact objects validated this call, in
+        # order. Any future divergence (compression, undo, repair, steer)
+        # breaks identity at the divergent index and re-scans from there.
+        cursor["prefix"] = messages[:]
 
     return repaired
 
@@ -1824,12 +1860,12 @@ def anthropic_prompt_cache_policy(
     gateway implements the Anthropic cache_control contract
     (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
 
-    Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
-    Alibaba (DashScope) also honour Anthropic-style ``cache_control``
-    markers on OpenAI-wire chat completions. Upstream pi-mono #3392 /
-    pi #3393 documented this for opencode-go Qwen. Without markers
-    these providers serve zero cache hits, re-billing the full prompt
-    on every turn.
+    Qwen models on OpenCode and direct Alibaba (DashScope), plus DeepSeek
+    models on OpenCode, also honour Anthropic-style ``cache_control`` markers
+    on OpenAI-wire chat completions. Upstream pi-mono #3392 / pi #3393
+    documented this for opencode-go Qwen; #24617 reports the same gateway
+    contract for DeepSeek. Without markers these providers serve zero cache
+    hits, re-billing the full prompt on every turn.
     """
     eff_provider = (provider if provider is not None else agent.provider) or ""
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
@@ -1944,16 +1980,22 @@ def anthropic_prompt_cache_policy(
         if is_minimax_provider or is_minimax_host:
             return True, True
 
-    # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
-    # transport that accepts Anthropic-style cache_control markers and
-    # rewards them with real cache hits.  Without this branch
-    # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
-    # through the subscription on every turn.
+    # Qwen on OpenCode (Zen/Go) and native DashScope, plus DeepSeek on
+    # OpenCode only: OpenAI-wire transports that accept Anthropic-style
+    # cache_control markers and reward them with real cache hits. Keep direct
+    # Alibaba specific to Qwen; its catalog does not establish the same
+    # contract for DeepSeek.
     model_is_qwen = "qwen" in model_lower
+    model_is_deepseek = "deepseek" in model_lower
+    provider_is_opencode = provider_lower in {
+        "opencode", "opencode-zen", "opencode-go",
+    }
     provider_is_alibaba_family = provider_lower in {
         "opencode", "opencode-zen", "opencode-go", "alibaba",
     }
-    if provider_is_alibaba_family and model_is_qwen:
+    if (provider_is_alibaba_family and model_is_qwen) or (
+        provider_is_opencode and model_is_deepseek
+    ):
         # Envelope layout (native_anthropic=False): markers on inner
         # content parts, not top-level tool messages.  Matches
         # pi-mono's "alibaba" cacheControlFormat.
@@ -2046,6 +2088,31 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # restore, request-scoped); auxiliary_client builds its own clients and keeps
     # SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
+    # Defense-in-depth: guarantee Copilot requests carry the integration
+    # headers regardless of which build path we came through. The primary
+    # header wiring lives in `_apply_client_headers_for_base_url`, but two
+    # rebuild paths (`primary_recovery`, `restore_primary` in this module)
+    # reconstruct the client purely from a `_primary_runtime` snapshot and do
+    # NOT re-run that wiring. If the snapshot's client_kwargs ever lacks
+    # `default_headers` (older snapshot, header-less resolver result), the
+    # client goes out WITHOUT `Copilot-Integration-Id: vscode-chat`; the
+    # Copilot server then routes it to the "copilot-language-server" integrator
+    # whose model allowlist omits enterprise-only models (claude-opus-4.8) →
+    # HTTP 400 model_not_available_for_integrator on every turn. This chokepoint
+    # is the single place every primary OpenAI client passes through, so filling
+    # missing Copilot headers here closes the whole class. We only ADD missing
+    # keys — never override headers a caller deliberately set.
+    try:
+        if base_url_host_matches(str(client_kwargs.get("base_url", "")), "githubcopilot.com"):
+            from hermes_cli.models import copilot_default_headers
+            existing = dict(client_kwargs.get("default_headers") or {})
+            existing_lower = {k.lower() for k in existing}
+            for hk, hv in copilot_default_headers().items():
+                if hk.lower() not in existing_lower:
+                    existing[hk] = hv
+            client_kwargs["default_headers"] = existing
+    except Exception:
+        _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)
@@ -3295,89 +3362,17 @@ def intent_ack_continuation_enabled(agent) -> bool:
 
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
-    """Copy provider-facing reasoning fields onto an API replay message."""
-    if source_msg.get("role") != "assistant":
-        return
+    """Copy provider-facing reasoning fields onto an API replay message.
 
-    needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+    Forwarder — the strip-vs-repad POLICY is owned by
+    ``agent.message_sanitization.apply_reasoning_content_policy`` (audit F4);
+    this only supplies the agent's cached provider-direction flag.
+    """
+    from agent.message_sanitization import apply_reasoning_content_policy
 
-    # 1. Explicit reasoning_content already set.
-    #
-    # When the active provider enforces the thinking-mode echo-back
-    # (DeepSeek / Kimi / MiMo), preserve it verbatim — that includes their
-    # own space-placeholder written at creation time and any valid reasoning
-    # from the same provider. Sessions persisted BEFORE #17341 have
-    # empty-string placeholders pinned at creation time; DeepSeek V4 Pro
-    # rejects those with HTTP 400, so upgrade "" → " " on replay.
-    #
-    # When the active provider does NOT enforce echo-back, strip the field
-    # entirely. Strict OpenAI-compatible providers (Mistral, Cerebras, Groq,
-    # SambaNova, …) reject ANY reasoning_content key in input messages with
-    # HTTP 400/422 ("Extra inputs are not permitted"), even an empty string
-    # or a single-space pad. This is the cross-provider fallback case: a
-    # reasoning primary (DeepSeek/Kimi/MiMo) pads history with " ", then a
-    # fallback to a strict provider replays that pad and 422s. Stripping
-    # here covers the rebuild path; reapply_reasoning_echo_for_provider()
-    # covers the already-built api_messages path. Refs #45655.
-    existing = source_msg.get("reasoning_content")
-    if isinstance(existing, str):
-        if not needs_thinking_pad:
-            api_msg.pop("reasoning_content", None)
-        elif existing == "":
-            api_msg["reasoning_content"] = " "
-        else:
-            api_msg["reasoning_content"] = existing
-        return
-
-    # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
-    # if the source turn has tool_calls AND a 'reasoning' field but no
-    # 'reasoning_content' key, the 'reasoning' text was written by a
-    # prior provider (e.g. MiniMax) — DeepSeek's own _build_assistant_message
-    # pins reasoning_content at creation time for tool-call turns, so the
-    # shape (reasoning set, reasoning_content absent, tool_calls present)
-    # is unreachable from same-provider DeepSeek history after this fix.
-    # Inject a single space to satisfy the API without leaking another
-    # provider's chain of thought to DeepSeek/Kimi. Space (not "")
-    # because DeepSeek V4 Pro rejects empty-string reasoning_content
-    # in thinking mode (refs #17341).
-    normalized_reasoning = source_msg.get("reasoning")
-    if (
-        needs_thinking_pad
-        and source_msg.get("tool_calls")
-        and isinstance(normalized_reasoning, str)
-        and normalized_reasoning
-    ):
-        api_msg["reasoning_content"] = " "
-        return
-
-    # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
-    # for providers that use the internal 'reasoning' key.
-    # This must happen before the unconditional empty-string fallback so
-    # genuine reasoning content is not overwritten (#15812 regression in
-    # PR #15478). Only promote for providers that enforce echo-back —
-    # strict providers reject the field (refs #45655).
-    if isinstance(normalized_reasoning, str) and normalized_reasoning:
-        if needs_thinking_pad:
-            api_msg["reasoning_content"] = normalized_reasoning
-        else:
-            api_msg.pop("reasoning_content", None)
-        return
-
-    # 4. DeepSeek / Kimi thinking mode: all assistant messages need
-    # reasoning_content. Inject a single space to satisfy the provider's
-    # requirement when no explicit reasoning content is present. Covers
-    # both tool-call turns (already-poisoned history with no reasoning
-    # at all) and plain text turns. Space (not "") because DeepSeek V4
-    # Pro tightened validation and rejects empty string with HTTP 400
-    # ("The reasoning content in the thinking mode must be passed back
-    # to the API"). Refs #17341.
-    if needs_thinking_pad:
-        api_msg["reasoning_content"] = " "
-        return
-
-    # 5. reasoning_content was present but not a string (e.g. None after
-    # context compaction).  Don't pass null to the API.
-    api_msg.pop("reasoning_content", None)
+    apply_reasoning_content_policy(
+        source_msg, api_msg, agent._needs_thinking_reasoning_pad()
+    )
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
@@ -3409,25 +3404,11 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     Returns the number of assistant turns whose reasoning_content was added or
     removed.
     """
-    needs_pad = agent._needs_thinking_reasoning_pad()
-    changed = 0
-    for api_msg in api_messages:
-        if api_msg.get("role") != "assistant":
-            continue
-        if needs_pad:
-            if api_msg.get("reasoning_content"):
-                continue
-            copy_reasoning_content_for_api(agent, api_msg, api_msg)
-            if api_msg.get("reasoning_content"):
-                changed += 1
-        else:
-            # Strict provider — strip any stale reasoning_content pad left
-            # over from a reasoning primary so the fallback request doesn't
-            # 400/422 on it.
-            if "reasoning_content" in api_msg:
-                api_msg.pop("reasoning_content", None)
-                changed += 1
-    return changed
+    from agent.message_sanitization import reapply_reasoning_echo
+
+    return reapply_reasoning_echo(
+        api_messages, agent._needs_thinking_reasoning_pad()
+    )
 
 
 def _iter_httpx_pool_objects(http_client: Any):

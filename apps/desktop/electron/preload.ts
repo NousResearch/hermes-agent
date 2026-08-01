@@ -155,6 +155,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
+  desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
@@ -210,6 +211,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:close-preview-requested', listener)
 
     return () => ipcRenderer.removeListener('hermes:close-preview-requested', listener)
+  },
+  onOpenFolderRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:open-folder-requested', listener)
+
+    return () => ipcRenderer.removeListener('hermes:open-folder-requested', listener)
   },
   onOpenUpdatesRequested: callback => {
     const listener = () => callback()
@@ -267,6 +274,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:power-resume', listener)
 
     return () => ipcRenderer.removeListener('hermes:power-resume', listener)
+  },
+  // AC ↔ battery transitions; renderers slow their backstop polls on battery.
+  getOnBattery: () => ipcRenderer.invoke('hermes:power-battery:get'),
+  onBatteryChanged: callback => {
+    const listener = (_event, onBattery) => callback(Boolean(onBattery))
+    ipcRenderer.on('hermes:power-battery', listener)
+
+    return () => ipcRenderer.removeListener('hermes:power-battery', listener)
   },
   onBootProgress: callback => {
     const listener = (_event, payload) => callback(payload)

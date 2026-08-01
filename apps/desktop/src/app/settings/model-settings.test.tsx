@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -312,6 +312,41 @@ describe('ModelSettings', () => {
         provider: 'nous',
         scope: 'auxiliary',
         task: 'vision'
+      })
+    )
+  })
+
+  it('carries the user-defined endpoint when an aux slot is set to a local main model', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Ollama',
+          slug: 'local-ollama',
+          models: ['qwen3:latest'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://localhost:11434/v1'
+        }
+      ]
+    })
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'local-ollama', model: 'qwen3:latest' })
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'local-ollama', model: 'qwen3:latest' },
+      tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
+    })
+
+    await renderModelSettings()
+
+    const setToMainButtons = await screen.findAllByRole('button', { name: 'Set to main' })
+    fireEvent.click(setToMainButtons[0])
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'qwen3:latest',
+        provider: 'local-ollama',
+        scope: 'auxiliary',
+        task: 'vision',
+        base_url: 'http://localhost:11434/v1'
       })
     )
   })

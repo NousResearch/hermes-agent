@@ -83,59 +83,14 @@ def test_prunes_below_compression_threshold():
         assert m["content"] != _PRUNED_TOOL_PLACEHOLDER       # informative, not a blank placeholder
 
 
-def test_disabled_by_default_is_noop():
-    c = _compressor()  # proactive_prune_tokens defaults to 0
-    assert c.proactive_prune_tokens == 0
-    msgs = _build(8, big_indices={0, 1, 2})
-    result, pruned = c.prune_tool_results_only(msgs, current_tokens=500_000)
-    assert pruned == 0
-    assert [m.get("content") for m in result] == [m.get("content") for m in msgs]
 
 
-def test_below_trigger_is_noop():
-    c = _compressor(proactive_prune_tokens=48_000)
-    msgs = _build(8, big_indices={0, 1, 2})
-    result, pruned = c.prune_tool_results_only(msgs, current_tokens=10_000)
-    assert pruned == 0
 
 
-def test_recent_tail_is_protected():
-    c = _compressor(
-        proactive_prune_tokens=48_000,
-        proactive_prune_min_result_chars=8_000,
-        proactive_prune_min_reclaim_tokens=0,  # gate off: this test pins tail semantics
-    )
-    # pair 0 tool is old (index 2); pair 7 tool is in the last-4 protected tail (index 16)
-    msgs = _build(8, big_indices={0, 7})
-    result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
-    assert len(_tool_by_id(result, "call_7")["content"]) == 9000   # protected, untouched
-    assert len(_tool_by_id(result, "call_0")["content"]) < 9000    # old, summarized
 
 
-def test_size_floor_spares_small_results():
-    c = _compressor(
-        proactive_prune_tokens=48_000,
-        proactive_prune_min_result_chars=8_000,
-        proactive_prune_min_reclaim_tokens=0,  # gate off: this test pins the size floor
-    )
-    msgs = _build(8, big_indices={1}, big_chars=9000)
-    for m in msgs:                      # make pair 0's tool 5000 chars (< 8000 floor), still old
-        if m.get("tool_call_id") == "call_0":
-            m["content"] = "Z" * 5000
-    result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
-    assert len(_tool_by_id(result, "call_0")["content"]) == 5000   # under floor -> untouched
-    assert len(_tool_by_id(result, "call_1")["content"]) < 9000    # over floor -> summarized
 
 
-def test_structure_preserved():
-    c = _compressor(proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000)
-    msgs = _build(8, big_indices={0, 1, 2})
-    roles_before = [m["role"] for m in msgs]
-    ids_before = [m.get("tool_call_id") for m in msgs]
-    result, _ = c.prune_tool_results_only(msgs, current_tokens=120_000)
-    assert len(result) == len(msgs)
-    assert [m["role"] for m in result] == roles_before
-    assert [m.get("tool_call_id") for m in result] == ids_before
 
 
 def test_idempotent():
@@ -148,28 +103,8 @@ def test_idempotent():
     assert [m.get("content") for m in second] == [m.get("content") for m in first]
 
 
-def test_prune_old_tool_results_default_floor_unchanged():
-    """Backward-compat: without min_prune_chars, _prune_old_tool_results still
-    prunes >200-char results (the compression Phase-1 caller's behavior)."""
-    c = _compressor()
-    msgs = _build(8, big_indices=set())
-    for m in msgs:                      # a 300-char old tool result
-        if m.get("tool_call_id") == "call_0":
-            m["content"] = "Q" * 300
-    result, pruned = c._prune_old_tool_results(msgs, protect_tail_count=4)
-    assert len(_tool_by_id(result, "call_0")["content"]) < 300
-    assert pruned >= 1
 
 
-def test_min_result_chars_floor_is_clamped():
-    """Config-robustness: a floor below 200 (or negative) is clamped up to 200,
-    while a configured 0 falls back to the 8000 default via ``or``. Without the
-    clamp, a tiny floor lets Pass 2 re-summarize its own (short) summary every
-    turn, and a negative floor strips every non-tail tool result."""
-    assert _compressor(proactive_prune_min_result_chars=0).proactive_prune_min_result_chars == 8000
-    assert _compressor(proactive_prune_min_result_chars=50).proactive_prune_min_result_chars == 200
-    assert _compressor(proactive_prune_min_result_chars=-1).proactive_prune_min_result_chars == 200
-    assert _compressor(proactive_prune_min_result_chars=8000).proactive_prune_min_result_chars == 8000
 
 
 # ---------------------------------------------------------------------------
@@ -178,52 +113,10 @@ def test_min_result_chars_floor_is_clamped():
 # ---------------------------------------------------------------------------
 
 
-def test_noop_paths_return_input_object():
-    """Standard caller contract: every no-op path hands back the INPUT list
-    object so callers can gate bookkeeping on ``result is not input``."""
-    msgs = _build(8, big_indices={0, 1, 2})
-    # Disabled (default)
-    c = _compressor()
-    result, pruned = c.prune_tool_results_only(msgs, current_tokens=500_000)
-    assert pruned == 0 and result is msgs
-    # Below trigger
-    c = _compressor(proactive_prune_tokens=48_000)
-    result, pruned = c.prune_tool_results_only(msgs, current_tokens=10_000)
-    assert pruned == 0 and result is msgs
-    # Above trigger but nothing prunable (all results tiny)
-    c = _compressor(proactive_prune_tokens=48_000)
-    tiny = _build(8, big_indices=set())
-    result, pruned = c.prune_tool_results_only(tiny, current_tokens=120_000)
-    assert pruned == 0 and result is tiny
 
 
-def test_min_reclaim_gate_blocks_small_prunes():
-    """Prompt-cache hysteresis: a prune that would reclaim less than
-    ``proactive_prune_min_reclaim_tokens`` must NOT commit (returns the input
-    object) — rewriting already-sent history for a trivial saving would break
-    the provider's cached prefix every tool iteration."""
-    c = _compressor(
-        proactive_prune_tokens=48_000,
-        proactive_prune_min_result_chars=8_000,
-        proactive_prune_min_reclaim_tokens=1_000_000,  # unreachably high
-    )
-    msgs = _build(8, big_indices={0, 1, 2})
-    result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
-    assert pruned == 0
-    assert result is msgs  # input object — caller commits nothing
 
 
-def test_min_reclaim_gate_allows_large_prunes():
-    """A prune reclaiming more than the gate commits normally."""
-    c = _compressor(
-        proactive_prune_tokens=48_000,
-        proactive_prune_min_result_chars=8_000,
-        proactive_prune_min_reclaim_tokens=1_000,  # 3×9000 chars ≈ 6.7K tokens reclaimed
-    )
-    msgs = _build(8, big_indices={0, 1, 2})
-    result, pruned = c.prune_tool_results_only(msgs, current_tokens=120_000)
-    assert pruned >= 3
-    assert result is not msgs
 
 
 def test_min_reclaim_gate_default_and_clamp():

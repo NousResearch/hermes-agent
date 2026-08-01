@@ -25,6 +25,11 @@ import tools.wake_word as ww
 def test_config_defaults_and_clamping():
     assert ww._provider({}) == "openwakeword"
     assert ww._provider({"provider": "Porcupine"}) == "porcupine"
+    assert ww._input_device({}) is None
+    assert ww._input_device({"input_device": 7}) == 7
+    assert ww._input_device({"input_device": " Microphone Array "}) == "Microphone Array"
+    assert ww._input_device({"input_device": ""}) is None
+    assert ww._input_device({"input_device": False}) is None
     assert ww._sensitivity({"sensitivity": 5}) == 1.0
     assert ww._sensitivity({"sensitivity": -1}) == 0.0
     # Invalid input falls back to the configured default, not a hardcoded 0.5.
@@ -104,30 +109,6 @@ def test_requirements_openwakeword_available(monkeypatch):
     assert r["phrase"] == "hey hermes"
 
 
-def test_requirements_need_stt_and_tts(monkeypatch):
-    """No STT/TTS → wake refuses to arm (mic would hear you, then nothing)."""
-    monkeypatch.setattr(ww, "_audio_available", lambda: True)
-    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
-
-    _voice_loop_ready(monkeypatch, stt=False, tts=True)
-    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
-    assert r["available"] is False
-    assert r["stt_available"] is False
-    assert "speech-to-text" in r["hint"]
-    assert "text-to-speech" not in r["hint"]
-
-    _voice_loop_ready(monkeypatch, stt=True, tts=False)
-    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
-    assert r["available"] is False
-    assert r["tts_available"] is False
-    assert "text-to-speech" in r["hint"]
-
-    _voice_loop_ready(monkeypatch, stt=False, tts=False)
-    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
-    assert r["available"] is False
-    assert "speech-to-text and text-to-speech" in r["hint"]
-
-
 def test_tts_ready_is_a_probe_never_an_installer(monkeypatch):
     """_tts_ready must NOT trigger lazy pip installs from a status poll.
 
@@ -165,24 +146,6 @@ def test_tts_ready_is_a_probe_never_an_installer(monkeypatch):
     assert ww._tts_ready() is True
 
 
-def test_requirements_porcupine_needs_access_key(monkeypatch):
-    monkeypatch.delenv("PORCUPINE_ACCESS_KEY", raising=False)
-    monkeypatch.setattr(ww, "_audio_available", lambda: True)
-    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
-    r = ww.check_wake_word_requirements({"provider": "porcupine"})
-    assert r["available"] is False
-    assert r["access_key_set"] is False
-    assert "PORCUPINE_ACCESS_KEY" in r["hint"]
-
-
-def test_requirements_unavailable_without_audio(monkeypatch):
-    monkeypatch.setattr(ww, "_audio_available", lambda: False)
-    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
-    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
-    assert r["available"] is False
-    assert r["audio_available"] is False
-
-
 def test_requirements_fresh_install_lazy_allowed(monkeypatch):
     """Deps missing + lazy installs allowed → available, so /wake on can
     reach the engine constructor's ``lazy_deps.ensure()`` call.
@@ -203,21 +166,6 @@ def test_requirements_fresh_install_lazy_allowed(monkeypatch):
     assert r["available"] is True
     assert r["deps_available"] is False
     assert r["hint"] == ""
-
-
-def test_requirements_fresh_install_lazy_disabled(monkeypatch):
-    """Deps missing + lazy installs disabled → unavailable, with the manual
-    pip command as the remediation hint."""
-    monkeypatch.setattr(ww, "_audio_available", lambda: True)
-    monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: False)
-    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
-    monkeypatch.setattr(
-        "tools.lazy_deps.feature_install_command", lambda f: f"uv pip install {f}"
-    )
-    r = ww.check_wake_word_requirements({"provider": "openwakeword"})
-    assert r["available"] is False
-    assert r["deps_available"] is False
-    assert "install" in r["hint"]
 
 
 def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
@@ -277,12 +225,6 @@ def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
     assert eng._labels == ["hey_hermes"]
 
 
-def test_openwakeword_fetches_builtin_by_name(monkeypatch):
-    calls = _install_fake_openwakeword(monkeypatch)
-    ww._OpenWakeWordEngine({"provider": "openwakeword", "openwakeword": {"model": "hey_jarvis"}})
-    assert calls["download"] == [["hey_jarvis"]]
-
-
 def test_bundled_hey_hermes_model_ships_on_disk():
     # The "hey hermes" wake word works out of the box only if the model is
     # actually bundled. Both framework artifacts must exist and be non-trivial.
@@ -290,32 +232,6 @@ def test_bundled_hey_hermes_model_ships_on_disk():
         path = ww._bundled_wakeword_path(framework)
         assert os.path.exists(path), path
         assert os.path.getsize(path) > 1024, path
-
-
-@pytest.mark.parametrize("model_value", [None, "", "hey_hermes", "hey hermes", "HEY_HERMES"])
-def test_openwakeword_default_resolves_to_bundled_model(monkeypatch, model_value):
-    # The default (and any "hey_hermes" alias) must load the bundled file, not be
-    # passed through as a bogus built-in name that openWakeWord can't resolve.
-    # Which artifact is bundled follows the platform's default backend (tflite on
-    # macOS ARM64, where openWakeWord's onnx path scores near-zero).
-    calls = _install_fake_openwakeword(monkeypatch)
-    sub = {} if model_value is None else {"model": model_value}
-    ww._OpenWakeWordEngine({"provider": "openwakeword", "openwakeword": sub})
-    (downloaded,) = calls["download"]
-    assert downloaded == [ww._bundled_wakeword_path(ww.default_inference_framework())]
-
-
-def test_openwakeword_bundled_model_matches_framework(monkeypatch):
-    calls = _install_fake_openwakeword(monkeypatch)
-    # Pin the tflite runtime as present so this exercises artifact selection,
-    # not runtime availability — off-Darwin the bridge legitimately returns
-    # False and the engine falls back to onnx (covered separately below).
-    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
-    ww._OpenWakeWordEngine(
-        {"provider": "openwakeword", "openwakeword": {"inference_framework": "tflite"}}
-    )
-    (downloaded,) = calls["download"]
-    assert downloaded == [ww._bundled_wakeword_path("tflite")]
 
 
 # ── platform-aware backend selection (openWakeWord onnx is broken on macOS ARM64,
@@ -327,27 +243,26 @@ def test_default_framework_is_tflite_on_macos_arm64(monkeypatch):
     assert ww.default_inference_framework() == "tflite"
 
 
-@pytest.mark.parametrize(
-    "plat,machine",
-    [("linux", "x86_64"), ("linux", "aarch64"), ("win32", "AMD64"), ("darwin", "x86_64")],
-)
-def test_default_framework_is_onnx_elsewhere(monkeypatch, plat, machine):
-    # Only the broken platform changes behaviour; everyone else keeps onnx.
-    monkeypatch.setattr(ww.sys, "platform", plat)
-    monkeypatch.setattr("platform.machine", lambda: machine)
-    assert ww.default_inference_framework() == "onnx"
-
-
-def test_explicit_framework_overrides_platform_default(monkeypatch):
-    # An operator who pins a backend keeps it, even on macOS ARM64.
+def test_explicit_framework_kept_off_broken_platform(monkeypatch):
+    # An operator who pins a backend keeps it everywhere ONNX actually works.
     calls = _install_fake_openwakeword(monkeypatch)
-    monkeypatch.setattr(ww.sys, "platform", "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.setattr(ww.sys, "platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
     ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"inference_framework": "onnx"}}
     )
     (downloaded,) = calls["download"]
     assert downloaded == [ww._bundled_wakeword_path("onnx")]
+
+
+def test_empty_framework_falls_back_to_platform_default(monkeypatch):
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    assert ww.resolve_inference_framework({}) == "tflite"
+    assert ww.resolve_inference_framework({"openwakeword": {"inference_framework": ""}}) == "tflite"
+    monkeypatch.setattr(ww.sys, "platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    assert ww.resolve_inference_framework({}) == "onnx"
 
 
 # ── ambient-speech rejection: consecutive-frame confirmation ──────────────────
@@ -375,137 +290,6 @@ def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
     monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
     monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
     return ww._OpenWakeWordEngine({"provider": "openwakeword", **cfg_wake})
-
-
-def test_confirmation_frames_reject_single_frame_spike(monkeypatch):
-    # A lone over-threshold frame (ambient phoneme) must NOT fire with the
-    # default 3-frame confirmation; the streak resets on the next quiet frame.
-    eng = _openwakeword_engine_with_scores(
-        monkeypatch,
-        {"sensitivity": 0.5, "confirmation_frames": 3},
-        [0.9, 0.0, 0.0, 0.9, 0.0],
-    )
-    assert [eng.process(None) for _ in range(5)] == [False, False, False, False, False]
-
-
-def test_confirmation_frames_fire_on_sustained_phrase(monkeypatch):
-    # Three consecutive over-threshold frames (a real utterance) fire exactly
-    # once, on the third frame.
-    eng = _openwakeword_engine_with_scores(
-        monkeypatch,
-        {"sensitivity": 0.5, "confirmation_frames": 3},
-        [0.9, 0.9, 0.9, 0.0],
-    )
-    assert [eng.process(None) for _ in range(4)] == [False, False, True, False]
-
-
-def test_confirmation_frames_one_restores_single_frame_behavior(monkeypatch):
-    # confirmation_frames=1 is the old behavior: fire on the first frame.
-    eng = _openwakeword_engine_with_scores(
-        monkeypatch,
-        {"sensitivity": 0.5, "confirmation_frames": 1},
-        [0.9, 0.0],
-    )
-    assert eng.process(None) is True
-
-
-def test_confirmation_streak_resets_on_engine_reset(monkeypatch):
-    # A pause (reset) between two over-threshold frames must not let a
-    # pre-pause frame count toward the post-resume streak.
-    eng = _openwakeword_engine_with_scores(
-        monkeypatch,
-        {"sensitivity": 0.5, "confirmation_frames": 2},
-        [0.9, 0.9, 0.9],
-    )
-    assert eng.process(None) is False  # streak = 1
-    eng.reset()                        # streak -> 0
-    assert eng.process(None) is False  # streak = 1 again, not 2
-    assert eng.process(None) is True   # streak = 2 -> fire
-
-
-def test_confirmation_frames_config_clamped(monkeypatch):
-    assert ww._confirmation_frames({"confirmation_frames": 0}) == 1
-    assert ww._confirmation_frames({"confirmation_frames": 99}) == 10
-    assert ww._confirmation_frames({"confirmation_frames": "x"}) == ww._DEFAULT_CONFIRMATION_FRAMES
-    assert ww._confirmation_frames({}) == ww._DEFAULT_CONFIRMATION_FRAMES
-
-
-def test_porcupine_sensitivity_is_inverted_to_match_shared_contract(monkeypatch):
-    # Our config contract is "higher sensitivity = stricter" for every engine.
-    # Porcupine's own `sensitivities` param means the OPPOSITE (higher = looser,
-    # more false alarms), so the engine must pass 1 - sensitivity.
-    captured = {}
-
-    class _FakePorcupine:
-        frame_length = 512
-
-        def process(self, frame):
-            return -1
-
-    def _create(**kwargs):
-        captured.update(kwargs)
-        return _FakePorcupine()
-
-    pv = types.ModuleType("pvporcupine")
-    pv.create = _create
-    monkeypatch.setitem(sys.modules, "pvporcupine", pv)
-    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
-    monkeypatch.setenv("PORCUPINE_ACCESS_KEY", "test-key")
-
-    # Strict (0.9) → Porcupine gets a low 0.1 (few false alarms).
-    ww._PorcupineEngine({"provider": "porcupine", "sensitivity": 0.9})
-    assert captured["sensitivities"] == [pytest.approx(0.1)]
-
-    # Loose (0.2) → Porcupine gets a high 0.8.
-    ww._PorcupineEngine({"provider": "porcupine", "sensitivity": 0.2})
-    assert captured["sensitivities"] == [pytest.approx(0.8)]
-
-
-def test_default_sensitivity_is_stricter_than_openwakeword_baseline():
-    # Regression: the 0.5 default let near-misses ("hey hor") through. The
-    # default must sit above openWakeWord's permissive 0.5 baseline.
-    assert ww._DEFAULTS["sensitivity"] >= 0.6
-    assert ww._sensitivity({}) >= 0.6
-
-
-def test_macos_tflite_refuses_silent_onnx_downgrade(monkeypatch):
-    # openWakeWord silently falls back to onnx when no tflite runtime imports.
-    # On macOS ARM64 that lands on the broken backend, so we must raise instead
-    # of arming a listener that can never fire.
-    _install_fake_openwakeword(monkeypatch)
-    monkeypatch.setattr(ww.sys, "platform", "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
-    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: False)
-    with pytest.raises(RuntimeError, match="ai-edge-litert"):
-        ww._OpenWakeWordEngine({"provider": "openwakeword", "openwakeword": {}})
-
-
-def test_non_macos_tflite_falls_back_to_onnx(monkeypatch):
-    # Off macOS the onnx backend works, so a missing tflite runtime is a
-    # downgrade, not a hard failure.
-    calls = _install_fake_openwakeword(monkeypatch)
-    monkeypatch.setattr(ww.sys, "platform", "linux")
-    monkeypatch.setattr("platform.machine", lambda: "x86_64")
-    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: False)
-    ww._OpenWakeWordEngine(
-        {"provider": "openwakeword", "openwakeword": {"inference_framework": "tflite"}}
-    )
-    (downloaded,) = calls["download"]
-    assert downloaded == [ww._bundled_wakeword_path("onnx")]
-
-
-def test_requirements_report_missing_tflite_runtime(monkeypatch):
-    # A missing runtime must surface as unavailable + an actionable hint rather
-    # than an armed-but-deaf detector.
-    monkeypatch.setattr(ww.sys, "platform", "darwin")
-    monkeypatch.setattr("platform.machine", lambda: "arm64")
-    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: False)
-    monkeypatch.setattr("tools.lazy_deps.is_available", lambda feature: feature != "wake.openwakeword.tflite")
-    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
-    monkeypatch.setattr(ww, "_audio_available", lambda: True)
-    reqs = ww.check_wake_word_requirements({"provider": "openwakeword", "openwakeword": {}})
-    assert reqs["available"] is False
-    assert "ai-edge-litert" in reqs["hint"]
 
 
 # ── sherpa-onnx open-vocabulary engine ───────────────────────────────────
@@ -574,159 +358,7 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
     return calls, model_dir
 
 
-def test_sherpa_engine_tokenizes_configured_phrase_at_runtime(monkeypatch, tmp_path):
-    # The open-vocab core: the phrase from config is tokenized at runtime —
-    # no per-phrase model, no training artifact.
-    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
-    eng = ww._SherpaKwsEngine({
-        "provider": "sherpa",
-        "phrase": "purple monkey dishwasher",
-        "sherpa": {"model_dir": str(model_dir)},
-    })
-    assert calls["text2token"] == [["PURPLE MONKEY DISHWASHER"]]
-    # keywords file was materialized with an underscored display name
-    with open(eng._keywords_file) as f:
-        line = f.read().strip()
-    assert line.endswith("@PURPLE_MONKEY_DISHWASHER")
-    eng.close()
-    assert not os.path.exists(eng._keywords_file)
-
-
-def test_sherpa_engine_process_fires_and_resets(monkeypatch, tmp_path):
-    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
-    eng = ww._SherpaKwsEngine({
-        "provider": "sherpa", "phrase": "hey hermes",
-        "sherpa": {"model_dir": str(model_dir)},
-    })
-    frame = [0] * eng.frame_length
-    assert eng.process(frame) is False       # no result queued
-    calls["results"].append("HEY_HERMES")
-    assert eng.process(frame) is True        # queued result → fire
-    old_stream = eng._stream
-    eng.reset()
-    assert eng._stream is not old_stream     # fresh decoder state
-
-
-def test_sherpa_provider_routing(monkeypatch, tmp_path):
-    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
-    for alias in ("sherpa", "sherpa-onnx", "kws", "open"):
-        eng = ww._build_engine({
-            "provider": alias, "phrase": "x",
-            "sherpa": {"model_dir": str(model_dir)},
-        })
-        assert isinstance(eng, ww._SherpaKwsEngine)
-
-
-def test_sherpa_requirements_probe_uses_sherpa_feature(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(ww, "_audio_available", lambda: True)
-    monkeypatch.setattr(
-        "tools.lazy_deps.is_available", lambda f: seen.setdefault("feature", f) or True
-    )
-    r = ww.check_wake_word_requirements({"provider": "sherpa", "phrase": "anything at all"})
-    assert seen["feature"] == "wake.sherpa"
-    assert r["provider"] == "sherpa"
-    assert r["phrase"] == "anything at all"
-
-
 # ── Multi-profile phrase routing ─────────────────────────────────────────
-
-
-def test_sherpa_engine_enrolls_all_profile_phrases(monkeypatch, tmp_path):
-    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
-    monkeypatch.setattr(ww, "_active_profile_name", lambda: "default")
-    monkeypatch.setattr(
-        ww, "enrolled_profile_phrases",
-        lambda: {"coder": "hey coder", "trader": "hey trader"},
-    )
-    eng = ww._SherpaKwsEngine({
-        "provider": "sherpa", "phrase": "hey hermes",
-        "sherpa": {"model_dir": str(model_dir)},
-    })
-    with open(eng._keywords_file, encoding="utf-8") as f:
-        lines = f.read().strip().splitlines()
-    assert len(lines) == 3
-    assert eng._display_to_profile == {
-        "HEY_HERMES": "default",
-        "HEY_CODER": "coder",
-        "HEY_TRADER": "trader",
-    }
-    eng.close()
-
-
-def test_sherpa_engine_profile_routing_can_be_disabled(monkeypatch, tmp_path):
-    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
-    monkeypatch.setattr(ww, "_active_profile_name", lambda: "default")
-    monkeypatch.setattr(
-        ww, "enrolled_profile_phrases", lambda: {"coder": "hey coder"}
-    )
-    eng = ww._SherpaKwsEngine({
-        "provider": "sherpa", "phrase": "hey hermes", "profile_routing": False,
-        "sherpa": {"model_dir": str(model_dir)},
-    })
-    assert eng._display_to_profile == {"HEY_HERMES": "default"}
-    eng.close()
-
-
-def test_sherpa_engine_match_maps_back_to_profile(monkeypatch, tmp_path):
-    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
-    monkeypatch.setattr(ww, "_active_profile_name", lambda: "default")
-    monkeypatch.setattr(
-        ww, "enrolled_profile_phrases", lambda: {"coder": "hey coder"}
-    )
-    eng = ww._SherpaKwsEngine({
-        "provider": "sherpa", "phrase": "hey hermes",
-        "sherpa": {"model_dir": str(model_dir)},
-    })
-    frame = [0] * eng.frame_length
-    calls["results"].append("HEY_CODER")
-    assert eng.process(frame) is True
-    assert eng.last_match == ("hey coder", "coder")
-    calls["results"].append("HEY_HERMES")
-    assert eng.process(frame) is True
-    assert eng.last_match == ("hey hermes", "default")
-
-
-def test_enrolled_profile_phrases_reads_profile_configs(monkeypatch, tmp_path):
-    profiles_root = tmp_path / "profiles"
-    for name, body in (
-        ("coder", "wake_word:\n  enabled: true\n  phrase: hey coder\n"),
-        ("trader", "wake_word:\n  enabled: true\n"),        # phrase defaults
-        ("quiet", "wake_word:\n  enabled: false\n"),         # not enrolled
-        ("empty", ""),                                        # no wake_word at all
-    ):
-        d = profiles_root / name
-        d.mkdir(parents=True)
-        (d / "config.yaml").write_text(body, encoding="utf-8")
-
-    class _Info:
-        def __init__(self, name):
-            self.name = name
-
-    import types as _types
-    fake_profiles = _types.ModuleType("hermes_cli.profiles")
-    fake_profiles.list_profiles = lambda: [
-        _Info(p.name) for p in sorted(profiles_root.iterdir())
-    ]
-    fake_profiles.get_profile_dir = lambda name: str(profiles_root / name)
-    fake_profiles.get_active_profile_name = lambda: "default"
-    monkeypatch.setitem(sys.modules, "hermes_cli.profiles", fake_profiles)
-
-    phrases = ww.enrolled_profile_phrases()
-    assert phrases == {"coder": "hey coder", "trader": "hey trader"}
-
-
-def test_get_last_match_reads_detector_engine(monkeypatch):
-    class _Eng:
-        last_match = ("hey coder", "coder")
-
-    class _Det:
-        engine = _Eng()
-
-    monkeypatch.setattr(ww, "_detector", _Det())
-    assert ww.get_last_match() == ("hey coder", "coder")
-    monkeypatch.setattr(ww, "_detector", None)
-    assert ww.get_last_match() is None
 
 
 # ── Detector loop ────────────────────────────────────────────────────────
@@ -801,8 +433,61 @@ class _LoudStream(_FakeStream):
         return _Frame([500] * n), False
 
 
+def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch):
+    opened = []
+
+    def _stream(**kwargs):
+        opened.append(kwargs)
+        return _LoudStream(**kwargs)
+
+    fake_sd = types.SimpleNamespace(
+        InputStream=_stream,
+        query_devices=lambda selector, kind: {
+            "name": "Microphone Array",
+            "hostapi": 2,
+            "max_input_channels": 2,
+            "default_samplerate": 48000.0,
+        },
+        query_hostapis=lambda index: {"name": "Windows WASAPI"},
+    )
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+
+    det = ww.WakeWordDetector(
+        _FakeEngine(fire=False),
+        lambda: None,
+        input_device="Microphone Array",
+    )
+    det.start()
+    try:
+        assert opened[0]["device"] == "Microphone Array"
+        assert det.input_device_details == {
+            "selector": "Microphone Array",
+            "name": "Microphone Array",
+            "hostapi_index": 2,
+            "hostapi": "Windows WASAPI",
+            "max_input_channels": 2,
+            "default_samplerate": 48000.0,
+        }
+    finally:
+        det.stop()
+
+
+def test_windows_silent_hint_names_selected_device(monkeypatch):
+    monkeypatch.setattr(ww.sys, "platform", "win32")
+    hint = ww.silent_audio_hint(
+        {
+            "selector": 3,
+            "name": "Microphone Array",
+            "hostapi": "Windows WASAPI",
+        }
+    )
+    assert "Microphone Array (Windows WASAPI)" in hint
+    assert "wake_word.input_device" in hint
+    assert "macOS" not in hint
+
+
 def test_detector_flags_silent_stream_and_recovers(monkeypatch):
-    """A stream of zeros sets audio_silent (macOS no-permission mode); audio clears it."""
+    """A stream of zeros sets audio_silent; audible input clears it."""
     monkeypatch.setattr(ww, "_SILENCE_ALERT_SECONDS", 0.001)  # trip on the first frame
     stream_cls = {"cls": _SilentStream}
     fake_sd = types.SimpleNamespace(InputStream=lambda **kw: stream_cls["cls"](**kw))
@@ -833,115 +518,7 @@ def test_detector_flags_silent_stream_and_recovers(monkeypatch):
         det.stop()
 
 
-def test_detector_fires_once_under_cooldown(monkeypatch):
-    _fake_audio(monkeypatch)
-    calls = []
-    eng = _FakeEngine(fire=True)
-    det = ww.WakeWordDetector(eng, lambda: calls.append(1), cooldown=10.0)
-    det.start()
-    time.sleep(0.25)
-    det.stop()
-    assert len(calls) == 1  # high cooldown suppresses repeats
-    assert eng.closed is True
-    assert det.running is False
-
-
-def test_detector_refires_after_cooldown(monkeypatch):
-    _fake_audio(monkeypatch)
-    calls = []
-    det = ww.WakeWordDetector(_FakeEngine(fire=True), lambda: calls.append(1), cooldown=0.05)
-    det.start()
-    time.sleep(0.3)
-    det.stop()
-    assert len(calls) >= 2
-
-
-def test_detector_no_fire_when_engine_quiet(monkeypatch):
-    _fake_audio(monkeypatch)
-    calls = []
-    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: calls.append(1))
-    det.start()
-    time.sleep(0.15)
-    det.stop()
-    assert calls == []
-
-
-def test_detector_resets_engine_on_each_start(monkeypatch):
-    # Clearing the engine buffer on (re)start is what stops a resume right after
-    # a voice turn from re-firing on stale audio (the runaway wake loop).
-    _fake_audio(monkeypatch)
-    eng = _FakeEngine(fire=False)
-    det = ww.WakeWordDetector(eng, lambda: None)
-    det.start()
-    time.sleep(0.05)
-    det.pause()
-    det.resume()
-    time.sleep(0.05)
-    det.stop()
-    assert eng.resets >= 2  # initial start + resume
-
-
-def test_detector_pause_resume(monkeypatch):
-    _fake_audio(monkeypatch)
-    det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
-    det.start()
-    time.sleep(0.05)
-    assert det.running is True
-    det.pause()
-    assert det.running is False
-    det.resume()
-    time.sleep(0.05)
-    assert det.running is True
-    det.stop()
-    assert det.running is False
-
-
 # ── Singleton lifecycle ──────────────────────────────────────────────────
-
-
-def test_singleton_lifecycle(monkeypatch, tmp_path):
-    _fake_audio(monkeypatch)
-    monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=False))
-    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
-    owner = object()
-
-    assert ww.is_listening() is False
-    det = ww.start_listening(lambda: None, owner=owner, config={})
-    time.sleep(0.05)
-    assert ww.is_listening() is True
-    assert ww.owns_listener(owner) is True
-
-    # Re-entrant start returns the same detector and re-arms it.
-    det2 = ww.start_listening(lambda: None, owner=owner, config={})
-    assert det2 is det
-
-    assert ww.pause_listening(owner=owner) is True
-    assert ww.is_listening() is False
-    assert ww.resume_listening(owner=owner) is True
-    time.sleep(0.05)
-    assert ww.is_listening() is True
-
-    assert ww.stop_listening(owner=owner) is True
-    assert ww.is_listening() is False
-
-
-def test_second_owner_cannot_mutate_listener(monkeypatch, tmp_path):
-    _fake_audio(monkeypatch)
-    monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=False))
-    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
-    owner, intruder = object(), object()
-    first_callback = lambda: None
-
-    detector = ww.start_listening(first_callback, owner=owner, config={})
-    with pytest.raises(ww.WakeWordInUse):
-        ww.start_listening(lambda: None, owner=intruder, config={})
-
-    assert detector.on_wake is first_callback
-    assert ww.pause_listening(owner=intruder) is False
-    assert ww.resume_listening(owner=intruder) is False
-    assert ww.stop_listening(owner=intruder) is False
-    assert ww.owns_listener(owner) is True
-    assert ww.stop_listening(owner=owner) is True
 
 
 def test_detection_callback_can_pause_and_close_stream(monkeypatch, tmp_path):

@@ -128,7 +128,7 @@ LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # Known model sets for auto-correction
-OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
+OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
 # Singleton for the local model — loaded once, reused across calls
@@ -1494,6 +1494,117 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         return WhisperModel(model_name, device="cpu", compute_type="int8")
 
 
+# Silence-hallucination hardening defaults for local faster-whisper.
+# Whisper decodes SOMETHING even from pure silence/noise — often short junk
+# tokens ("You", "Thank you.", other-language phrases). Three layers kill the
+# class at the source (all tunable under ``stt.local``):
+#   1. vad_filter (Silero VAD, bundled with faster-whisper): silence never
+#      reaches the model. ``stt.local.vad: false`` restores raw behavior
+#      (e.g. transcribing music/ambient audio).
+#   2. condition_on_previous_text=False: one hallucinated token can't seed a
+#      run of them; negligible quality cost for voice-note-length audio.
+#   3. Segment confidence gate (see _is_hallucinated_segment): drops segments
+#      the model itself flags as probably-not-speech AND low-confidence.
+_VAD_MIN_SILENCE_MS_DEFAULT = 500
+_NO_SPEECH_PROB_THRESHOLD_DEFAULT = 0.6
+_LOGPROB_THRESHOLD_DEFAULT = -1.0
+
+
+def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build the kwargs for EVERY local faster-whisper ``model.transcribe`` call.
+
+    Single owner for the anti-hallucination hardening — any new local-whisper
+    call site must go through this helper instead of hand-rolling kwargs.
+    """
+    stt_config = stt_config if isinstance(stt_config, dict) else _load_stt_config()
+    local_cfg = stt_config.get("local") or {}
+
+    kwargs: Dict[str, Any] = {
+        "beam_size": 5,
+        # Don't feed the previous window's text back as a prompt: a single
+        # hallucinated token otherwise seeds a self-reinforcing run of them.
+        "condition_on_previous_text": False,
+    }
+
+    vad_enabled = local_cfg.get("vad", True)
+    if vad_enabled is None:
+        vad_enabled = True
+    if bool(vad_enabled):
+        kwargs["vad_filter"] = True
+        try:
+            min_silence_ms = int(
+                local_cfg.get("vad_min_silence_ms", _VAD_MIN_SILENCE_MS_DEFAULT)
+            )
+        except (TypeError, ValueError):
+            min_silence_ms = _VAD_MIN_SILENCE_MS_DEFAULT
+        kwargs["vad_parameters"] = {"min_silence_duration_ms": min_silence_ms}
+    else:
+        kwargs["vad_filter"] = False
+
+    forced_lang = _resolve_stt_language("local", stt_config)
+    if forced_lang:
+        kwargs["language"] = forced_lang
+
+    initial_prompt = local_cfg.get("initial_prompt")
+    if isinstance(initial_prompt, str) and initial_prompt.strip():
+        kwargs["initial_prompt"] = initial_prompt
+
+    return kwargs
+
+
+def _confidence_thresholds(local_cfg: Dict[str, Any]) -> tuple[float, float]:
+    """Resolve (no_speech_prob, avg_logprob) gate thresholds from config."""
+    try:
+        no_speech = float(
+            local_cfg.get("no_speech_prob_threshold", _NO_SPEECH_PROB_THRESHOLD_DEFAULT)
+        )
+    except (TypeError, ValueError):
+        no_speech = _NO_SPEECH_PROB_THRESHOLD_DEFAULT
+    try:
+        logprob = float(local_cfg.get("logprob_threshold", _LOGPROB_THRESHOLD_DEFAULT))
+    except (TypeError, ValueError):
+        logprob = _LOGPROB_THRESHOLD_DEFAULT
+    return no_speech, logprob
+
+
+def _is_hallucinated_segment(segment: Any, no_speech_threshold: float, logprob_threshold: float) -> bool:
+    """True when a segment is very likely a silence hallucination.
+
+    Conservative AND gate (matches openai-whisper's own heuristic): the model
+    must BOTH think the window is non-speech (high no_speech_prob) AND have
+    decoded it with low confidence (low avg_logprob). Quiet-but-real speech
+    fails one of the two conditions and survives.
+    """
+    no_speech_prob = getattr(segment, "no_speech_prob", None)
+    avg_logprob = getattr(segment, "avg_logprob", None)
+    if no_speech_prob is None or avg_logprob is None:
+        return False
+    try:
+        no_speech_prob = float(no_speech_prob)
+        avg_logprob = float(avg_logprob)
+    except (TypeError, ValueError):
+        # Unknown segment shape (plugin/test doubles) — never drop.
+        return False
+    return no_speech_prob > no_speech_threshold and avg_logprob < logprob_threshold
+
+
+def _join_confident_segments(segments: Any, local_cfg: Dict[str, Any]) -> str:
+    """Join segment texts, dropping probable silence hallucinations."""
+    no_speech_threshold, logprob_threshold = _confidence_thresholds(local_cfg)
+    kept: list[str] = []
+    for segment in segments:
+        if _is_hallucinated_segment(segment, no_speech_threshold, logprob_threshold):
+            logger.debug(
+                "Dropping probable hallucinated segment %r (no_speech_prob=%.3f, avg_logprob=%.3f)",
+                getattr(segment, "text", ""),
+                getattr(segment, "no_speech_prob", float("nan")),
+                getattr(segment, "avg_logprob", float("nan")),
+            )
+            continue
+        kept.append(segment.text.strip())
+    return " ".join(kept).strip()
+
+
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     global _local_model, _local_model_name
@@ -1523,20 +1634,16 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
                     )
                     _local_model_name = model_name
 
-        # Language: stt.local.language > stt.language > env var > auto-detect.
+        # Shared hardened kwargs: VAD filter (default on), no cross-window
+        # conditioning, language/initial_prompt resolution — one owner for
+        # every local faster-whisper call site.
         stt_config = _load_stt_config()
         local_config = stt_config.get("local") or {}
-        _forced_lang = _resolve_stt_language("local", stt_config)
-        transcribe_kwargs = {"beam_size": 5}
-        if _forced_lang:
-            transcribe_kwargs["language"] = _forced_lang
-        initial_prompt = local_config.get("initial_prompt")
-        if isinstance(initial_prompt, str) and initial_prompt.strip():
-            transcribe_kwargs["initial_prompt"] = initial_prompt
+        transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
-            transcript = " ".join(segment.text.strip() for segment in segments)
+            transcript = _join_confident_segments(segments, local_config)
         except Exception as exc:
             # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
             # AFTER the model loaded successfully.  Evict the broken cached
@@ -1556,7 +1663,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
             _local_model_name = model_name
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
-            transcript = " ".join(segment.text.strip() for segment in segments)
+            transcript = _join_confident_segments(segments, local_config)
 
         logger.info(
             "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
@@ -1824,7 +1931,13 @@ def _transcribe_openai(
                     "response_format": "text" if model_name == "whisper-1" else "json",
                 }
                 if language:
-                    create_kwargs["language"] = language
+                    if model_name == "gpt-transcribe":
+                        # gpt-transcribe replaces the singular ``language``
+                        # field with a ``languages`` list; the API rejects
+                        # requests that send the legacy field.
+                        create_kwargs["extra_body"] = {"languages": [language]}
+                    else:
+                        create_kwargs["language"] = language
                     logger.debug("Using language hint '%s' for OpenAI STT", language)
                 return client.audio.transcriptions.create(**create_kwargs)
 

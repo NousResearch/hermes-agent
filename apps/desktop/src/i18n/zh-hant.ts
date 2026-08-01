@@ -129,6 +129,7 @@ export const zhHant = defineLocale({
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒絕了該 API 金鑰 (401)。',
+      diskFull: '磁碟已滿 — 請騰出一些空間後再試。',
       gatewayAuthFailed: '閘道認證失敗 — 請檢查你的 API_SERVER_KEY。',
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
@@ -150,6 +151,7 @@ export const zhHant = defineLocale({
       noSpeechDetected: '未偵測到語音',
       playbackFailed: '語音播放失敗',
       recordingFailed: '語音錄製失敗',
+      sayStopToEnd: phrase => `說「${phrase}」即可結束語音對話。`,
       transcriptionFailed: '語音轉寫失敗',
       transcriptionUnavailable: '語音轉寫暫不可用。',
       tryRecordingAgain: '請再錄製一次。',
@@ -309,6 +311,8 @@ export const zhHant = defineLocale({
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       backdropTitle: '聊天背景',
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
+      reactionsTitle: '訊息回應',
+      reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       embedsTitle: '內嵌預覽',
       embedsDesc:
         '豐富預覽會從第三方網站（YouTube、X 等）載入。詢問會在你允許前顯示佔位符；一律會自動載入；關閉則保留純連結。',
@@ -916,6 +920,9 @@ export const zhHant = defineLocale({
       ready: '就緒',
       needsSignIn: '需要登入',
       needsSetup: '需要安裝',
+      activeBackend: '目前後端',
+      activeBackendHint: '這是你目前使用的後端',
+      useBackend: '使用此後端',
       nousIncluded: '包含在 Nous 訂閱中；登入 Nous Portal 即可啟用。',
       nousAuthNeededTitle: '登入 Nous Portal',
       nousAuthNeededMessage: provider => `已儲存 ${provider}，但在登入 Nous Portal 之前不會啟用。`,
@@ -983,7 +990,7 @@ export const zhHant = defineLocale({
     visionModelLink: '在 設定 → 模型 中選擇視覺模型',
     toolsetsEnabled: (enabled, total) => `已啟用 ${enabled}/${total} 個工具集`,
     configureToolset: label => `設定 ${label}`,
-    toggleToolset: label => `切換 ${label} 工具集`,
+    toggleToolset: (label, enabled) => `${enabled ? '開啟' : '關閉'} ${label} 工具集`,
     skillsLoadFailed: '技能載入失敗',
     toolsetsRefreshFailed: '工具集重新整理失敗',
     skillEnabled: '技能已啟用',
@@ -1090,7 +1097,7 @@ export const zhHant = defineLocale({
       installed: '已安裝',
       generatedTag: '生成',
       adoptFailed: '無法領養該寵物。',
-      toggleFailed: '無法切換寵物顯示。',
+      toggleFailed: enabled => `無法${enabled ? '開啟' : '關閉'}寵物顯示。`,
       noneAvailable: '尚無可用寵物——請在下方選擇一個安裝。'
     },
     generatePet: {
@@ -2397,17 +2404,11 @@ export const zhHant = defineLocale({
     closeToRight: '關閉右側',
     closeAll: '全部關閉',
     newSessionTab: '新增工作階段分頁',
-    split: dir => `向${dir}分割`,
-    move: dir => `向${dir}移動`,
-    dirUp: '上',
-    dirDown: '下',
-    dirLeft: '左',
-    dirRight: '右',
     pluginDisabled: pluginId => `外掛「${pluginId}」已停用`,
     pluginDisabledBody: '在 設定 → 外掛 中重新啟用即可恢復面板。',
     missingPane: paneId => `缺少面板：${paneId}`,
     editTitle: '版面配置',
-    editHint: '選擇一個版面配置，或在區域之間拖曳面板。右鍵點擊區域可分割。',
+    editHint: '選擇一個版面配置，或在區域之間拖曳面板。',
     reset: '重設',
     templates: '範本',
     custom: '自訂',
@@ -2448,7 +2449,10 @@ export const zhHant = defineLocale({
       refresh: '重新整理',
       moreActions: '更多動作',
       branchNewChat: '在新聊天中分支',
+      react: '回應',
       dismissError: '关闭错误',
+      filesChanged: count => `${count} 個檔案已變更`,
+      reviewChanges: '檢視',
       readAloudFailed: '朗讀失敗',
       preparingAudio: '正在準備音訊...',
       stopReading: '停止朗讀',
@@ -2517,6 +2521,7 @@ export const zhHant = defineLocale({
       statusError: '錯誤',
       statusRecovered: '已復原',
       statusDone: '完成',
+      memoryWriteNoted: '已記下記憶寫入',
       actions: {
         read: '已讀取',
         reading: '正在讀取',
@@ -2678,7 +2683,7 @@ export const zhHant = defineLocale({
     sidebar: {
       title: '側邊欄',
       description: '顯示行動裝置側邊欄。',
-      toggle: '切換側邊欄'
+      toggle: open => `${open ? '顯示' : '隱藏'}側邊欄`
     }
   }
 })

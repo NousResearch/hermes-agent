@@ -559,8 +559,30 @@ class CLICommandsMixin:
             return
 
         try:
+            from hermes_cli.clipboard import (
+                is_remote_shell_session,
+                write_clipboard_text,
+            )
+            if is_remote_shell_session():
+                # Over SSH, native tools would write the REMOTE clipboard
+                # (or an X-forwarded one) — OSC 52 reaches the terminal
+                # the user is actually sitting at. Fixes #31528.
+                self._write_osc52_clipboard(text)
+                _cprint(
+                    f"  Copied assistant response #{idx + 1} via OSC 52 "
+                    "(terminal support required)"
+                )
+                return
+            if write_clipboard_text(text):
+                _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+                return
+            # Native tools unavailable/failed — fall back to OSC 52 so
+            # SSH/tmux sessions can still copy via the terminal emulator.
             self._write_osc52_clipboard(text)
-            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+            _cprint(
+                f"  Copied assistant response #{idx + 1} via OSC 52 "
+                "(terminal support required)"
+            )
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
 
@@ -671,11 +693,11 @@ class CLICommandsMixin:
 
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
-        from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.slash_exec import CommandContext, execute_command
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        reply = execute_command("profile", CommandContext(surface="cli"))
+        profile_name = reply.data["profile"]
+        display = reply.data["home"]
 
         print()
         print(f"  Profile: {profile_name}")
@@ -1998,20 +2020,21 @@ class CLICommandsMixin:
         of their session. Bundles are loaded via ``/<bundle-name>``.
         """
         from cli import ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint
-        try:
-            from agent.skill_bundles import list_bundles, _bundles_dir
-        except Exception as exc:
-            _cprint(f"\033[1;31mBundle subsystem unavailable: {exc}{_RST}")
+        from hermes_cli.slash_exec import CommandContext, execute_command
+
+        reply = execute_command("bundles", CommandContext(surface="cli"))
+        if "error" in reply.data:
+            _cprint(f"\033[1;31mBundle subsystem unavailable: {reply.data['error']}{_RST}")
             return
 
-        bundles = list_bundles()
+        bundles = reply.data["bundles"]
         if not bundles:
             _cprint("  No skill bundles installed.")
             _cprint(
                 f"  {_DIM}Create one with: hermes bundles create "
                 f"<name> --skill <s1> --skill <s2>{_RST}"
             )
-            _cprint(f"  {_DIM}Directory: {_bundles_dir()}{_RST}")
+            _cprint(f"  {_DIM}Directory: {reply.data['dir']}{_RST}")
             return
 
         _cprint(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(bundles)} installed):")
@@ -3032,6 +3055,46 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator — pick the TUI busy-indicator style.
+
+        Usage:
+            /indicator              Show the current busy-indicator style
+            /indicator status       Show the current busy-indicator style
+            /indicator kaomoji      Animated kaomoji faces (default)
+            /indicator emoji        Emoji spinner
+            /indicator unicode      Braille spinner
+            /indicator ascii        Plain ASCII spinner
+
+        Persists to ``display.tui_status_indicator`` — the same config key the
+        TUI reads — so the change is picked up the next time the TUI renders.
+        """
+        from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
+        from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+        styles = INDICATOR_STYLES
+        current = (
+            (self.config.get("display") or {}).get("tui_status_indicator", DEFAULT_INDICATOR_STYLE)
+        )
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            _cprint(f"  {_ACCENT}Busy-indicator style: {current}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [{'|'.join(styles)}]{_RST}")
+            return
+
+        arg = parts[1].strip().lower()
+        if arg not in styles:
+            _cprint(f"  {_DIM}(._.) Unknown indicator style: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [{'|'.join(styles)}]{_RST}")
+            return
+
+        self.config.setdefault("display", {})["tui_status_indicator"] = arg
+        if save_config_value("display.tui_status_indicator", arg):
+            _cprint(f"  {_ACCENT}✓ Busy-indicator style set to '{arg}' (saved to config){_RST}")
+            _cprint(f"  {_DIM}The TUI picks up the new style on its next render.{_RST}")
+        else:
+            _cprint(f"  {_ACCENT}✓ Busy-indicator style set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).

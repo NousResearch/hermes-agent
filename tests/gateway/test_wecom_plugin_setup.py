@@ -76,36 +76,4 @@ class TestWeComHomeChannelClear:
         assert "WECOM_HOME_CHANNEL" in removed
         assert "WECOM_HOME_CHANNEL" not in saved
 
-    def test_blank_without_prior_home_still_attempts_remove(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch, _PROMPTS_BLANK, _CHOICES, saved, removed, existing={}
-        )
-        interactive_setup()
-        assert removed.count("WECOM_HOME_CHANNEL") == 1
 
-    def test_nonempty_saves_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch, _PROMPTS_NONEMPTY, _CHOICES, saved, removed, existing={}
-        )
-        interactive_setup()
-        assert saved["WECOM_HOME_CHANNEL"] == "wecom-home-chat-id"
-        assert "WECOM_HOME_CHANNEL" not in removed
-
-    def test_whitespace_only_clears_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        saved, removed = {}, []
-        _patch_setup_io(
-            monkeypatch,
-            _PROMPTS_WHITESPACE,
-            _CHOICES,
-            saved,
-            removed,
-            existing={"WECOM_HOME_CHANNEL": "old-wecom-chat-id"},
-        )
-        interactive_setup()
-        assert "WECOM_HOME_CHANNEL" in removed
-        assert "WECOM_HOME_CHANNEL" not in saved

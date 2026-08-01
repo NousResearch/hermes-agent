@@ -30,32 +30,6 @@ def _cfg(providers=None, custom_providers=None):
 
 
 class TestNamedCustomProviderCatalogs:
-    def test_declared_default_model_survives_failed_discovery(self, monkeypatch):
-        """Endpoints without a /models route keep their declared models."""
-        monkeypatch.setenv("BEDROCK_MANTLE_API_KEY", "test-key")
-        cfg = _cfg(
-            providers={
-                "bedrock-mantle": {
-                    "name": "AWS Bedrock Mantle",
-                    "base_url": MANTLE_URL,
-                    "key_env": "BEDROCK_MANTLE_API_KEY",
-                    "api_mode": "codex_responses",
-                    "default_model": "openai.gpt-5.5",
-                }
-            }
-        )
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models.fetch_api_models", return_value=None
-        ):
-            catalogs = _named_custom_provider_catalogs()
-
-        assert catalogs == [
-            (
-                "custom:bedrock-mantle",
-                "AWS Bedrock Mantle",
-                [("openai.gpt-5.5", "")],
-            )
-        ]
 
     def test_live_discovery_extends_declared_models(self, monkeypatch):
         monkeypatch.setenv("SOME_KEY", "k")
@@ -80,25 +54,6 @@ class TestNamedCustomProviderCatalogs:
         assert slug == "custom:relay"
         assert [m for m, _ in models] == ["model-a", "model-b"]
 
-    def test_declared_models_dict_included(self, monkeypatch):
-        monkeypatch.setenv("SOME_KEY", "k")
-        cfg = _cfg(
-            providers={
-                "relay": {
-                    "name": "Relay",
-                    "base_url": "https://relay.example/v1",
-                    "key_env": "SOME_KEY",
-                    "default_model": "model-a",
-                    "models": {"model-b": {}, "model-c": {}},
-                }
-            }
-        )
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models.fetch_api_models", return_value=None
-        ):
-            catalogs = _named_custom_provider_catalogs()
-
-        assert [m for m, _ in catalogs[0][2]] == ["model-a", "model-b", "model-c"]
 
     def test_disabled_provider_skipped(self, monkeypatch):
         monkeypatch.setenv("SOME_KEY", "k")

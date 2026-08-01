@@ -104,7 +104,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # Google Vertex AI provider — OAuth2 token minting for the Gemini
     # OpenAI-compatible endpoint. Only loaded when provider=vertex is selected;
     # google-auth is NOT in [all] so plain installs don't carry it.
-    "provider.vertex": ("google-auth==2.55.1",),
+    "provider.vertex": (
+        "google-auth==2.55.1",
+        "pyasn1==0.6.4",
+    ),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
@@ -115,6 +118,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),
+
+    # ─── Monitoring ─────────────────────────────────────────────────────────
+    # OTLP gateway monitoring export. Lazily installed on first use of
+    # monitoring.gateway_health_export / monitoring.export.otlp. Tracks the
+    # `otlp` extra in pyproject.toml — bump both together.
+    "export.otlp": (
+        "opentelemetry-sdk==1.39.1",
+        "opentelemetry-exporter-otlp-proto-http==1.39.1",
+    ),
 
     # ─── TTS providers ─────────────────────────────────────────────────────
     # Pinned to exact versions to match pyproject.toml's no-ranges policy
@@ -243,12 +255,19 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
+    "terminal.vercel": ("vercel==0.7.2",),
 
     # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
         "google-api-python-client==2.194.0",
+        "google-auth==2.55.1",
         "google-auth-oauthlib==1.3.1",
         "google-auth-httplib2==0.3.1",
+        # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
+        # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
+        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale pyasn1/google-auth.
+        "httplib2==0.32.0",
+        "pyasn1==0.6.4",
     ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
@@ -267,14 +286,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # for stripped/source-build installs that somehow dropped it. The vision
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
-    "tool.vision": ("Pillow==12.2.0",),
+    "tool.vision": ("Pillow==12.3.0",),
     # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
     # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
     # extras in pyproject.toml. The one-liner installer pulls this in via
     # `[all]`; lazy-installing here covers lean / partial / broken-extra
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
-        "mcp==1.26.0",
+        "mcp==1.28.1",
         "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
     # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
@@ -909,6 +928,105 @@ def feature_install_command(feature: str) -> Optional[str]:
         return None
     specs = LAZY_DEPS[feature]
     return "uv pip install " + " ".join(repr(s) for s in specs)
+
+
+@dataclass
+class InstallSpecsResult:
+    """Outcome of :func:`install_specs` for one batch of pip specs.
+
+    ``ok``       — install succeeded (or nothing was missing).
+    ``blocked``  — installs are gated off (config kill switch, sealed venv
+                   without a durable target) or a spec failed validation;
+                   nothing was executed. ``reason`` explains why.
+    ``command``  — human-readable description of what ran (for UIs/logs).
+    """
+    ok: bool
+    blocked: bool = False
+    reason: str = ""
+    command: str = ""
+    stdout: str = ""
+    stderr: str = ""
+
+
+def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> InstallSpecsResult:
+    """Install arbitrary (validated) pip specs through the lazy-install pipeline.
+
+    This is the environment-aware install path for callers whose package
+    lists come from data (e.g. memory-provider plugin manifests declaring
+    ``pip_dependencies``) rather than the static :data:`LAZY_DEPS` allowlist.
+    It applies the exact same environment routing as :func:`ensure`:
+
+    * **Venv-scoped by default** — installs into ``sys.executable``'s venv.
+    * **Durable-target on immutable images** — when the deployment seals the
+      agent venv (``HERMES_DISABLE_LAZY_INSTALLS=1``) and sets
+      ``HERMES_LAZY_INSTALL_TARGET``, installs are redirected to the writable
+      data-volume dir (``--target`` + core-venv constraints), then activated
+      on ``sys.path`` so the packages import in this process immediately.
+    * **Gated** — honors ``security.allow_lazy_installs`` and refuses to run
+      when the venv is sealed with no durable target (never attempts a write
+      to a read-only tree; reports *why* instead of surfacing EROFS/EACCES).
+
+    Every spec must pass :func:`_spec_is_safe` (no URLs, paths, or shell
+    metacharacters). Unlike :func:`ensure`, unknown packages are permitted —
+    the caller owns manifest trust; this function owns spec hygiene and
+    environment routing.
+
+    Never raises; inspect the returned :class:`InstallSpecsResult`.
+    """
+    cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
+    if not cleaned:
+        return InstallSpecsResult(ok=True, command="")
+
+    for spec in cleaned:
+        if not _spec_is_safe(spec):
+            return InstallSpecsResult(
+                ok=False, blocked=True,
+                reason=f"refusing to install unsafe spec {spec!r}",
+            )
+
+    if not _allow_lazy_installs():
+        target = _lazy_install_target()
+        if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1" and target is None:
+            reason = (
+                "runtime installs are disabled on this deployment: the agent "
+                "environment is immutable and no writable install target is "
+                "configured (HERMES_LAZY_INSTALL_TARGET)"
+            )
+        else:
+            reason = "runtime installs disabled (security.allow_lazy_installs=false)"
+        return InstallSpecsResult(ok=False, blocked=True, reason=reason)
+
+    target = _lazy_install_target()
+    display = "uv pip install " + (
+        f"--target {target} " if target is not None else ""
+    ) + " ".join(cleaned)
+
+    logger.info("Installing pip specs %s (target=%s)", " ".join(cleaned), target or "venv")
+    try:
+        result = _venv_pip_install(cleaned, timeout=timeout)
+    except Exception as exc:
+        logger.warning("install_specs failed unexpectedly: %s", exc)
+        return InstallSpecsResult(
+            ok=False, command=display, stderr=f"install failed: {exc}"
+        )
+
+    # Freshly-installed dists must be visible to importers and metadata
+    # checks in this same process (dashboard rechecks availability inline).
+    try:
+        import importlib
+        importlib.invalidate_caches()
+        import importlib.metadata as _md
+        if hasattr(_md, "_cache_clear"):
+            _md._cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    return InstallSpecsResult(
+        ok=result.success,
+        command=display,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
 
 
 def active_features() -> list[str]:

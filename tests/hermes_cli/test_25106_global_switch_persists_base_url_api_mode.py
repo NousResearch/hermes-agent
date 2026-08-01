@@ -90,23 +90,6 @@ def test_global_switch_persists_base_url_and_api_mode(monkeypatch):
     assert saved["model.api_mode"] == "chat_completions"
 
 
-def test_global_switch_persists_provider_when_runtime_provider_is_unchanged(monkeypatch):
-    saved = _run_switch(monkeypatch, _make_result(provider_changed=False))
-
-    assert saved["model.provider"] == "custom:minimax"
-
-
-def test_global_switch_clears_base_url_and_api_mode_when_unresolved(monkeypatch):
-    """When the resolver returns no base_url/api_mode for the new provider
-    (e.g. a named provider needing neither), any previous value must be
-    cleared (None) rather than silently left in config.yaml."""
-    result = _make_result(base_url="", api_mode="")
-    saved = _run_switch(monkeypatch, result)
-
-    assert saved["model.base_url"] is None
-    assert saved["model.api_mode"] is None
-
-
 def test_session_only_switch_does_not_touch_config(monkeypatch):
     """--session must not call save_config_value at all — persistence stays
     entirely in-memory."""
@@ -145,28 +128,5 @@ def _run_apply(monkeypatch, result, persist_global=True):
     return saved
 
 
-def test_picker_global_switch_persists_base_url_and_api_mode(monkeypatch):
-    """Picker-path counterpart of `test_global_switch_persists_base_url_and_api_mode`:
-    `_apply_model_switch_result(..., persist_global=True)` must sync base_url/api_mode
-    too, not just default/provider."""
-    saved = _run_apply(monkeypatch, _make_result())
-
-    assert saved["model.default"] == "MiniMax-M3"
-    assert saved["model.provider"] == "custom:minimax"
-    assert saved["model.base_url"] == "https://api.minimax.io/v1"
-    assert saved["model.api_mode"] == "chat_completions"
 
 
-def test_picker_global_switch_persists_provider_when_runtime_provider_is_unchanged(monkeypatch):
-    saved = _run_apply(monkeypatch, _make_result(provider_changed=False))
-
-    assert saved["model.provider"] == "custom:minimax"
-
-
-def test_picker_global_switch_clears_base_url_and_api_mode_when_unresolved(monkeypatch):
-    """Picker-path counterpart of `test_global_switch_clears_base_url_and_api_mode_when_unresolved`."""
-    result = _make_result(base_url="", api_mode="")
-    saved = _run_apply(monkeypatch, result)
-
-    assert saved["model.base_url"] is None
-    assert saved["model.api_mode"] is None

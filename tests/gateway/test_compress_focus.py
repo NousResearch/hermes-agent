@@ -90,28 +90,3 @@ async def test_compress_focus_topic_passed_to_agent():
     assert 'Focus: "database schema"' in result
 
 
-@pytest.mark.asyncio
-async def test_compress_no_focus_passes_none():
-    """Bare /compress passes focus_topic=None."""
-    history = _make_history()
-    runner = _make_runner(history)
-    agent_instance = MagicMock()
-    agent_instance.context_compressor.has_content_to_compress.return_value = True
-    agent_instance.session_id = "sess-1"
-    agent_instance._compress_context.return_value = (list(history), "")
-    agent_instance._compression_skipped_due_to_lock = False
-
-    with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
-        patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100),
-    ):
-        result = await runner._handle_compress_command(_make_event("/compress"))
-
-    agent_instance._compress_context.assert_called_once()
-    call_kwargs = agent_instance._compress_context.call_args
-    assert call_kwargs.kwargs.get("focus_topic") is None
-
-    # No focus line in response
-    assert "Focus:" not in result

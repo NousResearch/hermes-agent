@@ -6,14 +6,14 @@
  *
  * Dragging is FancyZones-style (drag-session.ts): the layout stays fixed and
  * every zone lights up as a whole-region drop target. Right-click opens the
- * contextual zone menu (split/move + header/minimize toggles).
+ * contextual zone menu (tab close verbs + header/minimize toggles).
  */
 
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
+import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { DecodeText } from '@/components/ui/decode-text'
 import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS } from '@/components/ui/drop-affordance'
 import { PANE_TAB_STRIP_LINE_LEFT, PANE_TAB_STRIP_LINE_RIGHT, PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
@@ -25,28 +25,28 @@ import { cn } from '@/lib/utils'
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
 import { hiddenPaneProps, PaneGroupContext, PaneVisibleContext } from '../../pane-visibility'
-import type { DropPosition, GroupNode, RootEdge } from '../model'
-import { adjacentGroup } from '../model'
+import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
-  $layoutTree,
   $narrowViewport,
   $newSessionTabAction,
+  $panesWithCloser,
   $treeDragging,
   activateTreePane,
-  closeTreePane,
+  closeAllTreeTabs,
+  closeOtherTreeTabs,
+  closeTabPane,
+  closeTreeTabsToRight,
   collapseTreePane,
-  dismissTreePane,
   isCollapsePane,
   isSessionStripPane,
-  moveTreePane,
   noteActiveTreeGroup,
   restoreTreePane,
   SESSION_TILE_DRAG,
   setTreeGroupHeaderHidden,
-  splitTreeZone,
-  toggleTreeGroupMinimized
+  setTreeGroupMinimized,
+  treeTabCloseTargets
 } from '../store'
 
 import { type DoubleTapContext, startPaneDrag } from './drag-session'
@@ -54,30 +54,19 @@ import { forceLoneHeaderForPanes } from './lone-header'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
 
-/** A directional action in the zone menu (computed per group state). */
-interface ZoneMenuDirection {
-  side: RootEdge
-  label: string
-  run: () => void
-}
-
-const DIRECTION_ORDER: readonly RootEdge[] = ['right', 'bottom', 'left', 'top']
-const DIRECTION_ARROW: Record<RootEdge, string> = { bottom: '↓', left: '←', right: '→', top: '↑' }
-
-/** Right-click zone menu: directional actions + header toggle + minimize.
- *  The directions are CONTEXTUAL (computed by TreeGroup): a stacked group
- *  offers "Split <dir>" (carve a new zone with the clicked pane — VS Code
- *  split-and-move in one gesture); a single-pane group offers "Move <dir>"
- *  into the zone actually sitting on that side — directions with no visible
- *  neighbor aren't offered, so no action ever appears to do nothing. */
+/** Right-click zone menu: the tab verbs (close this / others / to the right /
+ *  all) plus the strip's own chrome toggles. Same items and icons as a session
+ *  tab's menu, so every tab in a strip answers a right-click the same way —
+ *  a pane with no domain menu of its own (the file tree, a terminal, the main
+ *  tab on a fresh draft) falls through to this one. */
 function ZoneMenu({
   children,
   closable,
   minimizable = true,
-  directions,
   headerHidden,
   minimized,
-  nodeId
+  nodeId,
+  targetPane
 }: {
   children: ReactNode
   /** The pane the menu closes (the right-clicked chip / the active pane);
@@ -86,52 +75,71 @@ function ZoneMenu({
   /** False for the zone hosting the uncloseable workspace — collapsing the
    *  MAIN pane strands the app behind a strip. */
   minimizable?: boolean
-  /** Called when the menu renders, not on every zone re-render: resolving the
-   *  neighbor zones has to read the layout tree, and subscribing every zone to
-   *  it made a sash drag re-render every mounted pane. Same lazy shape as
-   *  `closable`. */
-  directions: () => ZoneMenuDirection[]
   headerHidden?: boolean
   minimized?: boolean
   nodeId: string
+  /** The right-clicked chip (else the active pane) — what the close-others /
+   *  to-the-right / all verbs measure from. Called when the menu RENDERS, not
+   *  on every zone re-render: resolving the siblings reads the layout tree,
+   *  and subscribing every zone to it made a sash drag re-render every
+   *  mounted pane. */
+  targetPane: () => string
 }) {
   const { t } = useI18n()
 
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent>
-        {directions().map(direction => (
-          <ContextMenuItem key={direction.side} onSelect={direction.run}>
-            {direction.label}
-          </ContextMenuItem>
-        ))}
-        <ContextMenuItem onSelect={() => setTreeGroupHeaderHidden(nodeId, !headerHidden)}>
-          {headerHidden ? t.zones.showHeader : t.zones.hideHeader}
-        </ContextMenuItem>
-        {minimizable && (
-          <ContextMenuItem onSelect={() => toggleTreeGroupMinimized(nodeId, !minimized)}>
-            {minimized ? t.zones.restore : t.zones.minimize}
-          </ContextMenuItem>
-        )}
-        {/* Resolved at render: the menu mounts on open, after the right-click
-            set menuPane — so an uncloseable target hides the item instead
-            of offering a dead action. */}
-        {closable?.() !== undefined && (
-          <ContextMenuItem
-            onSelect={() => {
-              const paneId = closable?.()
+  // Resolved at render: the menu mounts on open, after the right-click set
+  // menuPane — so an uncloseable target hides Close instead of offering a
+  // dead action, and the counts describe the chip actually clicked.
+  const items = (kit: MenuKit) => {
+    const paneId = closable?.()
+    const targets = treeTabCloseTargets(targetPane())
 
-              if (paneId) {
-                closeTreePane(paneId)
-              }
-            }}
-          >
-            {t.common.close}
-          </ContextMenuItem>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
+    return (
+      <>
+        {paneId !== undefined &&
+          renderActionItem(kit, {
+            icon: 'close',
+            label: t.common.close,
+            onSelect: () => closeTabPane(paneId)
+          })}
+        {renderActionItem(kit, {
+          disabled: !targets.others,
+          icon: 'close-all',
+          label: t.zones.closeOthers,
+          onSelect: () => closeOtherTreeTabs(targetPane())
+        })}
+        {renderActionItem(kit, {
+          disabled: !targets.right,
+          icon: 'arrow-right',
+          label: t.zones.closeToRight,
+          onSelect: () => closeTreeTabsToRight(targetPane())
+        })}
+        {renderActionItem(kit, {
+          disabled: !targets.all,
+          icon: 'clear-all',
+          label: t.zones.closeAll,
+          onSelect: () => closeAllTreeTabs(targetPane())
+        })}
+        <kit.Separator />
+        {renderActionItem(kit, {
+          icon: headerHidden ? 'eye' : 'eye-closed',
+          label: headerHidden ? t.zones.showHeader : t.zones.hideHeader,
+          onSelect: () => setTreeGroupHeaderHidden(nodeId, !headerHidden)
+        })}
+        {minimizable &&
+          renderActionItem(kit, {
+            icon: minimized ? 'chevron-down' : 'chevron-up',
+            label: minimized ? t.zones.restore : t.zones.minimize,
+            onSelect: () => setTreeGroupMinimized(nodeId, !minimized)
+          })}
+      </>
+    )
+  }
+
+  return (
+    <ActionsContextMenu contentClassName="w-40" items={items}>
+      {children}
+    </ActionsContextMenu>
   )
 }
 
@@ -169,6 +177,7 @@ export function TreeGroup({
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
   const newSessionTabAction = useStore($newSessionTabAction)
+  const panesWithCloser = useStore($panesWithCloser)
 
   const paneFor = (id: string) => panes.find(p => p.id === id)
 
@@ -250,66 +259,25 @@ export function TreeGroup({
   const hideHeaderDoubleTap: DoubleTapContext = {
     key: `hide-header-${node.id}`,
     onDoubleTap: () => {
-      toggleTreeGroupMinimized(node.id, false)
+      setTreeGroupMinimized(node.id, false)
       setTreeGroupHeaderHidden(node.id, true)
     }
   }
 
-  const dirWord: Record<RootEdge, string> = {
-    bottom: t.zones.dirDown,
-    left: t.zones.dirLeft,
-    right: t.zones.dirRight,
-    top: t.zones.dirUp
-  }
-
-  // Zone-menu directions, contextual to this group's state:
-  //  - stacked panes -> "Split <dir>": carve a new zone on that side with the
-  //    right-clicked chip's pane in it (split + move, one gesture);
-  //  - a single pane -> "Move <dir>": join the zone visually adjacent on that
-  //    side (splitting here would only make an invisible empty zone). Sides
-  //    with no visible neighbor are omitted entirely.
-  // NOT `useStore($layoutTree)`: this subscribes every zone — and therefore
-  // every mounted pane and its whole transcript — to the entire layout tree.
-  // A sash drag rewrites the tree once per frame, so dragging the sidebar
-  // re-rendered all five tiles' message lists on every pointermove (measured:
-  // TreeGroup 180 renders cascading into ChatView/Thread/TileChat at ~4.5s
-  // each, holding the drag at ~3fps).
-  //
-  // The tree is only read to build the zone context menu's move/split
-  // directions, which are consumed when the menu OPENS — so read it at that
-  // moment with `.get()` instead of subscribing to every intermediate frame.
-  const menuDirections = (): ZoneMenuDirection[] => {
-    if (shown.length > 1) {
-      return DIRECTION_ORDER.map(side => ({
-        side,
-        label: `${t.zones.split(dirWord[side])} ${DIRECTION_ARROW[side]}`,
-        run: () => splitTreeZone(node.id, side, menuPane ?? activeId)
-      }))
-    }
-
-    const tree = $layoutTree.get()
-
-    return DIRECTION_ORDER.flatMap(side => {
-      const neighbor = tree ? adjacentGroup(tree, node.id, side, g => g.panes.some(paneShown)) : null
-
-      if (!neighbor || neighbor.id === node.id) {
-        return []
-      }
-
-      return [
-        {
-          side,
-          label: `${t.zones.move(dirWord[side])} ${DIRECTION_ARROW[side]}`,
-          run: () => moveTreePane(activeId, { groupId: neighbor.id, pos: 'center' })
-        }
-      ]
-    })
-  }
+  // Zone-menu close targets read the layout tree, but this component must NOT
+  // subscribe to it: `useStore($layoutTree)` here wires every zone — and
+  // therefore every mounted pane and its whole transcript — to the entire
+  // tree. A sash drag rewrites the tree once per frame, so dragging the
+  // sidebar re-rendered all five tiles' message lists on every pointermove
+  // (measured: TreeGroup 180 renders cascading into ChatView/Thread/TileChat
+  // at ~4.5s each, holding the drag at ~3fps). The menu's items are resolved
+  // when it OPENS, so they read the tree with `.get()` at that moment instead.
+  const targetPane = () => menuPane ?? activeId
 
   // Close targets the right-clicked chip (falling back to the active pane);
   // only panes that declare `uncloseable` (the main workspace) are exempt.
   const closable = () => {
-    const paneId = menuPane ?? activeId
+    const paneId = targetPane()
 
     return paneChrome(paneFor(paneId)).uncloseable ? undefined : paneId
   }
@@ -318,10 +286,14 @@ export function TreeGroup({
   // MAIN strands the whole app behind a strip.
   const minimizable = !shown.some(id => paneChrome(paneFor(id)).uncloseable)
 
-  // Tab ✕: a tool panel (terminal/logs) is REMOVED from the layout (comes back
-  // via its toggle); everything else routes through its Close (a session tile
-  // closes the session, a store-bound pane collapses).
-  const closeTab = (paneId: string) => (isCollapsePane(paneId) ? dismissTreePane(paneId) : closeTreePane(paneId))
+  // Middle-click / ⌘-click on a tab: one routing for every tab kind, the same
+  // one the zone menu's Close and ⌘W use.
+  const closeTab = (paneId: string) => closeTabPane(paneId)
+
+  // A pane whose store owns Close keeps the gesture even when the pane itself
+  // is uncloseable — the workspace tab empties to a fresh draft rather than
+  // leaving the tree.
+  const closeableTab = (paneId: string) => !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
 
   // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
   // chevron + tap gesture, routed so ⌃`/the titlebar toggle stay truthful.
@@ -330,11 +302,11 @@ export function TreeGroup({
   // Same menu on the header strip and the edit veil — one prop bag.
   const zoneMenu = {
     closable,
-    directions: menuDirections,
     headerHidden,
     minimizable,
     minimized: node.minimized,
-    nodeId: node.id
+    nodeId: node.id,
+    targetPane
   }
 
   // NO body double-click toggle: virtualized content (the thread) recreates
@@ -345,11 +317,19 @@ export function TreeGroup({
 
   return (
     <div
-      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-bg-editor)"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background)"
       data-tree-group={node.id}
       // Advertises the visible tab strip so panes can drop their own
       // self-naming labels (see [data-pane-self-label] in styles.css).
       data-zone-header={headerVisible || undefined}
+      // The zone menu opens from the strip, the rail, the edit veil and the
+      // body. Only the strip can name a chip, so resolve the target HERE for
+      // every one of them — otherwise a right-click off the strip reused the
+      // PREVIOUS target, and landing on the uncloseable workspace dropped
+      // Close from the menu for a pane that closes fine.
+      onContextMenu={e => {
+        setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
+      }}
       ref={ref}
       style={wcOverlap ? { paddingTop: wcOverlap.y + wcOverlap.height } : undefined}
     >
@@ -380,7 +360,7 @@ export function TreeGroup({
               role="tablist"
             >
               {shown.map(paneId => {
-                const closeable = !paneChrome(paneFor(paneId)).uncloseable
+                const closeable = closeableTab(paneId)
                 const title = paneFor(paneId)?.title ?? paneId
 
                 return (
@@ -418,11 +398,6 @@ export function TreeGroup({
             // data-zone-tabstrip: a drop over here STACKS (drag-session reads it).
             className="group/pane-header relative flex h-7 shrink-0 select-none bg-(--ui-sidebar-surface-background) [-webkit-app-region:no-drag] [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]"
             data-zone-tabstrip={node.id}
-            onContextMenu={e => {
-              setMenuPane(
-                (e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined
-              )
-            }}
             onPointerDown={e =>
               // Tap the header to collapse to it / expand back — the DetailPane
               // / sidebar-section gesture (never for the main zone). Double-tap
@@ -447,7 +422,7 @@ export function TreeGroup({
               {shown.map(paneId => {
                 const isActive = paneId === activeId && !node.minimized
                 const chrome = paneChrome(paneFor(paneId))
-                const closeable = !chrome.uncloseable
+                const closeable = closeableTab(paneId)
                 const title = paneFor(paneId)?.title ?? paneId
 
                 const tab = (

@@ -144,6 +144,9 @@ export interface ConfigSetResponse {
   confirm_message?: string
   confirm_required?: boolean
   credential_warning?: string
+  // A model pick made mid-turn is queued and applied at the next turn start,
+  // not live yet — the handler says "next turn" instead of "model → X".
+  deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
   value?: string
@@ -320,6 +323,9 @@ export interface SessionSteerResponse {
 
 export interface PromptSubmitResponse {
   ok?: boolean
+  /** Set when the submitted text was a bare voice stop phrase consumed
+   *  server-side to end the voice chat instead of starting a turn. */
+  voice_stopped?: boolean
 }
 
 export interface BackgroundStartResponse {
@@ -391,6 +397,7 @@ export interface VoiceToggleResponse {
   details?: string
   enabled?: boolean
   record_key?: string
+  stop_hint?: string
   stt_available?: boolean
   tts?: boolean
 }
@@ -620,7 +627,11 @@ export type GatewayEvent =
       type: 'billing.step_up.verification'
     }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
-  | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
+  | {
+      payload?: { no_speech_limit?: boolean; stop_phrase?: boolean; text?: string; typed?: boolean }
+      session_id?: string
+      type: 'voice.transcript'
+    }
   | {
       payload?: { phrase?: string; profile?: null | string; start_new_session?: boolean }
       session_id?: string

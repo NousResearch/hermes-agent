@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
@@ -315,6 +316,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "GATEWAY_RELAY_ID",
         "GATEWAY_RELAY_SECRET",
         "GATEWAY_RELAY_DELIVERY_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
     })
     # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
     # owned by the user's Claude Code install (subscription OAuth), not a
@@ -635,6 +640,69 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # still see the parent's HERMES_HOME but lose the DB mutation guard.
     env = _scrub_delegated_child_kanban_env(env)
 
+    return env
+
+
+def build_subprocess_env(
+    base: "Mapping[str, str] | None" = None,
+    *,
+    inherit_profile_home: bool = True,
+    scrub_secrets: bool = True,
+    extra: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Single factory for building a child-process environment.
+
+    Every spawn site in the codebase should build its env through this
+    function (or :func:`hermes_subprocess_env` for the model-driving-CLI
+    surface) instead of copying ``os.environ`` directly, so profile-home
+    propagation (``HERMES_HOME`` / subprocess ``HOME`` contract) and the
+    Hermes secret-scrub policy have a single owner.  History: ~11 separate
+    commits each fixed one more spawn site that missed profile-HOME or
+    secret-scrub propagation; this factory is the fix for the class.
+
+    Parameters:
+
+    * ``base`` — starting environment.  ``None`` (default) snapshots
+      ``os.environ``.  Pass an explicit mapping to build on a caller-prepared
+      env instead.
+    * ``scrub_secrets=True`` (default) — delegate to
+      :func:`_sanitize_subprocess_env`, the long-standing owner of the scrub
+      list (provider blocklist + ``_is_hermes_internal_secret`` dynamic
+      patterns + kanban/venv-marker/session-context guards) **and** of
+      ``HERMES_HOME`` / subprocess-HOME propagation.  On this path profile
+      home propagation is inherent — ``inherit_profile_home`` is ignored
+      (always applied), exactly matching today's sanitize semantics.
+    * ``scrub_secrets=False`` — preserve the base env content byte-for-byte
+      (no key is removed).  Use for children that intentionally receive
+      secrets (git credential flows, ``bws``/``op`` secret CLIs) or where
+      scrubbing could change behavior.  The site is still a win: it becomes
+      grep-able and future-fixable.
+    * ``inherit_profile_home`` — on the non-scrub path, when True, bridge the
+      context-local Hermes home override into ``HERMES_HOME`` and apply the
+      subprocess HOME contract (``hermes_constants.apply_subprocess_home_env``).
+      Pass False to keep the inherited env untouched (exact legacy
+      ``os.environ.copy()`` behavior).
+    * ``extra`` — applied **last** on the non-scrub path so explicit caller
+      overrides (e.g. a session-scoped ``HERMES_HOME``) always win.  On the
+      scrub path it is forwarded as ``_sanitize_subprocess_env``'s
+      ``extra_env`` (same force-prefix / blocklist handling as today).
+    """
+    if scrub_secrets:
+        # _sanitize_subprocess_env already performs HERMES_HOME override
+        # bridging + apply_subprocess_home_env unconditionally; delegating
+        # wholesale keeps one owner and zero drift.
+        return _sanitize_subprocess_env(
+            dict(base) if base is not None else os.environ.copy(),
+            dict(extra) if extra else None,
+        )
+
+    env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
+    if inherit_profile_home:
+        _inject_context_hermes_home(env)
+        from hermes_constants import apply_subprocess_home_env
+        apply_subprocess_home_env(env)
+    if extra:
+        env.update(extra)
     return env
 
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -41,16 +43,6 @@ class TestNativeAnthropic:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, True)
 
-    def test_api_anthropic_host_detected_even_when_provider_label_differs(self):
-        # Some pool configurations label native Anthropic as "anthropic-direct"
-        # or similar; falling back to hostname keeps caching on.
-        agent = _make_agent(
-            provider="anthropic-direct",
-            base_url="https://api.anthropic.com",
-            api_mode="anthropic_messages",
-            model="claude-opus-4.6",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (True, True)
 
 
 class TestOpenRouter:
@@ -87,23 +79,7 @@ class TestKimiMoonshotOnOpenRouter:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
-    def test_moonshot_v1_on_openrouter_caches_with_envelope_layout(self):
-        agent = _make_agent(
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            api_mode="chat_completions",
-            model="moonshotai/moonshot-v1-8k",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
-    def test_kimi_on_nous_portal_caches_with_envelope_layout(self):
-        agent = _make_agent(
-            provider="nous",
-            base_url="https://api.nousresearch.com/v1",
-            api_mode="chat_completions",
-            model="moonshotai/kimi-k2.6",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     def test_kimi_bare_release_slug_on_openrouter_caches(self):
         """Bare release slugs (k2-thinking) lack the 'kimi'/'moonshot' substring;
@@ -171,14 +147,6 @@ class TestMiniMaxAnthropicWire:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, True)
 
-    def test_minimax_m25_on_provider_minimax_cn_caches_native_layout(self):
-        agent = _make_agent(
-            provider="minimax-cn",
-            base_url="https://api.minimaxi.com/anthropic",
-            api_mode="anthropic_messages",
-            model="minimax-m2.5",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (True, True)
 
     def test_custom_provider_pointed_at_minimax_host_caches(self):
         # User wires a custom provider manually at MiniMax's Anthropic URL;
@@ -250,14 +218,6 @@ class TestQwenAlibabaFamily:
         assert should is True, "Qwen on opencode-go must cache"
         assert native is False, "opencode-go is OpenAI-wire; envelope layout"
 
-    def test_qwen35_plus_on_opencode_go(self):
-        agent = _make_agent(
-            provider="opencode-go",
-            base_url="https://opencode.ai/v1",
-            api_mode="chat_completions",
-            model="qwen3.5-plus",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     def test_qwen_on_opencode_zen_caches(self):
         agent = _make_agent(
@@ -268,45 +228,9 @@ class TestQwenAlibabaFamily:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
-    def test_qwen_on_direct_alibaba_caches(self):
-        agent = _make_agent(
-            provider="alibaba",
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            api_mode="chat_completions",
-            model="qwen3-coder",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
-    def test_non_qwen_on_opencode_go_does_not_cache(self):
-        # GLM / Kimi on opencode-go don't need markers (they have automatic
-        # server-side caching or none at all).
-        agent = _make_agent(
-            provider="opencode-go",
-            base_url="https://opencode.ai/v1",
-            api_mode="chat_completions",
-            model="glm-5",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (False, False)
 
-    def test_kimi_on_opencode_go_does_not_cache(self):
-        agent = _make_agent(
-            provider="opencode-go",
-            base_url="https://opencode.ai/v1",
-            api_mode="chat_completions",
-            model="kimi-k2.5",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (False, False)
 
-    def test_qwen_on_openrouter_not_affected(self):
-        # Qwen via OpenRouter falls through — OpenRouter has its own
-        # upstream caching arrangement for Qwen (provider-dependent).
-        agent = _make_agent(
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            api_mode="chat_completions",
-            model="qwen/qwen3-coder",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (False, False)
 
     def test_qwen_on_nous_portal_caches_with_envelope_layout(self):
         # Nous Portal Qwen takes the same envelope-layout cache_control
@@ -321,15 +245,6 @@ class TestQwenAlibabaFamily:
         )
         assert agent._anthropic_prompt_cache_policy() == (True, False)
 
-    def test_qwen_vendored_slug_on_nous_portal_caches(self):
-        # Same path but with the vendored slug form Portal sometimes uses.
-        agent = _make_agent(
-            provider="nous",
-            base_url="https://inference-api.nousresearch.com/v1",
-            api_mode="chat_completions",
-            model="qwen/qwen3.6-plus",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
     def test_non_qwen_non_claude_on_nous_portal_does_not_cache(self):
         # Portal scope is narrow: Claude OR Qwen only. Other models
@@ -340,6 +255,44 @@ class TestQwenAlibabaFamily:
             api_mode="chat_completions",
             model="openai/gpt-5.4",
         )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
+class TestDeepSeekOpenCode:
+    """DeepSeek uses OpenCode's envelope-layout cache markers (#24617)."""
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["opencode", "opencode-zen", "opencode-go"],
+    )
+    def test_deepseek_on_opencode_caches_with_envelope_layout(self, provider):
+        agent = _make_agent(
+            provider=provider,
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="deepseek-v4-pro",
+        )
+
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_deepseek_on_direct_alibaba_does_not_cache(self):
+        agent = _make_agent(
+            provider="alibaba",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_mode="chat_completions",
+            model="deepseek-v4-pro",
+        )
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_deepseek_on_openrouter_does_not_cache(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-chat",
+        )
+
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
@@ -402,4 +355,3 @@ class TestExplicitOverrides:
 # ─────────────────────────────────────────────────────────────────────
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────
-

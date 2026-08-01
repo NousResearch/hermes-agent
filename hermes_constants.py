@@ -18,6 +18,14 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
 )
 
+# ── TUI busy-indicator styles ─────────────────────────────────────────
+# Single source of truth shared by the CLI /indicator command, the TUI
+# gateway config handler, and the /help command registry. Keep in sync
+# with ``INDICATOR_STYLES`` / ``DEFAULT_INDICATOR_STYLE`` in
+# ``ui-tui/src/app/interfaces.ts`` on the frontend side.
+INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
+DEFAULT_INDICATOR_STYLE: str = "kaomoji"
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.
@@ -236,7 +244,12 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
     return get_hermes_home() / "skills"
 
 
-def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
+def get_hermes_dir(
+    new_subpath: str,
+    old_name: str,
+    *,
+    home: Path | None = None,
+) -> Path:
     """Resolve a Hermes subdirectory with backward compatibility.
 
     New installs get the consolidated layout (e.g. ``cache/images``).
@@ -254,12 +267,15 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     Args:
         new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
         old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
+        home: Optional explicit Hermes home. Profile-aware callers that manage
+            more than one home in the same process use this instead of
+            temporarily mutating the process or context-local HERMES_HOME.
 
     Returns:
         Absolute ``Path`` — legacy location if it exists with content,
         otherwise the new location.
     """
-    home = get_hermes_home()
+    home = home or get_hermes_home()
     old_path = home / old_name
     if _legacy_path_has_content(old_path):
         return old_path
@@ -1230,3 +1246,5 @@ FINISH_REASON_LENGTH = "length"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+
+AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"

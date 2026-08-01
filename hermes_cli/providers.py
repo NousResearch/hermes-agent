@@ -142,6 +142,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
+    "vercel": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+    ),
     "opencode": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -309,6 +313,11 @@ ALIASES: Dict[str, str] = {
     "github": "github-copilot",
     "github-copilot-acp": "copilot-acp",
 
+    # vercel (models.dev ID for AI Gateway)
+    "ai-gateway": "vercel",
+    "aigateway": "vercel",
+    "vercel-ai-gateway": "vercel",
+
     # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",
     "zen": "opencode",
@@ -431,7 +440,7 @@ def normalize_provider(name: str) -> str:
     return ALIASES.get(key, key)
 
 
-def get_provider(name: str) -> Optional[ProviderDef]:
+def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderDef]:
     """Look up a built-in provider by id or alias.
 
     Resolution order:
@@ -450,7 +459,13 @@ def get_provider(name: str) -> Optional[ProviderDef]:
     # Try to get models.dev data
     try:
         from agent.models_dev import get_provider_info as _mdev_provider
-        mdev_info = _mdev_provider(canonical)
+        # Keep the single-argument call on the default path: test sites
+        # monkeypatch get_provider_info with single-arg lambdas.
+        mdev_info = (
+            _mdev_provider(canonical)
+            if allow_network
+            else _mdev_provider(canonical, allow_network=False)
+        )
     except Exception:
         mdev_info = None
 
@@ -563,6 +578,27 @@ def is_routing_aggregator(provider: str) -> bool:
     return is_aggregator(provider_norm)
 
 
+def is_official_openai_host(base_url: str) -> bool:
+    """True when *base_url* points at OpenAI's official API host family.
+
+    Matches the canonical host (``api.openai.com``) and OpenAI's documented
+    data-residency / regional hosts (``us.api.openai.com``,
+    ``eu.api.openai.com``, and any future ``<region>.api.openai.com``) —
+    those serve the same API surface with the same transport requirements
+    and the same access-scoped ``/v1/models`` listing.
+
+    Hostname-parsed matching only — never substring — so lookalike hosts
+    (``api.openai.com.attacker.test``) and path-segment spoofs
+    (``proxy.test/api.openai.com/v1``) are rejected. A genuine
+    ``*.api.openai.com`` subdomain requires control of openai.com DNS, so
+    the dot-suffix match does not reopen the #32243 spoofing hole.
+    Delegates to ``utils.base_url_host_matches``, which owns the
+    exact-or-dot-suffix hostname contract (userinfo/port stripped,
+    lowercased, trailing dot removed) — one implementation, not two.
+    """
+    return base_url_host_matches(base_url, "api.openai.com")
+
+
 def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     """Return the wire protocol a specific endpoint *requires*, or None.
 
@@ -590,7 +626,11 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.anthropic.com" or url_lower.endswith("/anthropic"):
         return "anthropic_messages"
-    if hostname == "api.openai.com":
+    # Official OpenAI host family: canonical + data-residency regional hosts
+    # (us./eu.api.openai.com) all mandate the Responses API for reasoning
+    # models with tools. Shared predicate keeps this lane in lockstep with
+    # catalog filtering and listing authority.
+    if is_official_openai_host(base_url):
         return "codex_responses"
     if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
         return "bedrock_converse"
@@ -693,14 +733,36 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     )
 
 
-def custom_provider_slug(display_name: str) -> str:
-    """Build a canonical slug for a custom_providers entry.
+def custom_provider_slug(display_name: str, provider_key: str = "") -> str:
+    """Build the stable ``custom:`` identity for a configured provider.
 
-    Matches the convention used by runtime_provider and credential_pool
-    (``custom:<normalized-name>``).  Centralised here so all call-sites
-    produce identical slugs.
+    Keyed ``providers:`` entries keep their config key as the durable
+    identity even when their display name changes. Legacy
+    ``custom_providers:`` entries have no key, so their normalized display
+    name remains the identity.
     """
-    return "custom:" + display_name.strip().lower().replace(" ", "-")
+    identity = str(provider_key or "").strip() or str(display_name or "").strip()
+    normalized = identity.lower().replace(" ", "-")
+    return normalized if normalized.startswith("custom:") else f"custom:{normalized}"
+
+
+def custom_provider_aliases(
+    display_name: str,
+    provider_key: str = "",
+) -> frozenset[str]:
+    """Return every current and legacy identity accepted for one endpoint."""
+    aliases: set[str] = set()
+    for value in (display_name, provider_key):
+        raw = str(value or "").strip().lower()
+        if not raw:
+            continue
+        normalized = raw.replace(" ", "-")
+        aliases.update({raw, normalized, custom_provider_slug(normalized)})
+        if normalized.startswith("custom:"):
+            suffix = normalized.split(":", 1)[1]
+            if suffix:
+                aliases.update({suffix, f"custom:{normalized}"})
+    return frozenset(aliases)
 
 
 def resolve_custom_provider(
@@ -719,7 +781,7 @@ def resolve_custom_provider(
     # from a prior model-switch bug), fall back to the first custom
     # provider entry so existing configs self-heal.  (GH #17478)
     bare_custom_fallback = requested == "custom"
-    first_valid: Optional[Tuple[str, str, Tuple[str, ...]]] = None
+    first_valid: Optional[Tuple[str, str, Tuple[str, ...], str]] = None
 
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -736,16 +798,22 @@ def resolve_custom_provider(
             continue
 
         key_env = (entry.get("key_env") or "").strip()
+        provider_key = (entry.get("provider_key") or "").strip()
         env_vars: List[str] = []
         if key_env:
             env_vars.append(key_env)
 
         # Stash the first valid entry for bare-"custom" fallback
         if first_valid is None:
-            first_valid = (display_name, api_url, tuple(env_vars))
+            first_valid = (
+                display_name,
+                api_url,
+                tuple(env_vars),
+                custom_provider_slug(display_name, provider_key),
+            )
 
-        slug = custom_provider_slug(display_name)
-        if requested not in {display_name.lower(), slug}:
+        slug = custom_provider_slug(display_name, provider_key)
+        if requested not in custom_provider_aliases(display_name, provider_key):
             continue
 
         return ProviderDef(
@@ -761,8 +829,7 @@ def resolve_custom_provider(
 
     # Self-heal: bare "custom" matched nothing — return first valid entry
     if bare_custom_fallback and first_valid:
-        dname, aurl, denv = first_valid
-        slug = custom_provider_slug(dname)
+        dname, aurl, denv, slug = first_valid
         return ProviderDef(
             id=slug,
             name=dname,

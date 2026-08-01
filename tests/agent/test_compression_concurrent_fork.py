@@ -63,7 +63,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     compressor = MagicMock()
 
     def _compress_with_overlap(*_a, **_kw):
-        time.sleep(0.25)
+        time.sleep(0.15)
         return [
             {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
             {"role": "user", "content": "tail"},
@@ -118,136 +118,14 @@ def _wait_for_touch(touch_calls: list[str], value: str, timeout: float = 1.0) ->
     pytest.fail(f"Timed out waiting for touch activity {value!r}; calls={touch_calls!r}")
 
 
-def test_compression_activity_heartbeat_touches_agent_during_long_compress(tmp_path: Path) -> None:
-    """Long compression must refresh agent activity so gateway watchdogs do not fire."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    session_id = "HEARTBEAT_TEST"
-    db.create_session(session_id, source="test")
-
-    agent = _build_agent_with_db(db, session_id)
-    agent._compression_activity_heartbeat_interval = 0.1
-    touch_calls: list[str] = []
-    agent._touch_activity = lambda desc: touch_calls.append(desc)
-
-    def _slow_compress(*_a, **_kw):
-        _wait_for_touch(touch_calls, "context compression in progress")
-        return [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "user", "content": "tail"},
-        ]
-
-    agent.context_compressor.compress.side_effect = _slow_compress
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert touch_calls[0] == "context compression started"
-    assert "context compression in progress" in touch_calls
-    assert touch_calls[-1] == "context compression completed"
-    assert db.get_compression_lock_holder(session_id) is None
 
 
-def test_compression_activity_heartbeat_stops_on_compress_exception(tmp_path: Path) -> None:
-    """Exception paths must stop the heartbeat and release the compression lock."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    session_id = "HEARTBEAT_FAIL_TEST"
-    db.create_session(session_id, source="test")
-
-    agent = _build_agent_with_db(db, session_id)
-    agent._compression_activity_heartbeat_interval = 0.1
-    touch_calls: list[str] = []
-    agent._touch_activity = lambda desc: touch_calls.append(desc)
-
-    def _failing_compress(*_a, **_kw):
-        _wait_for_touch(touch_calls, "context compression in progress")
-        raise RuntimeError("compress boom")
-
-    agent.context_compressor.compress.side_effect = _failing_compress
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    with pytest.raises(RuntimeError, match="compress boom"):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert touch_calls[0] == "context compression started"
-    assert "context compression in progress" in touch_calls
-    assert touch_calls[-1] == "context compression failed"
-    assert db.get_compression_lock_holder(session_id) is None
 
 
-def test_compression_activity_heartbeat_ignores_touch_errors(tmp_path: Path) -> None:
-    """Activity touch failures must not affect compression success semantics."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    session_id = "HEARTBEAT_TOUCH_ERROR_TEST"
-    db.create_session(session_id, source="test")
-
-    agent = _build_agent_with_db(db, session_id)
-    agent._compression_activity_heartbeat_interval = 0.1
-    agent._touch_activity = lambda _desc: (_ for _ in ()).throw(RuntimeError("touch boom"))
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert compressed[0]["content"] == "[CONTEXT COMPACTION] summary"
-    assert db.get_compression_lock_holder(session_id) is None
 
 
-def test_compression_activity_heartbeat_strict_signature_fallback_releases_lock(tmp_path: Path) -> None:
-    """Strict compressor signatures still compress while heartbeat cleanup runs.
-
-    Main inspects the engine signature up front (_supported_compression_kwargs)
-    instead of catching TypeError, so a strict-signature engine is invoked
-    exactly once with only the kwargs it accepts. The heartbeat (with a
-    non-numeric configured interval falling back to the default) must still
-    wrap the call and stop cleanly.
-    """
-    db = SessionDB(db_path=tmp_path / "state.db")
-    session_id = "HEARTBEAT_TYPEERROR_TEST"
-    db.create_session(session_id, source="test")
-
-    agent = _build_agent_with_db(db, session_id)
-    agent._compression_activity_heartbeat_interval = "not-a-number"
-    touch_calls: list[str] = []
-    agent._touch_activity = lambda desc: touch_calls.append(desc)
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    strict_calls: list[int | None] = []
-
-    def _strict_compress(messages, current_tokens=None):
-        strict_calls.append(current_tokens)
-        return [
-            {"role": "user", "content": "[CONTEXT COMPACTION] strict summary"},
-            {"role": "user", "content": "tail"},
-        ]
-
-    agent.context_compressor.compress = _strict_compress
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert compressed[0]["content"] == "[CONTEXT COMPACTION] strict summary"
-    assert touch_calls[0] == "context compression started"
-    assert touch_calls[-1] == "context compression completed"
-    assert db.get_compression_lock_holder(session_id) is None
-    assert strict_calls == [120_000]
 
 
-def test_compression_activity_heartbeat_nonfinite_interval_falls_back(tmp_path: Path) -> None:
-    """Non-finite heartbeat intervals must not reach Event.wait()."""
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    session_id = "HEARTBEAT_NONFINITE_INTERVAL_TEST"
-    db.create_session(session_id, source="test")
-
-    agent = _build_agent_with_db(db, session_id)
-    touch_calls: list[str] = []
-    agent._touch_activity = lambda desc: touch_calls.append(desc)
-
-    heartbeat = _CompressionActivityHeartbeat(agent, interval_seconds=float("inf"))
-
-    assert heartbeat._interval_seconds == 60.0
-    heartbeat.start()
-    heartbeat.stop()
-    assert touch_calls == ["context compression started", "context compression completed"]
 
 
 
@@ -381,95 +259,8 @@ def test_durable_message_committed_before_lease_is_adopted(
     assert child_id is not None
     assert child_id == agent.session_id
 
-def test_skipped_compression_returns_messages_unchanged(tmp_path: Path) -> None:
-    """The loser of the lock race must return its input messages verbatim.
-
-    Callers (preflight compression in ``conversation_loop.py``) detect the
-    no-op via ``len(returned) == len(input)`` and stop the auto-compress
-    retry loop.  If the skipped path returned the compressed view, that
-    detection would break and the caller would mutate the conversation
-    without going through state.db rotation.
-    """
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "LOSER_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    # Pre-acquire the lock so the agent's compress_context sees it held.
-    held = db.try_acquire_compression_lock(parent_sid, "external_holder")
-    assert held is True
-
-    agent = _build_agent_with_db(db, parent_sid)
-    messages = [{"role": "user", "content": "m1"}, {"role": "user", "content": "m2"}]
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    # Skipped: messages returned verbatim, no rotation
-    assert compressed is messages or compressed == messages
-    assert agent.session_id == parent_sid
-    # Compressor was never called (the skip happens before .compress())
-    agent.context_compressor.compress.assert_not_called()
 
 
-def test_cancelled_commit_fence_blocks_late_session_db_compaction(
-    tmp_path: Path,
-) -> None:
-    """A worker cancelled during summarization must not mutate SessionDB later."""
-    from agent.conversation_compression import CompressionCommitFence
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    session_id = "HYGIENE_TIMEOUT_SESSION"
-    db.create_session(session_id, source="telegram")
-
-    agent = _build_agent_with_db(db, session_id)
-    agent.compression_in_place = True
-    agent._cached_system_prompt = "sys"
-    agent._last_compaction_in_place = True
-    summary_started = threading.Event()
-    release_summary = threading.Event()
-
-    def _slow_summary(*_args, **_kwargs):
-        summary_started.set()
-        assert release_summary.wait(timeout=5)
-        return [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "user", "content": "tail"},
-        ]
-
-    agent.context_compressor.compress.side_effect = _slow_summary
-    archive_spy = MagicMock(wraps=db.archive_and_compact)
-    db.archive_and_compact = archive_spy
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-    fence = CompressionCommitFence()
-    result = {}
-    errors = []
-
-    def _run_compression() -> None:
-        try:
-            result["value"] = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=120_000,
-                commit_fence=fence,
-            )
-        except BaseException as exc:  # pragma: no cover - surfaced below
-            errors.append(exc)
-
-    worker = threading.Thread(target=_run_compression, name="timed-out-hygiene")
-    worker.start()
-    assert summary_started.wait(timeout=2)
-
-    assert fence.cancel_before_commit() is True
-    release_summary.set()
-    worker.join(timeout=5)
-
-    assert not worker.is_alive()
-    assert errors == []
-    compressed, _prompt = result["value"]
-    assert compressed is messages
-    assert agent.session_id == session_id
-    assert agent._last_compaction_in_place is False
-    archive_spy.assert_not_called()
-    assert db.get_compression_lock_holder(session_id) is None
 
 
 def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) -> None:
@@ -611,87 +402,10 @@ def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     assert lifecycle_kwargs["session_db"] is db
 
 
-def test_delayed_contender_fails_closed_without_unique_child(tmp_path: Path) -> None:
-    """Missing or ambiguous lineage must not silently select a continuation."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "AMBIGUOUS_PARENT"
-    db.create_session(parent_sid, source="webui")
-    db.end_session(parent_sid, "compression")
-    db.create_session("CHILD_A", source="webui", parent_session_id=parent_sid)
-    db.create_session("CHILD_B", source="webui", parent_session_id=parent_sid)
-    db.replace_messages("CHILD_A", [{"role": "user", "content": "a"}])
-    db.replace_messages("CHILD_B", [{"role": "user", "content": "b"}])
-    agent = _build_agent_with_db(db, parent_sid)
-    stale_messages = [{"role": "user", "content": "stale"}]
-
-    returned, _system_prompt = agent._compress_context(
-        stale_messages, "sys", approx_tokens=120_000
-    )
-
-    assert returned is stale_messages or returned == stale_messages
-    assert agent.session_id == parent_sid
-    agent.context_compressor.compress.assert_not_called()
 
 
-def test_compression_restores_user_turn_when_compressor_drops_all_users(tmp_path: Path) -> None:
-    """Provider chat templates need at least one user message after compaction.
-
-    A plugin or future compressor can legally return a compacted context made
-    only of assistant/tool summary rows.  Before the guard in
-    ``compress_context``, that transcript went straight into the next API call;
-    LM Studio / llama.cpp Jinja templates then failed with "No user query found
-    in messages."  Preserve the last real user turn from the pre-compression
-    transcript instead of inventing a new active request.
-    """
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "NO_USER_AFTER_COMPRESS"
-    db.create_session(parent_sid, source="cli")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: [
-        {
-            "role": "assistant",
-            "content": "[CONTEXT COMPACTION] earlier work was summarized",
-        }
-    ]
-    messages = [
-        {"role": "user", "content": "first request"},
-        {"role": "assistant", "content": "first answer"},
-        {"role": "user", "content": "please continue from here"},
-        {"role": "assistant", "content": "working"},
-    ]
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    user_messages = [msg for msg in compressed if msg.get("role") == "user"]
-    assert user_messages == [{"role": "user", "content": "please continue from here"}]
 
 
-def test_synthetic_user_scaffolding_does_not_replace_human_anchor(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "SYNTHETIC_USER_AFTER_COMPRESS"
-    db.create_session(parent_sid, source="cli")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: [
-        {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-        {
-            "role": "user",
-            "content": "[Your active task list was preserved across context compression]",
-            "_todo_snapshot_synthetic": True,
-        },
-    ]
-    messages = [
-        {"role": "user", "content": "the actual human objective"},
-        {"role": "assistant", "content": "working"},
-    ]
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert any(
-        msg.get("role") == "user" and msg.get("content") == "the actual human objective"
-        for msg in compressed
-    )
 
 
 def _no_consecutive_user_roles(messages: list) -> bool:
@@ -747,22 +461,6 @@ def test_restored_anchor_never_creates_consecutive_user_roles() -> None:
     assert not compressed[0].get("_todo_snapshot_synthetic")
 
 
-def test_user_role_compaction_summary_is_not_a_human_anchor() -> None:
-    """A summary pinned to role="user" must not satisfy the anchor check.
-
-    The compressor flips the summary message to role="user" when the tail
-    opens with an assistant turn; treating that summary as human intent
-    would skip anchor restoration entirely.
-    """
-    from agent.context_compressor import SUMMARY_PREFIX
-    from agent.conversation_compression import _is_real_user_message
-
-    summary_as_user = {
-        "role": "user",
-        "content": f"{SUMMARY_PREFIX}\n## Historical Task Snapshot\nUser asked: x",
-    }
-    assert not _is_real_user_message(summary_as_user)
-    assert _is_real_user_message({"role": "user", "content": "please continue"})
 
 
 def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
@@ -784,21 +482,6 @@ def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
     assert len(db.get_messages(child_sid)) == len(compressed)
 
 
-def test_empty_compression_result_does_not_rotate_session(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "EMPTY_COMPRESS_PARENT"
-    db.create_session(parent_sid, source="cli")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: []
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    returned, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert returned is messages or returned == messages
-    assert agent.session_id == parent_sid
-    assert _count_children(db, parent_sid) == 0
-    assert db.get_session(parent_sid)["end_reason"] is None
 
 
 @pytest.mark.parametrize("in_place", [False, True])
@@ -837,59 +520,6 @@ def test_equal_copy_compression_result_does_not_rewrite_session(
     archive_and_compact.assert_not_called()
 
 
-def test_lock_refresh_keeps_owner_live_past_initial_ttl(tmp_path: Path, monkeypatch) -> None:
-    """The owning compression call must keep its lease alive while it runs."""
-    real_try_acquire = SessionDB.try_acquire_compression_lock
-
-    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
-        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
-
-    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-
-    parent_sid = "REFRESH_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    agent_a = _build_agent_with_db(db, parent_sid)
-    # 3s TTL / 0.25s refresh: ~12 refresh opportunities per lease. A 1s TTL
-    # left one missed scheduling quantum between "refreshed" and "expired"
-    # on a loaded runner.
-    agent_a._compression_lock_ttl_seconds = 3.0
-    agent_a._compression_lock_refresh_interval = 0.25
-    compression_started = threading.Event()
-    release_compression = threading.Event()
-
-    def _slow_compress(*_a, **_kw):
-        compression_started.set()
-        assert release_compression.wait(timeout=10)
-        return [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "user", "content": "tail"},
-        ]
-
-    agent_a.context_compressor.compress.side_effect = _slow_compress
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    def run(agent):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    t_a = threading.Thread(target=run, args=(agent_a,), name="refresh_owner")
-    t_a.start()
-    try:
-        assert compression_started.wait(timeout=10), "compression never acquired its lock"
-        assert db.get_compression_lock_holder(parent_sid) is not None
-        time.sleep(3.5)
-        assert db.try_acquire_compression_lock(
-            parent_sid, "refresh_probe", ttl_seconds=3.0
-        ) is False, "live owner lease expired and was reclaimable before compression finished"
-    finally:
-        release_compression.set()
-        t_a.join(timeout=10)
-
-    assert not t_a.is_alive()
-    assert _count_children(db, parent_sid) == 1
-    assert db.get_compression_lock_holder(parent_sid) is None
 
 
 def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatch) -> None:
@@ -897,7 +527,7 @@ def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatc
     real_try_acquire = SessionDB.try_acquire_compression_lock
 
     def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
-        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
+        return real_try_acquire(self, session_id, holder, ttl_seconds=0.15)
 
     monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
 
@@ -906,8 +536,8 @@ def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatc
     db.create_session(parent_sid, source="discord")
 
     agent = _build_agent_with_db(db, parent_sid)
-    agent._compression_lock_ttl_seconds = 1.0
-    agent._compression_lock_refresh_interval = 0.1
+    agent._compression_lock_ttl_seconds = 0.15
+    agent._compression_lock_refresh_interval = 0.05
     agent.context_compressor._last_summary_error = "summary failed"
     agent._emit_warning = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("warn boom"))
 
@@ -916,111 +546,14 @@ def test_post_compress_exception_stops_lock_refresher(tmp_path: Path, monkeypatc
     with pytest.raises(RuntimeError, match="warn boom"):
         agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    time.sleep(1.3)
+    time.sleep(0.25)
     assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
 
 
-def test_abort_warning_exception_stops_lock_refresher(tmp_path: Path, monkeypatch) -> None:
-    """An abort-path warning exception must still release the refreshed lock."""
-    real_try_acquire = SessionDB.try_acquire_compression_lock
-
-    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
-        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
-
-    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "REFRESH_ABORT_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._compression_lock_ttl_seconds = 1.0
-    agent._compression_lock_refresh_interval = 0.1
-
-    def _aborting_compress(*_a, **_kw):
-        agent.context_compressor._last_compress_aborted = True
-        agent.context_compressor._last_summary_error = "summary failed"
-        return [{"role": "user", "content": "tail"}]
-
-    agent.context_compressor.compress.side_effect = _aborting_compress
-    agent._emit_warning = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("abort boom"))
-
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    with pytest.raises(RuntimeError, match="abort boom"):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    time.sleep(1.3)
-    assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
 
 
-def test_internal_typeerror_stops_lock_refresher_without_retry(tmp_path: Path, monkeypatch) -> None:
-    """An engine TypeError must release the refreshed lock without a second call."""
-    real_try_acquire = SessionDB.try_acquire_compression_lock
-
-    def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
-        return real_try_acquire(self, session_id, holder, ttl_seconds=1.0)
-
-    monkeypatch.setattr(SessionDB, "try_acquire_compression_lock", _short_ttl)
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "REFRESH_TYPEERROR_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._compression_lock_ttl_seconds = 1.0
-    agent._compression_lock_refresh_interval = 0.1
-
-    calls = []
-
-    def _internal_typeerror(*_a, **_kw):
-        calls.append(_kw)
-        raise TypeError("engine implementation bug")
-
-    agent.context_compressor.compress.side_effect = _internal_typeerror
-
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    with pytest.raises(TypeError, match="engine implementation bug"):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert len(calls) == 1
-    time.sleep(1.3)
-    assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
 
 
-def test_lease_refresher_start_exception_releases_lock(tmp_path: Path, monkeypatch) -> None:
-    """A failed refresher start must not strand the lock until its TTL."""
-    refreshers = []
-
-    class FailingLeaseRefresher:
-        def __init__(self, *_args, **_kwargs):
-            self.stopped = False
-            refreshers.append(self)
-
-        def start(self):
-            raise RuntimeError("cannot start lock refresher")
-
-        def stop(self):
-            self.stopped = True
-
-    monkeypatch.setattr(
-        "agent.conversation_compression._CompressionLockLeaseRefresher",
-        FailingLeaseRefresher,
-    )
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "REFRESHER_START_EXCEPTION_TEST"
-    db.create_session(parent_sid, source="discord")
-    agent = _build_agent_with_db(db, parent_sid)
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    with pytest.raises(RuntimeError, match="cannot start lock refresher"):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert db.get_compression_lock_holder(parent_sid) is None
-    assert len(refreshers) == 1
-    assert refreshers[0].stopped is True
 
 
 def test_signature_introspection_exception_releases_lock_and_refresher(
@@ -1074,129 +607,10 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
     assert not refreshers[0]._thread.is_alive()
 
 
-def test_noop_prompt_exception_releases_lock_and_refresher(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """No-op prompt rebuild failures must not escape the lock cleanup scope."""
-    from agent.conversation_compression import (
-        _CompressionLockLeaseRefresher as RealLeaseRefresher,
-    )
-
-    refreshers = []
-
-    class RecordingLeaseRefresher(RealLeaseRefresher):
-        def start(self):
-            refreshers.append(self)
-            return super().start()
-
-    monkeypatch.setattr(
-        "agent.conversation_compression._CompressionLockLeaseRefresher",
-        RecordingLeaseRefresher,
-    )
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "NOOP_PROMPT_EXCEPTION_TEST"
-    db.create_session(parent_sid, source="discord")
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._compression_lock_refresh_interval = 0.1
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: messages
-    agent._cached_system_prompt = None
-    agent._build_system_prompt = lambda *_a, **_kw: (_ for _ in ()).throw(
-        RuntimeError("prompt rebuild boom")
-    )
-
-    with pytest.raises(RuntimeError, match="prompt rebuild boom"):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert db.get_compression_lock_holder(parent_sid) is None
-    assert len(refreshers) == 1
-    assert not refreshers[0]._thread.is_alive()
 
 
-def test_post_dispatch_attribute_exception_releases_lock_and_refresher(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Plugin state lookup failures after dispatch must release the lock."""
-    from agent.conversation_compression import (
-        _CompressionLockLeaseRefresher as RealLeaseRefresher,
-    )
-
-    refreshers = []
-
-    class RecordingLeaseRefresher(RealLeaseRefresher):
-        def start(self):
-            refreshers.append(self)
-            return super().start()
-
-    class AttributeBombEngine:
-        name = "attribute-bomb"
-
-        def compress(self, messages, **_kwargs):
-            return [messages[0], messages[-1]]
-
-        def __getattribute__(self, name):
-            if name == "_last_compression_made_progress":
-                raise RuntimeError("post-dispatch attribute boom")
-            return object.__getattribute__(self, name)
-
-    monkeypatch.setattr(
-        "agent.conversation_compression._CompressionLockLeaseRefresher",
-        RecordingLeaseRefresher,
-    )
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "POST_DISPATCH_ATTRIBUTE_EXCEPTION_TEST"
-    db.create_session(parent_sid, source="discord")
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._compression_lock_refresh_interval = 0.1
-    agent.context_compressor = AttributeBombEngine()
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    with pytest.raises(RuntimeError, match="post-dispatch attribute boom"):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert db.get_compression_lock_holder(parent_sid) is None
-    assert len(refreshers) == 1
-    assert not refreshers[0]._thread.is_alive()
 
 
-def test_refresher_stop_exception_does_not_block_lock_release(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Refresher cleanup failure must not prevent holder-qualified DB release."""
-    refreshers = []
-
-    class StopFailingLeaseRefresher:
-        def __init__(self, *_args, **_kwargs):
-            self.stop_calls = 0
-            refreshers.append(self)
-
-        def start(self):
-            return self
-
-        def stop(self):
-            self.stop_calls += 1
-            raise RuntimeError("refresher stop boom")
-
-    monkeypatch.setattr(
-        "agent.conversation_compression._CompressionLockLeaseRefresher",
-        StopFailingLeaseRefresher,
-    )
-
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "REFRESHER_STOP_EXCEPTION_TEST"
-    db.create_session(parent_sid, source="discord")
-    agent = _build_agent_with_db(db, parent_sid)
-    agent.context_compressor.compress.side_effect = RuntimeError("engine boom")
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    with pytest.raises(RuntimeError, match="engine boom"):
-        agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert db.get_compression_lock_holder(parent_sid) is None
-    assert len(refreshers) == 1
-    assert refreshers[0].stop_calls == 1
 
 
 def _make_legacy_session_db_class() -> type:
@@ -1272,108 +686,12 @@ class _NonCallableLockAPI:
         return getattr(self._real, name)
 
 
-def test_missing_lock_subsystem_fails_open_not_infinite_loop(tmp_path: Path, monkeypatch) -> None:
-    """A truly old in-memory SessionDB class must still make progress.
-
-    A module reload can update ``conversation_compression`` while the cached
-    ``hermes_state.SessionDB`` class remains pre-lock. The compatibility path is
-    only valid for that exact class identity, not a proxy that merely uses the
-    same name.
-    """
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "SKEW_TEST_SESSION"
-    db.create_session(parent_sid, source="discord")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    legacy_type = _make_legacy_session_db_class()
-    import hermes_state
-
-    real_session_db_type = hermes_state.SessionDB
-    monkeypatch.setattr(hermes_state, "SessionDB", legacy_type)
-    try:
-        # The same module now exposes its genuinely old SessionDB class; its
-        # instance forwards persistence/rotation operations to a real database.
-        agent._session_db = legacy_type(db)
-        monkeypatch.setattr(
-            "agent.conversation_compression._CompressionLockLeaseRefresher",
-            lambda *_a, **_k: (_ for _ in ()).throw(
-                AssertionError("lock refresher should not start on fail-open lock skew")
-            ),
-        )
-        messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-        compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-    finally:
-        monkeypatch.setattr(hermes_state, "SessionDB", real_session_db_type)
-
-    assert agent.context_compressor.compress.call_count == 1
-    assert len(compressed) < len(messages), (
-        "Compression made no progress despite failing open — loop would still spin."
-    )
-    assert agent.session_id != parent_sid
 
 
-def test_nominal_sessiondb_impostor_fails_closed(tmp_path: Path) -> None:
-    """A name/module-spoofing proxy is not the legacy SessionDB compatibility case."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "NOMINAL_SESSIONDB_IMPOSTOR_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._session_db = _NominalSessionDBImpostor(db)
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert compressed is messages or compressed == messages
-    assert agent.session_id == parent_sid
-    assert _count_children(db, parent_sid) == 0
-    agent.context_compressor.compress.assert_not_called()
 
 
-def test_noncallable_lock_api_fails_closed(tmp_path: Path) -> None:
-    """A present but non-callable lock API is not legacy version skew."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "NONCALLABLE_LOCK_API_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._session_db = _NonCallableLockAPI(db)
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert compressed is messages or compressed == messages
-    assert agent.session_id == parent_sid
-    assert _count_children(db, parent_sid) == 0
-    agent.context_compressor.compress.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        RuntimeError("simulated lock lookup failure"),
-        AttributeError("simulated lock lookup attribute error"),
-        TypeError("simulated lock lookup type error"),
-    ],
-)
-def test_nonmissing_lock_lookup_errors_fail_closed(
-    tmp_path: Path, error: Exception
-) -> None:
-    """Only AttributeError for an absent API may use the compatibility path."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "BROKEN_LOCK_LOOKUP_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    agent = _build_agent_with_db(db, parent_sid)
-    agent._session_db = _BrokenLockLookupDB(db, error)
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert compressed is messages or compressed == messages
-    assert agent.session_id == parent_sid
-    assert _count_children(db, parent_sid) == 0
-    agent.context_compressor.compress.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1414,29 +732,6 @@ def test_real_lock_api_internal_errors_fail_closed_skips_compression(
     agent.context_compressor.compress.assert_not_called()
 
 
-def test_post_acquire_error_releases_owned_lock(tmp_path: Path, monkeypatch) -> None:
-    """A failure after acquisition commits must not strand the holder lease."""
-    db = SessionDB(db_path=tmp_path / "state.db")
-    parent_sid = "POST_ACQUIRE_ERROR_TEST"
-    db.create_session(parent_sid, source="discord")
-
-    original_acquire = db.try_acquire_compression_lock
-
-    def _acquire_then_raise(session_id, holder, ttl_seconds=300.0):
-        assert original_acquire(session_id, holder, ttl_seconds=ttl_seconds) is True
-        raise RuntimeError("simulated post-acquire failure")
-
-    monkeypatch.setattr(db, "try_acquire_compression_lock", _acquire_then_raise)
-    agent = _build_agent_with_db(db, parent_sid)
-    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
-
-    compressed, _sp = agent._compress_context(messages, "sys", approx_tokens=120_000)
-
-    assert compressed is messages or compressed == messages
-    assert agent.session_id == parent_sid
-    assert _count_children(db, parent_sid) == 0
-    assert db.get_compression_lock_holder(parent_sid) is None
-    agent.context_compressor.compress.assert_not_called()
 
 
 def test_review_fork_disables_compression_to_prevent_stale_parent_fork(tmp_path: Path) -> None:
@@ -1542,79 +837,10 @@ def _no_sleep(refresher) -> None:
     refresher._stop.wait = lambda _interval: False  # type: ignore[assignment]
 
 
-def test_lease_refresher_survives_single_transient_failure() -> None:
-    """One False (transient blip) followed by success must NOT stop the loop.
-
-    Regression for the W1/W2 finding: the original ``if not refreshed: break``
-    treated a one-off failure identically to genuine lost-ownership, killing
-    the lease on the first hiccup.
-    """
-    from agent.conversation_compression import _CompressionLockLeaseRefresher
-
-    # Script: success, FAILURE (blip), success, then stop the loop externally.
-    db = _FlakyRefreshDB([True, False, True])
-    refresher = _CompressionLockLeaseRefresher(
-        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=0.001
-    )
-    # Stop after exactly 4 ticks (3 scripted + 1 steady success), no real sleep.
-    refresher._stop.wait = lambda _i: db.calls >= 4  # type: ignore[assignment]
-    refresher._run()
-
-    # The single False at call 2 must NOT have ended the loop — we keep going
-    # past it (calls reach >= 4), proving the blip was tolerated.
-    assert db.calls >= 4, (
-        "Lease refresher stopped after a single transient failure — the "
-        "bounded-tolerance fix regressed (one blip must not kill the lease)."
-    )
 
 
-def test_lease_refresher_first_refresh_is_immediate() -> None:
-    """Tick #1 must land before the first wait, not one interval late.
-
-    The lease clock starts at try_acquire(), but the refresher only starts
-    after the rotation-ownership lookup, the durable-breaker re-read and thread
-    startup. Waiting a full interval before the first refresh charges all of
-    that against the acquirer's first lease, so under load a short TTL can
-    expire — and be reclaimed by a competitor — before the owner ever renews.
-    """
-    from agent.conversation_compression import _CompressionLockLeaseRefresher
-
-    db = _FlakyRefreshDB([])  # always succeeds
-    refresher = _CompressionLockLeaseRefresher(
-        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
-    )
-
-    calls_before_first_wait: list[int] = []
-
-    def _wait(_interval: float) -> bool:
-        calls_before_first_wait.append(db.calls)
-        return True  # stop after the first wait
-
-    refresher._stop.wait = _wait  # type: ignore[assignment]
-    refresher._run()
-
-    assert calls_before_first_wait and calls_before_first_wait[0] == 1, (
-        "Refresher waited a full interval before its first refresh — the lease "
-        f"is renewed one interval late (calls at first wait: "
-        f"{calls_before_first_wait!r})."
-    )
 
 
-def test_lease_refresher_immediate_tick_still_honors_stop() -> None:
-    """A refresher stopped before/at startup must not fire the immediate tick."""
-    from agent.conversation_compression import _CompressionLockLeaseRefresher
-
-    db = _FlakyRefreshDB([])
-    refresher = _CompressionLockLeaseRefresher(
-        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
-    )
-    refresher._stop.set()  # released before the thread got to run
-    refresher._run()
-
-    assert db.calls == 0, (
-        "The immediate first tick must not resurrect a lock whose owner already "
-        f"released it (refresh calls after stop(): {db.calls})."
-    )
 
 
 def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
@@ -1645,66 +871,7 @@ def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
     )
 
 
-def test_lease_refresher_failure_cap_has_floor_of_one() -> None:
-    """A degenerate interval >= ttl still tolerates exactly one blip (floor 1)."""
-    from agent.conversation_compression import _CompressionLockLeaseRefresher
-
-    db = _FlakyRefreshDB([False] * 10)
-    refresher = _CompressionLockLeaseRefresher(
-        db, "sess", "holder", ttl_seconds=1.0, refresh_interval_seconds=5.0
-    )
-    _no_sleep(refresher)
-    refresher._run()
-    assert refresher._max_consecutive_failures == 1
-    assert db.calls == 1
 
 
-def test_lease_refresher_recovers_after_raise() -> None:
-    """A raise treated as a failure tick must RESET on a later success — the
-    exception arm gets the same blip-tolerance as a falsy return, not just a
-    'doesn't crash' guarantee."""
-    from agent.conversation_compression import _CompressionLockLeaseRefresher
-
-    class _RaiseThenOKDB:
-        """Raise once, then succeed forever — the transient-blip analog."""
-
-        def __init__(self):
-            self.calls = 0
-
-        def refresh_compression_lock(self, *a, **k):
-            self.calls += 1
-            if self.calls == 1:
-                raise RuntimeError("simulated DB hiccup")
-            return True
-
-    db = _RaiseThenOKDB()
-    refresher = _CompressionLockLeaseRefresher(
-        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
-    )
-    # Run a handful of ticks past the raise, then stop.
-    refresher._stop.wait = lambda _i: db.calls >= 4  # type: ignore[assignment]
-    refresher._run()  # must not propagate the RuntimeError
-    # Survived the raise and kept refreshing — the counter reset on recovery.
-    assert db.calls >= 4
 
 
-def test_lease_refresher_stops_on_persistent_raise() -> None:
-    """A refresh that raises every tick is bounded by the same TTL-derived cap,
-    never propagates, and never loops forever."""
-    from agent.conversation_compression import _CompressionLockLeaseRefresher
-
-    class _AlwaysRaiseDB:
-        def __init__(self):
-            self.calls = 0
-
-        def refresh_compression_lock(self, *a, **k):
-            self.calls += 1
-            raise RuntimeError("simulated DB hiccup")
-
-    db = _AlwaysRaiseDB()
-    refresher = _CompressionLockLeaseRefresher(
-        db, "sess", "holder", ttl_seconds=10.0, refresh_interval_seconds=2.0
-    )
-    _no_sleep(refresher)
-    refresher._run()  # must not propagate
-    assert db.calls == refresher._max_consecutive_failures

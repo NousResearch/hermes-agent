@@ -66,6 +66,25 @@ class TestIsTtsEcho:
         transcript = "the smoke tests passed without any errors"
         assert is_tts_echo(transcript, spoken) is True
 
+    def test_short_genuine_acknowledgement_is_not_echo(self):
+        # A one-word barge-in that happens to also appear as a word inside
+        # a longer spoken reply must NOT be treated as a self-capture: the
+        # fragment fallback's same-length window would otherwise match it
+        # at ratio 1.0 and drop a real "yes" (#75792 review).
+        spoken = "Yes, I can help with that -- let me pull up the details for you."
+        transcript = "yes"
+        assert is_tts_echo(transcript, spoken) is False
+
+    def test_short_fragment_of_longer_reply_in_no_whitespace_language_is_echo(self):
+        # The fragment fallback must work without relying on whitespace
+        # word-splitting, since some languages (e.g. Chinese, Japanese)
+        # don't delimit words with spaces (#75792 review).
+        spoken = (
+            "部署已经成功完成。所有三个服务都正常运行状态良好,冒烟测试也全部通过,没有发现任何错误。"
+        )
+        transcript = "所有三个服务都正常运行状态良好"
+        assert is_tts_echo(transcript, spoken) is True
+
     def test_empty_inputs_are_not_echo(self):
         assert is_tts_echo("", "hello") is False
         assert is_tts_echo("hello", "") is False

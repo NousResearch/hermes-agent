@@ -1319,6 +1319,16 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
 # verbatim from the TTS text, creating a TTS -> STT -> TTS feedback loop.
 DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD = 0.6
 
+# Minimum normalized-transcript length (in characters) required before the
+# fragment sliding-window fallback runs. Below this, any same-length window
+# of `spoken_text` that happens to contain the transcript verbatim (e.g. a
+# genuine one-word barge-in like "yes" landing inside a longer reply that
+# also says "yes") scores a trivial 1.0 ratio and would otherwise be
+# misread as a self-capture. A real self-capture fragment spans at least
+# the pre-roll buffer plus time-to-silence, so it is normally well above
+# this length; a short genuine interjection is not (#75792 review).
+MIN_FRAGMENT_LENGTH_FOR_ECHO = 10
+
 
 def _normalize_for_echo_compare(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
@@ -1345,9 +1355,14 @@ def is_tts_echo(
     FRAGMENT of `spoken_text`, not a near-verbatim repeat of the whole
     thing. A whole-string ratio dilutes towards 0 as `spoken_text` grows
     past the fragment's length, so when the whole-string check misses, we
-    also slide a window sized to the transcript's word count across
+    also slide a window sized to the transcript's character length across
     `spoken_text` and compare against each window, catching a short
-    fragment echoed from within a much longer multi-sentence reply.
+    fragment echoed from within a much longer multi-sentence reply. This
+    windowing is character-based (not word-split), so it also works for
+    languages without whitespace between words. Transcripts shorter than
+    `MIN_FRAGMENT_LENGTH_FOR_ECHO` skip this fallback entirely, since a
+    short genuine interjection can trivially match an equally short window
+    of unrelated spoken text.
     """
     if not transcript or not spoken_text:
         return False
@@ -1357,13 +1372,11 @@ def is_tts_echo(
         return False
     if difflib.SequenceMatcher(None, a, b).ratio() >= threshold:
         return True
-    b_words = b.split(" ")
-    a_word_count = len(a.split(" "))
-    if a_word_count >= len(b_words):
+    if len(a) < MIN_FRAGMENT_LENGTH_FOR_ECHO or len(a) >= len(b):
         return False
     best_ratio = 0.0
-    for start in range(0, len(b_words) - a_word_count + 1):
-        window = " ".join(b_words[start : start + a_word_count])
+    for start in range(0, len(b) - len(a) + 1):
+        window = b[start : start + len(a)]
         ratio = difflib.SequenceMatcher(None, a, window).ratio()
         if ratio > best_ratio:
             best_ratio = ratio

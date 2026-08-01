@@ -215,24 +215,26 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           // The base "where am I working" strip is part of the composer surface
           // itself, so it inherits the composer's width and clipped top radius.
           className="coding-status-bar min-h-7 rounded-t-[inherit] rounded-b-none border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 hover:bg-transparent"
+          // Static branch glyph — never the loading spinner. This row only renders
+          // once `status` exists, so a spinner here only ever fired on *refreshes*
+          // of an already-loaded repo (window focus, turn settle), reading as an
+          // annoying icon "blip" with no first-load value. Refreshes are silent.
+          // It's a button (not the whole row) so the glyph opens the review pane
+          // while the strip around it stays inert; size-3.5 fills the slot exactly.
+          leading={
+            <button className="flex size-3.5 items-center justify-center" onClick={onOpen} type="button">
+              <Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />
+            </button>
+          }
         >
           <div className="flex min-w-0 flex-1 items-center gap-1">
-            {/* Only the branch identity opens the review pane — the strip itself
-                is not a button, so the dead space around it stays inert. Static
-                branch glyph, never the loading spinner: this row only renders
-                once `status` exists, so a spinner here only ever fired on
-                *refreshes* (window focus, turn settle), an icon "blip" with no
-                first-load value. Refreshes are silent. */}
-            <button
-              className="flex min-w-0 items-center gap-2 text-left"
-              onClick={onOpen}
-              title={branchLabel}
-              type="button"
-            >
-              <span className="flex size-3.5 shrink-0 items-center justify-center">
-                <Codicon className="text-(--ui-green)" name="git-branch" size="0.8rem" />
+            {/* Branch name — the other half of the review-pane target. `contents`
+                so the button lays out nothing of its own: the label stays the
+                same flex child it always was, and the hit area is the text. */}
+            <button className="contents" onClick={onOpen} type="button">
+              <span className="min-w-0 truncate text-xs font-normal text-muted-foreground/92" title={branchLabel}>
+                {branchLabel}
               </span>
-              <span className="min-w-0 truncate text-xs font-normal text-muted-foreground/92">{branchLabel}</span>
             </button>
 
             {/* Branch actions kebab — same pattern as the session/worktree rows.
@@ -260,12 +262,13 @@ export const CodingStatusRow = memo(function CodingStatusRow({
             )}
           </div>
 
-          {/* The other half of the hit target: the counts describe what's in the
-              review pane, so clicking them opens it. */}
+          {/* The counts describe what's in the review pane, so clicking them
+              opens it. `contents` again: the two spans stay direct flex children
+              of the row, keeping their gap and `ml-auto` behaviour untouched. */}
           {(status.ahead > 0 || status.behind > 0 || hasLineDelta || untrackedOnly) && (
-            <button className="ml-auto flex shrink-0 items-center gap-1.5" onClick={onOpen} type="button">
+            <button className="contents" onClick={onOpen} type="button">
               {(status.ahead > 0 || status.behind > 0) && (
-                <span className="flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
+                <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[0.68rem] leading-4 text-muted-foreground/75 tabular-nums">
                   {status.ahead > 0 && (
                     <span className="flex items-center gap-0.5" title={s.ahead(status.ahead)}>
                       <span aria-hidden>↑</span>
@@ -282,9 +285,15 @@ export const CodingStatusRow = memo(function CodingStatusRow({
               )}
 
               {hasLineDelta ? (
-                <DiffCount added={status.added} className="text-[0.72rem] leading-4" removed={status.removed} />
+                <DiffCount
+                  added={status.added}
+                  className={`text-[0.72rem] leading-4 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+                  removed={status.removed}
+                />
               ) : untrackedOnly ? (
-                <span className="shrink-0 text-[0.72rem] leading-4 text-amber-500/90">
+                <span
+                  className={`shrink-0 text-[0.72rem] leading-4 text-amber-500/90 ${status.ahead === 0 && status.behind === 0 ? 'ml-auto' : ''}`}
+                >
                   {s.changed(status.untracked)}
                 </span>
               ) : null}

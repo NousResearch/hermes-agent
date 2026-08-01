@@ -40,7 +40,18 @@ describe('CodingStatusRow', () => {
     fireEvent.click(screen.getByText('bb/hitbox'))
     expect(onOpen).toHaveBeenCalledTimes(1)
 
-    fireEvent.click(screen.getByText('12').closest('button')!)
+    fireEvent.click(screen.getByText('12'))
     expect(onOpen).toHaveBeenCalledTimes(2)
+  })
+
+  it('wraps the click targets without adding a layout box', () => {
+    const { container } = render(<CodingStatusRow onOpen={() => undefined} repoPath="/repo" />)
+
+    // `display: contents` is what keeps the branch label and the counts direct
+    // flex children of the row — the hit areas cost nothing visually.
+    expect(screen.getByText('bb/hitbox').parentElement?.classList.contains('contents')).toBe(true)
+    expect(screen.getByText('12').closest('button')?.classList.contains('contents')).toBe(true)
+    // The glyph button fills the row's existing 3.5 leading slot exactly.
+    expect(container.querySelector('button[class~="size-3.5"]')).not.toBeNull()
   })
 })

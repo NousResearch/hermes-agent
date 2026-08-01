@@ -9,6 +9,7 @@ Dependencies (optional):
     or: uv sync --extra voice
 """
 
+import difflib
 import logging
 import math
 import os
@@ -1308,6 +1309,43 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
     if stop_phrases is None:
         stop_phrases = _load_voice_stop_phrases()
     return cleaned in stop_phrases
+
+
+# Similarity ratio (difflib.SequenceMatcher, 0..1) above which a
+# playback-phase barge transcript is treated as a self-capture of Hermes'
+# own just-spoken TTS rather than genuine user speech. See #75780: the
+# full-duplex listener has no acoustic echo cancellation, so speaker bleed
+# on the mic can trip the barge trigger and get transcribed nearly
+# verbatim from the TTS text, creating a TTS -> STT -> TTS feedback loop.
+DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD = 0.6
+
+
+def _normalize_for_echo_compare(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def is_tts_echo(
+    transcript: str,
+    spoken_text: str,
+    threshold: float = DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD,
+) -> bool:
+    """Return True when *transcript* looks like a self-capture of *spoken_text*.
+
+    Compares a playback-phase barge-in transcript against the TTS text
+    Hermes just spoke using a character-level similarity ratio, which works
+    across languages without word-tokenization. A genuine user interjection
+    is very unlikely to closely match Hermes' own words, so a high ratio is
+    a strong signal of speaker-bleed self-capture (fail-closed guard for the
+    playback-phase full-duplex listener, which has no acoustic echo
+    cancellation; see #75780).
+    """
+    if not transcript or not spoken_text:
+        return False
+    a = _normalize_for_echo_compare(transcript)
+    b = _normalize_for_echo_compare(spoken_text)
+    if not a or not b:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= threshold
 
 
 def voice_stop_hint() -> str:

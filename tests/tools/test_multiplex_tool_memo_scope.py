@@ -47,6 +47,15 @@ def test_checkpoint_and_snapshot_paths_follow_active_profile(two_profiles):
     assert _under(prof_a, pr._checkpoint_path) == prof_a / "processes.json"
 
 
+def test_consumed_marker_dir_follows_active_profile(two_profiles):
+    import tools.process_registry as pr
+
+    prof_a, prof_b = two_profiles
+    _under(prof_a, pr._consumed_marker_dir)  # warm under A
+    assert _under(prof_b, pr._consumed_marker_dir) == prof_b / "processes-consumed"
+    assert _under(prof_a, pr._consumed_marker_dir) == prof_a / "processes-consumed"
+
+
 def test_config_caches_are_keyed_by_profile(two_profiles):
     import tools.browser_camofox as cam
     import tools.browser_tool as bt

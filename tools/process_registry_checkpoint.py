@@ -49,7 +49,13 @@ class ProcessCheckpointMixin:
         from tools.process_registry import (
             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
+            _sweep_consumed_markers,
         )
+
+        # Startup sweep of the durable consumed markers (they carry their own
+        # TTL, longer than the finished-session TTL, so they are reaped here
+        # and on prune instead of with the session dicts).
+        _sweep_consumed_markers()
 
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():

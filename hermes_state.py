@@ -266,6 +266,75 @@ _MODEL_CONFIG_ROW_MISSING = object()
 _BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
 
 
+def _projected_tip_source_sql(session_alias: str = "s") -> str:
+    """SQL expression for a listable session's projected live-tip source.
+
+    Keep the child eligibility and ordering in lockstep with
+    :meth:`SessionDB.get_compression_tip`. The recursive walk is bounded and
+    cycle-safe so malformed lineage cannot make a listing/count query loop.
+    """
+    return f"""
+        COALESCE(NULLIF((
+            WITH RECURSIVE
+            ranked_children(parent_id, child_id) AS (
+                SELECT parent_id, child_id
+                FROM (
+                    SELECT
+                        parent.id AS parent_id,
+                        child.id AS child_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY parent.id
+                            ORDER BY
+                                CASE
+                                    WHEN child.end_reason = 'compression' THEN 0
+                                    WHEN child.ended_at IS NULL THEN 1
+                                    ELSE 2
+                                END,
+                                COALESCE(
+                                    (SELECT MAX(m.timestamp)
+                                     FROM messages m
+                                     WHERE m.session_id = child.id),
+                                    child.started_at
+                                ) DESC,
+                                child.started_at DESC,
+                                child.id DESC
+                        ) AS child_rank
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND json_extract(
+                          COALESCE(child.model_config, '{{}}'),
+                          '$._branched_from'
+                      ) IS NULL
+                      AND json_extract(
+                          COALESCE(child.model_config, '{{}}'),
+                          '$._delegate_from'
+                      ) IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                )
+                WHERE child_rank = 1
+            ),
+            tip(id, depth, visited) AS (
+                SELECT {session_alias}.id, 0, ',' || {session_alias}.id || ','
+                UNION ALL
+                SELECT
+                    child.child_id,
+                    tip.depth + 1,
+                    tip.visited || child.child_id || ','
+                FROM tip
+                JOIN ranked_children child ON child.parent_id = tip.id
+                WHERE tip.depth < 100
+                  AND INSTR(tip.visited, ',' || child.child_id || ',') = 0
+            )
+            SELECT leaf.source
+            FROM tip
+            JOIN sessions leaf ON leaf.id = tip.id
+            ORDER BY tip.depth DESC
+            LIMIT 1
+        ), ''), 'cli')
+    """
+
+
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
     # ``_`` and ``%`` are LIKE wildcards but ordinary characters in a path
@@ -8743,36 +8812,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
         include_sources = [source] if source else list(sources or [])
-        # When projecting compression tips, source membership is defined by the
-        # *live tip* source, not the root. Defer include/exclude until after
-        # projection so telegram→webui chains appear under source=webui (#75625).
-        defer_source_filter = bool(
-            project_compression_tips
-            and not include_children
-            and (include_sources or exclude_sources)
+        source_sql = (
+            _projected_tip_source_sql("s")
+            if project_compression_tips and not include_children
+            else "s.source"
         )
-        deferred_include_sources: List[str] = []
-        deferred_exclude_sources: List[str] = []
-        page_limit, page_offset = limit, offset
-        if defer_source_filter:
-            deferred_include_sources = list(include_sources)
-            deferred_exclude_sources = list(exclude_sources or [])
-            include_sources = []
-            exclude_sources = None
-            # Over-fetch then filter/slice so LIMIT is not applied to the wrong
-            # pre-projection population. Cap keeps pathological DBs bounded.
-            limit = min(max((page_limit + page_offset) * 25, page_limit + page_offset, 100), 10_000)
-            offset = 0
         if include_sources:
             placeholders = ",".join("?" for _ in include_sources)
-            where_clauses.append(f"s.source IN ({placeholders})")
+            where_clauses.append(f"{source_sql} IN ({placeholders})")
             params.extend(include_sources)
         if session_key:
             where_clauses.append("s.session_key = ?")
             params.append(session_key)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            where_clauses.append(f"{source_sql} NOT IN ({placeholders})")
             params.extend(exclude_sources)
         if cwd_prefix:
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
@@ -9036,25 +9090,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 projected.append(merged)
             sessions = projected
 
-        if defer_source_filter:
-            sessions = [
-                s
-                for s in sessions
-                if self._session_source_matches(
-                    s.get("source"),
-                    include_sources=deferred_include_sources,
-                    exclude_sources=deferred_exclude_sources,
-                )
-            ]
-            sessions = sessions[page_offset : page_offset + page_limit]
-
         # Derive read state per surfaced conversation. ``last_read_at`` is
         # lineage-stamped by set_session_read, so a projected row's root
         # watermark and its tip's are the same value — comparing it against
         # the tip's last_active is correct either way.
         for s in sessions:
             s["unread"] = self.session_unread(s)
-
         return sessions
 
     def session_lifecycle_statuses(
@@ -9103,22 +9144,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 finish_reason=row["finish_reason"],
             )
         return statuses
-
-    @staticmethod
-    def _session_source_matches(
-        row_source: Any,
-        *,
-        include_sources: List[str] | None = None,
-        exclude_sources: List[str] | None = None,
-    ) -> bool:
-        """Return whether a (possibly projected) session source matches filters."""
-        src = row_source if row_source not in (None, "") else "cli"
-        if include_sources:
-            if src not in include_sources:
-                return False
-        if exclude_sources and src in exclude_sources:
-            return False
-        return True
 
     # =========================================================================
     # Message storage
@@ -11174,25 +11199,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``list_sessions_rich`` after compression-tip projection (tip source),
         not the raw root source (#75625).
         """
-        include_sources = [source] if source else list(sources or [])
-        if exclude_children and (include_sources or exclude_sources):
-            # Projected-tip semantics: reuse list_sessions_rich (defers source
-            # until after tip projection) with a large page and count results.
-            rows = self.list_sessions_rich(
-                source=source,
-                sources=sources,
-                exclude_sources=exclude_sources,
-                cwd_prefix=cwd_prefix,
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                limit=10_000,
-                offset=0,
-                project_compression_tips=True,
-                include_children=False,
-            )
-            return len(rows)
-
         where_clauses = []
         params = []
 
@@ -11202,13 +11208,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # children.
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
+        include_sources = [source] if source else list(sources or [])
+        source_sql = _projected_tip_source_sql("s") if exclude_children else "s.source"
         if include_sources:
             placeholders = ",".join("?" for _ in include_sources)
-            where_clauses.append(f"s.source IN ({placeholders})")
+            where_clauses.append(f"{source_sql} IN ({placeholders})")
             params.extend(include_sources)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
-            where_clauses.append(f"s.source NOT IN ({placeholders})")
+            where_clauses.append(f"{source_sql} NOT IN ({placeholders})")
             params.extend(exclude_sources)
         if cwd_prefix:
             clause, clause_params = _cwd_prefix_clause(cwd_prefix)
@@ -11265,21 +11273,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Sessions page actually lists. Counts use the **projected tip** source
         when compression tips are projected (#75625).
         """
-        if exclude_children:
-            rows = self.list_sessions_rich(
-                limit=10_000,
-                offset=0,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                project_compression_tips=True,
-                include_children=False,
-            )
-            counts: Dict[str, int] = {}
-            for s in rows:
-                src = s.get("source") if s.get("source") not in (None, "") else "cli"
-                counts[str(src)] = counts.get(str(src), 0) + 1
-            return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
-
         where_clauses = []
         params: list = []
 
@@ -11289,15 +11282,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append("s.archived = 0")
 
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        source_sql = (
+            _projected_tip_source_sql("s")
+            if exclude_children
+            else "COALESCE(NULLIF(s.source, ''), 'cli')"
+        )
 
         with self._lock:
             if self._conn is None:
                 raise RuntimeError("SessionDB connection is closed")
             rows = self._conn.execute(
-                "SELECT COALESCE(NULLIF(s.source, ''), 'cli') AS source, COUNT(*) AS count "
-                f"FROM sessions s{where_sql} "
-                "GROUP BY COALESCE(NULLIF(s.source, ''), 'cli') "
-                "ORDER BY count DESC",
+                "SELECT projected_source AS source, COUNT(*) AS count "
+                "FROM ("
+                f"SELECT {source_sql} AS projected_source "
+                f"FROM sessions s{where_sql}"
+                ") "
+                "GROUP BY projected_source "
+                "ORDER BY count DESC, projected_source ASC",
                 params,
             ).fetchall()
         return {str(row["source"]): int(row["count"] or 0) for row in rows}

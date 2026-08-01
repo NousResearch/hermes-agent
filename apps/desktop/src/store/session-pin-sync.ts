@@ -33,6 +33,13 @@ const pending = new Set<string>()
 // be read as the server disagreeing with us. Cleared when the write settles —
 // the request's own lifetime is the guard, so nothing can leave one open.
 const unconfirmed = new Map<string, boolean>()
+// The pinned set as of the last reconcile. Ids that appear in the set now but
+// not here are FRESH local pins whose PATCH has not been sent yet; they must
+// be protected from the pull pass (which would otherwise see the page's stale
+// pinned=false row and undo the pin before the write even leaves). Null until
+// the first reconcile so a pre-existing pin set at boot counts as historical,
+// not fresh — the server stays authoritative for those.
+let lastSeen: ReadonlySet<string> | null = null
 
 function profileFor(pinId: string): null | string | undefined {
   return $sessions.get().find(row => sessionMatchesStoredId(row, pinId))?.profile
@@ -45,6 +52,16 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
   return setSessionPinnedRemote(id, pinned, profile).then(
     () => {
       unconfirmed.delete(id)
+      // The sidebar row cache still carries the pre-PATCH value until the WS
+      // row update lands. Refresh it on the ack so a later pull pass never
+      // reads our own confirmed write as the server disagreeing (the ack can
+      // outlive the row update by seconds, and that window used to undo the
+      // pin on the very next reconcile).
+      const rows = $sessions.get()
+
+      if (rows.some(row => sessionMatchesStoredId(row, id))) {
+        $sessions.set(rows.map(row => (sessionMatchesStoredId(row, id) ? { ...row, pinned } : row)))
+      }
     },
     (err: unknown) => {
       unconfirmed.delete(id)
@@ -60,7 +77,7 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
  * time we reconcile — it gets marked as mirrored rather than echoed straight
  * back as a redundant PATCH.
  */
-function pullRemotePins(): void {
+function pullRemotePins(freshlyUnpinned: ReadonlySet<string> = new Set()): void {
   const local = new Set($pinnedSessionIds.get())
 
   for (const row of $sessions.get()) {
@@ -81,11 +98,11 @@ function pullRemotePins(): void {
       continue
     }
 
-    if (row.pinned && !heldLocally) {
+    if (row.pinned && !heldLocally && !freshlyUnpinned.has(pinId) && !freshlyUnpinned.has(row.id)) {
       pinSession(pinId)
       // Already true server-side; record it so the push pass doesn't re-PATCH.
       mirrored.add(pinId)
-    } else if (!row.pinned && heldLocally) {
+    } else if (!row.pinned && heldLocally && !pending.has(pinId) && !pending.has(row.id)) {
       unpinSession(local.has(pinId) ? pinId : row.id)
       mirrored.delete(pinId)
       mirrored.delete(row.id)
@@ -99,8 +116,40 @@ function reconcile(): void {
     return
   }
 
-  pullRemotePins()
+  // Snapshot taken BEFORE the pull pass: ids added since the last reconcile
+  // are FRESH local pins whose PATCH has not been sent yet. Register them as
+  // pending before the pull so a page row still carrying the pre-PATCH
+  // pinned=false value can't undo the pin (the unconfirmed map can't protect
+  // this window — the write hasn't started). Symmetrically, ids REMOVED since
+  // the last reconcile are fresh unpins whose unpin PATCH has not been sent;
+  // the pull pass must not re-adopt them from a stale pinned=true row. The
+  // first reconcile (boot) seeds `lastSeen` with the current set instead, so
+  // historical pins stay subject to the server's authority both ways.
+  const before = new Set($pinnedSessionIds.get())
+  const freshlyUnpinned = new Set<string>()
 
+  if (lastSeen === null) {
+    lastSeen = before
+  } else {
+    for (const id of before) {
+      if (!lastSeen.has(id) && !mirrored.has(id)) {
+        pending.add(id)
+      }
+    }
+
+    for (const id of lastSeen) {
+      if (!before.has(id)) {
+        freshlyUnpinned.add(id)
+      }
+    }
+
+    lastSeen = before
+  }
+
+  pullRemotePins(freshlyUnpinned)
+
+  // Snapshot taken AFTER the pull pass: pins the pull just adopted are part
+  // of the current set and must not be treated as stale in the passes below.
   const current = new Set($pinnedSessionIds.get())
 
   // Unpinned: anything we were tracking that's no longer in the set.

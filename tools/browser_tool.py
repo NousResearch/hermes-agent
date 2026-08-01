@@ -61,6 +61,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.redact import redact_cdp_url
@@ -1568,6 +1569,42 @@ _cleanup_running = False
 _cleanup_lock = threading.Lock()
 
 
+def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
+    """Return a provider-authoritative session expiry as epoch seconds.
+
+    Cloud providers may omit ``expires_at``. Unknown or malformed values are
+    therefore treated as having no known expiry, preserving the existing
+    lifecycle for local browsers and providers without an expiry contract.
+    """
+    value = session_info.get("expires_at")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    normalized = value.strip()
+    if normalized.endswith(("Z", "z")):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        logger.warning("Ignoring invalid cloud browser session expiry timestamp")
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _session_has_expired(
+    session_info: Dict[str, Any], *, now: Optional[float] = None
+) -> bool:
+    """Return whether a cached browser session crossed its provider deadline."""
+    expires_at = _session_expiry_timestamp(session_info)
+    if expires_at is None:
+        return False
+    return (time.time() if now is None else now) >= expires_at
+
+
 def _emergency_cleanup_all_sessions():
     """
     Emergency cleanup of all active browser sessions.
@@ -2152,7 +2189,22 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     with _cleanup_lock:
         # Check if we already have a session for this task
         if task_id in _active_sessions:
-            return _active_sessions[task_id]
+            existing_session = _active_sessions[task_id]
+        else:
+            existing_session = None
+
+    if existing_session is not None:
+        if not _session_has_expired(existing_session):
+            return existing_session
+
+        logger.info(
+            "Replacing expired cloud browser session for task %s",
+            task_id,
+        )
+        _cleanup_single_browser_session(task_id)
+        # Cleanup removes the activity entry. The replacement session must be
+        # tracked by the inactivity reaper just like an initial session.
+        _update_session_activity(task_id)
 
     # Hybrid routing: session keys ending with ``::local`` force a local
     # Chromium regardless of the globally-configured cloud provider.  Public
@@ -4539,12 +4591,23 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         # Stop auto-recording before closing (saves the file)
         _maybe_stop_recording(task_id)
 
-        # Try to close via agent-browser first (needs session in _active_sessions)
-        try:
-            _run_browser_command(task_id, "close", [], timeout=10)
-            logger.debug("agent-browser close command completed for task %s", task_id)
-        except Exception as e:
-            logger.warning("agent-browser close failed for task %s: %s", task_id, e)
+        # An expired cloud CDP URL cannot accept an agent-browser close command.
+        # Avoid feeding it back through _get_session_info(), which would try to
+        # renew the session recursively while cleanup is still in progress.
+        if _session_has_expired(session_info):
+            logger.debug(
+                "Skipping agent-browser close for expired session %s",
+                task_id,
+            )
+        else:
+            try:
+                _run_browser_command(task_id, "close", [], timeout=10)
+                logger.debug(
+                    "agent-browser close command completed for task %s",
+                    task_id,
+                )
+            except Exception as e:
+                logger.warning("agent-browser close failed for task %s: %s", task_id, e)
 
         # Now remove from tracking under lock
         with _cleanup_lock:

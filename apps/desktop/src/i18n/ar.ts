@@ -1660,6 +1660,7 @@ export const ar = defineLocale({
     newSessionPlaceholders: ['اسأل Hermes عن شيء...', 'اطلب من Hermes تنفيذ مهمة...', 'ابدأ محادثة جديدة...'],
     followUpPlaceholders: ['اكتب متابعة...', 'أضف توجيها...', 'اسأل سؤالا آخر...'],
     startVoice: 'بدء الصوت',
+    openDirective: 'فتح',
     queueMessage: 'إضافة الرسالة للطابور',
     steer: 'توجيه',
     stop: 'إيقاف',

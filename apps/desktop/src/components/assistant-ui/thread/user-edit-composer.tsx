@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
   type ComposerInsertMode,
@@ -795,6 +796,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               spellCheck={false}
               suppressContentEditableWarning
             />
+            <ComposerDirectiveActions editorRef={editorRef} />
             <ComposerPrimitive.Input
               asChild
               className="sr-only"

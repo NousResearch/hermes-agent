@@ -2165,6 +2165,7 @@ export const zh: Translations = {
       '调整或继续'
     ],
     startVoice: '开始语音对话',
+    openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
     stop: '停止',

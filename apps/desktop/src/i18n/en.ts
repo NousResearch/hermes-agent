@@ -1972,6 +1972,7 @@ export const en: Translations = {
       'Adjust or continue'
     ],
     startVoice: 'Start voice conversation',
+    openDirective: 'Open',
     queueMessage: 'Queue message',
     steer: 'Steer the current run',
     stop: 'Stop',

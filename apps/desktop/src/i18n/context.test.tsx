@@ -209,6 +209,24 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('ja')
   })
 
+  it('applies RTL direction for Arabic and restores LTR on switch back', async () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="ar">
+        <LanguageProbe target="en" />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('locale').textContent).toBe('ar')
+    expect(document.documentElement.dir).toBe('rtl')
+    expect(document.documentElement.lang).toBe('ar')
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
+    expect(document.documentElement.dir).toBe('ltr')
+    expect(document.documentElement.lang).toBe('en')
+  })
+
   it('rolls back the visible locale when saving fails', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockResolvedValue({ display: { language: 'en' } }),

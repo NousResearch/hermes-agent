@@ -29,7 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry
+from tools.registry import discover_builtin_tools, registry, tool_error
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,15 @@ logger = logging.getLogger(__name__)
 # Tracks platform-bundle names already flagged in disabled_toolsets so the
 # advisory (#33924) is logged once per name, not on every tool recompute.
 _WARNED_DISABLED_BUNDLES: set = set()
+
+
+def _is_delegated_child_context() -> bool:
+    try:
+        from agent.delegation_context import is_delegated_child_context
+
+        return is_delegated_child_context()
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -323,6 +332,7 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            _is_delegated_child_context(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -366,7 +376,11 @@ def _compute_tool_definitions(
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
-        if os.environ.get("HERMES_KANBAN_TASK") and "kanban" not in effective_enabled_toolsets:
+        if (
+            os.environ.get("HERMES_KANBAN_TASK")
+            and not _is_delegated_child_context()
+            and "kanban" not in effective_enabled_toolsets
+        ):
             # Dispatcher-spawned workers are scoped by HERMES_KANBAN_TASK and
             # must always receive the lifecycle handoff tools. Assignee
             # profiles may intentionally restrict their normal chat toolsets
@@ -399,16 +413,19 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
-                if toolset_name.startswith("hermes-"):
-                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, so
-                    # subtracting the whole bundle would strip core tools shared
-                    # by other enabled toolsets and empty the tool list (#33924).
-                    # Subtract only the bundle's non-core delta; keep core.
-                    from toolsets import bundle_non_core_tools
+                from toolsets import bundle_non_core_tools, get_toolset
+                if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):
+                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, and
+                    # posture toolsets (`posture: True`, e.g. `coding`) re-list
+                    # those same core tools without owning them, so subtracting
+                    # the whole toolset would strip core tools shared by other
+                    # enabled toolsets and empty the tool list (#33924, #57315).
+                    # Subtract only the non-core delta; keep core.
                     to_remove = bundle_non_core_tools(toolset_name)
                     tools_to_include.difference_update(to_remove)
                     resolved = sorted(to_remove)
-                    if not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
+                    if (not quiet_mode and toolset_name.startswith("hermes-")
+                            and toolset_name not in _WARNED_DISABLED_BUNDLES):
                         _WARNED_DISABLED_BUNDLES.add(toolset_name)
                         logger.info(
                             "agent.disabled_toolsets contains platform-bundle "
@@ -552,10 +569,15 @@ def _compute_tool_definitions(
                 config=ts_cfg,
             )
             if assembly.activated and not quiet_mode:
+                _forms = {"full": "catalog listing embedded",
+                          "names": "names-only listing embedded",
+                          "mixed": "listing embedded (oversized servers summarized)",
+                          "groups": "server summary embedded (search-only discovery)",
+                          "none": "no listing (search-only)"}
                 print(
-                    f"🔎 Tool Search: {assembly.deferred_count} MCP/plugin tools deferred "
-                    f"(~{assembly.deferred_tokens} tokens) behind tool_search/describe/call. "
-                    f"Threshold ~{assembly.threshold_tokens} tokens."
+                    f"🔎 Tool Search (tier {assembly.tier}): {assembly.deferred_count} "
+                    f"MCP/plugin tools deferred (~{assembly.deferred_tokens} tokens) behind "
+                    f"tool_search/describe/call — {_forms.get(assembly.listing_form, assembly.listing_form)}."
                 )
             filtered_tools = assembly.tool_defs
     except Exception as e:  # pragma: no cover — never break tool loading
@@ -580,7 +602,43 @@ def _resolve_active_context_length() -> int:
         if not model_id:
             return 0
         from agent.model_metadata import get_model_context_length
-        return int(get_model_context_length(model_id) or 0)
+        # Honor explicit `model.context_length` in config.yaml — short-circuits
+        # the OpenRouter /models probe at get_model_context_length step 0, so
+        # non-OpenRouter providers don't pay the ~2-3s OpenRouter fetch at every
+        # CLI startup.  See issue #46620.
+        raw_ctx = model_cfg.get("context_length")
+        config_ctx = raw_ctx if isinstance(raw_ctx, int) and raw_ctx > 0 else None
+        # Provider-aware resolution: providers like Codex OAuth enforce a
+        # different (lower) window than the direct API for the same slug, and
+        # their resolvers key off provider/base_url/api_key. Without these,
+        # the gate sizes against generic metadata (e.g. 1.05M for gpt-5.5
+        # instead of Codex's enforced 272K). Credential resolution failing
+        # (offline, no keys) degrades to a provider+base_url-only lookup so
+        # the static provider-aware fallbacks still apply.
+        provider = str(model_cfg.get("provider") or "").strip()
+        base_url = str(model_cfg.get("base_url") or "").strip()
+        api_key = ""
+        if provider:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                rt = resolve_runtime_provider(
+                    requested=provider, target_model=model_id
+                ) or {}
+                base_url = str(rt.get("base_url") or base_url or "").strip()
+                api_key = str(rt.get("api_key") or "").strip()
+            except Exception as rt_exc:
+                logger.debug(
+                    "Runtime credential resolution failed for tool-search "
+                    "context gate (provider=%s): %s — using config values only",
+                    provider, rt_exc,
+                )
+        return int(get_model_context_length(
+            model_id,
+            base_url=base_url,
+            api_key=api_key,
+            config_context_length=config_ctx,
+            provider=provider,
+        ) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0
@@ -673,6 +731,16 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not properties:
         return args
 
+    # The model saw the SANITIZED schema — property keys violating provider
+    # patterns (e.g. Cloudflare's ``issue_class~neq``) were renamed before
+    # the request. Map any sanitized keys back to the registry's original
+    # wire names before schema lookup / dispatch.
+    try:
+        from tools.schema_sanitizer import unrename_tool_args
+        args = unrename_tool_args(schema.get("parameters"), args)
+    except Exception:  # pragma: no cover — never break dispatch
+        pass
+
     for key, value in list(args.items()):
         prop_schema = properties.get(key)
         if not prop_schema:
@@ -718,14 +786,126 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if not isinstance(value, str):
+            # Recurse into already-native containers so JSON-encoded
+            # *elements* (array items) and *sub-fields* (nested object
+            # properties) get normalized too — e.g. ``todos: ['{"id":...}']``
+            # or ``tasks: [{"goal": "..."}]`` where an element was emitted as
+            # a JSON string. The top-level coercion above only repairs the
+            # outermost value.
+            if expected == "array" and isinstance(value, (list, tuple)):
+                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
+            elif expected == "object" and isinstance(value, dict):
+                args[key] = _normalize_json_strings_for_schema(value, prop_schema)
             continue
         if not expected and not _schema_allows_null(prop_schema):
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)
         if coerced is not value:
             args[key] = coerced
+            # If we just JSON-parsed a string into a container, recurse so
+            # nested JSON-encoded elements/fields get normalized as well.
+            if isinstance(coerced, (list, tuple, dict)):
+                args[key] = _normalize_json_strings_for_schema(coerced, prop_schema)
 
     return args
+
+
+def _schema_accepts_kind(schema: Any, kind: str) -> bool:
+    """Return True when *schema* permits a value of JSON type *kind*.
+
+    Looks at ``type`` (string or list) and recurses through
+    ``anyOf``/``oneOf``/``allOf`` branches — matching the JSON-Schema shapes
+    open-weight models emit against. ``kind`` is ``"array"`` or ``"object"``.
+    """
+    if not isinstance(schema, dict):
+        return False
+    t = schema.get("type")
+    if t == kind or (isinstance(t, list) and kind in t):
+        return True
+    for union_key in ("anyOf", "oneOf", "allOf"):
+        branches = schema.get(union_key)
+        if isinstance(branches, list) and any(
+            _schema_accepts_kind(b, kind) for b in branches
+        ):
+            return True
+    return False
+
+
+def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
+    """Recursively parse JSON-encoded string values that a schema expects to
+    be arrays or objects, including nested array items and object properties.
+
+    Open-weight models (DeepSeek, Qwen, GLM, and others) sometimes emit a
+    structured field — or an *element* of a structured field — as a
+    JSON-encoded string instead of a native value. The top-level
+    :func:`coerce_tool_args` pass repairs the outermost value; this helper
+    walks the rest of the tree so cases like::
+
+        {"todos": ["{\\"id\\": \\"1\\", \\"content\\": \\"x\\"}"]}
+
+    (a list whose elements are JSON strings) and nested object sub-fields are
+    repaired too. Parsing is schema-guided: a string is only parsed when the
+    matching schema position actually expects an array or object, so
+    legitimate JSON-looking string fields (``type: string``) are preserved.
+
+    Ported from cline/cline#11803, adapted to hermes-agent's coercion layer.
+    Returns the original value object when nothing changed (identity preserved
+    so callers can cheaply detect no-ops).
+    """
+    if not isinstance(schema, dict):
+        return value
+
+    # Parse a JSON-encoded string into the container the schema expects.
+    if isinstance(value, str):
+        trimmed = value.strip()
+        expects_array = _schema_accepts_kind(schema, "array")
+        expects_object = _schema_accepts_kind(schema, "object")
+        if (expects_array and trimmed.startswith("[")) or (
+            expects_object and trimmed.startswith("{")
+        ):
+            try:
+                parsed = json.loads(trimmed)
+            except (ValueError, TypeError):
+                return value
+            if isinstance(parsed, list) and expects_array:
+                value = parsed
+            elif isinstance(parsed, dict) and expects_object:
+                value = parsed
+            else:
+                return value
+        else:
+            return value
+
+    # Recurse into list items using the ``items`` schema.
+    if isinstance(value, list):
+        items_schema = schema.get("items")
+        if not isinstance(items_schema, dict):
+            return value
+        changed = False
+        out = []
+        for item in value:
+            nxt = _normalize_json_strings_for_schema(item, items_schema)
+            changed = changed or (nxt is not item)
+            out.append(nxt)
+        return out if changed else value
+
+    # Recurse into object properties using each property's schema.
+    if isinstance(value, dict):
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            return value
+        changed = False
+        out = dict(value)
+        for k, prop_schema in props.items():
+            if k not in value or not isinstance(prop_schema, dict):
+                continue
+            nxt = _normalize_json_strings_for_schema(value[k], prop_schema)
+            if nxt is not value[k]:
+                out[k] = nxt
+                changed = True
+        return out if changed else value
+
+    return value
 
 
 def _coerce_value(value: str, expected_type, schema: dict | None = None):
@@ -876,7 +1056,7 @@ def _emit_post_tool_call_hook(
     listener will actually consume it).
     """
     try:
-        from hermes_cli.plugins import has_hook, invoke_hook
+        from hermes_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
             return
         if status is None:
@@ -913,6 +1093,7 @@ def handle_function_call(
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
     skip_tool_request_middleware: bool = False,
+    skip_tool_execution_middleware: bool = False,
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -989,8 +1170,7 @@ def handle_function_call(
         if function_name == _ts_mod.TOOL_CALL_NAME:
             underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
             if err or not underlying_name:
-                return json.dumps({"error": err or "tool_call could not be resolved"},
-                                  ensure_ascii=False)
+                return tool_error(err or "tool_call could not be resolved")
             # Defense in depth: the underlying tool MUST be in the session's
             # scoped deferrable catalog. resolve_underlying_call() only checks
             # that the name is deferrable in the global registry; this gate
@@ -999,12 +1179,16 @@ def handle_function_call(
             # the bridge even if the catalog scoping above regressed.
             _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
             if underlying_name not in _scoped_deferrable:
-                return json.dumps({
-                    "error": (
-                        f"'{underlying_name}' is not available in this session. "
-                        "Use tool_search to find tools you can call."
-                    ),
-                }, ensure_ascii=False)
+                return tool_error(
+                    f"'{underlying_name}' is not available in this session. "
+                    "Use tool_search to find tools you can call."
+                )
+            # Probe-validate against the deferred tool's schema (ironclaw#5149):
+            # a blind call missing required arguments returns the parameter
+            # schema instead of dispatching into an opaque downstream failure.
+            _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
+            if _probe_err is not None:
+                return _probe_err
             # Recurse with the underlying tool. All hooks fire against the
             # real tool name. The bridge is invisible to hooks by design.
             return handle_function_call(
@@ -1017,6 +1201,7 @@ def handle_function_call(
                 enabled_tools=enabled_tools,
                 skip_pre_tool_call_hook=skip_pre_tool_call_hook,
                 skip_tool_request_middleware=skip_tool_request_middleware,
+                skip_tool_execution_middleware=skip_tool_execution_middleware,
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
@@ -1044,23 +1229,24 @@ def handle_function_call(
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
-            return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+            return tool_error(f"{function_name} must be handled by the agent loop")
 
-        # Check plugin hooks for a block directive (unless caller already
-        # checked — e.g. run_agent._invoke_tool passes skip=True to
+        # Check plugin hooks for a block/approve directive (unless caller
+        # already checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
         #
         # Single-fire contract: pre_tool_call fires exactly once per tool
-        # execution. get_pre_tool_call_block_message() internally calls
-        # invoke_hook("pre_tool_call", ...) and returns the first block
-        # directive (if any), so observer plugins see the hook on that same
-        # pass. When skip=True, the caller already fired it — do nothing
-        # here.
+        # execution. resolve_pre_tool_block() internally calls
+        # invoke_hook("pre_tool_call", ...) once and returns the block message
+        # for a `block` directive OR for an `approve` directive whose human
+        # gate denied/timed-out/errored (fail-closed). Observer plugins see
+        # the hook on that same pass. When skip=True, the caller already
+        # fired it — do nothing here.
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import resolve_pre_tool_block
+                block_message = resolve_pre_tool_block(
                     function_name,
                     function_args,
                     task_id=task_id or "",
@@ -1074,7 +1260,7 @@ def handle_function_call(
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 
             if block_message is not None:
-                result = json.dumps({"error": block_message}, ensure_ascii=False)
+                result = tool_error(block_message)
                 _emit_post_tool_call_hook(
                     function_name=function_name,
                     function_args=function_args,
@@ -1103,7 +1289,7 @@ def handle_function_call(
         except Exception as _edit_approval_err:
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
             if function_name in {"write_file", "patch"}:
-                return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
+                return tool_error("Edit approval denied: approval guard failed")
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
@@ -1154,19 +1340,22 @@ def handle_function_call(
                         session_id=session_id,
                         user_task=user_task,
                     )
-            from hermes_cli.middleware import run_tool_execution_middleware
+            if skip_tool_execution_middleware:
+                result = _dispatch(function_args)
+            else:
+                from hermes_cli.middleware import run_tool_execution_middleware
 
-            result = run_tool_execution_middleware(
-                function_name,
-                function_args,
-                _dispatch,
-                original_args=_tool_original_args,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
-                turn_id=turn_id or "",
-                api_request_id=api_request_id or "",
-            )
+                result = run_tool_execution_middleware(
+                    function_name,
+                    function_args,
+                    _dispatch,
+                    original_args=_tool_original_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                    turn_id=turn_id or "",
+                    api_request_id=api_request_id or "",
+                )
         finally:
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:
@@ -1197,7 +1386,7 @@ def handle_function_call(
         # Gated on has_hook so the no-listener path skips both the result
         # field derivation and the payload dispatch.
         try:
-            from hermes_cli.plugins import has_hook, invoke_hook
+            from hermes_cli.lifecycle import has_hook, invoke_hook
             if has_hook("transform_tool_result"):
                 status, error_type, error_message = _tool_result_observer_fields(result)
                 hook_results = invoke_hook(
@@ -1227,7 +1416,7 @@ def handle_function_call(
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        return tool_error(_sanitize_tool_error(error_msg))
 
 
 # =============================================================================

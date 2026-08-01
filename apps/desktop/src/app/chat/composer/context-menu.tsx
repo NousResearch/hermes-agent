@@ -18,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { useComposerAttachmentProviders } from './contrib'
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
 
@@ -39,6 +40,9 @@ export function ContextMenu({
   // window (composer "+" anchor), so we promoted it to a real Dialog —
   // easier to grow with search / descriptions, and no positioning math.
   const [snippetsOpen, setSnippetsOpen] = useState(false)
+  // `composer.attachments` contributions — plugin/core-registered rows that
+  // extend this menu through the same registry as every other surface.
+  const attachmentProviders = useComposerAttachmentProviders()
 
   return (
     <>
@@ -89,6 +93,18 @@ export function ContextMenu({
           <ContextMenuItem icon={MessageSquareText} onSelect={() => setSnippetsOpen(true)}>
             {c.promptSnippets}
           </ContextMenuItem>
+
+          {attachmentProviders.length > 0 && <DropdownMenuSeparator />}
+          {attachmentProviders.map(provider => (
+            <DropdownMenuItem
+              className="text-[length:var(--conversation-tool-font-size)] focus:bg-(--ui-bg-tertiary)"
+              key={provider.key}
+              onSelect={() => void provider.run({ insertText: onInsertText })}
+            >
+              <Codicon name={provider.icon ?? 'plug'} size="0.875rem" />
+              <span>{provider.label}</span>
+            </DropdownMenuItem>
+          ))}
 
           <DropdownMenuSeparator />
 

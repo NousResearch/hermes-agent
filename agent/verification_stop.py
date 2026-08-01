@@ -72,64 +72,24 @@ def _filter_verifiable_paths(paths: Iterable[str]) -> list[str]:
     return [p for p in paths if p and not _is_non_code_path(p)]
 
 
-# Session identities (platform or source) that are NOT human conversational
-# messaging surfaces: interactive coding surfaces (CLI, TUI, desktop, codex,
-# local, gateway) and programmatic callers (API server, webhooks, tools).
-# Verify-on-stop stays ON by default for these. Any other resolved gateway
-# platform is a conversational messaging surface (Telegram, Discord, WhatsApp,
-# Signal, Slack, etc.) where the verification narrative would reach a human as
-# chat noise, so it defaults OFF. Mirrors LOCAL_SESSION_SOURCE_IDS in
-# apps/desktop/src/lib/session-source.ts; keep roughly in sync when adding a
-# local or programmatic surface. Default-deny by design: an unrecognized
-# identity is treated as messaging (OFF) so a new chat platform never leaks the
-# verification receipt before this set is updated.
-_NON_MESSAGING_SESSION_SURFACES = frozenset(
-    {
-        "",
-        "cli",
-        "codex",
-        "desktop",
-        "gateway",
-        "local",
-        "tui",
-        "tool",
-        "api_server",
-        "webhook",
-        "msgraph_webhook",
-    }
-)
-
-
 def _session_is_messaging_surface() -> bool:
-    """Return whether this turn is delivered over a human messaging channel.
+    """Whether this turn is delivered over a human messaging channel.
 
-    The gateway binds the platform value (e.g. ``telegram``) to
-    ``HERMES_SESSION_PLATFORM``; the CLI and TUI set ``HERMES_SESSION_SOURCE``
-    (e.g. ``cli``, ``tui``) instead. Both are consulted via the session-context
-    helper (with an ``os.environ`` fallback), alongside the ``HERMES_PLATFORM``
-    override, matching the sibling platform resolution in
-    ``agent/skill_commands.py`` and ``agent/prompt_builder.py``. A turn is a
-    messaging surface when a resolved identity is present and is not a known
-    non-messaging surface.
+    Verify-on-stop defaults ON for the interactive coding surfaces and
+    programmatic callers, and OFF on a conversational platform (Telegram,
+    Discord, Slack, ...) where the verification narrative reaches a human as
+    chat noise. The surface classification itself is shared with the other
+    consumers of this distinction — see
+    ``gateway.session_context.session_is_messaging_surface``.
     """
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import session_is_messaging_surface
 
-        platform = (
-            os.getenv("HERMES_PLATFORM")
-            or get_session_env("HERMES_SESSION_PLATFORM", "")
-        )
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
+        return session_is_messaging_surface()
     except Exception:
-        platform = os.getenv("HERMES_PLATFORM", "") or os.environ.get(
-            "HERMES_SESSION_PLATFORM", ""
-        )
-        source = os.environ.get("HERMES_SESSION_SOURCE", "")
-    for identity in (platform, source):
-        identity = str(identity or "").strip().lower()
-        if identity and identity not in _NON_MESSAGING_SESSION_SURFACES:
-            return True
-    return False
+        # The gateway package is unreachable, so there is no messaging channel
+        # to be on. Reporting a local surface keeps verify-on-stop enabled.
+        return False
 
 
 def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
@@ -149,9 +109,9 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
         return env.strip().lower() not in {"0", "false", "no", "off"}
     if config is None:
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import load_config_readonly
 
-            config = load_config()
+            config = load_config_readonly()
         except Exception:
             config = {}
     agent_cfg = (config or {}).get("agent") if isinstance(config, dict) else None
@@ -289,7 +249,7 @@ def build_verify_on_stop_nudge(
             + "), read any failure, repair the code, and summarize what passed."
         )
     else:
-        temp_dir = tempfile.gettempdir()
+        temp_dir = os.path.realpath(tempfile.gettempdir())
         command_instruction = (
             "No canonical test/lint/build command was detected. Create a focused "
             f"temporary verification script under `{temp_dir}` using an OS-safe "

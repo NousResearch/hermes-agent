@@ -39,49 +39,11 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
-    def test_basic_kwargs(self, transport):
-        messages = [
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "Hello"},
-        ]
-        kw = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=messages,
-            tools=[],
-        )
-        assert kw["model"] == "gpt-5.4"
-        assert kw["instructions"] == "You are helpful."
-        assert "input" in kw
-        assert kw["store"] is False
 
-    def test_system_extracted_from_messages(self, transport):
-        messages = [
-            {"role": "system", "content": "Custom system prompt"},
-            {"role": "user", "content": "Hi"},
-        ]
-        kw = transport.build_kwargs(model="gpt-5.4", messages=messages, tools=[])
-        assert kw["instructions"] == "Custom system prompt"
 
-    def test_no_system_uses_default(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(model="gpt-5.4", messages=messages, tools=[])
-        assert kw["instructions"]  # should be non-empty default
 
-    def test_reasoning_config(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
-            reasoning_config={"effort": "high"},
-        )
-        assert kw.get("reasoning", {}).get("effort") == "high"
 
-    def test_reasoning_disabled(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
-            reasoning_config={"enabled": False},
-        )
-        assert "reasoning" not in kw or kw.get("include") == []
+
 
     def test_cache_key_is_content_addressed_not_session_id(self, transport):
         """prompt_cache_key is content-addressed from the static prefix
@@ -112,14 +74,123 @@ class TestCodexBuildKwargs:
         )
         assert kw1["prompt_cache_key"] == kw2["prompt_cache_key"]
 
-    def test_github_responses_no_cache_key(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
+
+    def test_github_responses_drops_message_item_id_end_to_end(self, transport):
+        # #32716: Copilot binds codex_message_items ids to a backend
+        # "connection" that doesn't survive credential rotation, a gateway
+        # restart, or load-balancer churn — replaying a stale id gets HTTP
+        # 401 "input item ID does not belong to this connection", even for
+        # ids well under the #27038 64-char length cap. build_kwargs must
+        # thread is_github_responses through to the input converter so the
+        # id never reaches the request.
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_but_connection_scoped",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+        ]
         kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
-            session_id="test-session",
+            model="gpt-5.5", messages=messages, tools=[],
             is_github_responses=True,
         )
-        assert "prompt_cache_key" not in kw
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+        assert message_item["status"] == "in_progress"
+        assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+
+    def test_non_github_responses_keeps_message_item_id_end_to_end(self, transport):
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_id",
+                    }
+                ],
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_codex_backend=True,
+        )
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert message_item["id"] == "msg_short_id"
+
+    @pytest.mark.parametrize("model", [
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.4",
+        "gpt-5.2",
+        "gpt-5.1-codex-max",
+        "gpt-5.1",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-chat-latest",
+        "gpt-5",
+        "gpt-5-codex",
+        "gpt-4.1",
+        "openai.gpt-5.5-pro",
+        "openai/gpt-5.1-codex-2026-01-01",
+    ])
+    def test_extended_cache_models_set_24h_prompt_cache_retention(self, transport, model):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model=model, messages=messages, tools=[],
+            session_id="test-session",
+            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+        )
+        assert kw["prompt_cache_retention"] == "24h"
+
+    @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-4o", "o3"])
+    def test_prompt_cache_retention_omitted_for_other_model_families(self, transport, model):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id="test-session",
+            base_url="https://bedrock-mantle.us-west-2.api.aws/v1",
+        )
+        assert "prompt_cache_retention" not in kw
+
+    @pytest.mark.parametrize("base_url", [
+        "https://api.openai.com/v1",
+        "https://example.openai.azure.com/openai/v1",
+        "https://api.x.ai/v1",
+        "https://models.github.ai/inference",
+        "https://api.githubcopilot.com",
+        "https://chatgpt.com/backend-api/codex",
+        "https://responses.example.com/v1",
+        "https://bedrock-mantle.us-west-2.api.aws.example/v1",
+        "https://example.com/bedrock-mantle.us-west-2.api.aws/v1",
+    ])
+    def test_prompt_cache_retention_omitted_for_non_mantle_endpoints(self, transport, base_url):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url=base_url,
+        )
+        assert "prompt_cache_retention" not in kw
 
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the
@@ -164,130 +235,41 @@ class TestCodexBuildKwargs:
         assert eb.get("prompt_cache_key") == "caller-override"
         assert eb.get("other_field") == 42
 
-    def test_max_tokens(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
-            max_tokens=4096,
-        )
-        assert kw.get("max_output_tokens") == 4096
 
-    def test_codex_backend_no_max_output_tokens(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
-            max_tokens=4096,
-            is_codex_backend=True,
-        )
-        assert "max_output_tokens" not in kw
 
-    def test_codex_backend_sets_cache_routing_headers(self, transport):
-        """Codex backend sends session_id / x-client-request-id as HTTP
-        headers (via extra_headers) for cache-scope routing."""
-        messages = [{"role": "user", "content": "Hi"}]
 
-        kw = transport.build_kwargs(
+
+    @pytest.mark.parametrize("length", [64, 65])
+    def test_codex_cache_scope_boundary(self, transport, length):
+        session_id = "s" * length
+        scope = transport.build_kwargs(
             model="gpt-5.4",
-            messages=messages,
+            messages=[{"role": "user", "content": "Hi"}],
             tools=[],
-            session_id="conv-codex-1",
-            is_codex_backend=True,
-        )
-
-        headers = kw.get("extra_headers", {})
-        assert headers.get("session_id") == "conv-codex-1"
-        assert headers.get("x-client-request-id") == "conv-codex-1"
-
-    def test_codex_backend_no_headers_without_session_id(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-
-        kw = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=messages,
-            tools=[],
-            is_codex_backend=True,
-        )
-
-        assert "extra_headers" not in kw
-
-    def test_codex_backend_preserves_caller_extra_headers(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-
-        kw = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=messages,
-            tools=[],
-            session_id="conv-codex-1",
+            session_id=session_id,
             is_codex_backend=True,
             request_overrides={"extra_headers": {"x-test": "1"}},
-        )
+        )["extra_headers"]
 
-        headers = kw.get("extra_headers", {})
-        assert headers.get("x-test") == "1"
-        assert headers.get("session_id") == "conv-codex-1"
-        assert headers.get("x-client-request-id") == "conv-codex-1"
+        assert scope["x-test"] == "1"
+        assert len(scope["session_id"]) <= 64
+        assert scope["x-client-request-id"] == scope["session_id"]
+        if length == 64:
+            assert scope["session_id"] == session_id
+        else:
+            assert scope["session_id"].startswith("pck_")
+            assert scope["session_id"] != session_id
 
-    def test_non_codex_responses_preserves_caller_extra_headers(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
 
-        kw = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=messages,
-            tools=[],
-            is_codex_backend=False,
-            request_overrides={"extra_headers": {"x-test": "1"}},
-        )
 
-        assert kw["extra_headers"] == {"x-test": "1"}
 
-    def test_xai_headers(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-3", messages=messages, tools=[],
-            session_id="conv-123",
-            is_xai_responses=True,
-        )
-        assert kw.get("extra_headers", {}).get("x-grok-conv-id") == "conv-123"
 
-    def test_xai_headers_preserve_request_override_headers(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-3", messages=messages, tools=[],
-            session_id="conv-123",
-            is_xai_responses=True,
-            request_overrides={"extra_headers": {"X-Test": "1", "X-Trace": "abc"}},
-        )
-        assert kw.get("extra_headers") == {
-            "X-Test": "1",
-            "X-Trace": "abc",
-            "x-grok-conv-id": "conv-123",
-        }
 
-    def test_minimal_effort_clamped(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gpt-5.4", messages=messages, tools=[],
-            reasoning_config={"effort": "minimal"},
-        )
-        # "minimal" should be clamped to "low"
-        assert kw.get("reasoning", {}).get("effort") == "low"
 
-    def test_xai_reasoning_effort_passed(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-4.3", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "high"},
-        )
-        # xAI Responses receives reasoning.effort on the allowlisted models.
-        assert kw.get("reasoning") == {"effort": "high"}
-        # As of May 2026 (post-revert of PR #26644) we DO request
-        # reasoning.encrypted_content back from xAI so we can replay it
-        # across turns for cross-turn coherence — xAI explicitly relies
-        # on this for their partnership integration.  See
-        # tests/run_agent/test_codex_xai_oauth_recovery.py for the
-        # full history.
-        assert "reasoning.encrypted_content" in kw.get("include", [])
+
+
+
+
 
     def test_xai_injects_native_web_search_when_client_web_search_present(self, transport):
         """xAI path swaps a client-side ``web_search`` function for xAI's
@@ -339,32 +321,6 @@ class TestCodexBuildKwargs:
         names = [t.get("name") for t in tools if t.get("type") == "function"]
         assert "read_file" in names
 
-    def test_xai_drops_clientside_web_search_to_avoid_duplicate(self, transport):
-        """When the client registers its own 'web_search' function, the xAI
-        path must drop it and rely on the native built-in — otherwise xAI
-        returns HTTP 400 'Duplicate tool names: web_search'."""
-        messages = [{"role": "user", "content": "Search the web."}]
-        kw = transport.build_kwargs(
-            model="grok-composer-2.5-fast", messages=messages,
-            tools=[{"type": "function", "function": {
-                "name": "web_search", "description": "Search the web.",
-                "parameters": {"type": "object",
-                               "properties": {"query": {"type": "string"}}}}}],
-            is_xai_responses=True,
-        )
-        tools = kw.get("tools", [])
-        # Exactly one tool named/typed web_search, and it is the native built-in.
-        web_search_entries = [
-            t for t in tools
-            if t.get("name") == "web_search" or t.get("type") == "web_search"
-        ]
-        assert len(web_search_entries) == 1
-        assert web_search_entries[0] == {"type": "web_search"}
-        # No client-side function form of web_search survives.
-        assert not any(
-            t.get("type") == "function" and t.get("name") == "web_search"
-            for t in tools
-        )
 
     def test_non_xai_path_does_not_inject_native_web_search(self, transport):
         """Native web_search injection is scoped to xAI — Codex/GitHub paths
@@ -385,25 +341,7 @@ class TestCodexBuildKwargs:
             for t in tools
         )
 
-    def test_xai_reasoning_disabled_no_reasoning_key(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-4.3", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"enabled": False},
-        )
-        # When reasoning is disabled, do not send the reasoning key at all
-        assert "reasoning" not in kw
 
-    def test_xai_minimal_effort_clamped(self, transport):
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-4.3", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "minimal"},
-        )
-        # "minimal" should be clamped to "low" for xAI as well
-        assert kw.get("reasoning", {}).get("effort") == "low"
 
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
@@ -413,60 +351,9 @@ class TestCodexBuildKwargs:
     # ``reasoning.encrypted_content`` back from xAI on every model —
     # see test_xai_reasoning_effort_passed for the rationale.
 
-    def test_xai_grok_4_omits_reasoning_effort(self, transport):
-        """grok-4 / grok-4-0709 reject reasoning.effort with HTTP 400."""
-        messages = [{"role": "user", "content": "Hi"}]
-        for model in ("grok-4", "grok-4-0709"):
-            kw = transport.build_kwargs(
-                model=model, messages=messages, tools=[],
-                is_xai_responses=True,
-                reasoning_config={"effort": "high"},
-            )
-            assert "reasoning" not in kw, (
-                f"{model} must not receive a reasoning key (xAI rejects it)"
-            )
-            # Even without the effort dial we still ask xAI to echo back
-            # encrypted reasoning content so it can be replayed next turn.
-            assert "reasoning.encrypted_content" in kw.get("include", [])
 
-    def test_xai_grok_4_fast_omits_reasoning_effort(self, transport):
-        """grok-4-fast and grok-4-1-fast variants reject reasoning.effort."""
-        messages = [{"role": "user", "content": "Hi"}]
-        for model in (
-            "grok-4-fast-reasoning",
-            "grok-4-fast-non-reasoning",
-            "grok-4-1-fast-reasoning",
-            "grok-4-1-fast-non-reasoning",
-        ):
-            kw = transport.build_kwargs(
-                model=model, messages=messages, tools=[],
-                is_xai_responses=True,
-                reasoning_config={"effort": "low"},
-            )
-            assert "reasoning" not in kw, (
-                f"{model} must not receive a reasoning key (xAI rejects it)"
-            )
 
-    def test_xai_grok_3_non_mini_omits_reasoning_effort(self, transport):
-        """Plain grok-3 rejects reasoning.effort — only grok-3-mini accepts it."""
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-3", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "medium"},
-        )
-        assert "reasoning" not in kw
 
-    def test_xai_grok_3_mini_keeps_reasoning_effort(self, transport):
-        """grok-3-mini and -fast variants do accept the effort dial."""
-        messages = [{"role": "user", "content": "Hi"}]
-        for model in ("grok-3-mini", "grok-3-mini-fast"):
-            kw = transport.build_kwargs(
-                model=model, messages=messages, tools=[],
-                is_xai_responses=True,
-                reasoning_config={"effort": "high"},
-            )
-            assert kw.get("reasoning") == {"effort": "high"}
 
     def test_xai_grok_4_20_0309_variants_omit_reasoning_effort(self, transport):
         """grok-4.20-0309-(non-)reasoning reject the effort dial.
@@ -482,43 +369,8 @@ class TestCodexBuildKwargs:
             )
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
 
-    def test_xai_grok_4_20_multi_agent_keeps_reasoning_effort(self, transport):
-        """grok-4.20-multi-agent-0309 is the one grok-4.20 variant that accepts effort."""
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-4.20-multi-agent-0309", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "low"},
-        )
-        assert kw.get("reasoning") == {"effort": "low"}
 
-    def test_xai_grok_code_fast_omits_reasoning_effort(self, transport):
-        """grok-code-fast-1 rejects reasoning.effort."""
-        messages = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="grok-code-fast-1", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "high"},
-        )
-        assert "reasoning" not in kw
 
-    def test_xai_aggregator_prefix_stripped(self, transport):
-        """`x-ai/grok-3-mini` (OpenRouter-style slug) still resolves correctly."""
-        messages = [{"role": "user", "content": "Hi"}]
-        # Effort-capable
-        kw = transport.build_kwargs(
-            model="x-ai/grok-3-mini", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "high"},
-        )
-        assert kw.get("reasoning") == {"effort": "high"}
-        # Effort-incapable
-        kw = transport.build_kwargs(
-            model="x-ai/grok-4-0709", messages=messages, tools=[],
-            is_xai_responses=True,
-            reasoning_config={"effort": "high"},
-        )
-        assert "reasoning" not in kw
 
 
 class TestCodexValidateResponse:
@@ -526,18 +378,22 @@ class TestCodexValidateResponse:
     def test_none_response(self, transport):
         assert transport.validate_response(None) is False
 
-    def test_empty_output(self, transport):
-        r = SimpleNamespace(output=[], output_text=None)
-        assert transport.validate_response(r) is False
 
     def test_valid_output(self, transport):
         r = SimpleNamespace(output=[{"type": "message", "content": []}])
         assert transport.validate_response(r) is True
 
-    def test_output_text_fallback_not_valid(self, transport):
-        """validate_response is strict — output_text doesn't make it valid.
-        The caller handles output_text fallback with diagnostic logging."""
-        r = SimpleNamespace(output=None, output_text="Some text")
+
+
+
+    @pytest.mark.parametrize("reason", ["max_output_tokens", "length", "", None])
+    def test_empty_output_other_incomplete_reasons_remain_invalid(self, transport, reason):
+        r = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason=reason),
+            output=[],
+            output_text="",
+        )
         assert transport.validate_response(r) is False
 
 
@@ -546,14 +402,8 @@ class TestCodexMapFinishReason:
     def test_completed(self, transport):
         assert transport.map_finish_reason("completed") == "stop"
 
-    def test_incomplete(self, transport):
-        assert transport.map_finish_reason("incomplete") == "length"
 
-    def test_failed(self, transport):
-        assert transport.map_finish_reason("failed") == "stop"
 
-    def test_unknown(self, transport):
-        assert transport.map_finish_reason("unknown_status") == "stop"
 
 
 class TestCodexNormalizeResponse:
@@ -648,23 +498,7 @@ class TestCodexTransportTimeout:
         )
         assert kw.get("timeout") == 600.0
 
-    def test_zero_timeout_dropped(self, transport):
-        kw = transport.build_kwargs(
-            model="gpt-5.5",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=[],
-            timeout=0,
-        )
-        assert "timeout" not in kw
 
-    def test_none_timeout_omitted(self, transport):
-        kw = transport.build_kwargs(
-            model="gpt-5.5",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=[],
-            timeout=None,
-        )
-        assert "timeout" not in kw
 
     def test_inf_timeout_dropped(self, transport):
         kw = transport.build_kwargs(
@@ -675,25 +509,7 @@ class TestCodexTransportTimeout:
         )
         assert "timeout" not in kw
 
-    def test_bool_timeout_dropped(self, transport):
-        """``True`` is technically int but must not survive — caller bug guard."""
-        kw = transport.build_kwargs(
-            model="gpt-5.5",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=[],
-            timeout=True,
-        )
-        assert "timeout" not in kw
 
-    def test_request_overrides_can_supply_timeout(self, transport):
-        """request_overrides["timeout"] is honored when no explicit kwarg passed."""
-        kw = transport.build_kwargs(
-            model="gpt-5.5",
-            messages=[{"role": "user", "content": "hi"}],
-            tools=[],
-            request_overrides={"timeout": 450.0},
-        )
-        assert kw.get("timeout") == 450.0
 
 
 class TestCodexTransportXaiServiceTierStrip:

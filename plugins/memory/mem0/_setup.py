@@ -67,6 +67,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     flags: dict[str, str] = {
         "mode": "",
         "api_key": "",
+        "host": "",
         "oss_llm": "openai",
         "oss_llm_key": "",
         "oss_llm_model": "",
@@ -90,6 +91,7 @@ def parse_flags(argv: list[str] | None = None) -> dict[str, str]:
     flag_map = {
         "--mode": "mode",
         "--api-key": "api_key",
+        "--host": "host",
         "--oss-llm": "oss_llm",
         "--oss-llm-key": "oss_llm_key",
         "--oss-llm-model": "oss_llm_model",
@@ -133,15 +135,17 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     llm_def = LLM_PROVIDERS[llm_id]
     llm_model = flags.get("oss_llm_model") or llm_def["default_model"]
     llm_config: dict[str, Any] = {"model": llm_model}
-    if "default_url" in llm_def:
-        llm_config["ollama_base_url"] = flags.get("oss_llm_url") or llm_def["default_url"]
+    llm_url = flags.get("oss_llm_url") or llm_def.get("default_url")
+    if llm_url and llm_def.get("base_url_key"):
+        llm_config[llm_def["base_url_key"]] = llm_url
 
     embedder_id = flags.get("oss_embedder", "openai")
     embedder_def = EMBEDDER_PROVIDERS[embedder_id]
     embedder_model = flags.get("oss_embedder_model") or embedder_def["default_model"]
     embedder_config: dict[str, Any] = {"model": embedder_model}
-    if "default_url" in embedder_def:
-        embedder_config["ollama_base_url"] = flags.get("oss_embedder_url") or embedder_def["default_url"]
+    embedder_url = flags.get("oss_embedder_url") or embedder_def.get("default_url")
+    if embedder_url and embedder_def.get("base_url_key"):
+        embedder_config[embedder_def["base_url_key"]] = embedder_url
     dims = KNOWN_DIMS.get(embedder_model)
     if dims:
         embedder_config["embedding_dims"] = dims
@@ -189,7 +193,14 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        # Read as UTF-8 (BOM-tolerant), matching the canonical .env readers in
+        # hermes_cli/config.py. read_text() with no encoding falls back to the
+        # system locale (cp1252/GBK on Windows): it mangles or crashes on
+        # non-ASCII values while copying existing lines through, and a BOM'd
+        # first line would fail the key match and get duplicated.
+        existing_lines = env_path.read_text(
+            encoding="utf-8-sig"
+        ).splitlines()
 
     updated_keys: set[str] = set()
     new_lines: list[str] = []
@@ -204,7 +215,7 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
         if k not in updated_keys:
             new_lines.append(f"{k}={v}")
 
-    env_path.write_text("\n".join(new_lines) + "\n")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 def _save_mem0_json(hermes_home: str, data: dict) -> None:
@@ -217,7 +228,7 @@ def _save_mem0_json(hermes_home: str, data: dict) -> None:
         except Exception:
             pass
     existing.update(data)
-    config_path.write_text(json.dumps(existing, indent=2) + "\n")
+    config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 
 
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -230,14 +241,14 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
         {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
         {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
-        {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+        {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
     ]
 
     existing_config = {}
     config_path = Path(hermes_home) / "mem0.json"
     if config_path.exists():
         try:
-            existing_config = json.loads(config_path.read_text())
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
@@ -293,6 +304,24 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         return
 
     provider_config["mode"] = "platform"
+    # Clear any stale self-hosted host: routing checks ``host`` before platform
+    # (see _create_backend), so leaving it would silently keep routing to the
+    # self-hosted server even though the user just chose platform mode. Set it
+    # to "" rather than pop() — save_config merges into the existing mem0.json
+    # (existing.update), so a popped key would survive; an empty value overwrites
+    # it and reads as falsy at routing time.
+    provider_config["host"] = ""
+    # The json-file clear above can't help when the host comes from the
+    # environment: _load_config() seeds ``host`` from MEM0_HOST, and the
+    # docs tell self-hosted users to put MEM0_HOST in ~/.hermes/.env. Warn
+    # so the user knows platform mode won't take effect until it's removed.
+    if os.environ.get("MEM0_HOST", "").strip():
+        print(
+            "\n  ⚠ MEM0_HOST is set in your environment "
+            f"({os.environ['MEM0_HOST']}). It overrides platform mode — "
+            "remove it from ~/.hermes/.env (or unset it) or Hermes will keep "
+            "routing to the self-hosted server."
+        )
 
     from hermes_cli.config import save_config
     config["memory"]["provider"] = "mem0"
@@ -305,12 +334,108 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
     if env_writes:
         _write_env(Path(hermes_home) / ".env", env_writes)
 
-    print(f"\n  Memory provider: mem0")
-    print(f"  Activation saved to config.yaml")
-    print(f"  Provider config saved")
+    print("\n  Memory provider: mem0")
+    print("  Activation saved to config.yaml")
+    print("  Provider config saved")
     if env_writes:
-        print(f"  API keys saved to .env")
-    print(f"\n  Start a new session to activate.\n")
+        print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
+
+
+def _check_selfhosted_server(host: str) -> None:
+    """Best-effort reachability check for a self-hosted Mem0 server (non-fatal)."""
+    import urllib.error
+    import urllib.request as _urlreq
+
+    try:
+        req = _urlreq.Request(f"{host.rstrip('/')}/docs", method="GET")
+        _urlreq.urlopen(req, timeout=5)
+        print(f"  ✓ Mem0 server reachable at {host}")
+    except urllib.error.HTTPError:
+        # Any HTTP response (401/403/404) still means something is listening.
+        print(f"  ✓ Mem0 server responding at {host}")
+    except Exception:
+        print(f"  ⚠ Could not reach {host} — check the URL and that the server is running.")
+
+
+def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
+    """Self-hosted mode setup — point at an existing Mem0 dashboard server.
+
+    For users already running the Dockerized Mem0 FastAPI server: stores the
+    server URL (behavioral -> mem0.json) and an optional API key
+    (secret -> .env as MEM0_API_KEY).
+    """
+    existing_config = {}
+    config_path = Path(hermes_home) / "mem0.json"
+    if config_path.exists():
+        try:
+            existing_config = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    provider_config = dict(existing_config)
+
+    print("\n  Configuring mem0 (self-hosted server):\n")
+
+    host = flags.get("host") or _prompt(
+        "Mem0 server URL (e.g. http://localhost:8888)",
+        default=provider_config.get("host") or None,
+    )
+    if not host:
+        print("  Error: a server URL is required for self-hosted mode.", file=sys.stderr)
+        return
+    host = host.rstrip("/")
+
+    env_writes: dict[str, str] = {}
+    if flags.get("api_key"):
+        env_writes["MEM0_API_KEY"] = flags["api_key"]
+    else:
+        existing_key = os.environ.get("MEM0_API_KEY", "")
+        if existing_key:
+            masked = f"...{existing_key[-4:]}" if len(existing_key) > 4 else "set"
+            val = _prompt(f"Server API key (current: {masked}, blank to keep)", secret=True)
+        else:
+            val = _prompt("Server API key (blank if AUTH_DISABLED)", secret=True)
+        if val:
+            env_writes["MEM0_API_KEY"] = val
+
+    user_id = flags.get("user_id") or _prompt(
+        "User identifier", default=provider_config.get("user_id") or "hermes-user"
+    )
+    agent_id = _prompt("Agent identifier", default=provider_config.get("agent_id") or "hermes")
+
+    if flags.get("dry_run"):
+        print(f"\n  [dry-run] Would save config: host={host}, user_id={user_id}, agent_id={agent_id}")
+        if env_writes:
+            print("  [dry-run] Would write API key to .env")
+        _check_selfhosted_server(host)
+        print("  [dry-run] No files written.\n")
+        return
+
+    provider_config["mode"] = "platform"  # routing: oss > host > platform; host wins
+    provider_config["host"] = host
+    provider_config["user_id"] = user_id
+    provider_config["agent_id"] = agent_id
+
+    from hermes_cli.config import save_config
+    config["memory"]["provider"] = "mem0"
+    save_config(config)
+
+    from plugins.memory.mem0 import Mem0MemoryProvider
+    provider = Mem0MemoryProvider()
+    provider.save_config(provider_config, hermes_home)
+
+    if env_writes:
+        _write_env(Path(hermes_home) / ".env", env_writes)
+
+    _check_selfhosted_server(host)
+    print("\n  Memory provider: mem0 (self-hosted)")
+    print(f"  Server: {host}")
+    print("  Activation saved to config.yaml")
+    print("  Provider config saved")
+    if env_writes:
+        print("  API key saved to .env")
+    print("\n  Start a new session to activate.\n")
 
 
 def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -358,14 +483,14 @@ def _setup_oss(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     save_config(config)
 
     _run_connectivity_checks(oss_config)
-    print(f"\n  ✓ Mem0 configured (OSS mode)")
+    print("\n  ✓ Mem0 configured (OSS mode)")
     print(f"    LLM:      {oss_config['llm']['provider']} ({oss_config['llm']['config'].get('model', '')})")
     print(f"    Embedder: {oss_config['embedder']['provider']} ({oss_config['embedder']['config'].get('model', '')})")
     print(f"    Vector:   {vector_id}")
     if env_writes:
-        print(f"    API keys saved to .env")
-    print(f"    Config saved to mem0.json")
-    print(f"    Provider set in config.yaml")
+        print("    API keys saved to .env")
+    print("    Config saved to mem0.json")
+    print("    Provider set in config.yaml")
     print("\n  Start a new session to activate.\n")
 
 
@@ -375,7 +500,12 @@ def _prompt_api_key(label: str, env_var: str, hermes_home: str) -> str:
     if not existing:
         env_path = Path(hermes_home) / ".env"
         if env_path.exists():
-            for line in env_path.read_text().splitlines():
+            # BOM-tolerant read matching the canonical .env readers in
+            # hermes_cli/config.py; a Notepad BOM on the first line would
+            # otherwise defeat the startswith() key match below.
+            for line in env_path.read_text(
+                encoding="utf-8-sig", errors="replace"
+            ).splitlines():
                 if line.startswith(f"{env_var}="):
                     existing = line.split("=", 1)[1].strip()
                     break
@@ -407,7 +537,7 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
         try:
             result = subprocess.run(
                 ["docker", "inspect", _PGVECTOR_CONTAINER, "--format", "{{.State.Status}}"],
-                capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and "exited" in result.stdout:
                 print(f"  Found stopped container '{_PGVECTOR_CONTAINER}', restarting...")
@@ -417,7 +547,7 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
                 _wait_for_port(host, port, timeout=15)
                 ok, _ = _check_pgvector(host, port)
                 if ok:
-                    print(f"  ✓ PostgreSQL container restarted")
+                    print("  ✓ PostgreSQL container restarted")
                     return None
         except Exception:
             pass
@@ -711,14 +841,14 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
     save_config(config)
 
     _run_connectivity_checks(oss_config)
-    print(f"\n  ✓ Mem0 configured (OSS mode)")
+    print("\n  ✓ Mem0 configured (OSS mode)")
     print(f"    LLM:      {oss_config['llm']['provider']} ({oss_config['llm']['config'].get('model', '')})")
     print(f"    Embedder: {oss_config['embedder']['provider']} ({oss_config['embedder']['config'].get('model', '')})")
     print(f"    Vector:   {vector_id}")
     if env_writes:
-        print(f"    API keys saved to .env")
-    print(f"    Config saved to mem0.json")
-    print(f"    Provider set in config.yaml")
+        print("    API keys saved to .env")
+    print("    Config saved to mem0.json")
+    print("    Provider set in config.yaml")
     print("\n  Start a new session to activate.\n")
 
 
@@ -733,11 +863,17 @@ def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> Non
     for dep in sorted(deps):
         try:
             print(f"  Installing {dep}...")
-            subprocess.run(
-                ["uv", "pip", "install", "--python", sys.executable, dep],
-                capture_output=True, timeout=60,
-            )
-            print(f"  ✓ Installed {dep}")
+            # Environment-aware install: sealed hosted venvs redirect to the
+            # durable data-volume target instead of /opt/hermes (NS-605).
+            from tools.lazy_deps import install_specs
+
+            outcome = install_specs([dep], timeout=60)
+            if outcome.ok:
+                print(f"  ✓ Installed {dep}")
+            elif outcome.blocked:
+                print(f"  Warning: cannot install {dep}: {outcome.reason}")
+            else:
+                print(f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
         except Exception:
             print(f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
     if deps:
@@ -828,10 +964,10 @@ def _check_min_dep_version() -> None:
 def post_setup(hermes_home: str, config: dict) -> None:
     """Entry point called by hermes memory setup framework.
 
-    Only intercepts when OSS mode is requested (via --mode oss flag or
-    interactive picker). For platform mode, returns without action so the
-    framework's schema-based flow handles it (preserving the original
-    platform onboarding experience).
+    Routes on --mode (platform / selfhosted / oss); with no flag it shows an
+    interactive picker with all three modes. Platform keeps the framework's
+    original schema-based onboarding; selfhosted points at an existing Mem0
+    server; oss builds a local SDK config.
     """
     _check_min_dep_version()
     flags = parse_flags(sys.argv[1:])
@@ -841,6 +977,10 @@ def post_setup(hermes_home: str, config: dict) -> None:
         _setup_oss(hermes_home, config, flags)
         return
 
+    if flags["mode"] in ("selfhosted", "self-hosted"):
+        _setup_selfhosted(hermes_home, config, flags)
+        return
+
     if flags["mode"] == "platform":
         _setup_platform(hermes_home, config, flags)
         return
@@ -848,10 +988,13 @@ def post_setup(hermes_home: str, config: dict) -> None:
     # No --mode flag: show interactive picker
     mode_items = [
         ("Platform", "Mem0 Cloud API (lightweight, just needs an API key)"),
+        ("Self-hosted server", "Connect to an existing self-hosted Mem0 server (Docker/FastAPI)"),
         ("Open Source", "Run Mem0 locally (self-hosted LLM + vector store)"),
     ]
     mode_idx = _curses_select("  Select mode", mode_items, 0)
     if mode_idx == 1:
+        _setup_selfhosted(hermes_home, config, flags)
+    elif mode_idx == 2:
         flags["_mode_from_flag"] = False
         _setup_oss(hermes_home, config, flags)
     else:

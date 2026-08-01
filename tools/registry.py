@@ -45,25 +45,68 @@ def _module_registers_tools(module_path: Path) -> bool:
 
     Only inspects module-body statements so that helper modules which happen
     to call ``registry.register()`` inside a function are not picked up.
+
+    A cheap text prefilter avoids the ``ast.parse`` cost for files that do not
+    mention both ``registry`` and ``register`` — a necessary condition for a
+    top-level ``registry.register()`` call to exist.
     """
     try:
         source = module_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if "registry" not in source or "register" not in source:
+        return False
+    try:
         tree = ast.parse(source, filename=str(module_path))
-    except (OSError, SyntaxError):
+    except SyntaxError:
         return False
 
     return any(_is_registry_register_call(stmt) for stmt in tree.body)
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
-    """Import built-in self-registering tool modules and return their module names."""
+    """Import built-in self-registering tool modules and return their module names.
+
+    The per-file AST scan (:func:`_module_registers_tools`) costs ~145 ms over
+    ~100 files on a warm cache, so verdicts are memoized on disk keyed by
+    ``(mtime_ns, size)``. A file whose mtime_ns+size match the cached entry is
+    trusted without re-reading; any mismatch (or a corrupt/missing cache file)
+    falls back to a fresh scan for that file. The cache write is best-effort
+    and atomic, so concurrent processes can race harmlessly.
+    """
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
-    module_names = [
-        f"tools.{path.stem}"
-        for path in sorted(tools_path.glob("*.py"))
-        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
-        and _module_registers_tools(path)
-    ]
+
+    cache = _load_discovery_cache()
+    fresh_cache: Dict[str, list] = {}
+    cache_dirty = False
+
+    module_names: List[str] = []
+    for path in sorted(tools_path.glob("*.py")):
+        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+            continue
+        abs_path = str(path.resolve())
+        try:
+            st = path.stat()
+            stat_key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            continue
+        cached = cache.get(abs_path)
+        if (
+            isinstance(cached, (list, tuple))
+            and len(cached) == 3
+            and (cached[0], cached[1]) == stat_key
+        ):
+            registers = bool(cached[2])
+        else:
+            registers = _module_registers_tools(path)
+            cache_dirty = True
+        fresh_cache[abs_path] = [stat_key[0], stat_key[1], registers]
+        if registers:
+            module_names.append(f"tools.{path.stem}")
+
+    # Drop entries for files that no longer exist; rewrite only when changed.
+    if cache_dirty or set(fresh_cache) != set(cache):
+        _save_discovery_cache(fresh_cache)
 
     imported: List[str] = []
     for mod_name in module_names:
@@ -73,6 +116,45 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
         except Exception as e:
             logger.warning("Could not import tool module %s: %s", mod_name, e)
     return imported
+
+
+def _discovery_cache_path() -> Optional[Path]:
+    """Path of the tool-discovery verdict cache, or None if unresolvable."""
+    try:
+        # Deferred import keeps tools/registry.py a no-deps leaf at module
+        # import time (hermes_constants itself is stdlib-only, so no cycle).
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home()) / "cache" / "tool_discovery_cache.json"
+    except Exception:
+        return None
+
+
+def _load_discovery_cache() -> Dict[str, list]:
+    """Read the discovery cache; any error → empty dict (full scan)."""
+    path = _discovery_cache_path()
+    if path is None:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_discovery_cache(cache: Dict[str, list]) -> None:
+    """Best-effort atomic write of the discovery cache. Never raises."""
+    path = _discovery_cache_path()
+    if path is None:
+        return
+    try:
+        from utils import atomic_json_write  # stdlib+yaml only; no cycle
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, cache, indent=0)
+    except Exception as e:
+        logger.debug("Could not write tool discovery cache %s: %s", path, e)
 
 
 class ToolEntry:
@@ -379,18 +461,7 @@ class ToolRegistry:
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
-                # Allow MCP-to-MCP overwrites (legitimate: server refresh,
-                # or two MCP servers with overlapping tool names).
-                both_mcp = (
-                    existing.toolset.startswith("mcp-")
-                    and toolset.startswith("mcp-")
-                )
-                if both_mcp:
-                    logger.debug(
-                        "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
-                        name, toolset, existing.toolset,
-                    )
-                elif override:
+                if override:
                     _owner = self._plugin_owner_of(handler)
                     if _owner is not None and not self._plugin_override_policy.get(_owner, False):
                         logger.error(
@@ -414,8 +485,9 @@ class ToolRegistry:
                         name, toolset, existing.toolset,
                     )
                 else:
-                    # Reject shadowing — prevent plugins/MCP from overwriting
-                    # built-in tools or vice versa.
+                    # Reject every cross-toolset shadow, including MCP-to-MCP
+                    # collisions. Legitimate MCP reconnect/refresh re-registers
+                    # within the same canonical toolset and remains allowed.
                     logger.error(
                         "Tool registration REJECTED: '%s' (toolset '%s') would "
                         "shadow existing tool from toolset '%s'. Pass "
@@ -571,21 +643,56 @@ class ToolRegistry:
     # Dispatch
     # ------------------------------------------------------------------
 
-    def dispatch(self, name: str, args: dict, **kwargs) -> str:
+    @staticmethod
+    def _normalize_handler_result(name: str, result):
+        """Enforce the result shapes supported by the agent tool pipeline.
+
+        Normal tool results are strings.  The sole structured exception is the
+        multimodal envelope consumed by the agent executor.  Returning every
+        other value as a string error keeps logging, hooks, budgeting, and
+        persistence from receiving values they cannot safely slice or size.
+        """
+        if isinstance(result, str):
+            return result
+        if (
+            isinstance(result, dict)
+            and result.get("_multimodal") is True
+            and isinstance(result.get("content"), list)
+        ):
+            return result
+
+        result_type = type(result).__name__
+        logger.error(
+            "Tool %s handler returned unsupported result type: %s",
+            name,
+            result_type,
+        )
+        return tool_error(
+            f"Tool handler returned unsupported result type: {result_type}",
+            error_type="tool_result_contract",
+            tool=name,
+            result_type=result_type,
+        )
+
+    def dispatch(self, name: str, args: dict, **kwargs) -> str | dict:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.
+        * Handler results are normalized to a string or supported multimodal
+          envelope before leaving the registry.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
         """
         entry = self.get_entry(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return tool_error(f"Unknown tool: {name}")
         try:
             if entry.is_async:
                 from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
-            return entry.handler(args, **kwargs)
+                result = _run_async(entry.handler(args, **kwargs))
+            else:
+                result = entry.handler(args, **kwargs)
+            return self._normalize_handler_result(name, result)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
             # Route through the sanitizer so framing tokens / CDATA / fences
@@ -597,7 +704,7 @@ class ToolRegistry:
                 sanitized = _sanitize_tool_error(raw)
             except Exception:
                 sanitized = raw  # defensive: never let the sanitizer block error propagation
-            return json.dumps({"error": sanitized})
+            return tool_error(sanitized)
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { type Translations, useI18n } from '@/i18n'
+import { compactNumber } from '@/lib/format'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -114,14 +115,11 @@ const fmtDuration = (seconds: number | undefined, a: Translations['agents']) => 
   return a.durationMinutes(m, s)
 }
 
-const fmtTokens = (value: number | undefined, a: Translations['agents']) => {
-  if (!value) {
-    return ''
-  }
+const fmtTokens = (value: number | undefined, a: Translations['agents']) =>
+  value ? a.tokens(compactNumber(value)) : ''
 
-  return value >= 1000 ? a.tokensK((value / 1000).toFixed(1)) : a.tokens(value)
-}
-
+// Distinct contract from coarseElapsed: rounds to the second (this ticks live),
+// and hours are unbounded ("25h", never "1d"). Kept local on purpose.
 const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => {
   const s = Math.max(0, Math.round((nowMs - updatedAt) / 1000))
 
@@ -135,11 +133,7 @@ const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => 
 
   const m = Math.floor(s / 60)
 
-  if (m < 60) {
-    return a.ageMinutes(m)
-  }
-
-  return a.ageHours(Math.floor(m / 60))
+  return m < 60 ? a.ageMinutes(m) : a.ageHours(Math.floor(m / 60))
 }
 
 const flatten = (nodes: readonly SubagentNode[]): SubagentNode[] =>

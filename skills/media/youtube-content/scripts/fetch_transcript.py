@@ -94,7 +94,7 @@ def main():
         if "disabled" in error_msg.lower():
             print(json.dumps({"error": "Transcripts are disabled for this video."}))
         elif "no transcript" in error_msg.lower():
-            print(json.dumps({"error": f"No transcript found. Try specifying a language with --language."}))
+            print(json.dumps({"error": "No transcript found. Try specifying a language with --language."}))
         else:
             print(json.dumps({"error": error_msg}))
         sys.exit(1)

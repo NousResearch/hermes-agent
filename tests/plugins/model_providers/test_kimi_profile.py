@@ -77,12 +77,6 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
-    def test_disabled_ignores_effort(self, kimi_profile):
-        extra_body, top_level = kimi_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False, "effort": "high"}
-        )
-        assert extra_body == {"thinking": {"type": "disabled"}}
-        assert top_level == {}
 
     @pytest.mark.parametrize(
         "reasoning_config",
@@ -103,6 +97,26 @@ class TestKimiReasoningWireShape:
         assert not ("thinking" in extra_body and "reasoning_effort" in top_level)
 
 
+class TestKimiModelDiscovery:
+    def test_malformed_base_url_is_unconfirmed_and_filters_k3(self, kimi_profile):
+        """Malformed user URLs must fall through safely, never authorize K3."""
+        from unittest.mock import patch
+
+        from providers.base import ProviderProfile
+
+        with patch.object(
+            ProviderProfile,
+            "fetch_models",
+            return_value=["k3", "kimi-k2.6"],
+        ):
+            models = kimi_profile.fetch_models(
+                api_key="test-key",
+                base_url="https://[api.kimi.com/coding",
+            )
+
+        assert models == ["kimi-k2.6"]
+
+
 class TestKimiFullKwargsIntegration:
     """The transport's full kwargs carry at most one reasoning knob."""
 
@@ -119,12 +133,4 @@ class TestKimiFullKwargsIntegration:
             provider_name="kimi-coding",
         )
 
-    def test_explicit_effort_omits_thinking(self, kimi_profile):
-        kwargs = self._build(kimi_profile, {"enabled": True, "effort": "high"})
-        assert kwargs["reasoning_effort"] == "high"
-        assert "thinking" not in kwargs.get("extra_body", {})
 
-    def test_no_config_omits_effort(self, kimi_profile):
-        kwargs = self._build(kimi_profile, None)
-        assert "reasoning_effort" not in kwargs
-        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}

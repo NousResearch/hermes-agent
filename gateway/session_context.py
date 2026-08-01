@@ -73,12 +73,20 @@ def session_context_engaged() -> bool:
 _SESSION_PLATFORM: ContextVar = ContextVar("HERMES_SESSION_PLATFORM", default=_UNSET)
 _SESSION_SOURCE: ContextVar = ContextVar("HERMES_SESSION_SOURCE", default=_UNSET)
 _SESSION_CHAT_ID: ContextVar = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
+_SESSION_CHAT_TYPE: ContextVar = ContextVar("HERMES_SESSION_CHAT_TYPE", default=_UNSET)
 _SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
 _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
+# In-process UI session/window id for multi-session desktop/TUI hosts. This is
+# intentionally separate from HERMES_SESSION_ID: the latter is the durable
+# conversation/session-db id, while the UI id is the live frontend tab/window
+# that commissioned a detached completion. Background completions use it as a
+# precise return address so a stale/rotated durable session key cannot be
+# consumed by whichever desktop poller wakes first.
+_SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=_UNSET)
 # ID of the message that triggered the current turn. Used as a reply anchor
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
@@ -89,12 +97,11 @@ _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNS
 # Whether the current session's delivery channel can route an ASYNC completion
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
 #
-# True  — CLI (in-process completion_queue drain) and the real gateway
-#         platforms (Telegram/Discord/Slack/...), which hold a persistent
-#         outbound channel and run the watcher/drain loops.
-# False — stateless request/response adapters (the API server: every route,
-#         spec and proprietary, tears down its channel when the turn ends, so
-#         a background completion that finishes later has nowhere to go).
+# True  — long-lived CLI sessions (in-process completion_queue drain) and the
+#         real gateway platforms (Telegram/Discord/Slack/...), which hold a
+#         persistent outbound channel and run the watcher/drain loops.
+# False — finite runtimes that can end before a detached completion returns:
+#         stateless API-server requests and dispatcher-spawned Kanban workers.
 #
 # Tools that promise async delivery (terminal notify_on_complete /
 # watch_patterns, delegate_task background=True) read this via
@@ -117,12 +124,14 @@ _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
     "HERMES_SESSION_SOURCE": _SESSION_SOURCE,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
+    "HERMES_SESSION_CHAT_TYPE": _SESSION_CHAT_TYPE,
     "HERMES_SESSION_CHAT_NAME": _SESSION_CHAT_NAME,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
+    "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
@@ -150,6 +159,7 @@ def set_session_vars(
     platform: str = "",
     source: str = "",
     chat_id: str = "",
+    chat_type: str = "",
     chat_name: str = "",
     thread_id: str = "",
     user_id: str = "",
@@ -160,6 +170,7 @@ def set_session_vars(
     profile: str = "",
     cwd: str = "",
     async_delivery: bool = True,
+    ui_session_id: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -185,12 +196,14 @@ def set_session_vars(
         _SESSION_PLATFORM.set(platform),
         _SESSION_SOURCE.set(source),
         _SESSION_CHAT_ID.set(chat_id),
+        _SESSION_CHAT_TYPE.set(chat_type),
         _SESSION_CHAT_NAME.set(chat_name),
         _SESSION_THREAD_ID.set(thread_id),
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
+        _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
@@ -219,12 +232,14 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_PLATFORM,
         _SESSION_SOURCE,
         _SESSION_CHAT_ID,
+        _SESSION_CHAT_TYPE,
         _SESSION_CHAT_NAME,
         _SESSION_THREAD_ID,
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
         _SESSION_ID,
+        _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
         _SESSION_PROFILE,
     ):
@@ -316,19 +331,109 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+# Surfaces that are not a human chat channel. The gateway binds a platform
+# value (``telegram``) to HERMES_SESSION_PLATFORM, while the CLI, TUI, and
+# desktop bind HERMES_SESSION_SOURCE (``cli``, ``tui``, ``desktop``) and leave
+# the platform empty — so both have to be consulted. ``local``, ``api_server``,
+# ``webhook``, and ``msgraph_webhook`` are real Platform values that reach
+# HERMES_SESSION_PLATFORM but have no attachment channel behind them.
+# Default-deny: an unrecognized identity counts as messaging so a newly added
+# chat platform is never treated as a private surface before this set is
+# updated. Mirrors LOCAL_SESSION_SOURCE_IDS in
+# apps/desktop/src/lib/session-source.ts; keep roughly in sync when adding a
+# local or programmatic surface.
+NON_MESSAGING_SESSION_SURFACES = frozenset(
+    {
+        "",
+        "api_server",
+        "cli",
+        "codex",
+        "desktop",
+        "gateway",
+        "kanban",
+        "local",
+        "msgraph_webhook",
+        "tool",
+        "tui",
+        "webhook",
+    }
+)
+
+
+def session_is_messaging_surface() -> bool:
+    """Whether this turn is delivered over a human messaging channel.
+
+    Callers use this to decide anything that differs between "the user is
+    reading a chat message" and "the user is at a machine they own": whether
+    to emit a delivery tag, whether a file has to land somewhere the gateway
+    is allowed to send from, whether narration would read as chat noise.
+
+    Resolves ``HERMES_PLATFORM``, then the session platform, then the session
+    source, and reports messaging when any of them names a surface outside
+    :data:`NON_MESSAGING_SESSION_SURFACES`.
+    """
+    import os
+
+    platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM", "")
+    source = get_session_env("HERMES_SESSION_SOURCE", "")
+    for identity in (platform, source):
+        identity = str(identity or "").strip().lower()
+        if identity and identity not in NON_MESSAGING_SESSION_SURFACES:
+            return True
+    return False
+
+
+def declare_stateless_channel() -> None:
+    """Declare that this session cannot receive an async background completion.
+
+    Binds only the delivery capability, leaving every other session var unset.
+    Use this instead of ``set_session_vars(async_delivery=False)`` on a pure
+    single-process runner: ``set_session_vars`` also latches
+    ``_session_context_engaged`` (see above), which switches the subprocess
+    env bridge from "os.environ fallback" to "ContextVar-authoritative, strip on
+    _UNSET" in ``tools/environments/local.py``. A one-shot CLI that never engages
+    the session-context system must not flip that latch as a side effect of
+    declaring a capability.
+
+    Callers that already build a full session context (cron's ``run_job``) get
+    the same state by passing ``async_delivery=False`` to ``set_session_vars``.
+
+    A session that cannot take a late completion makes ``delegate_task`` fall
+    through to its existing inline/synchronous path, so subagent results are
+    returned within the turn instead of being dispatched to a channel that will
+    never deliver them.
+
+    See NousResearch/hermes-agent#53027 and #63142.
+    """
+    _SESSION_ASYNC_DELIVERY.set(False)
+
+
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 
-    Returns ``False`` only when the active session was explicitly bound by a
-    stateless adapter (the API server) that cannot route a notification back to
-    the agent after the turn ends. CLI, cron, and the real gateway platforms —
-    and any path that never bound the contextvar — return ``True``.
+    Returns ``False`` for finite runtimes that can end before a detached result
+    is delivered: sessions explicitly bound by a stateless channel — an adapter
+    that cannot route a notification back after the turn ends (the API server),
+    or a one-shot runner that exits after its final response (``hermes -z``,
+    cron — see :func:`declare_stateless_channel`) — and dispatcher-spawned
+    Kanban workers (identified by ``HERMES_KANBAN_TASK``), which are one-shot
+    ``chat -q`` subprocesses. The real gateway platforms, the interactive CLI,
+    and any other path that never bound the contextvar return ``True``.
 
     Tools that promise async delivery (``terminal`` notify_on_complete /
     watch_patterns, ``delegate_task`` background=True) consult this before
     registering a watcher / dispatching a detached child, so they can refuse a
     promise the channel can't keep instead of silently no-op'ing.
     """
+    import os
+
+    # A Kanban worker is a one-shot subprocess. Its parent session and process
+    # disappear after the quiet turn returns, so a completion queued later has
+    # no durable consumer even though an ordinary CLI session can drain that
+    # queue. Force tools onto their existing synchronous/polling fallbacks.
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return False
+
     value = _SESSION_ASYNC_DELIVERY.get()
     if value is _UNSET:
         return True

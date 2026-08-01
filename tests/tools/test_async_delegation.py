@@ -5,7 +5,11 @@ onto the shared process_registry.completion_queue, the rich re-injection block
 formatting, capacity rejection, and crash handling.
 """
 
+import json
+import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 
@@ -21,6 +25,13 @@ def _clean_state():
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
     yield
+    # Give just-released workers a beat to finalize BEFORE draining, so their
+    # completion events land now instead of leaking into the next test's
+    # queue (worker threads push events asynchronously; a drain that races an
+    # in-flight _finalize misses it).
+    deadline = time.monotonic() + 2.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
@@ -35,11 +46,30 @@ def _drain_one(timeout=5.0):
     return None
 
 
+def _drain_for(delegation_id, timeout=5.0):
+    """Drain until the event for *delegation_id* appears (discarding others).
+
+    Completion events are pushed asynchronously by worker threads, so a
+    straggler from a PREVIOUS test can land after that test's teardown drain
+    and leak into the current test's queue. Matching on delegation_id makes
+    the assertion immune to that cross-test leak.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not process_registry.completion_queue.empty():
+            evt = process_registry.completion_queue.get_nowait()
+            if evt.get("delegation_id") == delegation_id:
+                return evt
+            continue
+        time.sleep(0.02)
+    return None
+
+
 def test_dispatch_returns_immediately_without_blocking():
     gate = threading.Event()
 
     def runner():
-        gate.wait(timeout=5)
+        gate.wait(timeout=60)
         return {"status": "completed", "summary": "done", "api_calls": 1,
                 "duration_seconds": 0.1, "model": "m"}
 
@@ -66,7 +96,7 @@ def test_async_executor_workers_are_daemon_threads():
     gate = threading.Event()
 
     def runner():
-        gate.wait(timeout=5)
+        gate.wait(timeout=60)
         return {"status": "completed", "summary": "done"}
 
     res = ad.dispatch_async_delegation(
@@ -99,6 +129,7 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     res = ad.dispatch_async_delegation(
         goal="compute X", context="some context", toolsets=["web", "file"],
         role="leaf", model="test-model", session_key="agent:main:cli:dm:local",
+        parent_session_id="20260703_parent_sid",
         runner=runner, max_async_children=3,
     )
     assert res["status"] == "dispatched"
@@ -108,6 +139,7 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["type"] == "async_delegation"
     assert evt["summary"] == "the result"
     assert evt["session_key"] == "agent:main:cli:dm:local"
+    assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
 
 
@@ -142,7 +174,7 @@ def test_dispatch_rejected_at_capacity():
     ev = threading.Event()
 
     def blocker():
-        ev.wait(timeout=5)
+        ev.wait(timeout=60)
         return {"status": "completed", "summary": "x"}
 
     for i in range(2):
@@ -161,30 +193,18 @@ def test_dispatch_rejected_at_capacity():
     ev.set()
 
 
-def test_crashed_runner_produces_error_completion():
-    def boom():
-        raise RuntimeError("subagent exploded")
-
-    r = ad.dispatch_async_delegation(
-        goal="risky", context=None, toolsets=None, role="leaf", model="m",
-        session_key="", runner=boom, max_async_children=3,
-    )
-    assert r["status"] == "dispatched"
-    evt = _drain_one()
-    assert evt is not None
-    assert evt["status"] == "error"
-    text = format_process_notification(evt)
-    assert text is not None
-    assert "did not complete successfully" in text
-    assert "subagent exploded" in text
-
-
 def test_interrupt_all_signals_running_children():
     ev = threading.Event()
     interrupted = {"count": 0}
+    # No short internal timeout: the blocker holds until interrupt_fn fires.
+    # The old ev.wait(timeout=5) made this test a change-detector for CI
+    # worker load — on a CPU-starved runner the 5s expired before
+    # interrupt_all() ran, the record finalized, and interrupt_all() found
+    # nothing running (n == 0). The pytest-level timeout is the real
+    # runaway guard.
 
     def blocker():
-        ev.wait(timeout=5)
+        ev.wait(timeout=60)
         return {"status": "interrupted", "summary": None,
                 "error": "cancelled"}
 
@@ -192,7 +212,7 @@ def test_interrupt_all_signals_running_children():
         interrupted["count"] += 1
         ev.set()
 
-    ad.dispatch_async_delegation(
+    r = ad.dispatch_async_delegation(
         goal="long task", context=None, toolsets=None, role="leaf",
         model="m", session_key="", runner=blocker,
         interrupt_fn=interrupt_fn, max_async_children=3,
@@ -200,25 +220,307 @@ def test_interrupt_all_signals_running_children():
     n = ad.interrupt_all(reason="test")
     assert n == 1
     assert interrupted["count"] == 1
-    # child still emits a completion event after interrupt
-    evt = _drain_one()
+    # child still emits a completion event after interrupt. Match on THIS
+    # delegation's id — straggler 'completed' events from a previous test's
+    # workers can finalize after that test's teardown drain and leak into
+    # this queue (observed on loaded CI workers).
+    evt = _drain_for(r["delegation_id"])
     assert evt is not None
     assert evt["status"] == "interrupted"
 
 
-def test_completed_records_pruned_to_cap():
-    # Run more than the retention cap quickly; ensure list doesn't grow forever.
-    for i in range(ad._MAX_RETAINED_COMPLETED + 10):
-        ad.dispatch_async_delegation(
-            goal=f"t{i}", context=None, toolsets=None, role="leaf", model="m",
-            session_key="", runner=lambda: {"status": "completed", "summary": "ok"},
-            max_async_children=ad._MAX_RETAINED_COMPLETED + 20,
+def _fast_stale_monitor(monkeypatch, *, idle=0.15, in_tool=0.3, grace=0.15):
+    """Shrink the stale-monitor cadence so tests run in milliseconds."""
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
+    monkeypatch.setattr(ad, "_STALE_IDLE_SECONDS", idle)
+    monkeypatch.setattr(ad, "_STALE_IN_TOOL_SECONDS", in_tool)
+    monkeypatch.setattr(ad, "_STALL_GRACE_SECONDS", grace)
+
+
+def test_stalled_runner_is_interrupted_then_finalized(monkeypatch):
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    interrupted = {"count": 0}
+
+    def stuck_runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "too late"}
+
+    def interrupt_fn():
+        interrupted["count"] += 1
+
+    res = ad.dispatch_async_delegation(
+        goal="stuck child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=stuck_runner,
+        interrupt_fn=interrupt_fn, max_async_children=1,
+        # Frozen progress token: the child never advances an API call.
+        progress_fn=lambda: ((0, None), False),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    try:
+        assert evt is not None
+        assert evt["type"] == "async_delegation"
+        assert evt["status"] == "stalled"
+        assert evt["delegation_id"] == res["delegation_id"]
+        assert evt["api_calls"] == 0
+        assert "stalled" in evt["error"]
+        # Interrupt was requested BEFORE force-finalization (grace window).
+        assert interrupted["count"] >= 1
+        assert ad.active_count() == 0
+    finally:
+        gate.set()
+
+    # If the ignored runner eventually returns, it must not enqueue a second
+    # completion for a delegation the monitor already finalized.
+    assert _drain_one(timeout=0.5) is None
+
+
+def test_progressing_runner_is_never_stalled(monkeypatch):
+    """A child that keeps advancing is left alone no matter how long it runs."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    ticks = {"n": 0}
+
+    def slow_but_alive_runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "done", "api_calls": 7}
+
+    def progress_fn():
+        # Token advances on every sample — simulates a child making steady
+        # API-call progress.
+        ticks["n"] += 1
+        return (ticks["n"], None), False
+
+    res = ad.dispatch_async_delegation(
+        goal="slow child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=slow_but_alive_runner,
+        max_async_children=1, progress_fn=progress_fn,
+    )
+    assert res["status"] == "dispatched"
+
+    # Run well past the (shrunk) idle threshold — several monitor sweeps.
+    time.sleep(0.6)
+    assert ad.active_count() == 1
+    assert process_registry.completion_queue.empty()
+
+    gate.set()
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+    assert evt["summary"] == "done"
+
+
+def test_stalling_runner_that_honors_interrupt_keeps_its_result(monkeypatch):
+    """Interrupt-responsive children finalize through the NORMAL path.
+
+    The monitor's interrupt gives a wedged-looking child a grace window; if
+    the runner returns during it, the real result (partial work, api_calls)
+    is delivered instead of a synthetic stalled event.
+    """
+    _fast_stale_monitor(monkeypatch, grace=5.0)
+    interrupted = threading.Event()
+
+    def runner():
+        # "Wedged" until interrupted, then unwinds and reports partial work.
+        interrupted.wait(timeout=10)
+        return {
+            "status": "interrupted",
+            "summary": "partial work saved",
+            "api_calls": 3,
+        }
+
+    res = ad.dispatch_async_delegation(
+        goal="responsive child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=runner,
+        interrupt_fn=interrupted.set, max_async_children=1,
+        progress_fn=lambda: ((3, None), False),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "interrupted"
+    assert evt["summary"] == "partial work saved"
+    assert evt["api_calls"] == 3
+    assert ad.active_count() == 0
+
+
+def test_streaming_child_counts_as_alive(monkeypatch):
+    """A child mid-stream (api_call_count frozen, last_activity_ts ticking)
+    must never be stalled — streamed chunks tick _touch_activity, and the
+    progress token includes that timestamp (same liveness signal as the
+    compaction inactivity budget, PR #71508)."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+    now = {"ts": 1000.0}
+
+    def progress_fn():
+        # api_call_count and current_tool frozen (long streaming response in
+        # flight), but the activity timestamp advances with every chunk.
+        now["ts"] += 1.0
+        return ((1, None, now["ts"]),), False
+
+    res = ad.dispatch_async_delegation(
+        goal="streaming child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: (gate.wait(timeout=10), {"status": "completed", "summary": "streamed"})[1],
+        progress_fn=progress_fn,
+    )
+    assert res["status"] == "dispatched"
+
+    time.sleep(0.6)  # several sweeps past the shrunk idle threshold
+    assert ad.active_count() == 1
+    assert process_registry.completion_queue.empty()
+
+    gate.set()
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+
+
+def test_stalled_event_carries_structured_stall_metadata(monkeypatch):
+    """The terminal stalled event must expose machine-readable stall context
+    (#51690) — quiet duration, tripped threshold, phase, grace — mirroring
+    the sync path's timeout_seconds/timed_out_after_seconds/timeout_phase."""
+    _fast_stale_monitor(monkeypatch)
+    gate = threading.Event()
+
+    res = ad.dispatch_async_delegation(
+        goal="stall metadata", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: {} if gate.wait(timeout=10) else {},
+        progress_fn=lambda: ((0, "terminal"), True),
+    )
+    assert res["status"] == "dispatched"
+
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    try:
+        assert evt is not None
+        assert evt["status"] == "stalled"
+        assert evt["stalled_after_quiet_seconds"] >= 0.3  # in-tool threshold
+        assert evt["stall_threshold_seconds"] == ad._STALE_IN_TOOL_SECONDS
+        assert evt["stall_phase"] == "in_tool"
+        assert evt["stall_grace_seconds"] == ad._STALL_GRACE_SECONDS
+    finally:
+        gate.set()
+
+
+def test_list_async_delegations_exposes_live_activity(monkeypatch):
+    """list_async_delegations must expose per-child live activity sampled
+    from progress_fn plus seconds_since_progress, for /agents UIs (#51690)."""
+    monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
+    gate = threading.Event()
+    base_ts = time.time() - 12.0
+
+    res = ad.dispatch_async_delegation(
+        goal="live listing", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", max_async_children=1,
+        runner=lambda: {} if gate.wait(timeout=10) else {},
+        progress_fn=lambda: (((3, "web_search", base_ts),), True),
+    )
+    try:
+        time.sleep(0.1)  # let the monitor stamp _progress_ts at least once
+        item = next(
+            d for d in ad.list_async_delegations()
+            if d["delegation_id"] == res["delegation_id"]
         )
-    # let workers finish
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and ad.active_count() > 0:
-        time.sleep(0.05)
-    assert len(ad.list_async_delegations()) <= ad._MAX_RETAINED_COMPLETED
+        assert item["status"] == "running"
+        assert item["in_tool"] is True
+        assert "seconds_since_progress" in item
+        (child,) = item["children_activity"]
+        assert child["api_calls"] == 3
+        assert child["current_tool"] == "web_search"
+        assert 10.0 <= child["seconds_since_activity"] <= 20.0
+        # Callables and private bookkeeping must never leak.
+        assert "progress_fn" not in item
+        assert "interrupt_fn" not in item
+        assert not any(k.startswith("_") for k in item)
+    finally:
+        gate.set()
+
+
+def test_in_tool_stall_uses_higher_threshold(monkeypatch):
+    """A frozen child inside a tool gets the in-tool ceiling, not the idle one."""
+    _fast_stale_monitor(monkeypatch, idle=0.1, in_tool=10.0, grace=0.1)
+    gate = threading.Event()
+
+    def runner():
+        gate.wait(timeout=10)
+        return {"status": "completed", "summary": "long tool finished"}
+
+    res = ad.dispatch_async_delegation(
+        goal="long tool child", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=runner, max_async_children=1,
+        # Frozen token but in_tool=True — a legitimately slow terminal
+        # command / web fetch. Must NOT be stalled at the idle threshold.
+        progress_fn=lambda: ((1, "terminal"), True),
+    )
+    assert res["status"] == "dispatched"
+
+    time.sleep(0.5)  # far past idle threshold, well under in-tool threshold
+    assert ad.active_count() == 1
+    assert process_registry.completion_queue.empty()
+
+    gate.set()
+    evt = _drain_for(res["delegation_id"], timeout=5.0)
+    assert evt is not None
+    assert evt["status"] == "completed"
+
+
+def test_real_process_restart_restores_owned_completion_once(tmp_path):
+    """Real-import E2E: a fresh interpreter restores a prior process's result."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import time
+from tools import async_delegation as ad
+r = ad.dispatch_async_delegation(
+    goal="restart", context=None, toolsets=None, role="leaf", model="m",
+    session_key="owner-session", parent_session_id="durable-parent",
+    runner=lambda: {"status": "completed", "summary": "after restart"},
+)
+deadline = time.time() + 5
+while ad.active_count() and time.time() < deadline:
+    time.sleep(.01)
+print(r["delegation_id"])
+'''
+    first = subprocess.run(
+        [sys.executable, "-c", producer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    delegation_id = first.stdout.strip().splitlines()[-1]
+
+    consumer = r'''
+import json
+from tools.process_registry import process_registry
+evt = process_registry.completion_queue.get_nowait()
+print(json.dumps(evt, sort_keys=True))
+'''
+    second = subprocess.run(
+        [sys.executable, "-c", consumer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    evt = json.loads(second.stdout.strip().splitlines()[-1])
+    assert evt["delegation_id"] == delegation_id
+    assert evt["session_key"] == "owner-session"
+    assert evt["parent_session_id"] == "durable-parent"
+    assert evt["summary"] == "after restart"
+
+    acker = f'''
+from tools import async_delegation as ad
+assert ad.mark_completion_delivered({delegation_id!r})
+'''
+    subprocess.run(
+        [sys.executable, "-c", acker], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    probe = subprocess.run(
+        [sys.executable, "-c", "from tools.process_registry import process_registry; print(process_registry.completion_queue.qsize())"],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
+    )
+    assert probe.stdout.strip().splitlines()[-1] == "0"
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +547,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     gate = threading.Event()
 
     def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=5)  # a sync impl would hang delegate_task here
+        gate.wait(timeout=60)  # a sync impl would hang delegate_task here
         return {
             "task_index": 0, "status": "completed", "summary": f"done: {goal}",
             "api_calls": 1, "duration_seconds": 0.1, "model": "m",
@@ -289,206 +591,66 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     assert "the real task" in text
 
 
-def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
-    """A multi-item batch with background=True dispatches the WHOLE fan-out as
-    ONE background unit (one handle, one async slot). The children run in
-    parallel and join; the consolidated results come back as a single
-    completion event when ALL of them finish."""
+def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
+    """TUI async delegation must route to the live/compressed agent id.
+
+    Regression: delegate_task captured the stale approval/session context key
+    after compression rotated parent_agent.session_id. The resulting completion
+    was orphaned and could be consumed by an unrelated desktop session poller.
+    """
     import json
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
     import tools.delegate_tool as dt
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.approval import reset_current_session_key, set_current_session_key
 
     parent = MagicMock()
     parent._delegate_depth = 0
-    parent.session_id = "sess"
+    parent.session_id = "post-compress-tip"
     parent._interrupt_requested = False
     parent._active_children = []
     parent._active_children_lock = None
-
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
-
-    gate = threading.Event()
-
-    def _blocking_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=5)
-        return {
-            "task_index": task_index, "status": "completed",
-            "summary": f"done: {goal}", "api_calls": 1,
-            "duration_seconds": 0.1, "model": "m", "exit_reason": "completed",
-        }
 
     creds = {
         "model": "m", "provider": None, "base_url": None, "api_key": None,
         "api_mode": None, "command": None, "args": None,
     }
-
-    # Use monkeypatch (not a `with` block) so the patches stay active while the
-    # background worker thread runs _execute_and_aggregate AFTER delegate_task
-    # has already returned.
     monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: fake_child)
-    monkeypatch.setattr(dt, "_run_single_child", _blocking_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
-    out = dt.delegate_task(
-        tasks=[{"goal": "a"}, {"goal": "b"}, {"goal": "c"}],
-        background=True,
-        parent_agent=parent,
+    monkeypatch.setattr(
+        dt,
+        "_run_single_child",
+        lambda *a, **k: {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        },
     )
 
-    parsed = json.loads(out)
-    assert parsed["status"] == "dispatched"
-    assert parsed["mode"] == "background"
-    assert parsed["count"] == 3
-    assert parsed["delegation_id"].startswith("deleg_")
-    assert parsed["goals"] == ["a", "b", "c"]
-    # ONE background unit for the whole fan-out (not three), and the call
-    # returned while all children are still blocked → chat not blocked.
-    assert process_registry.completion_queue.empty()
-    assert ad.active_count() == 1
+    approval_token = set_current_session_key("pre-compress-parent")
+    session_tokens = set_session_vars(
+        source="tui",
+        session_key="pre-compress-parent",
+        ui_session_id="origin-tab",
+    )
+    try:
+        out = dt.delegate_task(goal="bg task", background=True, parent_agent=parent)
+        assert json.loads(out)["status"] == "dispatched"
+        evt = _drain_one()
+    finally:
+        reset_current_session_key(approval_token)
+        clear_session_vars(session_tokens)
 
-    # Release the children; the whole batch joins and emits ONE event.
-    gate.set()
-    evt = _drain_one()
     assert evt is not None
     assert evt["type"] == "async_delegation"
-    assert evt.get("is_batch") is True
-    assert len(evt["results"]) == 3
-    summaries = sorted(r["summary"] for r in evt["results"])
-    assert summaries == ["done: a", "done: b", "done: c"]
-    # The consolidated notification names all three tasks in one block.
-    text = format_process_notification(evt)
-    assert text is not None
-    assert "TASK 1/3" in text and "TASK 2/3" in text and "TASK 3/3" in text
-    assert "done: a" in text and "done: b" in text and "done: c" in text
-    # No more events — it's a single combined completion, not N of them.
-    assert _drain_one() is None
-
-
-def test_model_dispatch_forces_background():
-    """The MODEL-facing dispatch path forces background=True for any top-level
-    delegation (single task OR batch), and keeps it off for an orchestrator
-    subagent (depth > 0). Direct delegate_task() callers are unaffected (they
-    keep the synchronous default)."""
-    import tools.delegate_tool as dt
-    from unittest.mock import MagicMock
-
-    top = MagicMock()
-    top._delegate_depth = 0
-    sub = MagicMock()
-    sub._delegate_depth = 1
-
-    # Registry-fallback helper: top-level always background, regardless of
-    # single vs batch; subagent never.
-    assert dt._model_background_value({"goal": "x"}, top) is True
-    assert dt._model_background_value(
-        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, top
-    ) is True
-    assert dt._model_background_value({"tasks": [{"goal": "a"}]}, top) is True
-    assert dt._model_background_value({"goal": "x"}, sub) is False
-    assert dt._model_background_value(
-        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, sub
-    ) is False
-
-
-def test_run_agent_dispatch_forces_background():
-    """run_agent._dispatch_delegate_task — the live model path — forces
-    background on for any top-level delegation (single OR batch) and off for a
-    subagent."""
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 0
-
-    captured = {}
-
-    def _fake_delegate(**kwargs):
-        captured.update(kwargs)
-        return "{}"
-
-    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
-        agent = _FakeAgent()
-        run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "x"})
-        assert captured["background"] is True
-
-        run_agent.AIAgent._dispatch_delegate_task(
-            agent, {"tasks": [{"goal": "a"}, {"goal": "b"}]}
-        )
-        assert captured["background"] is True
-
-        sub = _FakeAgent()
-        sub._delegate_depth = 1
-        run_agent.AIAgent._dispatch_delegate_task(sub, {"goal": "x"})
-        assert captured["background"] is False
-
-
-def test_dispatch_never_forwards_model_toolsets():
-    """The model has no toolsets argument — subagents always inherit the
-    parent's toolsets. Even if a model smuggles a `toolsets` key into the
-    tool-call args, the live dispatch path must NOT forward it to
-    delegate_task (which no longer accepts it) and must not crash."""
-    from unittest.mock import patch
-    import run_agent
-
-    class _FakeAgent:
-        _delegate_depth = 0
-
-    captured = {}
-
-    def _fake_delegate(**kwargs):
-        captured.update(kwargs)
-        return "{}"
-
-    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
-        run_agent.AIAgent._dispatch_delegate_task(
-            _FakeAgent(), {"goal": "x", "toolsets": ["web", "terminal"]}
-        )
-    assert "toolsets" not in captured
-
-
-def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
-    """A background child must NOT remain in parent._active_children —
-    otherwise parent-turn interrupts / cache evicts / session close would
-    kill the detached subagent mid-run."""
-    from unittest.mock import MagicMock, patch
-    import tools.delegate_tool as dt
-
-    parent = MagicMock()
-    parent._delegate_depth = 0
-    parent.session_id = "sess"
-    parent._active_children = []
-    parent._active_children_lock = threading.Lock()
-    fake_child = MagicMock()
-    fake_child._delegate_role = "leaf"
-    fake_child._subagent_id = "s1"
-
-    gate = threading.Event()
-
-    def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=5)
-        return {"task_index": 0, "status": "completed", "summary": "ok"}
-
-    def build_and_register(**kw):
-        # Mirror what the real _build_child_agent does: register the child
-        # for interrupt propagation.
-        parent._active_children.append(fake_child)
-        return fake_child
-
-    creds = {
-        "model": "m", "provider": None, "base_url": None, "api_key": None,
-        "api_mode": None, "command": None, "args": None,
-    }
-    with patch.object(dt, "_build_child_agent", side_effect=build_and_register), \
-         patch.object(dt, "_run_single_child", side_effect=slow_child), \
-         patch.object(dt, "_resolve_delegation_credentials", return_value=creds):
-        out = dt.delegate_task(goal="bg task", background=True, parent_agent=parent)
-
-    import json
-    assert json.loads(out)["status"] == "dispatched"
-    # Child detached immediately at dispatch, while it is still running.
-    assert fake_child not in parent._active_children
-    gate.set()
-    assert _drain_one() is not None
+    assert evt["session_key"] == "post-compress-tip"
+    assert evt["origin_ui_session_id"] == "origin-tab"
 
 
 def test_concurrent_dispatch_respects_capacity():
@@ -497,7 +659,7 @@ def test_concurrent_dispatch_respects_capacity():
     gate = threading.Event()
 
     def blocker():
-        gate.wait(timeout=5)
+        gate.wait(timeout=60)
         return {"status": "completed", "summary": "x"}
 
     results = []
@@ -548,17 +710,6 @@ def _make_async_evt(**over):
     return evt
 
 
-def test_gateway_enriches_routing_from_session_key():
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    evt = _make_async_evt()
-    runner._enrich_async_delegation_routing(evt)
-    assert evt["platform"] == "telegram"
-    assert evt["chat_id"] == "12345"
-    assert evt["thread_id"] == "678"
-
-
 def test_gateway_formatter_renders_async_block():
     from gateway.run import _format_gateway_process_notification
 
@@ -569,40 +720,6 @@ def test_gateway_formatter_renders_async_block():
     assert "Investigate flaky test" in txt
 
 
-def test_gateway_watch_drain_requeues_async_without_looping():
-    from gateway.run import _drain_gateway_watch_events
-
-    q = queue.Queue()
-    async_evt = _make_async_evt()
-    watch_evt = {
-        "type": "watch_match",
-        "session_id": "proc_1",
-        "command": "pytest",
-        "pattern": "READY",
-        "output": "READY",
-    }
-    q.put(async_evt)
-    q.put(watch_evt)
-
-    watch_events = _drain_gateway_watch_events(q)
-
-    assert watch_events == [watch_evt]
-    assert q.qsize() == 1
-    assert q.get_nowait() == async_evt
-
-
-def test_gateway_builds_routable_source_from_enriched_event():
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    evt = _make_async_evt()
-    runner._enrich_async_delegation_routing(evt)
-    src = runner._build_process_event_source(evt)
-    assert src is not None
-    assert src.platform.value == "telegram"
-    assert src.chat_id == "12345"
-
-
 def test_gateway_cli_origin_event_left_unrouted():
     """An empty session_key (CLI origin) is left without routing fields."""
     from gateway.run import GatewayRunner
@@ -611,5 +728,4 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
 

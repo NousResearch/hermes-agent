@@ -31,7 +31,30 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
-from gateway.platforms.helpers import strip_markdown
+from .media_cache import ext_for_mime
+from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+
+# Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for
+# the shared dispatch in gateway.platforms.media_cache. Both maps are
+# CLOSED: unlisted mimes fall back to .jpg / .mp3 (never mimetypes).
+_BLUEBUBBLES_IMAGE_EXT_OVERRIDES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".jpg",  # preserves historical bluebubbles mapping
+    "image/heif": ".jpg",  # preserves historical bluebubbles mapping
+    "image/tiff": ".jpg",  # preserves historical bluebubbles mapping
+}
+_BLUEBUBBLES_AUDIO_EXT_OVERRIDES = {
+    "audio/mp3": ".mp3",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-caf": ".mp3",  # preserves historical bluebubbles mapping
+    "audio/mp4": ".m4a",
+    "audio/aac": ".m4a",  # preserves historical bluebubbles mapping (shared table says .aac)
+}
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +63,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_WEBHOOK_HOST = "127.0.0.1"
+# BlueBubbles webhook events are small JSON/form payloads; attachments come
+# through the REST API, not the webhook. 1 MiB is generous headroom while
+# keeping oversized/chunked bodies from being buffered unbounded.
+_WEBHOOK_MAX_BODY_BYTES = 1_048_576
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
@@ -167,34 +194,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         ``raw`` is a list (from config or env JSON), a string (raw env var:
         JSON list, or comma/newline-separated), or None (use Hermes defaults).
         """
-        if raw is None:
-            patterns = list(DEFAULT_MENTION_PATTERNS)
-        elif isinstance(raw, str):
-            text = raw.strip()
-            try:
-                loaded = json.loads(text) if text else []
-            except Exception:
-                loaded = None
-            patterns = loaded if isinstance(loaded, list) else [
-                part.strip()
-                for line in text.splitlines()
-                for part in line.split(",")
-            ]
-        elif isinstance(raw, list):
-            patterns = raw
-        else:
-            patterns = [raw]
-
-        compiled: List["re.Pattern"] = []
-        for pattern in patterns:
-            text = str(pattern).strip()
-            if not text:
-                continue
-            try:
-                compiled.append(re.compile(text, re.IGNORECASE))
-            except re.error as exc:
-                logger.warning("[bluebubbles] Invalid mention pattern %r: %s", text, exc)
-        return compiled
+        return compile_mention_patterns(
+            raw,
+            log_prefix="bluebubbles",
+            defaults=DEFAULT_MENTION_PATTERNS,
+            logger_=logger,
+        )
 
     def _message_matches_mention_patterns(self, text: str) -> bool:
         if not text or not self._mention_patterns:
@@ -264,7 +269,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 self.client = None
             return False
 
-        app = web.Application()
+        # Explicit body cap: BlueBubbles webhook events are small JSON (or
+        # form-encoded) payloads. client_max_size makes aiohttp enforce the
+        # cap on every read path — including chunked requests that carry no
+        # Content-Length (same pattern as webhook.py / raft, #58536/#58902).
+        app = web.Application(client_max_size=_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
         app.router.add_post(self.webhook_path, self._handle_webhook)
         # The webhook auth value is carried in the query string because the
@@ -800,29 +809,27 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             transfer_name = att_meta.get("transferName", "")
 
             if mime.startswith("image/"):
-                ext_map = {
-                    "image/jpeg": ".jpg",
-                    "image/png": ".png",
-                    "image/gif": ".gif",
-                    "image/webp": ".webp",
-                    "image/heic": ".jpg",
-                    "image/heif": ".jpg",
-                    "image/tiff": ".jpg",
-                }
-                ext = ext_map.get(mime, ".jpg")
+                ext = ext_for_mime(
+                    mime,
+                    overrides=_BLUEBUBBLES_IMAGE_EXT_OVERRIDES,
+                    # Historical map was closed: any unlisted image mime
+                    # fell back to .jpg without consulting mimetypes.
+                    use_defaults=False,
+                    use_mimetypes=False,
+                    fallback=".jpg",
+                ) or ".jpg"
                 return cache_image_from_bytes(data, ext)
 
             if mime.startswith("audio/"):
-                ext_map = {
-                    "audio/mp3": ".mp3",
-                    "audio/mpeg": ".mp3",
-                    "audio/ogg": ".ogg",
-                    "audio/wav": ".wav",
-                    "audio/x-caf": ".mp3",
-                    "audio/mp4": ".m4a",
-                    "audio/aac": ".m4a",
-                }
-                ext = ext_map.get(mime, ".mp3")
+                ext = ext_for_mime(
+                    mime,
+                    overrides=_BLUEBUBBLES_AUDIO_EXT_OVERRIDES,
+                    # Historical map was closed: any unlisted audio mime
+                    # fell back to .mp3 without consulting mimetypes.
+                    use_defaults=False,
+                    use_mimetypes=False,
+                    fallback=".mp3",
+                ) or ".mp3"
                 return cache_audio_from_bytes(data, ext)
 
             # Videos, documents, and everything else

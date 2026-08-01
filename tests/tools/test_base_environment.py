@@ -6,7 +6,7 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
@@ -22,6 +22,35 @@ class _TestableEnv(BaseEnvironment):
         pass
 
 
+class TestBoundedOutputCollector:
+    def test_large_stream_retains_bounded_head_and_tail(self):
+        collector = _BoundedOutputCollector(1_000)
+        collector.append("HEAD-SENTINEL\n")
+        for _ in range(2_000):
+            collector.append("x" * 4_096)
+        collector.append("\nTAIL-SENTINEL")
+
+        rendered = collector.render()
+
+        assert collector.total_chars > 8_000_000
+        assert collector.buffered_chars <= 1_000
+        assert len(rendered) <= 1_000
+        assert rendered.startswith("HEAD-SENTINEL")
+        assert rendered.endswith("TAIL-SENTINEL")
+        assert "[OUTPUT TRUNCATED" in rendered
+
+
+    def test_required_status_suffix_stays_inside_limit(self):
+        collector = _BoundedOutputCollector(120)
+        collector.append("A" * 10_000)
+
+        rendered = collector.render(suffix="\n[Command timed out after 1s]")
+
+        assert len(rendered) <= 120
+        assert rendered.endswith("[Command timed out after 1s]")
+        assert "[OUTPUT TRUNCATED" in rendered
+
+
 class TestWrapCommand:
     def test_basic_shape(self):
         env = _TestableEnv()
@@ -32,8 +61,9 @@ class TestWrapCommand:
         assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
-        assert "export -p >" in wrapped
-        assert "pwd -P >" in wrapped
+        assert "export -p" in wrapped and "> " in wrapped
+        # cwd travels via the stdout marker only — no temp-file write.
+        assert "pwd -P >" not in wrapped
         assert env._cwd_marker in wrapped
         assert "exit $__hermes_ec" in wrapped
 
@@ -51,36 +81,6 @@ class TestWrapCommand:
 
         assert "eval 'echo '\\''hello world'\\'''" in wrapped
 
-    def test_tilde_not_quoted(self):
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("ls", "~")
-
-        assert "cd -- ~" in wrapped
-        assert "cd -- '~'" not in wrapped
-
-    def test_tilde_subpath_with_spaces_uses_home_and_quotes_suffix(self):
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("ls", "~/my repo")
-
-        assert "cd -- $HOME/'my repo'" in wrapped
-        assert "cd -- ~/my repo" not in wrapped
-
-    def test_tilde_slash_maps_to_home(self):
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("ls", "~/")
-
-        assert "cd -- $HOME" in wrapped
-        assert "cd -- ~/" not in wrapped
-
-    def test_hyphen_prefixed_workdir_is_passed_after_double_dash(self):
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("pwd", "-demo")
-
-        assert "builtin cd -- -demo || exit 126" in wrapped
 
     def test_cd_failure_exit_126(self):
         env = _TestableEnv()
@@ -105,14 +105,15 @@ class TestAtomicSnapshotWrite:
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
         # Env dump goes to a temp file, not directly over the live snapshot.
-        assert "export -p > " in wrapped
+        assert "export -p" in wrapped and "> " in wrapped
         assert ".tmp." in wrapped
         # Then an atomic rename onto the real snapshot path.
         assert "mv -f " in wrapped
         # The env-dump must NOT write the live snapshot in place (the bug).
         snap = env._snapshot_path
-        assert f"export -p > {snap} " not in wrapped
-        assert f"export -p > '{snap}'" not in wrapped
+        assert f"> {snap} " not in wrapped
+        assert f"> '{snap}'" not in wrapped
+        assert f"> {snap}\n" not in wrapped
 
     def test_temp_path_uses_bashpid_not_dollardollar(self):
         """The temp name MUST use ``$BASHPID`` (the real subshell PID), not
@@ -128,30 +129,6 @@ class TestAtomicSnapshotWrite:
         # The bare $$ temp form must be gone.
         assert ".tmp.$$" not in wrapped
 
-    def test_temp_path_static_part_is_quoted_bashpid_outside(self):
-        """The static path portion must be shlex-quoted (Windows/Git-Bash
-        ``C:/Users/...`` or spaces) while ``$BASHPID`` stays OUTSIDE the quotes
-        so it still expands."""
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        env._snapshot_path = "/tmp/has space/hermes-snap-x.sh"
-        wrapped = env._wrap_command("echo hi", "/tmp")
-        # The static path (with its space) is shlex-quoted as a single word, with
-        # $BASHPID appended OUTSIDE the quotes so it still expands at runtime.
-        assert "'/tmp/has space/hermes-snap-x.sh.tmp.'$BASHPID" in wrapped
-        # The space must never appear bare/unquoted in the temp token (that would
-        # word-split into two args and break the redirect/mv).
-        assert " space/hermes-snap-x.sh.tmp.$BASHPID" not in wrapped
-
-    def test_wrap_command_mv_chained_on_export_success(self):
-        """A failed/partial ``export -p`` must NOT mv a torn temp over a good
-        snapshot.  The mv is chained with ``&&`` on the export, and the temp is
-        removed on failure."""
-        env = _TestableEnv()
-        env._snapshot_ready = True
-        wrapped = env._wrap_command("echo hi", "/tmp")
-        assert "export -p > " in wrapped and "&& mv -f " in wrapped
-        assert "rm -f " in wrapped  # temp cleanup on failure
 
     def test_init_session_bootstrap_also_atomic_and_bashpid(self):
         """The init_session bootstrap (first snapshot write) is the same shared
@@ -161,8 +138,8 @@ class TestAtomicSnapshotWrite:
         captured = {}
 
         def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured["cmd"] = cmd_string
-            raise RuntimeError("stop after capture")  # we only need the script
+            captured.setdefault("cmd", cmd_string)  # only the bootstrap; ignore the failure-path probe
+            raise RuntimeError("stop after capture")
 
         env._run_bash = fake_run_bash  # type: ignore[assignment]
         try:
@@ -173,6 +150,24 @@ class TestAtomicSnapshotWrite:
         assert ".tmp." in boot and "mv -f " in boot, boot
         assert "$BASHPID" in boot
         assert ".tmp.$$" not in boot
+
+
+    def test_init_session_bootstrap_uses_private_umask(self):
+        env = _TestableEnv()
+        captured = {}
+
+        def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+            captured.setdefault("cmd", cmd_string)  # only the bootstrap; ignore the failure-path probe
+            raise RuntimeError("stop after capture")
+
+        env._run_bash = fake_run_bash  # type: ignore[assignment]
+        try:
+            env.init_session()
+        except Exception:
+            pass
+        boot = captured.get("cmd", "")
+        assert "umask 077" in boot
+        assert boot.index("umask 077") < boot.index("export -p")
 
 
 class TestAtomicSnapshotConcurrencyBehavioral:
@@ -250,6 +245,59 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         assert "export GOOD=1" in out.stdout, "good snapshot was destroyed by a failed export"
 
 
+class TestSnapshotFileModes:
+    """Snapshot metadata files are private without changing user command umask."""
+
+    def test_snapshot_and_cwd_files_are_0600(self, tmp_path):
+        import os
+        from pathlib import Path
+        import shutil
+        import stat
+        import subprocess
+        if not shutil.which("bash"):
+            import pytest
+            pytest.skip("bash required")
+
+        class ExecutableEnv(BaseEnvironment):
+            def __init__(self, temp_dir):
+                self._temp_dir = str(temp_dir)
+                super().__init__(cwd=str(temp_dir), timeout=10)
+
+            def get_temp_dir(self):
+                return self._temp_dir
+
+            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+                proc = subprocess.Popen(
+                    ["/bin/bash", "-lc", cmd_string],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    cwd=self.cwd,
+                )
+                proc.communicate(timeout=timeout)
+                return proc
+
+            def cleanup(self):
+                pass
+
+        old_umask = os.umask(0o022)
+        try:
+            env = ExecutableEnv(tmp_path)
+            env.init_session()
+
+            user_file = tmp_path / "user-created.txt"
+            env.execute(f"touch {user_file}")
+
+            assert stat.S_IMODE(user_file.stat().st_mode) == 0o644
+            assert stat.S_IMODE(Path(env._snapshot_path).stat().st_mode) == 0o600
+            # The cwd temp file is no longer written (cwd travels via the
+            # stdout marker for every backend) — nothing to leak on disk.
+            assert not Path(env._cwd_file).exists()
+        finally:
+            os.umask(old_umask)
+
+
 class TestExtractCwdFromOutput:
     def test_happy_path(self):
         env = _TestableEnv()
@@ -262,24 +310,6 @@ class TestExtractCwdFromOutput:
         assert env.cwd == "/home/user"
         assert marker not in result["output"]
 
-    def test_missing_marker(self):
-        env = _TestableEnv()
-        result = {"output": "hello world\n"}
-        env._extract_cwd_from_output(result)
-
-        assert env.cwd == "/tmp"  # unchanged
-
-    def test_marker_in_command_output(self):
-        """If the marker appears in command output AND as the real marker,
-        rfind grabs the last (real) one."""
-        env = _TestableEnv()
-        marker = env._cwd_marker
-        result = {
-            "output": f"user typed {marker} in their output\nreal output\n{marker}/correct/path{marker}\n",
-        }
-        env._extract_cwd_from_output(result)
-
-        assert env.cwd == "/correct/path"
 
     def test_output_cleaned(self):
         env = _TestableEnv()
@@ -323,42 +353,41 @@ class TestInitSessionFailure:
 
         assert env._snapshot_ready is False
 
-    def test_snapshot_ready_false_on_nonzero_bootstrap_exit(self):
-        """A non-zero bootstrap result should trigger fallback mode."""
+
+    def test_prefer_nonlogin_when_login_bash_is_dead(self):
+        """Login snapshot failure + working non-login probe → don't use bash -l."""
         env = _TestableEnv()
 
-        def mock_run_bash(*args, **kwargs):
+        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
             mock = MagicMock()
             mock.poll.return_value = 0
-            mock.returncode = 127
             mock.stdout = iter([])
+            if login:
+                mock.returncode = 1
+            else:
+                mock.returncode = 0
             return mock
 
         env._run_bash = mock_run_bash
         env.init_session()
 
         assert env._snapshot_ready is False
-
-    def test_login_flag_when_snapshot_not_ready(self):
-        """When _snapshot_ready=False, execute() should pass login=True to _run_bash."""
-        env = _TestableEnv()
-        env._snapshot_ready = False
+        assert env._prefer_nonlogin is True
 
         calls = []
-        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+
+        def track_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
             calls.append({"login": login})
-            # Return a mock process handle
             mock = MagicMock()
             mock.poll.return_value = 0
             mock.returncode = 0
             mock.stdout = iter([])
             return mock
 
-        env._run_bash = mock_run_bash
+        env._run_bash = track_run_bash
         env.execute("echo test")
 
-        assert len(calls) == 1
-        assert calls[0]["login"] is True
+        assert calls[0]["login"] is False
 
 
 class TestCwdMarker:

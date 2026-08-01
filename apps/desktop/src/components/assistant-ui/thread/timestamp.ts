@@ -1,11 +1,4 @@
-const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
-
-const SHORT_FMT = new Intl.DateTimeFormat(undefined, {
-  day: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-  month: 'short'
-})
+import { fmtClock, fmtDayTime } from '@/lib/time'
 
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
@@ -28,12 +21,12 @@ export function formatMessageTimestamp(
   const dayDelta = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86_400_000)
 
   if (dayDelta === 0) {
-    return labels.today(TIME_FMT.format(date))
+    return labels.today(fmtClock.format(date))
   }
 
   if (dayDelta === 1) {
-    return labels.yesterday(TIME_FMT.format(date))
+    return labels.yesterday(fmtClock.format(date))
   }
 
-  return SHORT_FMT.format(date)
+  return fmtDayTime.format(date)
 }

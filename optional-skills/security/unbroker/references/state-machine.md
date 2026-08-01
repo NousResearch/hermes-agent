@@ -31,13 +31,26 @@ found                -> action_selected | submitted | human_task_queued | indire
 indirect_exposure    -> submitted | human_task_queued | not_found | found | blocked
 action_selected      -> submitted | human_task_queued | blocked
 submitted            -> verification_pending | awaiting_processing | human_task_queued | blocked
-verification_pending -> confirmed_removed | human_task_queued | blocked
+verification_pending -> awaiting_processing | confirmed_removed | human_task_queued | blocked
 awaiting_processing  -> confirmed_removed | human_task_queued | blocked
 confirmed_removed    -> reappeared | confirmed_removed   (recheck refreshes the date)
 reappeared           -> found | indirect_exposure
 human_task_queued    -> found | indirect_exposure | action_selected | submitted | verification_pending
                         | awaiting_processing | confirmed_removed | blocked
 blocked              -> searching | found | not_found | indirect_exposure | action_selected
+                        | human_task_queued
 ```
 
 A transition to the same state is always allowed (idempotent field updates).
+
+## Notes / gotchas learned in the field
+
+- **`submitted -> not_found` is ILLEGAL.** A lodged request that then finds no matching profile is a
+  no-op that resolves as `awaiting_processing`, never a walk back to `not_found`. (This is why a guided
+  opt-out whose matcher says "no results" after you have already submitted is recorded
+  `awaiting_processing`, not `not_found`.)
+- **`blocked -> submitted` is ILLEGAL directly** - go `blocked -> action_selected -> submitted`.
+- **Recording an operator's manual verdict:** attach an `operator_manual_check` evidence note. A
+  dead / 404 site, or an operator-confirmed "no results" search, is a valid `not_found`.
+- **`--evidence` shell gotcha:** an `--evidence` JSON string containing a literal `&` trips the shell's
+  backgrounding guard - write the word "and" instead of `&`.

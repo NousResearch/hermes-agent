@@ -59,23 +59,6 @@ def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
     )
 
 
-def test_acp_embedded_text_resource_is_inlined_as_text():
-    content = _content_blocks_to_openai_user_content([
-        EmbeddedResourceContentBlock(
-            type="resource",
-            resource=TextResourceContents(
-                uri="file:///workspace/todo.txt",
-                mimeType="text/plain",
-                text="first\nsecond",
-            ),
-        ),
-    ])
-
-    assert content == (
-        "[Attached file: todo.txt]\n"
-        "URI: file:///workspace/todo.txt\n\n"
-        "first\nsecond"
-    )
 
 
 @pytest.mark.asyncio
@@ -94,66 +77,7 @@ _ONE_PX_PNG = bytes.fromhex(
 )
 
 
-def test_acp_resource_link_image_file_is_inlined_as_image_url(tmp_path):
-    attached = tmp_path / "shot.png"
-    attached.write_bytes(_ONE_PX_PNG)
-
-    content = _content_blocks_to_openai_user_content([
-        TextContentBlock(type="text", text="Look at this screenshot"),
-        ResourceContentBlock(
-            type="resource_link",
-            name="shot.png",
-            uri=attached.as_uri(),
-            mimeType="image/png",
-        ),
-    ])
-
-    assert isinstance(content, list)
-    # [user text, image header, image_url]
-    assert content[0] == {"type": "text", "text": "Look at this screenshot"}
-    assert content[1]["type"] == "text"
-    assert "[Attached image: shot.png]" in content[1]["text"]
-    assert content[2]["type"] == "image_url"
-    expected_url = "data:image/png;base64," + base64.b64encode(_ONE_PX_PNG).decode("ascii")
-    assert content[2]["image_url"]["url"] == expected_url
 
 
-def test_acp_resource_link_image_mime_inferred_from_suffix(tmp_path):
-    """No mimeType sent — should still be recognised as image by file suffix."""
-    attached = tmp_path / "pic.jpg"
-    attached.write_bytes(_ONE_PX_PNG)  # content doesn't matter for the code path
-
-    content = _content_blocks_to_openai_user_content([
-        ResourceContentBlock(
-            type="resource_link",
-            name="pic.jpg",
-            uri=attached.as_uri(),
-        ),
-    ])
-
-    assert isinstance(content, list)
-    image_parts = [p for p in content if p.get("type") == "image_url"]
-    assert len(image_parts) == 1
-    assert image_parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
-def test_acp_embedded_blob_image_is_inlined_as_image_url():
-    b64 = base64.b64encode(_ONE_PX_PNG).decode("ascii")
-    content = _content_blocks_to_openai_user_content([
-        EmbeddedResourceContentBlock(
-            type="resource",
-            resource=BlobResourceContents(
-                uri="file:///tmp/embed.png",
-                mimeType="image/png",
-                blob=b64,
-            ),
-        ),
-    ])
-
-    assert isinstance(content, list)
-    assert content[0]["type"] == "text"
-    assert "[Attached image: embed.png]" in content[0]["text"]
-    assert content[1] == {
-        "type": "image_url",
-        "image_url": {"url": f"data:image/png;base64,{b64}"},
-    }

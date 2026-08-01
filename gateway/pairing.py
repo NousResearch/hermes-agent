@@ -20,6 +20,7 @@ Storage: ~/.hermes/pairing/
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import tempfile
@@ -32,8 +33,14 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases,
     normalize_whatsapp_identifier,
 )
-from hermes_constants import get_hermes_dir
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_dir,
+    get_hermes_home,
+)
 from utils import atomic_replace
+
+logger = logging.getLogger(__name__)
 
 
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
@@ -158,6 +165,55 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
         pass
 
 
+def _load_json_file(path: Path) -> dict:
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _merge_pairing_dir(active_dir: Path, alternate_dir: Path) -> None:
+    """Merge split legacy/new pairing data into the active PairingStore dir.
+
+    Older installs use ``{HERMES_HOME}/pairing`` while newer code/docs may
+    write ``{HERMES_HOME}/platforms/pairing``. If both directories exist, the
+    gateway must not silently ignore approved users sitting in the inactive
+    location; otherwise already-paired Feishu users get asked for a fresh code.
+    """
+    if not alternate_dir.exists() or active_dir.resolve() == alternate_dir.resolve():
+        return
+    active_dir.mkdir(parents=True, exist_ok=True)
+    for src in alternate_dir.glob("*.json"):
+        if not src.is_file():
+            continue
+        dest = active_dir / src.name
+        merged = _load_json_file(src)
+        if not merged:
+            continue
+        current = _load_json_file(dest)
+        before = dict(current)
+        # Active data wins on key conflict; otherwise union the inactive data.
+        merged.update(current)
+        if merged != before:
+            _secure_write(dest, json.dumps(merged, indent=2, ensure_ascii=False))
+
+
+def _migrate_split_pairing_dirs(
+    *,
+    home: Optional[Path] = None,
+    active: Optional[Path] = None,
+) -> None:
+    home = home or get_hermes_home()
+    old_dir = home / "pairing"
+    new_dir = home / "platforms" / "pairing"
+    active = active or PAIRING_DIR
+    alternate = new_dir if active.resolve() == old_dir.resolve() else old_dir
+    _merge_pairing_dir(active, alternate)
+
+
 def _secure_write(path: Path, data: str) -> None:
     """Write data to file with restrictive permissions (owner read/write only).
 
@@ -192,27 +248,88 @@ class PairingStore:
       - {platform}-pending.json   : pending pairing requests
       - {platform}-approved.json  : approved (paired) users
       - _rate_limits.json         : rate limit tracking
+
+    When constructed with ``profile="<name>"``, storage resolves from that
+    profile's own HERMES_HOME using the same legacy/consolidated layout rules
+    as ``hermes -p <name> pairing ...``. This keeps multiplex gateways and
+    profile-scoped CLI approvals on one whitelist. Without a profile, storage
+    is the global pairing directory for the current HERMES_HOME.
     """
 
-    def __init__(self):
-        PAIRING_DIR.mkdir(parents=True, exist_ok=True)
+    def __init__(self, profile: Optional[str] = None):
+        # Resolve storage directory lazily — tests use a temp HERMES_HOME
+        # and PairingStore may be constructed before the env is set.
+        if profile:
+            root = get_default_hermes_root()
+            profile_home = (
+                root
+                if profile == "default"
+                else root / "profiles" / profile
+            )
+            self._dir = get_hermes_dir(
+                "platforms/pairing",
+                "pairing",
+                home=profile_home,
+            )
+        else:
+            self._dir = PAIRING_DIR
+        self._dir.mkdir(parents=True, exist_ok=True)
+        if profile:
+            # Explicit stores must resolve exactly as a standalone
+            # ``hermes -p <profile> pairing ...`` process does. Merge the
+            # alternate old/new layout so upgrades cannot split approvals.
+            _migrate_split_pairing_dirs(home=profile_home, active=self._dir)
+        else:
+            # Heal installs whose global pairing data ended up split across
+            # the legacy and new directories.
+            _migrate_split_pairing_dirs()
         # Protects all read-modify-write cycles. The gateway runs multiple
         # platform adapters concurrently in threads sharing one PairingStore.
         self._lock = threading.RLock()
+        self._profile = profile  # for diagnostics / log lines
+
+    @property
+    def profile(self) -> Optional[str]:
+        """Profile name this store is scoped to, or None for the global store."""
+        return self._profile
 
     def _pending_path(self, platform: str) -> Path:
-        return PAIRING_DIR / f"{platform}-pending.json"
+        return self._dir / f"{platform}-pending.json"
 
     def _approved_path(self, platform: str) -> Path:
-        return PAIRING_DIR / f"{platform}-approved.json"
+        return self._dir / f"{platform}-approved.json"
 
     def _rate_limit_path(self) -> Path:
-        return PAIRING_DIR / "_rate_limits.json"
+        return self._dir / "_rate_limits.json"
 
     def _load_json(self, path: Path) -> dict:
         if path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError as e:
+                # Surface this loudly: a 0600 file owned by a different user
+                # (classic Docker symptom: `docker exec` runs as root and writes
+                # the file, then the gateway process — running as `hermes` after
+                # gosu drop — can't read it) would otherwise be swallowed by
+                # the generic OSError branch below, silently leaving the user
+                # marked unauthorized. See issue #10270.
+                try:
+                    st = path.stat()
+                    owner_info = f"owner_uid={st.st_uid} mode={oct(st.st_mode)[-4:]}"
+                except OSError:
+                    owner_info = "<stat failed>"
+                # os.geteuid doesn't exist on Windows; the Docker scenario is
+                # POSIX-only, but the gateway (and this fallback) runs anywhere.
+                euid = os.geteuid() if hasattr(os, "geteuid") else "n/a"
+                logger.warning(
+                    "Pairing file %s exists but is not readable as uid=%s (%s; %s). "
+                    "If you ran `docker exec <container> hermes pairing approve ...` as root, "
+                    "re-run with `docker exec -u hermes <container> ...` and "
+                    "chown the existing file to the hermes user, or restart the "
+                    "container so the entrypoint can fix ownership.",
+                    path, euid, owner_info, e,
+                )
+                return {}
             except (json.JSONDecodeError, OSError):
                 return {}
         return {}
@@ -315,6 +432,30 @@ class PairingStore:
     def _hash_code(code: str, salt: bytes) -> str:
         """Hash a pairing code with the given salt using SHA-256."""
         return hashlib.sha256(salt + code.encode("utf-8")).hexdigest()
+
+    def _finish_approval(
+        self, platform: str, pending: dict, matched_key: str, matched_entry: dict
+    ) -> dict:
+        """Remove a pending request and approve its user. Must hold self._lock."""
+        del pending[matched_key]
+        self._save_json(self._pending_path(platform), pending)
+
+        # A successful approval proves the requester is legitimate, so the
+        # brute-force failure streak must not carry over. Without this,
+        # isolated mistyped codes accumulate across the gateway's lifetime
+        # (the counter is persisted in _rate_limits.json and only ever
+        # reset when a lockout fires) and eventually trip a spurious
+        # lockout on a single fresh typo — rejecting even a valid code.
+        self._reset_failed_attempts(platform)
+
+        self._approve_user(
+            platform, matched_entry["user_id"], matched_entry.get("user_name", "")
+        )
+
+        return {
+            "user_id": matched_entry["user_id"],
+            "user_name": matched_entry.get("user_name", ""),
+        }
 
     def generate_code(
         self, platform: str, user_id: str, user_name: str = ""
@@ -428,26 +569,62 @@ class PairingStore:
                 self._record_failed_attempt(platform)
                 return None
 
-            del pending[matched_key]
-            self._save_json(self._pending_path(platform), pending)
+            return self._finish_approval(platform, pending, matched_key, matched_entry)
 
-            # Add to approved list
-            self._approve_user(platform, matched_entry["user_id"],
-                               matched_entry.get("user_name", ""))
+    @staticmethod
+    def looks_like_request_id(value: str) -> bool:
+        """True when ``value`` has the shape of a ``list_pending`` request id.
 
-            return {
-                "user_id": matched_entry["user_id"],
-                "user_name": matched_entry.get("user_name", ""),
-            }
+        Request ids are ``secrets.token_hex(8)`` (16 lowercase hex chars);
+        pairing codes are 8 chars from an unambiguous uppercase alphabet that
+        excludes every hex letter's ambiguity partner. The two shapes cannot
+        collide, so callers accepting either can dispatch on this.
+        """
+        value = str(value or "").strip()
+        return len(value) == 16 and all(c in "0123456789abcdefABCDEF" for c in value)
+
+    def approve_request(self, platform: str, request_id: str) -> Optional[dict]:
+        """
+        Approve a pending pairing request by its server-side request id.
+
+        This is the grant path for authenticated admin surfaces (``hermes
+        pairing list``, the dashboard/desktop approve buttons), which show
+        pending requests but must never reveal the one-time code DM'd to the
+        user. Returns ``{user_id, user_name}`` on success, ``None`` for an
+        unknown/expired request id.
+
+        Unlike :meth:`approve_code` this does NOT count a miss toward the
+        brute-force lockout, and is not itself gated by one. The lockout
+        protects the 8-char code space against guessing over a messaging
+        channel; a request id is only ever obtained by an admin already
+        authenticated to this store, so a stale id means "the row you clicked
+        expired", not an attack. Counting it here let a few GUI clicks on a
+        stale list lock the operator out of the CLI's code path too.
+        """
+        with self._lock:
+            self._cleanup_expired(platform)
+            request_id = str(request_id or "").strip().lower()
+            if not request_id:
+                return None
+
+            pending = self._load_json(self._pending_path(platform))
+            for entry_id, entry in pending.items():
+                if not isinstance(entry, dict):
+                    continue
+                if "salt" not in entry or "hash" not in entry:
+                    continue
+                if secrets.compare_digest(str(entry_id).lower(), request_id):
+                    return self._finish_approval(platform, pending, entry_id, entry)
+
+            return None
 
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform.
 
-        Codes are stored hashed — the ``code`` field is replaced with the
-        first 8 hex characters of the hash so admins can distinguish entries
-        without revealing the original code. Legacy plaintext-key entries
-        (pre-hash format) are shown with a "legacy" placeholder so admins
-        can see them age out without crashing on a missing ``hash`` field.
+        Codes are stored hashed and are never returned. Each entry exposes a
+        server-side ``request_id`` that an authenticated admin surface passes
+        to :meth:`approve_request`. Legacy pre-hash entries have no approvable
+        id — they report an empty ``request_id`` and age out at TTL.
         """
         results = []
         with self._lock:
@@ -462,11 +639,12 @@ class PairingStore:
                     if not isinstance(created_at, (int, float)):
                         continue
                     age_min = int((time.time() - created_at) / 60)
-                    hash_val = info.get("hash")
-                    code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
+                    is_modern = isinstance(info.get("hash"), str) and isinstance(
+                        info.get("salt"), str
+                    )
                     results.append({
                         "platform": p,
-                        "code": code_display,
+                        "request_id": str(entry_id) if is_modern else "",
                         "user_id": info.get("user_id", ""),
                         "user_name": info.get("user_name", ""),
                         "age_minutes": age_min,
@@ -526,6 +704,19 @@ class PairingStore:
                   f"after {MAX_FAILED_ATTEMPTS} failed attempts", flush=True)
         self._save_json(self._rate_limit_path(), limits)
 
+    def _reset_failed_attempts(self, platform: str) -> None:
+        """Clear the accumulated failed-approval counter after a success.
+
+        Called from the ``approve_code`` success path so that a legitimate
+        approval resets the brute-force streak (standard lockout semantics:
+        the counter tracks *consecutive* failures, not lifetime ones).
+        """
+        limits = self._load_json(self._rate_limit_path())
+        fail_key = f"_failures:{platform}"
+        if limits.get(fail_key):
+            limits[fail_key] = 0
+            self._save_json(self._rate_limit_path(), limits)
+
     # ----- Cleanup -----
 
     def _cleanup_expired(self, platform: str) -> None:
@@ -557,7 +748,7 @@ class PairingStore:
     def _all_platforms(self, suffix: str) -> list:
         """List all platforms that have data files of a given suffix."""
         platforms = []
-        for f in PAIRING_DIR.iterdir():
+        for f in self._dir.iterdir():
             if f.name.endswith(f"-{suffix}.json"):
                 platform = f.name.replace(f"-{suffix}.json", "")
                 if not platform.startswith("_"):

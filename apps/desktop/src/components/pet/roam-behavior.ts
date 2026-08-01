@@ -88,7 +88,7 @@ export function pickStrollTarget(ledge: Ledge, fromX: number, rng: Rng = Math.ra
   const roomLeft = fromX - ledge.left
   const roomRight = ledge.right - fromX
   // Usually head to the roomier side; the long tail of the coin doubles back.
-  const goRight = (rng() < STROLL_TOWARD_ROOM) === (roomRight >= roomLeft)
+  const goRight = rng() < STROLL_TOWARD_ROOM === roomRight >= roomLeft
   const room = Math.max(0, goRight ? roomRight : roomLeft)
   const minDist = Math.min(room, Math.max(span * STROLL_MIN_FRACTION, STROLL_MIN_PX))
   const dist = minDist + rng() * Math.max(0, room - minDist)

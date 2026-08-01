@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { LayoutDashboard, RefreshCw } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { cn } from '@/lib/utils'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { StatusResponse } from '@/types/hermes'
 
@@ -35,21 +36,27 @@ function useGatewayLogTail(): string[] {
   useEffect(() => {
     let cancelled = false
 
-    const load = () =>
-      getLogs({ file: 'gui', lines: LOG_TAIL })
-        .then(res => {
-          if (cancelled) {
-            return
-          }
+    // async: getLogs THROWS (not rejects) when the desktop bridge is missing
+    // (plain-browser mode) — a sync throw here would take down the root
+    // error boundary before the .catch even attaches.
+    const load = async () => {
+      try {
+        const res = await getLogs({ file: 'gui', lines: LOG_TAIL })
 
-          setLines(
-            res.lines
-              .map(line => line.trim())
-              .filter(line => line && !LOG_NOISE_RE.test(line))
-              .slice(-LOG_VISIBLE)
-          )
-        })
-        .catch(() => {})
+        if (cancelled) {
+          return
+        }
+
+        setLines(
+          res.lines
+            .map(line => line.trim())
+            .filter(line => line && !LOG_NOISE_RE.test(line))
+            .slice(-LOG_VISIBLE)
+        )
+      } catch {
+        // Bridge/gateway unavailable — keep the last tail.
+      }
+    }
 
     void load()
     const timer = window.setInterval(load, LOG_POLL_MS)
@@ -176,13 +183,13 @@ export function GatewayMenuPanel({
       </div>
 
       {inferenceStatus?.reason && (
-        <div className="border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
+        <Section className="text-xs text-muted-foreground">
           <div className="line-clamp-3">{inferenceStatus.reason}</div>
-        </div>
+        </Section>
       )}
 
       {recentLogs.length > 0 && (
-        <div className="px-3 py-2">
+        <Section>
           <div className="flex items-center justify-between gap-2">
             <SectionLabel>{copy.recentActivity}</SectionLabel>
             <Button
@@ -198,11 +205,11 @@ export function GatewayMenuPanel({
           <LogView className="mt-1.5 max-h-40 border-0 px-0" ref={logScrollRef}>
             {recentLogs.map(trimLogLine).join('\n')}
           </LogView>
-        </div>
+        </Section>
       )}
 
       {platforms.length > 0 && (
-        <div className="border-t border-border/50 px-3 py-2">
+        <Section>
           <SectionLabel>{copy.messagingPlatforms}</SectionLabel>
           <ul className="mt-1.5 space-y-1">
             {platforms.map(([name, platform]) => (
@@ -215,10 +222,14 @@ export function GatewayMenuPanel({
               </li>
             ))}
           </ul>
-        </div>
+        </Section>
       )}
     </div>
   )
+}
+
+function Section({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn('border-t border-border/50 px-3 py-2', className)}>{children}</div>
 }
 
 function SectionLabel({ children }: { children: string }) {

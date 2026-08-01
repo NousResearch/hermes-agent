@@ -76,7 +76,17 @@ function hslToRgb(h: number, s: number, l: number): Rgb {
   const m = l - c / 2
 
   const [r, g, b] =
-    hue < 60 ? [c, x, 0] : hue < 120 ? [x, c, 0] : hue < 180 ? [0, c, x] : hue < 240 ? [0, x, c] : hue < 300 ? [x, 0, c] : [c, 0, x]
+    hue < 60
+      ? [c, x, 0]
+      : hue < 120
+        ? [x, c, 0]
+        : hue < 180
+          ? [0, c, x]
+          : hue < 240
+            ? [0, x, c]
+            : hue < 300
+              ? [x, 0, c]
+              : [c, 0, x]
 
   return { b: Math.round((b + m) * 255), g: Math.round((g + m) * 255), r: Math.round((r + m) * 255) }
 }
@@ -106,7 +116,9 @@ export function computePalette(canvas: HTMLCanvasElement): Palette {
   const primary = resolveRgb(style.getPropertyValue('--theme-primary').trim() || style.color)
 
   const bg = resolveRgb(
-    style.getPropertyValue('--background').trim() || style.getPropertyValue('--dt-background').trim() || (darkTheme ? '#000' : '#fff')
+    style.getPropertyValue('--background').trim() ||
+      style.getPropertyValue('--dt-background').trim() ||
+      (darkTheme ? '#000' : '#fff')
   )
 
   return {

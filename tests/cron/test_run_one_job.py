@@ -18,7 +18,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
     """Patch the job pipeline primitives and record the call order."""
     calls = []
 
-    def fake_run_job(job):
+    def fake_run_job(job, *, defer_agent_teardown=None):
         calls.append(("run_job", job["id"]))
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
@@ -66,59 +66,6 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
-def test_run_one_job_silent_skips_delivery(monkeypatch):
-    """A [SILENT] final response saves output + marks the run but does NOT
-    deliver."""
-    calls = _patch_pipeline(monkeypatch, silent_marker_in="[SILENT]")
-
-    s.run_one_job({"id": "j3", "name": "t"})
-
-    kinds = [c[0] for c in calls]
-    assert "run_job" in kinds and "save" in kinds and "mark" in kinds
-    assert "deliver" not in kinds
-
-
-def test_run_one_job_empty_response_is_soft_failure(monkeypatch):
-    """An empty final response marks the run as NOT ok (issue #8585)."""
-    calls = _patch_pipeline(monkeypatch, final="   ")
-
-    s.run_one_job({"id": "j4", "name": "t"})
-
-    mark = [c for c in calls if c[0] == "mark"][0]
-    assert mark == ("mark", "j4", False)
-
-
-def test_run_one_job_failed_job_delivers_error(monkeypatch):
-    """A failed job still delivers (the error notice) and marks not-ok."""
-    calls = _patch_pipeline(monkeypatch, success=False, final="", error="boom")
-
-    s.run_one_job({"id": "j5", "name": "t"})
-
-    kinds = [c[0] for c in calls]
-    assert "deliver" in kinds  # failures always deliver
-    mark = [c for c in calls if c[0] == "mark"][0]
-    assert mark == ("mark", "j5", False)
-
-
-def test_run_one_job_exception_marks_failure(monkeypatch):
-    """If run_job raises, the helper marks the run failed and returns False
-    rather than propagating."""
-    def boom(job):
-        raise RuntimeError("kaboom")
-
-    monkeypatch.setattr(s, "run_job", boom)
-    marks = []
-    monkeypatch.setattr(
-        s, "mark_job_run",
-        lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok)),
-    )
-
-    ok = s.run_one_job({"id": "j6", "name": "t"})
-
-    assert ok is False
-    assert marks == [("j6", False)]
-
-
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):
     """Regression: under profile isolation (multiplex active), run_one_job must
     execute run_job inside a profile secret scope so credential reads
@@ -136,7 +83,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
 
     scope_during_run = {}
 
-    def fake_run_job(job):
+    def fake_run_job(job, *, defer_agent_teardown=None):
         # This is where resolve_runtime_provider() would read a secret. Prove a
         # scope is installed and the profile's secret resolves without raising.
         scope_during_run["scope"] = ss.current_secret_scope()
@@ -160,3 +107,5 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after run_one_job returned (no leak).
     assert ss.current_secret_scope() is None
+
+

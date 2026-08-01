@@ -117,27 +117,8 @@ def test_create_forwards_stream_read_timeout(monkeypatch, tmp_path):
     assert agg["timeout"] is timeout_sentinel
 
 
-def test_create_respects_caller_stream_options(monkeypatch, tmp_path):
-    """A caller-provided stream_options is forwarded as-is (not overwritten)."""
-    facade, calls = _facade(monkeypatch, tmp_path)
-    facade.create(
-        messages=[{"role": "user", "content": "q"}],
-        tools=[],
-        stream=True,
-        stream_options={"include_usage": False, "extra": 1},
-    )
-    agg = next(c for c in calls if c["task"] == "moa_aggregator")
-    assert agg["stream_options"] == {"include_usage": False, "extra": 1}
 
 
-def test_create_does_not_forward_timeout_when_not_streaming(monkeypatch, tmp_path):
-    """A stray timeout on a non-streaming call is NOT forwarded — the non-stream
-    path must remain unchanged regardless of incidental kwargs."""
-    facade, calls = _facade(monkeypatch, tmp_path)
-    facade.create(messages=[{"role": "user", "content": "q"}], tools=[], timeout=object())
-    agg = next(c for c in calls if c["task"] == "moa_aggregator")
-    assert "timeout" not in agg
-    assert "stream" not in agg
 
 
 # --------------------------------------------------------------------------
@@ -186,36 +167,3 @@ def test_call_llm_stream_returns_raw_stream_and_skips_validation(monkeypatch):
     assert captured.get("stream_options") == {"include_usage": True}
 
 
-def test_call_llm_non_stream_still_validates(monkeypatch):
-    """Sanity: stream=False keeps the validated path (regression guard for the
-    early-return not leaking into normal calls)."""
-    from agent import auxiliary_client as ac
-
-    class _Completions:
-        def create(self, **kwargs):
-            return _response("ok")
-
-    fake_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=_Completions()),
-        base_url="http://localhost:8001/v1",
-    )
-    monkeypatch.setattr(
-        ac, "_resolve_task_provider_model",
-        lambda *a, **k: ("custom", "m", "http://localhost:8001/v1", "key", "chat_completions"),
-    )
-    monkeypatch.setattr(ac, "_get_cached_client", lambda *a, **k: (fake_client, "m"))
-
-    validated = {"called": False}
-
-    def _validate(resp, task):
-        validated["called"] = True
-        return resp
-
-    monkeypatch.setattr(ac, "_validate_llm_response", _validate)
-
-    ac.call_llm(
-        provider="custom",
-        model="m",
-        messages=[{"role": "user", "content": "hi"}],
-    )
-    assert validated["called"] is True

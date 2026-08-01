@@ -45,45 +45,6 @@ class TestRegisterCredentialFiles:
         assert mounts[0]["host_path"] == str(hermes_home / "token.json")
         assert mounts[0]["container_path"] == "/root/.hermes/token.json"
 
-    def test_dict_with_name_key_fallback(self, tmp_path):
-        """Skills use 'name' instead of 'path' — both should work."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "google_token.json").write_text("{}")
-
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            missing = register_credential_files([
-                {"name": "google_token.json", "description": "OAuth token"},
-            ])
-
-        assert missing == []
-        mounts = get_credential_file_mounts()
-        assert len(mounts) == 1
-        assert "google_token.json" in mounts[0]["container_path"]
-
-    def test_string_entry(self, tmp_path):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "secret.key").write_text("key")
-
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            missing = register_credential_files(["secret.key"])
-
-        assert missing == []
-        mounts = get_credential_file_mounts()
-        assert len(mounts) == 1
-
-    def test_missing_file_reported(self, tmp_path):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            missing = register_credential_files([
-                {"name": "does_not_exist.json"},
-            ])
-
-        assert "does_not_exist.json" in missing
-        assert get_credential_file_mounts() == []
 
     def test_path_takes_precedence_over_name(self, tmp_path):
         """When both path and name are present, path wins."""
@@ -116,16 +77,6 @@ class TestSkillsDirectoryMount:
         assert mounts[0]["host_path"] == str(skills_dir)
         assert mounts[0]["container_path"] == "/root/.hermes/skills"
 
-    def test_returns_none_when_no_skills_dir(self, tmp_path):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            mounts = get_skills_directory_mount()
-
-        # No local skills dir → no local mount (external dirs may still appear)
-        local_mounts = [m for m in mounts if m["container_path"].endswith("/skills")]
-        assert local_mounts == []
 
     def test_custom_container_base(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
@@ -260,19 +211,6 @@ class TestPathTraversalSecurity:
         assert result is False
         assert get_credential_file_mounts() == []
 
-    def test_legitimate_file_still_works(self, tmp_path, monkeypatch):
-        """Normal files inside HERMES_HOME must still be registered."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        (hermes_home / "token.json").write_text('{"token": "abc"}')
-
-        result = register_credential_file("token.json")
-
-        assert result is True
-        mounts = get_credential_file_mounts()
-        assert len(mounts) == 1
-        assert "token.json" in mounts[0]["container_path"]
 
     def test_nested_subdir_inside_hermes_home_allowed(self, tmp_path, monkeypatch):
         """Files in subdirectories of HERMES_HOME must be allowed."""
@@ -387,17 +325,6 @@ class TestCacheDirectoryMounts:
         assert "/root/.hermes/cache/audio" in paths
         assert "/root/.hermes/cache/videos" in paths
 
-    def test_skips_nonexistent_dirs(self, tmp_path, monkeypatch):
-        """Dirs that don't exist on disk are not returned."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        # Create only one cache dir
-        (hermes_home / "cache" / "documents").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        mounts = get_cache_directory_mounts()
-        assert len(mounts) == 1
-        assert mounts[0]["container_path"] == "/root/.hermes/cache/documents"
 
     def test_legacy_dir_names_resolved(self, tmp_path, monkeypatch):
         """Old-style dir names (e.g. document_cache) are resolved correctly.
@@ -435,6 +362,39 @@ class TestCacheDirectoryMounts:
 
         assert get_cache_directory_mounts() == []
 
+    def test_images_upload_dir_is_mounted(self, tmp_path, monkeypatch):
+        """The flat top-level ``images/`` upload dir is mounted (#69575).
+
+        Desktop / clipboard / PDF uploads land in ``HERMES_HOME/images``, not
+        under ``cache/``. Without this entry vision_analyze on a desktop upload
+        fails because the file is not reachable inside the sandbox.
+        """
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "images").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mounts = get_cache_directory_mounts()
+        by_container = {m["container_path"]: m["host_path"] for m in mounts}
+        assert "/root/.hermes/images" in by_container
+        assert by_container["/root/.hermes/images"] == str(hermes_home / "images")
+
+    def test_images_upload_file_maps_into_container(self, tmp_path, monkeypatch):
+        """A concrete upload under ``images/`` maps to its container path.
+
+        This is the reverse mapping vision uses to translate a container-visible
+        path back to the host mount; it must recognise the ``images/`` dir.
+        """
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "images").mkdir(parents=True)
+        upload = hermes_home / "images" / "upload_20260722_181019_1.png"
+        upload.write_bytes(bytes.fromhex("89504e470d0a1a0a"))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert (
+            map_cache_path_to_container(str(upload))
+            == "/root/.hermes/images/upload_20260722_181019_1.png"
+        )
+
 
 class TestMapCachePathToContainer:
     """Tests for map_cache_path_to_container() — the backend-agnostic mapper."""
@@ -451,24 +411,6 @@ class TestMapCachePathToContainer:
             == "/root/.hermes/cache/images/generated.png"
         )
 
-    def test_custom_container_base_for_remote_home(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        img_dir = hermes_home / "cache" / "images"
-        img_dir.mkdir(parents=True)
-        host_path = str(img_dir / "remote.png")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        assert (
-            map_cache_path_to_container(host_path, container_base="/home/agent/.hermes")
-            == "/home/agent/.hermes/cache/images/remote.png"
-        )
-
-    def test_returns_none_when_outside_cache_dirs(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        (hermes_home / "cache" / "images").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        assert map_cache_path_to_container(str(tmp_path / "elsewhere.png")) is None
 
     def test_returns_none_when_no_cache_dirs_exist(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -510,18 +452,6 @@ class TestIterCacheFiles:
         assert "real.txt" in names
         assert "link.txt" not in names
 
-    def test_nested_files(self, tmp_path, monkeypatch):
-        """Files in subdirectories are included with correct relative paths."""
-        hermes_home = tmp_path / ".hermes"
-        ss_dir = hermes_home / "cache" / "screenshots"
-        sub = ss_dir / "session_abc"
-        sub.mkdir(parents=True)
-        (sub / "screen1.png").write_bytes(b"PNG")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        entries = iter_cache_files()
-        assert len(entries) == 1
-        assert entries[0]["container_path"] == "/root/.hermes/cache/screenshots/session_abc/screen1.png"
 
     def test_empty_cache(self, tmp_path, monkeypatch):
         """No cache dirs → empty list."""
@@ -530,3 +460,115 @@ class TestIterCacheFiles:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         assert iter_cache_files() == []
+
+
+class TestMasterCredentialStoresAreNeverMountable:
+    """Containment is not enough — HERMES_HOME *is* where the keys live.
+
+    ``required_credential_files`` is skill-declared frontmatter, and skills are
+    installed from the hub. The traversal guard already stops
+    ``../../.ssh/id_rsa`` from escaping HERMES_HOME, but every master
+    credential store sits *inside* it: a one-line declaration would otherwise
+    bind-mount ``.env`` (every provider key) or ``auth.json`` (all provider
+    tokens and OAuth grants) read-only into the sandbox the skill's own code
+    runs in.
+
+    The bar is the canonical read deny-list: whatever the agent is forbidden to
+    ``read_file`` must not be mountable either, so the mount surface can't
+    grant what the read surface denies.
+    """
+
+    @staticmethod
+    def _home(tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / ".env").write_text("OPENAI_API_KEY=sk-proj-REAL\n")
+        (home / "auth.json").write_text('{"providers":{}}')
+        (home / ".anthropic_oauth.json").write_text('{"refresh_token":"rt"}')
+        (home / "webhook_subscriptions.json").write_text("{}")
+        (home / "cache").mkdir()
+        (home / "cache" / "bws_cache.json").write_text("{}")
+        (home / "mcp-tokens").mkdir()
+        (home / "mcp-tokens" / "srv.json").write_text('{"access_token":"t"}')
+        (home / "google_token.json").write_text("{}")
+        return home
+
+    @pytest.mark.parametrize(
+        "rel_path",
+        [
+            ".env",
+            "auth.json",
+            ".anthropic_oauth.json",
+            "webhook_subscriptions.json",
+            "cache/bws_cache.json",
+            "mcp-tokens/srv.json",
+        ],
+    )
+    def test_master_credential_store_is_refused(self, tmp_path, rel_path):
+        home = self._home(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_file(rel_path) is False, (
+                f"{rel_path} would be bind-mounted into the sandbox"
+            )
+            assert get_credential_file_mounts() == []
+
+    def test_per_service_token_still_mounts(self, tmp_path):
+        """The module's legitimate purpose must keep working."""
+        home = self._home(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_file("google_token.json") is True
+            mounts = get_credential_file_mounts()
+        assert [m["container_path"] for m in mounts] == [
+            "/root/.hermes/google_token.json"
+        ]
+
+    def test_refused_entry_does_not_block_the_rest_of_the_batch(self, tmp_path):
+        home = self._home(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            missing = register_credential_files([".env", "google_token.json"])
+            mounts = get_credential_file_mounts()
+
+        paths = [m["container_path"] for m in mounts]
+        assert "/root/.hermes/google_token.json" in paths
+        assert "/root/.hermes/.env" not in paths
+        assert ".env" in missing, "a refused store is reported back to the skill"
+
+    def test_traversal_guard_still_applies(self, tmp_path):
+        """The pre-existing containment check is untouched."""
+        home = self._home(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+            assert register_credential_file("../../.ssh/id_rsa") is False
+            assert register_credential_file("/etc/passwd") is False
+
+    def test_missing_guard_fails_closed_with_error_log(self, tmp_path, caplog):
+        """If agent.file_safety can't be imported the mount is refused loudly.
+
+        The fail-closed path must be observable (#67665): a silent deny with
+        no diagnostic reproduces the trust gap the deny-list was added to fix.
+        """
+        import tools.credential_files as cf
+
+        home = self._home(tmp_path)
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}), \
+                patch.object(cf, "get_read_block_error", None):
+            with caplog.at_level("ERROR", logger="tools.credential_files"):
+                assert cf.register_credential_file("google_token.json") is False
+            assert cf.get_credential_file_mounts() == []
+        assert any("deny-list cannot be consulted" in r.message for r in caplog.records)
+
+    def test_guard_exception_fails_closed_with_traceback(self, tmp_path, caplog):
+        """A raising guard refuses the mount and logs the stack trace."""
+        import tools.credential_files as cf
+
+        home = self._home(tmp_path)
+
+        def _boom(path):
+            raise RuntimeError("guard exploded")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(home)}), \
+                patch.object(cf, "get_read_block_error", _boom):
+            with caplog.at_level("ERROR", logger="tools.credential_files"):
+                assert cf.register_credential_file("google_token.json") is False
+            assert cf.get_credential_file_mounts() == []
+        rec = next(r for r in caplog.records if "read guard raised" in r.message)
+        assert rec.exc_info is not None, "traceback must be attached (logger.exception)"

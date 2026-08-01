@@ -24,10 +24,12 @@ platforms:
   webhook:
     enabled: true
     extra:
-      host: "0.0.0.0"
       port: 8644
       secret: "generate-a-strong-secret-here"
 ```
+
+Omitting `host` uses the dual-stack default and listens on both IPv4 and IPv6.
+Set a specific address only when you intentionally want to restrict the bind.
 
 ### Option 3: Environment variables
 Add to `${HERMES_HOME:-~/.hermes}/.env`:
@@ -66,6 +68,22 @@ hermes webhook subscribe <name> \
 ```
 
 Returns the webhook URL and HMAC secret. The user configures their service to POST to that URL.
+
+### Filter or transform payloads before the agent runs
+
+Two mechanisms narrow broad event streams (e.g. Todoist/GitHub fire on every update) so only relevant payloads wake the agent:
+
+- **Declarative `filters`** (config.yaml routes only): list of conditions on payload fields, event type, or headers — operators `equals`, `not_equals`, `contains`, `exists`, `missing`, `in`, `in_file`, `regex`, with `all`/`any`/`not` grouping. Non-matching events are ignored with HTTP 200.
+- **Route scripts** (`--script` on subscribe, or `script:` on a config route): a script under `~/.hermes/scripts/` receives the payload as JSON on stdin. JSON stdout replaces the payload before prompt templating; empty stdout, `[SILENT]`, or a nonzero exit ignores the webhook. `.sh`/`.bash` run with bash, everything else with Python. Scripts cannot live outside `~/.hermes/scripts/` (path traversal is blocked).
+
+```bash
+hermes webhook subscribe todoist-hermes \
+  --prompt "Task changed: {payload.content}" \
+  --script "todoist-hermes-label.py" \
+  --deliver telegram --deliver-chat-id "12345"
+```
+
+Full filter syntax: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks#payload-filters
 
 ### List subscriptions
 ```bash

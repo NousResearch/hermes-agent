@@ -55,6 +55,80 @@ def has_clipboard_image() -> bool:
     return _xclip_has_image()
 
 
+# ── Text write (native tools, mirrors ui-tui/src/lib/clipboard.ts) ──────
+
+def _powershell_write_script(b64: str) -> str:
+    # PowerShell decodes piped stdin with the system ANSI code page (e.g.
+    # CP936), not UTF-8, so stdin-based writes mangle CJK/emoji.  Base64 the
+    # UTF-8 bytes and decode inside PowerShell instead — same approach as
+    # the TUI's writeClipboardText.
+    return (
+        "Set-Clipboard -Value ([System.Text.Encoding]::UTF8.GetString("
+        f"[System.Convert]::FromBase64String('{b64}')))"
+    )
+
+
+def _write_clipboard_commands() -> list:
+    """Return (cmd_argv, use_stdin) candidates in platform fallback order."""
+    if sys.platform == "darwin":
+        return [(["pbcopy"], True)]
+    if sys.platform == "win32":
+        return [(["powershell", "-NoProfile", "-NonInteractive"], False)]
+    attempts = []
+    if _is_wsl():
+        attempts.append((["powershell.exe", "-NoProfile", "-NonInteractive"], False))
+    if os.environ.get("WAYLAND_DISPLAY"):
+        attempts.append((["wl-copy", "--type", "text/plain"], True))
+    attempts.append((["xclip", "-selection", "clipboard", "-in"], True))
+    attempts.append((["xsel", "--clipboard", "--input"], True))
+    return attempts
+
+
+def is_remote_shell_session(env=None) -> bool:
+    """True when running inside an SSH session.
+
+    Mirrors ui-tui/src/lib/terminalSetup.ts isRemoteShellSession().  Over
+    SSH, native clipboard tools write the REMOTE machine's clipboard (or
+    an X-forwarded one), which is almost never what the user wants —
+    OSC 52 reaches the LOCAL terminal emulator instead.
+    """
+    e = os.environ if env is None else env
+    return bool(
+        e.get("SSH_CONNECTION") or e.get("SSH_TTY") or e.get("SSH_CLIENT")
+    )
+
+
+def write_clipboard_text(text: str) -> bool:
+    """Write *text* to the system clipboard via native platform tools.
+
+    Fallback order matches the TUI (ui-tui/src/lib/clipboard.ts):
+    macOS pbcopy → Windows/WSL PowerShell Set-Clipboard → wl-copy →
+    xclip → xsel.  Returns True if any backend succeeded; callers should
+    fall back to OSC 52 on False.
+    """
+    for argv, use_stdin in _write_clipboard_commands():
+        try:
+            if use_stdin:
+                proc = subprocess.run(
+                    argv, input=text.encode("utf-8"),
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+            else:
+                b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+                proc = subprocess.run(
+                    argv + ["-Command", _powershell_write_script(b64)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+            if proc.returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return False
+
+
 # ── macOS ────────────────────────────────────────────────────────────────
 
 def _macos_save(dest: Path) -> bool:
@@ -67,7 +141,7 @@ def _macos_has_image() -> bool:
     try:
         info = subprocess.run(
             ["osascript", "-e", "clipboard info"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3,
         )
         return "«class PNGf»" in info.stdout or "«class TIFF»" in info.stdout
     except Exception:
@@ -109,7 +183,7 @@ def _macos_osascript(dest: Path) -> bool:
     try:
         r = subprocess.run(
             ["osascript", "-e", script],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         if r.returncode == 0 and "fail" not in r.stdout and dest.exists() and dest.stat().st_size > 0:
             return True
@@ -200,7 +274,7 @@ _POWERSHELL_EXTRACT_IMAGE_SCRIPTS = (
 def _run_powershell(exe: str, script: str, timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         [exe, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
     )
 
 
@@ -258,7 +332,7 @@ def _find_powershell() -> str | None:
         try:
             r = subprocess.run(
                 [name, "-NoProfile", "-NonInteractive", "-Command", "echo ok"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             )
             if r.returncode == 0 and "ok" in r.stdout:
                 return name
@@ -333,7 +407,7 @@ def _wayland_has_image() -> bool:
     try:
         r = subprocess.run(
             ["wl-paste", "--list-types"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3,
         )
         return r.returncode == 0 and any(
             t.startswith("image/") for t in r.stdout.splitlines()
@@ -351,7 +425,7 @@ def _wayland_save(dest: Path) -> bool:
         # Check available MIME types
         types_r = subprocess.run(
             ["wl-paste", "--list-types"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3,
         )
         if types_r.returncode != 0:
             return False
@@ -453,7 +527,7 @@ def _xclip_has_image() -> bool:
     try:
         r = subprocess.run(
             ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3,
         )
         return r.returncode == 0 and "image/png" in r.stdout
     except FileNotFoundError:
@@ -469,7 +543,7 @@ def _xclip_save(dest: Path) -> bool:
     try:
         targets = subprocess.run(
             ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3,
         )
         if "image/png" not in targets.stdout:
             return False

@@ -19,7 +19,7 @@ class _DummyPool:
 @pytest.fixture
 def oauth_file(monkeypatch, tmp_path):
     target = tmp_path / '.anthropic_oauth.json'
-    monkeypatch.setattr('agent.anthropic_adapter._HERMES_OAUTH_FILE', target)
+    monkeypatch.setattr('agent.anthropic_adapter._get_hermes_oauth_file', lambda: target)
     monkeypatch.setattr('agent.credential_pool.load_pool', lambda _provider: _DummyPool())
     return target
 
@@ -36,18 +36,23 @@ def test_dashboard_oauth_write_uses_owner_only_permissions(oauth_file):
     assert mode == 0o600
 
 
-def test_dashboard_oauth_write_uses_atomic_replace_and_cleans_temp_files(oauth_file, monkeypatch):
-    replace_calls = []
+def test_dashboard_oauth_write_uses_atomic_json_write_with_owner_only_mode(oauth_file, monkeypatch):
+    """The OAuth token file must be written 0o600 from creation via
+    ``atomic_json_write(mode=0o600)``, so it is never briefly world-readable
+    (the old ``os.replace`` + post-hoc ``chmod`` TOCTOU)."""
+    import utils
 
-    def flaky_replace(src, dst):
-        replace_calls.append((src, dst))
-        raise OSError('simulated replace failure')
+    calls = {}
+    real = utils.atomic_json_write
 
-    monkeypatch.setattr('hermes_cli.web_server.os.replace', flaky_replace)
+    def spy(path, data, **kwargs):
+        calls['mode'] = kwargs.get('mode')
+        return real(path, data, **kwargs)
 
-    with pytest.raises(OSError, match='simulated replace failure'):
-        _save_anthropic_oauth_creds('access-token', 'refresh-token', 123456)
+    monkeypatch.setattr(utils, 'atomic_json_write', spy)
 
-    assert replace_calls, 'helper should attempt atomic os.replace()'
-    assert not oauth_file.exists()
-    assert not list(oauth_file.parent.glob(f'{oauth_file.name}.tmp*'))
+    _save_anthropic_oauth_creds('access-token', 'refresh-token', 123456)
+
+    assert calls.get('mode') == 0o600, \
+        'OAuth creds must be written 0o600 atomically (no chmod-after-replace window)'
+    assert oauth_file.exists()

@@ -78,14 +78,21 @@ async def handle(event_type: str, context: dict):
 | `session:start` | New messaging session created | `platform`, `user_id`, `session_id`, `session_key` |
 | `session:end` | Session ended (before reset) | `platform`, `user_id`, `session_key` |
 | `session:reset` | User ran `/new` or `/reset` | `platform`, `user_id`, `session_key` |
-| `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `message` |
+| `session:compress` | Context compression completed for a session | `platform`, `session_id`, `old_session_id` (empty when compacted in place), `in_place` (bool — `true` = transcript compacted on the same id, `false` = rotated from `old_session_id`), `compression_count` |
+| `agent:start` | Agent begins processing a message | `platform`, `user_id`, `chat_id`, `thread_id` (forum-topic / thread root id; empty when not in a thread), `chat_type` (`"dm"` \| `"group"` \| `"forum"`; empty if unknown), `session_id`, `message` (truncated to 500 chars) |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
-| `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `message`, `response` |
+| `agent:end` | Agent finishes processing | same keys as `agent:start`, plus `response` (truncated to 500 chars) |
+| `reaction:added` | An emoji reaction was added to a message the bot can see (Slack adapter currently). Requires the `reactions:read` scope + the `reaction_added` bot event subscription; the bot must be a member of the channel. | `platform`, `reaction`, `user_id`, `item_user_id`, `item_type`, `channel_id`, `message_ts`, `team_id`, `event_ts`, `raw_event` |
+| `reaction:removed` | An emoji reaction was removed from a message the bot can see. Requires the `reaction_removed` bot event subscription. | same shape as `reaction:added` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
 
 #### Wildcard Matching
 
 Handlers registered for `command:*` fire for any `command:` event (`command:model`, `command:reset`, etc.). Monitor all slash commands with a single subscription.
+
+:::tip Threaded replies
+A handler posting a follow-up message into the same Telegram forum topic should include `message_thread_id=int(thread_id)` when `chat_type == "forum"` and `thread_id` is non-empty.
+:::
 
 ### Examples
 
@@ -365,6 +372,10 @@ def register(ctx):
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
     ctx.register_hook("on_session_end", my_cleanup_callback)
+    # Kanban board lifecycle (fire after the board DB change commits):
+    ctx.register_hook("kanban_task_claimed", my_claim_callback)     # dispatcher process
+    ctx.register_hook("kanban_task_completed", my_done_callback)    # worker process
+    ctx.register_hook("kanban_task_blocked", my_blocked_callback)   # worker process
 ```
 
 **General rules for all hooks:**
@@ -390,8 +401,8 @@ def register(ctx):
 | [`subagent_start`](#subagent_start) | A `delegate_task` child has been constructed and is about to run | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
-| [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
-| [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
+| [`pre_approval_request`](#pre_approval_request) | An approval decision is requested, including smart-mode auto decisions | ignored |
+| [`post_approval_response`](#post_approval_response) | An approval decision is made (or a prompt times out) | ignored |
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
@@ -873,7 +884,7 @@ def my_callback(session_id: str, platform: str, **kwargs):
 
 ---
 
-See the **[Build a Plugin guide](/guides/build-a-hermes-plugin)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+See the **[Build a Plugin guide](/developer-guide/plugins)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
 
 ---
 
@@ -957,7 +968,7 @@ Fires **once per child agent** after `delegate_task` finishes. Whether you deleg
 ```python
 def my_callback(parent_session_id: str, child_role: str | None,
                 child_summary: str | None, child_status: str,
-                duration_ms: int, **kwargs):
+                tool_call_history: list[dict], duration_ms: int, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -966,6 +977,7 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | `child_role` | `str \| None` | Orchestrator role tag set on the child (`None` if the feature isn't enabled) |
 | `child_summary` | `str \| None` | The final response the child returned to the parent |
 | `child_status` | `str` | `"completed"`, `"failed"`, `"interrupted"`, or `"error"` |
+| `tool_call_history` | `list[dict]` | Ordered metadata-only tool calls: `tool_name`, bounded `tool_input`, `input_bytes`, `output_bytes`, and `status`; raw inputs and outputs are excluded |
 | `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
 
 **Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.
@@ -1060,7 +1072,7 @@ def register(ctx):
 
 ### `pre_approval_request`
 
-Fires **immediately before** an approval request is shown to the user — covers every surface: interactive CLI, the Ink TUI, gateway platforms (Telegram, Discord, Slack, WhatsApp, Matrix, etc.), and ACP clients (VS Code, Zed, JetBrains).
+Fires before an approval decision is requested. It covers prompted surfaces—interactive CLI, Ink TUI, gateway platforms, and ACP clients—and `approvals.mode=smart` decisions made without a human prompt (`surface="smart"`). In smart mode, the hook runs before the auxiliary LLM is called.
 
 This is the right place to wire a custom notifier — for example, a macOS menu-bar app that pops an allow/deny notification, or an audit log that records every approval request with context.
 
@@ -1080,12 +1092,12 @@ def my_callback(
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `command` | `str` | The shell command awaiting approval |
+| `command` | `str` | Terminal command or `execute_code` script being assessed. Smart and gateway payloads are redacted before observer dispatch. Smart observer redaction is mandatory even when `security.redact_secrets` is disabled; if redaction fails, smart hooks are skipped. |
 | `description` | `str` | Human-readable reason(s) the command is flagged (combined when multiple patterns match) |
 | `pattern_key` | `str` | Primary pattern key that triggered the approval (e.g. `"rm_rf"`, `"sudo"`) |
 | `pattern_keys` | `list[str]` | All pattern keys that matched |
 | `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
-| `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals |
+| `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals, or `"smart"` for auxiliary-LLM auto approve/deny decisions |
 
 **Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
 
@@ -1112,7 +1124,7 @@ def register(ctx):
 
 ### `post_approval_response`
 
-Fires **after** the user responds to an approval prompt (or the prompt times out).
+Fires after a prompted or smart approval decision (or after a prompt times out).
 
 **Callback signature:**
 
@@ -1133,7 +1145,8 @@ Same kwargs as `pre_approval_request`, plus:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `choice` | `str` | One of `"once"`, `"session"`, `"always"`, `"deny"`, or `"timeout"` |
+| `choice` | `str` | Prompted surfaces use `"once"`, `"session"`, `"always"`, `"deny"`, or `"timeout"`; smart decisions use `"smart_approve"` or `"smart_deny"` |
+| `decided_by` | `str` | `"aux_llm"` for smart decisions; absent on prompted surfaces |
 
 **Return value:** ignored.
 
@@ -1282,7 +1295,7 @@ The hook is guarded on a non-empty, non-interrupted response — it will not fir
 
 ## Shell Hooks
 
-Declare shell-script hooks in your `cli-config.yaml` and Hermes will run them as subprocesses whenever the corresponding plugin-hook event fires — in both CLI and gateway sessions. No Python plugin authoring required.
+Declare shell-script hooks in your `~/.hermes/config.yaml` and Hermes will run them as subprocesses whenever the corresponding plugin-hook event fires — in both CLI and gateway sessions. No Python plugin authoring required.
 
 Use shell hooks when you want a drop-in, single-file script (Bash, Python, anything with a shebang) to:
 
@@ -1450,7 +1463,7 @@ Three escape hatches bypass the interactive prompt — any one is sufficient:
 
 1. `--accept-hooks` flag on the CLI (e.g. `hermes --accept-hooks chat`)
 2. `HERMES_ACCEPT_HOOKS=1` environment variable
-3. `hooks_auto_accept: true` in `cli-config.yaml`
+3. `hooks_auto_accept: true` in `~/.hermes/config.yaml`
 
 Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning.
 

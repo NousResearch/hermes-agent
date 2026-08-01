@@ -107,11 +107,11 @@ class AudioBridge:
                     "load-module",
                     "module-null-sink",
                     f"sink_name={sink_name}",
-                    f"sink_properties=device.description=HermesMeetSink",
+                    "sink_properties=device.description=HermesMeetSink",
                 ],
                 check=True,
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 stdin=subprocess.DEVNULL,
             )
         except FileNotFoundError as exc:
@@ -136,7 +136,7 @@ class AudioBridge:
                 ],
                 check=True,
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 stdin=subprocess.DEVNULL,
             )
         except subprocess.CalledProcessError as exc:
@@ -172,7 +172,7 @@ class AudioBridge:
         try:
             out = subprocess.check_output(
                 ["system_profiler", "SPAudioDataType"],
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 stderr=subprocess.STDOUT,
             )
         except FileNotFoundError as exc:

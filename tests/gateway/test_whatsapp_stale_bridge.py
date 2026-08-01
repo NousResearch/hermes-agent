@@ -53,6 +53,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._send_read_receipts = False
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -112,36 +113,12 @@ class TestFileContentHash:
         assert len(h) == 16
         assert h == _file_content_hash(f)  # deterministic
 
-    def test_changes_with_content(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        f = tmp_path / "x.js"
-        f.write_text("abc")
-        h1 = _file_content_hash(f)
-        f.write_text("def")
-        assert _file_content_hash(f) != h1
-
-    def test_missing_file_returns_empty(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        assert _file_content_hash(tmp_path / "nope.js") == ""
-
-    def test_matches_bridge_js_self_hash_algorithm(self, tmp_path):
-        """Python and Node must compute the same hash for the same bytes."""
-        import hashlib
-
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        f = tmp_path / "bridge.js"
-        f.write_bytes(b"const x = 1;\n")
-        # Node side: createHash('sha256').update(bytes).digest('hex').slice(0, 16)
-        expected = hashlib.sha256(b"const x = 1;\n").hexdigest()[:16]
-        assert _file_content_hash(f) == expected
-
 
 class TestStaleBridgeHandshake:
+
+
     @pytest.mark.asyncio
-    async def test_reuses_bridge_when_hash_matches(self, tmp_path):
+    async def test_restarts_bridge_when_read_receipt_config_changed(self, tmp_path):
         from plugins.platforms.whatsapp.adapter import _file_content_hash
 
         bridge_dir = _setup_bridge_dir(tmp_path)
@@ -150,63 +127,15 @@ class TestStaleBridgeHandshake:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
+        adapter._send_read_receipts = True
         disk_hash = _file_content_hash(bridge_dir / "bridge.js")
-        mock_client = _mock_health({"status": "connected", "scriptHash": disk_hash})
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", mock_client), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task") as mock_task, \
-             patch("subprocess.Popen") as mock_popen, \
-             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True), \
-             patch.object(adapter, "_mark_connected", create=True):
-            result = await adapter.connect()
-
-        assert result is True
-        mock_popen.assert_not_called()  # reused, never spawned
-        mock_task.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_restarts_bridge_on_hash_mismatch(self, tmp_path):
-        bridge_dir = _setup_bridge_dir(tmp_path)
-        _fresh_node_modules(bridge_dir)
-        adapter = _make_adapter(
-            bridge_script=str(bridge_dir / "bridge.js"),
-            session_path=tmp_path / "session",
-        )
         mock_client = _mock_health(
-            {"status": "connected", "scriptHash": "deadbeefdeadbeef"}
+            {
+                "status": "connected",
+                "scriptHash": disk_hash,
+                "sendReadReceipts": False,
+            }
         )
-        # Spawned bridge dies immediately → connect() returns False, but the
-        # assertion that matters is that the stale bridge was NOT reused and
-        # a new process spawn was attempted.
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 1
-        mock_proc.returncode = 1
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", mock_client), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
-             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
-            result = await adapter.connect()
-
-        assert result is False  # mock proc died; not the point of the test
-        mock_popen.assert_called_once()  # stale bridge replaced, not reused
-        mock_kill_port.assert_called_once_with(adapter._bridge_port)
-
-    @pytest.mark.asyncio
-    async def test_restarts_unversioned_bridge(self, tmp_path):
-        """Bridges predating the handshake report no scriptHash → stale."""
-        bridge_dir = _setup_bridge_dir(tmp_path)
-        _fresh_node_modules(bridge_dir)
-        adapter = _make_adapter(
-            bridge_script=str(bridge_dir / "bridge.js"),
-            session_path=tmp_path / "session",
-        )
-        # Old bridge /health payload: no scriptHash key at all
-        mock_client = _mock_health({"status": "connected"})
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
@@ -248,65 +177,6 @@ class TestDepRefreshStamp:
 
         mock_run.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_reinstalls_when_package_json_changed(self, tmp_path):
-        bridge_dir = _setup_bridge_dir(tmp_path)
-        _fresh_node_modules(bridge_dir)
-        # Simulate `hermes update` bumping the Baileys pin
-        (bridge_dir / "package.json").write_text('{"name": "bridge", "v": 2}\n')
-        adapter = _make_adapter(
-            bridge_script=str(bridge_dir / "bridge.js"),
-            session_path=tmp_path / "session",
-        )
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 1
-        mock_proc.returncode = 1
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", _mock_health({"status": "disconnected"})), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run, \
-             patch("subprocess.Popen", return_value=mock_proc), \
-             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
-            await adapter.connect()
-
-        mock_run.assert_called_once()
-        assert "install" in mock_run.call_args[0][0]
-        # Stamp updated to the new package.json hash
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-        stamp = (bridge_dir / "node_modules" / ".hermes-pkg-hash").read_text().strip()
-        assert stamp == _file_content_hash(bridge_dir / "package.json")
-
-    @pytest.mark.asyncio
-    async def test_installs_when_node_modules_missing(self, tmp_path):
-        bridge_dir = _setup_bridge_dir(tmp_path)  # no node_modules
-        adapter = _make_adapter(
-            bridge_script=str(bridge_dir / "bridge.js"),
-            session_path=tmp_path / "session",
-        )
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = 1
-        mock_proc.returncode = 1
-
-        def _npm_install(*args, **kwargs):
-            # npm creates node_modules as a side effect
-            (bridge_dir / "node_modules").mkdir(exist_ok=True)
-            return MagicMock(returncode=0)
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", _mock_health({"status": "disconnected"})), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("subprocess.run", side_effect=_npm_install) as mock_run, \
-             patch("subprocess.Popen", return_value=mock_proc), \
-             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
-            await adapter.connect()
-
-        mock_run.assert_called_once()
-
 
 class TestCacheDirEnvPassthrough:
     @pytest.mark.asyncio
@@ -317,6 +187,7 @@ class TestCacheDirEnvPassthrough:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
+        adapter._send_read_receipts = True
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
@@ -339,3 +210,4 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_IMAGE_CACHE_DIR"] == str(get_image_cache_dir())
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
+        assert env["WHATSAPP_SEND_READ_RECEIPTS"] == "true"

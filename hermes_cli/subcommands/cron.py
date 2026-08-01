@@ -70,6 +70,19 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--model",
+        help=(
+            "Pin this job to a specific inference model (user-owned; the "
+            "agent's cronjob tool cannot set this). Omit to follow "
+            "cron.model / model.default from config.yaml."
+        ),
+    )
+    cron_create.add_argument(
+        "--provider",
+        dest="model_provider",
+        help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -134,6 +147,19 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
     )
+    cron_edit.add_argument(
+        "--model",
+        help=(
+            "Pin this job to a specific inference model (user-owned; the "
+            "agent's cronjob tool cannot set this). Pass empty string to "
+            "clear the pin and follow cron.model / model.default."
+        ),
+    )
+    cron_edit.add_argument(
+        "--provider",
+        dest="model_provider",
+        help="Inference provider paired with --model. Pass empty string to clear.",
+    )
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
@@ -155,6 +181,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     # cron status
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
+
+    cron_runs = cron_subparsers.add_parser(
+        "runs", aliases=["history"], help="Show durable execution attempts"
+    )
+    cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")
+    cron_runs.add_argument("--limit", type=int, default=20, help="Rows to show (1-500)")
 
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")

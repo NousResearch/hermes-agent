@@ -10,11 +10,7 @@ class Mem0Backend(ABC):
     """Unified interface over Platform (MemoryClient) and OSS (Memory) backends."""
 
     @abstractmethod
-    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
-        ...
-
-    @abstractmethod
-    def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         ...
 
     @abstractmethod
@@ -57,15 +53,9 @@ class PlatformBackend(Mem0Backend):
         from mem0 import MemoryClient
         self._client = MemoryClient(api_key=api_key)
 
-    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         response = self._client.search(query, filters=filters, top_k=top_k, rerank=rerank)
         return _unwrap_results(response)
-
-    def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
-        response = self._client.get_all(filters=filters, page=page, page_size=page_size)
-        results = response.get("results", []) if isinstance(response, dict) else response
-        count = response.get("count", len(results)) if isinstance(response, dict) else len(results)
-        return {"results": results, "count": count}
 
     def add(
         self,
@@ -90,12 +80,102 @@ class PlatformBackend(Mem0Backend):
         return {"result": "Memory deleted.", "memory_id": memory_id}
 
 
+class SelfHostedBackend(Mem0Backend):
+    """Direct HTTP backend for a self-hosted Mem0 server (the FastAPI ``server/``).
+
+    mem0.MemoryClient can't be reused for self-hosted: it is hardwired to the
+    cloud API — ``Authorization: Token`` auth and a ``GET /v1/ping/`` validation
+    call in ``__init__`` that the self-hosted server does not expose (it would
+    404 before any real request). This client talks to that server directly,
+    using its actual contract: ``X-API-Key`` auth and the ``/memories`` /
+    ``/search`` routes.
+    """
+
+    def __init__(self, api_key: str, host: str, transport=None):
+        import httpx
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["X-API-Key"] = api_key  # omitted only for AUTH_DISABLED servers
+        # Connect-level retries smooth over transient blips so a single
+        # dropped SYN doesn't count toward the provider failure breaker.
+        # ``transport`` is injectable for tests (httpx.MockTransport).
+        if transport is None:
+            transport = httpx.HTTPTransport(retries=2)
+        self._client = httpx.Client(
+            base_url=host.rstrip("/"), headers=headers, timeout=30.0,
+            transport=transport,
+        )
+
+    def _json(self, method: str, path: str, **kwargs) -> Any:
+        resp = self._client.request(method, path, **kwargs)
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
+        # rerank is a platform-only feature; the self-hosted /search ignores it.
+        body: dict[str, Any] = {"query": query, "top_k": top_k}
+        if filters:
+            body["filters"] = filters  # user_id belongs in filters (top-level is deprecated)
+        return _unwrap_results(self._json("POST", "/search", json=body))
+
+    def add(
+        self,
+        messages: list,
+        *,
+        user_id: str,
+        agent_id: str,
+        infer: bool = False,
+        metadata: dict | None = None,
+    ) -> dict:
+        body: dict[str, Any] = {
+            "messages": messages,
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "infer": infer,
+        }
+        if metadata:
+            body["metadata"] = metadata
+        return self._json("POST", "/memories", json=body)
+
+    def update(self, memory_id: str, text: str) -> dict:
+        self._json("PUT", f"/memories/{memory_id}", json={"text": text})
+        return {"result": "Memory updated.", "memory_id": memory_id}
+
+    def delete(self, memory_id: str) -> dict:
+        self._json("DELETE", f"/memories/{memory_id}")
+        return {"result": "Memory deleted.", "memory_id": memory_id}
+
+    def close(self) -> None:
+        try:
+            self._client.close()
+        except Exception:
+            pass
+
+
 class OSSBackend(Mem0Backend):
     """Wraps mem0.Memory for self-hosted (OSS) mode."""
 
     def __init__(self, oss_config: dict):
         import os
         from mem0 import Memory
+
+        def _provider_block(name: str) -> dict:
+            block = dict(oss_config[name])
+            provider = str(block.get("provider") or "").strip().lower()
+            provider_config = dict(block.get("config", {}))
+            legacy_base = provider_config.pop("api_base", None)
+            if legacy_base:
+                from ._oss_providers import EMBEDDER_PROVIDERS, LLM_PROVIDERS
+
+                provider_def = (
+                    LLM_PROVIDERS if name == "llm" else EMBEDDER_PROVIDERS
+                ).get(provider, {})
+                canonical_key = provider_def.get("base_url_key")
+                if canonical_key:
+                    provider_config.setdefault(canonical_key, legacy_base)
+            block["config"] = provider_config
+            return block
 
         vector_store = dict(oss_config["vector_store"])
         vs_config = dict(vector_store.get("config", {}))
@@ -119,8 +199,8 @@ class OSSBackend(Mem0Backend):
 
         config = {
             "vector_store": vector_store,
-            "llm": oss_config["llm"],
-            "embedder": oss_config["embedder"],
+            "llm": _provider_block("llm"),
+            "embedder": _provider_block("embedder"),
             "version": "v1.1",
         }
         self._memory = Memory.from_config(config)
@@ -189,17 +269,9 @@ class OSSBackend(Mem0Backend):
             except Exception:
                 pass
 
-    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         response = self._memory.search(query, filters=filters, top_k=top_k)
         return _unwrap_results(response)
-
-    def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
-        response = self._memory.get_all(filters=filters)
-        all_results = _unwrap_results(response)
-        total = len(all_results)
-        start = (page - 1) * page_size
-        results = all_results[start : start + page_size]
-        return {"results": results, "count": total}
 
     def add(
         self,

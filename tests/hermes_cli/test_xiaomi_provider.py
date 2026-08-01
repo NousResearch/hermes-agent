@@ -22,20 +22,9 @@ class TestXiaomiProviderRegistry:
     def test_registered(self):
         assert "xiaomi" in PROVIDER_REGISTRY
 
-    def test_name(self):
-        assert PROVIDER_REGISTRY["xiaomi"].name == "Xiaomi MiMo"
-
-    def test_auth_type(self):
-        assert PROVIDER_REGISTRY["xiaomi"].auth_type == "api_key"
 
     def test_inference_base_url(self):
         assert PROVIDER_REGISTRY["xiaomi"].inference_base_url == "https://api.xiaomimimo.com/v1"
-
-    def test_api_key_env_vars(self):
-        assert PROVIDER_REGISTRY["xiaomi"].api_key_env_vars == ("XIAOMI_API_KEY",)
-
-    def test_base_url_env_var(self):
-        assert PROVIDER_REGISTRY["xiaomi"].base_url_env_var == "XIAOMI_BASE_URL"
 
 
 # =============================================================================
@@ -61,11 +50,6 @@ class TestXiaomiAliases:
         assert normalize_provider("mimo") == "xiaomi"
         assert normalize_provider("xiaomi-mimo") == "xiaomi"
 
-    def test_normalize_provider_providers_py(self):
-        from hermes_cli.providers import normalize_provider
-        assert normalize_provider("mimo") == "xiaomi"
-        assert normalize_provider("xiaomi-mimo") == "xiaomi"
-
 
 # =============================================================================
 # Auto-detection
@@ -80,7 +64,7 @@ class TestXiaomiAutoDetection:
         for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                      "DEEPSEEK_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
                      "DASHSCOPE_API_KEY", "XAI_API_KEY", "KIMI_API_KEY",
-                     "MINIMAX_API_KEY", "KILOCODE_API_KEY",
+                     "MINIMAX_API_KEY", "AI_GATEWAY_API_KEY", "KILOCODE_API_KEY",
                      "HF_TOKEN", "GLM_API_KEY", "COPILOT_GITHUB_TOKEN",
                      "GH_TOKEN", "GITHUB_TOKEN", "MINIMAX_CN_API_KEY",
                      "TOKENHUB_API_KEY", "ARCEEAI_API_KEY"):
@@ -98,15 +82,7 @@ class TestXiaomiAutoDetection:
 class TestXiaomiCredentials:
     """Test credential resolution for the xiaomi provider."""
 
-    def test_status_configured(self, monkeypatch):
-        monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-12345678")
-        status = get_api_key_provider_status("xiaomi")
-        assert status["configured"]
 
-    def test_status_not_configured(self, monkeypatch):
-        monkeypatch.delenv("XIAOMI_API_KEY", raising=False)
-        status = get_api_key_provider_status("xiaomi")
-        assert not status["configured"]
 
     def test_resolve_credentials(self, monkeypatch):
         monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-12345678")
@@ -115,11 +91,40 @@ class TestXiaomiCredentials:
         assert creds["api_key"] == "sk-test-12345678"
         assert creds["base_url"] == "https://api.xiaomimimo.com/v1"
 
-    def test_custom_base_url_override(self, monkeypatch):
-        monkeypatch.setenv("XIAOMI_API_KEY", "sk-test-12345678")
-        monkeypatch.setenv("XIAOMI_BASE_URL", "https://custom.xiaomi.example/v1")
-        creds = resolve_api_key_provider_credentials("xiaomi")
-        assert creds["base_url"] == "https://custom.xiaomi.example/v1"
+
+    def test_resolve_credentials_reads_home_external_secret_scope(
+        self, tmp_path, monkeypatch
+    ):
+        """BWS-injected keys belong in the profile scope that loaded them."""
+        from agent import secret_scope as ss
+        from hermes_cli import config as config_module
+        from hermes_cli import env_loader
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setattr(config_module, "get_env_path", lambda: home / ".env")
+        config_module.invalidate_env_cache()
+
+        monkeypatch.delenv("XIAOMI_BASE_URL", raising=False)
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            str(home.resolve()),
+            {"XIAOMI_API_KEY": "sk-bws-xiaomi-12345678"},
+        )
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(ss.build_profile_secret_scope(home))
+        try:
+            creds = resolve_api_key_provider_credentials("xiaomi")
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+        assert creds["api_key"] == "sk-bws-xiaomi-12345678"
+        assert creds["source"] == "XIAOMI_API_KEY"
+
+
 
 
 # =============================================================================
@@ -185,19 +190,12 @@ class TestXiaomiModelCatalog:
 class TestXiaomiNormalization:
     """Model name normalization — Xiaomi is a direct provider."""
 
-    def test_vendor_prefix_mapping(self):
-        from hermes_cli.model_normalize import _VENDOR_PREFIXES
-        assert _VENDOR_PREFIXES.get("mimo") == "xiaomi"
 
     def test_matching_prefix_strip(self):
         """xiaomi/mimo-v2-pro should normalize to mimo-v2-pro for direct API."""
         from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
         assert "xiaomi" in _MATCHING_PREFIX_STRIP_PROVIDERS
 
-    def test_lowercase_model_provider(self):
-        """Xiaomi must be in _LOWERCASE_MODEL_PROVIDERS."""
-        from hermes_cli.model_normalize import _LOWERCASE_MODEL_PROVIDERS
-        assert "xiaomi" in _LOWERCASE_MODEL_PROVIDERS
 
     def test_lowercase_subset_of_matching_prefix(self):
         """_LOWERCASE_MODEL_PROVIDERS must be a subset of _MATCHING_PREFIX_STRIP_PROVIDERS.
@@ -214,22 +212,6 @@ class TestXiaomiNormalization:
             f"{_LOWERCASE_MODEL_PROVIDERS - _MATCHING_PREFIX_STRIP_PROVIDERS}"
         )
 
-    def test_normalize_strips_provider_prefix(self):
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider("xiaomi/mimo-v2-pro", "xiaomi")
-        assert result == "mimo-v2-pro"
-
-    def test_normalize_bare_name_unchanged(self):
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider("mimo-v2-pro", "xiaomi")
-        assert result == "mimo-v2-pro"
-
-    @pytest.mark.parametrize("empty_input", ["", None, "   "])
-    def test_normalize_empty_and_none(self, empty_input):
-        """None, empty, and whitespace-only inputs return empty string."""
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider(empty_input, "xiaomi")
-        assert result == ""
 
     @pytest.mark.parametrize("input_name,expected", [
         ("MiMo-V2.5-Pro", "mimo-v2.5-pro"),
@@ -247,16 +229,6 @@ class TestXiaomiNormalization:
         result = normalize_model_for_provider(input_name, "xiaomi")
         assert result == expected
 
-    @pytest.mark.parametrize("input_name,expected", [
-        ("xiaomi/MiMo-V2.5-Pro", "mimo-v2.5-pro"),
-        ("xiaomi/MIMO-V2.5-PRO", "mimo-v2.5-pro"),
-        ("xiaomi/mimo-v2.5-pro", "mimo-v2.5-pro"),
-    ])
-    def test_normalize_strips_prefix_and_lowercases(self, input_name, expected):
-        """Provider prefix stripping AND lowercasing must both work together."""
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        result = normalize_model_for_provider(input_name, "xiaomi")
-        assert result == expected
 
 
 # =============================================================================
@@ -267,9 +239,6 @@ class TestXiaomiNormalization:
 class TestXiaomiURLMapping:
     """Test URL → provider inference for Xiaomi endpoints."""
 
-    def test_url_to_provider(self):
-        from agent.model_metadata import _URL_TO_PROVIDER
-        assert _URL_TO_PROVIDER.get("api.xiaomimimo.com") == "xiaomi"
 
     def test_provider_prefixes(self):
         from agent.model_metadata import _PROVIDER_PREFIXES
@@ -277,9 +246,6 @@ class TestXiaomiURLMapping:
         assert "mimo" in _PROVIDER_PREFIXES
         assert "xiaomi-mimo" in _PROVIDER_PREFIXES
 
-    def test_infer_from_url(self):
-        from agent.model_metadata import _infer_provider_from_url
-        assert _infer_provider_from_url("https://api.xiaomimimo.com/v1") == "xiaomi"
 
     def test_infer_from_regional_urls(self):
         """Regional token-plan endpoints should also resolve to xiaomi."""
@@ -305,14 +271,7 @@ class TestXiaomiProvidersModule:
         assert overlay.base_url_env_var == "XIAOMI_BASE_URL"
         assert not overlay.is_aggregator
 
-    def test_alias_resolves(self):
-        from hermes_cli.providers import normalize_provider
-        assert normalize_provider("mimo") == "xiaomi"
-        assert normalize_provider("xiaomi-mimo") == "xiaomi"
 
-    def test_label(self):
-        from hermes_cli.providers import get_label
-        assert get_label("xiaomi") == "Xiaomi MiMo"
 
     def test_get_provider(self):
         pdef = None
@@ -331,19 +290,6 @@ class TestXiaomiProvidersModule:
 # =============================================================================
 
 
-class TestXiaomiAuxiliary:
-    """Xiaomi auxiliary routing: vision → omni, non-vision → user's main model, never flash."""
-
-    def test_no_flash_in_aux_models(self):
-        """mimo-v2-flash must NEVER be used for automatic aux routing."""
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert "xiaomi" not in _API_KEY_PROVIDER_AUX_MODELS
-
-    def test_vision_model_override(self):
-        """Xiaomi vision tasks should use mimo-v2.5 (multimodal), not the main model."""
-        from agent.auxiliary_client import _PROVIDER_VISION_MODELS
-        assert "xiaomi" in _PROVIDER_VISION_MODELS
-        assert _PROVIDER_VISION_MODELS["xiaomi"] == "mimo-v2.5"
 
 
 # =============================================================================

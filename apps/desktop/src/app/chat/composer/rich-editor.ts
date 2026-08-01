@@ -21,22 +21,50 @@ import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
-/** Paints `data-placeholder` while the editor is empty.
+/** Chromium's litter: editing beside a `contenteditable=false` chip splits the
+ *  line and leaves zero-length text nodes behind. They render as nothing and
+ *  serialize as nothing, so no reader of the editor should count them. */
+function isEmptyTextNode(node: ChildNode | null): boolean {
+  return node?.nodeType === Node.TEXT_NODE && !node.textContent
+}
+
+/** The node before `node`, stepping over that litter. */
+function meaningfulPreviousSibling(node: ChildNode | null): ChildNode | null {
+  let prev = node?.previousSibling ?? null
+
+  while (isEmptyTextNode(prev)) {
+    prev = prev?.previousSibling ?? null
+  }
+
+  return prev
+}
+
+/** The node after `node`, stepping over that litter. */
+function meaningfulNextSibling(node: ChildNode | null): ChildNode | null {
+  let next = node?.nextSibling ?? null
+
+  while (isEmptyTextNode(next)) {
+    next = next?.nextSibling ?? null
+  }
+
+  return next
+}
+
+/** Keep the `data-empty` marker the placeholder paints on in step with the
+ *  editor root's contents.
  *
  *  `:empty` can't be the whole test: a cleared editor keeps a scaffolding <br>
  *  so the contenteditable doesn't collapse, and that break makes `:empty`
  *  false. Nor can CSS infer it on its own — a text node is invisible to
  *  selectors, so `one<br>` and a lone `<br>` are the same shape, and
- *  `:has(> br:only-child)` would paint the placeholder straight over the
- *  user's text. The code that empties the editor is what knows, so it marks it.
+ *  `:has(> br:only-child)` would paint the placeholder over the user's text.
+ *  The code that empties the editor is what knows, so it marks it.
  *
- *  @see markEditorEmptiness */
-export const COMPOSER_PLACEHOLDER_CLASS =
-  '[&:is(:empty,[data-empty])]:before:content-[attr(data-placeholder)] [&:is(:empty,[data-empty])]:before:text-muted-foreground/60'
-
-/** Keep that marker in step with the editor root's contents. */
+ *  Zero-length text nodes don't count as contents. Chromium leaves them behind
+ *  whenever an edit lands next to a `contenteditable=false` chip, and counting
+ *  them left an editor the user had emptied looking occupied. */
 export function markEditorEmptiness(editor: HTMLElement) {
-  if (editor.childNodes.length === 0) {
+  if (Array.from(editor.childNodes).every(isEmptyTextNode)) {
     editor.dataset.empty = ''
   } else {
     delete editor.dataset.empty
@@ -407,7 +435,14 @@ export function replaceBeforeCaret(editor: HTMLElement, length: number, fragment
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND
  *  the single trailing space we auto-insert after it, atomically — so removing a
  *  directive never strands an orphaned space (the contenteditable-driven cleanup
- *  was unreliable). Returns whether it ran. */
+ *  was unreliable). Returns whether it ran.
+ *
+ *  "Immediately after" has to be read through Chromium's litter. Committing a
+ *  completion empties the typed token's text node rather than removing it, and
+ *  `Range.insertNode` splits around the caret, so the chip routinely sits
+ *  between zero-length text nodes. Reading those as content made the caret look
+ *  like it was after plain text; the delete declined and Chromium's own
+ *  backspace bounced between the leftovers instead of removing the chip. */
 export function deleteChipBeforeCaret(editor: HTMLElement): boolean {
   const hit = composerSelectionRange(editor)
 
@@ -419,16 +454,20 @@ export function deleteChipBeforeCaret(editor: HTMLElement): boolean {
   let chip: ChildNode | null = null
 
   if (startContainer === editor) {
-    chip = startOffset > 0 ? editor.childNodes[startOffset - 1] : null
+    chip = startOffset > 0 ? (editor.childNodes[startOffset - 1] ?? null) : null
+
+    if (isEmptyTextNode(chip)) {
+      chip = meaningfulPreviousSibling(chip)
+    }
   } else if (startContainer.nodeType === Node.TEXT_NODE && startOffset === 0) {
-    chip = startContainer.previousSibling
+    chip = meaningfulPreviousSibling(startContainer as ChildNode)
   }
 
   if (chip?.nodeType !== Node.ELEMENT_NODE || !(chip as HTMLElement).dataset.refText) {
     return false
   }
 
-  const after = chip.nextSibling
+  const after = meaningfulNextSibling(chip)
   chip.remove()
 
   // Drop the auto-inserted trailing space; keep any real following text.
@@ -666,6 +705,14 @@ function isBlankNode(node: ChildNode | null): boolean {
  *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
  *  (Shift+Enter, which sit after actual text) are preserved. */
 export function normalizeComposerEditorDom(editor: HTMLElement) {
+  // Chromium's zero-length text nodes first: every check below reads siblings,
+  // and litter between them makes a chip look like it has text either side.
+  for (const child of Array.from(editor.childNodes)) {
+    if (isEmptyTextNode(child)) {
+      child.remove()
+    }
+  }
+
   // A trailing block wrapper holding only a break/whitespace is the phantom
   // "new line" Chromium adds after a chip on backspace — drop it.
   const tailBlock = editor.lastChild as HTMLElement | null

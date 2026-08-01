@@ -11,6 +11,7 @@ import pytest
 
 from agent.auxiliary_client import (
     _NOUS_MODEL,
+    CodexAuxiliaryClient,
     get_text_auxiliary_client,
     get_available_vision_backends,
     resolve_vision_provider_client,
@@ -4051,3 +4052,43 @@ class TestCustomEndpointApiKeyInheritance:
 
         assert captured.get("api_key") == "no-key-required"
 
+
+class TestMoaAggregatorStreamingBypass:
+    def test_moa_aggregator_stream_bypasses_relay_for_codex_auxiliary_client(self, monkeypatch):
+        """The MoA facade owns the streaming contract. For Codex Responses-shim
+        clients (openai-codex, xai-oauth), call_llm must return the provider's
+        direct create() result instead of routing through Relay's managed
+        stream, which cannot iterate a completed SimpleNamespace (#74903).
+        """
+
+        completed = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+
+        real_client = SimpleNamespace(
+            api_key="test-key",
+            base_url="https://chatgpt.com/backend-api/codex/",
+            close=lambda: None,
+        )
+        client = CodexAuxiliaryClient(real_client, "gpt-5.6-sol")
+        direct_create = MagicMock(return_value=completed)
+        monkeypatch.setattr(client.chat.completions, "create", direct_create)
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (client, "gpt-5.6-sol"),
+        )
+        relay_stream = MagicMock(side_effect=AssertionError("_relay_sync_stream must not be used"))
+        monkeypatch.setattr("agent.auxiliary_client._relay_sync_stream", relay_stream)
+
+        result = call_llm(
+            task="moa_aggregator",
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "只回答 OK"}],
+            stream=True,
+        )
+
+        assert result is completed
+        direct_create.assert_called_once()
+        relay_stream.assert_not_called()

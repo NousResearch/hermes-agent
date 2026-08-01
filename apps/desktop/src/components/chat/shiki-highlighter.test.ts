@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { chunkByLines, exceedsHighlightBudget } from '@/components/chat/shiki-highlighter'
+import { chunkByLines, copyableCodeText, exceedsHighlightBudget } from '@/components/chat/shiki-highlighter'
 
 describe('exceedsHighlightBudget', () => {
   it('highlights normal-sized blocks', () => {
@@ -33,5 +33,14 @@ describe('chunkByLines', () => {
     expect(chunks).toHaveLength(5)
     expect(chunks.map(chunk => chunk.text).join('\n')).toBe(code)
     expect(chunks.reduce((sum, chunk) => sum + chunk.lines, 0)).toBe(1000)
+  })
+})
+
+
+describe('copyableCodeText', () => {
+  it('unwraps URL reference directives before copying a code block', () => {
+    expect(copyableCodeText('curl @url:https://example.com/image.png -o image.png')).toBe(
+      'curl https://example.com/image.png -o image.png'
+    )
   })
 })

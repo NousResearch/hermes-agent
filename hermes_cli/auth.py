@@ -71,6 +71,25 @@ except Exception:
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 
+# Internal-only key stamped onto an in-memory store dict that was created as
+# a *load-failure* fallback (genuine JSON/schema corruption after a
+# successful read) rather than an explicit user action (fresh install,
+# ``hermes auth logout``, etc.). ``_save_auth_store`` refuses to persist a
+# store carrying this marker while ``providers`` is still empty, so a load
+# failure alone can never flush an empty store over real on-disk credentials.
+# Any caller that legitimately mutates the store (adds/removes a provider,
+# writes credential_pool entries, ...) clears the marker before saving.
+_LOAD_FAILURE_MARKER = "__load_failure_fallback__"
+
+
+class AuthStoreWriteGuardError(RuntimeError):
+    """Raised when a write path tries to persist an unsafe empty auth store.
+
+    Specifically: an in-memory store that was only ever created as a
+    load-failure fallback (see ``_LOAD_FAILURE_MARKER``) and never received
+    a real provider or credential_pool entry from an explicit user action.
+    """
+
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
@@ -1167,7 +1186,16 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
                 "A copy could NOT be preserved at %s",
                 auth_file, exc, corrupt_path,
             )
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+        # Mark this store as a load-failure fallback, not a user-created empty
+        # store. _save_auth_store() refuses to persist it while it is still
+        # empty, so a load failure alone can never flush and erase real
+        # on-disk credentials; only an explicit subsequent write (e.g. the
+        # user re-authenticating) clears the marker.
+        return {
+            "version": AUTH_STORE_VERSION,
+            "providers": {},
+            _LOAD_FAILURE_MARKER: True,
+        }
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict)
@@ -1191,6 +1219,29 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
 
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
+    # Invariant: a store that only exists because a *load* failed (genuine
+    # JSON/schema corruption; never a transient OSError, which raises before
+    # a store like this is ever constructed — see _load_auth_store) must
+    # never be flushed to disk while it is still empty. Doing so would take
+    # a real, merely-unparseable auth.json and permanently replace it with
+    # nothing. The marker is cleared implicitly the moment a caller adds a
+    # real provider or credential_pool entry, since the store is then no
+    # longer empty and this guard no longer applies.
+    if auth_store.get(_LOAD_FAILURE_MARKER) and not auth_store.get(
+        "providers"
+    ) and not auth_store.get("credential_pool"):
+        logger.error(
+            "auth: refusing to write an empty auth store that originated "
+            "from a load failure (target=%s); on-disk credentials, if any, "
+            "were left untouched",
+            target_path if target_path is not None else _auth_file_path(),
+        )
+        raise AuthStoreWriteGuardError(
+            "refusing to persist an empty auth store created as a load-"
+            "failure fallback; this would silently delete any existing "
+            "on-disk credentials"
+        )
+    auth_store.pop(_LOAD_FAILURE_MARKER, None)
     # target_path=None preserves the existing contract (write the active
     # store at _auth_file_path()). An explicit path lets callers persist a
     # specific store — e.g. the global-root write-through for rotating xAI

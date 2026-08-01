@@ -1133,11 +1133,17 @@ function Test-Node {
                 # Persist to User PATH so fresh shells (and future stages
                 # in cross-process driver mode) see it.  Matches the
                 # pattern Install-Git uses for PortableGit.
+                #
+                # PREPEND, don't append.  Appending leaves a pre-existing
+                # system Node ahead of the bundled one in every new shell,
+                # so anything launched without a curated environment (a
+                # standalone hermes-setup.exe run, a user typing `npm`)
+                # silently resolves the wrong Node.  Bundled must win.
                 $nodeDir = "$HermesHome\node"
                 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
                 $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
                 if ($userPathItems -notcontains $nodeDir) {
-                    $userPathItems += $nodeDir
+                    $userPathItems = @($nodeDir) + $userPathItems
                     [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
                 }
 

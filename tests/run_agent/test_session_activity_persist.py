@@ -116,6 +116,63 @@ def test_touch_activity_persist_errors_are_swallowed(monkeypatch):
     assert agent._last_activity_desc == "tool completed: terminal (1.0s)"
 
 
+def test_heartbeat_write_failure_never_propagates_direct(monkeypatch):
+    """_persist_session_activity_if_due itself must swallow DB failures.
+
+    The heartbeat is best-effort by contract: a SessionDB write failure
+    (locked db, disk error, closed connection) must never raise into the
+    agent loop — it debug-logs and retries naturally on the next due window.
+    """
+    agent = _agent_with_db()
+    agent._session_db.touch_session_activity.side_effect = OSError("disk gone")
+    monkeypatch.setattr(run_agent.time, "monotonic", lambda: 5000.0)
+    agent._last_activity_ts = 1.0
+    agent._last_activity_desc = "x"
+
+    # Must not raise, despite the DB write blowing up.
+    agent._persist_session_activity_if_due()
+    assert agent._session_db.touch_session_activity.called
+
+
+def test_heartbeat_cadence_constant_pinned():
+    """Heartbeat cadence is a config-independent constant and >= 30s.
+
+    The SessionDB write path is contended; the heartbeat must stay
+    low-frequency regardless of compression/agent config.
+    """
+    from agent.session_activity import (
+        SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS,
+    )
+
+    assert SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS >= 30.0
+
+
+def test_heartbeat_respects_cadence_constant(monkeypatch):
+    """The rate limiter must key off the shared cadence constant."""
+    from agent.session_activity import (
+        SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS as INTERVAL,
+    )
+
+    agent = _agent_with_db()
+    mono = {"t": 1000.0}
+    monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_000.0)
+    monkeypatch.setattr(run_agent.time, "monotonic", lambda: mono["t"])
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    agent._touch_activity("first")
+    assert agent._session_db.touch_session_activity.call_count == 1
+
+    # Just inside the window: no write.
+    mono["t"] = 1000.0 + INTERVAL - 0.5
+    agent._touch_activity("inside window")
+    assert agent._session_db.touch_session_activity.call_count == 1
+
+    # Just past the window: write.
+    mono["t"] = 1000.0 + INTERVAL + 0.5
+    agent._touch_activity("past window")
+    assert agent._session_db.touch_session_activity.call_count == 2
+
+
 def test_get_activity_summary_exposes_shared_activity_contract(monkeypatch):
     agent = _agent_with_db()
     monkeypatch.setattr(run_agent.time, "time", lambda: 1_700_000_010.0)

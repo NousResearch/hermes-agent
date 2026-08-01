@@ -18,6 +18,16 @@ from typing import Any, Mapping, Optional
 
 ACTIVITY_DESCRIPTION_MAX = 120
 
+# Durable SessionDB activity heartbeat cadence (seconds between writes per
+# session). Contract: MUST stay >= 30s — the SessionDB write path is
+# contended (deadline/patience retry, compression-lock patience), and the
+# heartbeat is an observation-only projection that never justifies extra
+# write pressure. This cadence is deliberately a code constant, independent
+# of any compression.* or agent.* config, so no configuration can turn the
+# heartbeat into a high-frequency writer. Matches the kanban auto-heartbeat
+# cadence. force_persist (terminal stamps) is the only bypass.
+SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
+
 
 class ActivityProvenance(str, Enum):
     """Where a durable/in-memory activity stamp came from."""

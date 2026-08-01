@@ -3680,8 +3680,11 @@ class AIAgent:
     def _persist_session_activity_if_due(self) -> None:
         """Best-effort durable activity heartbeat for SessionDB consumers.
 
-        Rate-limited to one write per 60s per agent (same cadence as the
-        kanban auto-heartbeat). Fail-open: never raises into the agent loop.
+        Cadence is pinned by SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS
+        (>=30s per session, config-independent — see agent/session_activity.py).
+        The write rides the standard SessionDB ``_execute_write`` patience
+        path via ``touch_session_activity``. Fail-open: a failed heartbeat
+        write must NEVER raise into the agent loop (swallow + debug-log).
         """
         session_id = getattr(self, "session_id", None)
         session_db = getattr(self, "_session_db", None)
@@ -3690,14 +3693,17 @@ class AIAgent:
         touch = getattr(session_db, "touch_session_activity", None)
         if not callable(touch):
             return
+        from agent.session_activity import (
+            SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS,
+            normalize_activity_provenance,
+        )
+
         now_mono = time.monotonic()
         last_mono = getattr(self, "_session_activity_last_persist_mono", 0.0)
-        if (now_mono - last_mono) < 60.0:
+        if (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
             return
         self._session_activity_last_persist_mono = now_mono
         try:
-            from agent.session_activity import normalize_activity_provenance
-
             touch(
                 session_id,
                 getattr(self, "_last_activity_ts", None),
@@ -3707,8 +3713,13 @@ class AIAgent:
                 ),
             )
         except Exception:
-            # Never let durable heartbeat I/O break the agent loop.
-            pass
+            # Never let durable heartbeat I/O break the agent loop. The
+            # heartbeat is an observation-only projection; the next due
+            # window retries naturally.
+            logger.debug(
+                "session activity heartbeat write failed (ignored)",
+                exc_info=True,
+            )
 
     def _reset_activity_labels_after_turn(self) -> None:
         """Drop mid-turn activity labels once the turn is no longer running.

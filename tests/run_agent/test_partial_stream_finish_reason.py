@@ -166,6 +166,47 @@ class TestCleanTextEndWithoutFinishReason:
         assert response.id == PARTIAL_STREAM_STUB_ID
         assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_opencode_host_fallback_accepts_as_stop(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Provider id may be blank; official opencode.ai host still counts."""
+        agent = _make_agent()
+        agent.provider = ""
+        agent.base_url = "https://opencode.ai/zen/go/v1"
+        response = self._run_clean_text_stream(
+            agent, mock_create, monkeypatch, text="from host fallback",
+        )
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_path_containing_opencode_ai_still_stubs(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Path substring must not be treated as OpenCode (#76112 review)."""
+        agent = _make_agent()
+        agent.provider = "openrouter"
+        agent.base_url = "https://evil.com/opencode.ai/v1"
+        response = self._run_clean_text_stream(agent, mock_create, monkeypatch)
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_lookalike_host_still_stubs(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """Lookalike hostnames must not match base_url_host_matches."""
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.base_url = "https://opencode.ai.evil/v1"
+        response = self._run_clean_text_stream(agent, mock_create, monkeypatch)
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+
 
 class TestCleanStreamEndMidToolCall:
     """The upstream closes the SSE stream cleanly after delivering a tool

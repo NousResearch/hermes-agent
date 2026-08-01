@@ -2468,8 +2468,9 @@ def _provider_accepts_clean_text_end_without_finish_reason(agent) -> bool:
     provider = (getattr(agent, "provider", None) or "").strip().lower()
     if provider in _CLEAN_TEXT_NO_FINISH_PROVIDERS:
         return True
-    base = (getattr(agent, "base_url", None) or "").lower()
-    return "opencode.ai" in base
+    base = getattr(agent, "base_url", None) or ""
+    # Host match only — reject path/lookalike false positives (utils.base_url_host_matches).
+    return base_url_host_matches(base, "opencode.ai")
 
 
 def _build_partial_stream_stub(

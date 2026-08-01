@@ -209,6 +209,10 @@ def _(rid, params: dict) -> dict:
             )
             if len(items) >= 30:
                 break
+    except _UnknownProfileError:
+        # Fail closed with 4028 via handle_request — a named-but-unknown
+        # profile must not be folded into the generic completion error.
+        raise
     except Exception as e:
         return _err(rid, 5021, str(e))
 

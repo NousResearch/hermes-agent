@@ -1228,11 +1228,17 @@ def _response_profile_name(profile: str | None = None) -> str:
     """Profile name to report on session.* payloads.
 
     Prefer the RPC's requested profile when it is a real non-launch profile;
-    otherwise the process launch profile.
+    otherwise the process launch profile. This is a label helper for success
+    payloads (the DB guards have already vetted the profile), so an unknown
+    name degrades to the launch label instead of raising.
     """
     name = (profile or "").strip()
-    if name and _profile_home(name) is not None:
-        return name
+    if name:
+        try:
+            if _profile_home(name) is not None:
+                return name
+        except _UnknownProfileError:
+            pass
     return _current_profile_name()
 
 
@@ -1249,21 +1255,52 @@ def _db_unavailable_error(rid, *, code: int):
 # (a ContextVar override) for the duration of the call so config/skills/model and
 # message persistence all resolve to the right profile. Omitted/own profile → the
 # launch profile (unchanged for single-profile and per-profile-remote setups).
+class _UnknownProfileError(Exception):
+    """A request named a profile that is not provisioned on this host.
+
+    Raised by :func:`_profile_home` so every consumer — direct callers,
+    :func:`_db_for_profile`, and the :func:`_profile_db` contextmanager —
+    fails closed instead of silently operating on the launch profile's
+    home/state.db. :func:`handle_request` maps it to JSON-RPC error 4028
+    before any launch-profile DB access happens.
+    """
+
+    def __init__(self, profile: str):
+        self.profile = profile
+        super().__init__(profile)
+
+
 def _profile_home(profile: str | None) -> Path | None:
-    """Resolve a named profile's home on THIS host, or None for the launch profile."""
+    """Resolve a named profile's home on THIS host, or None for the launch profile.
+
+    Raises :class:`_UnknownProfileError` when the name does not resolve to a
+    provisioned profile home — callers must never fall back to the launch
+    profile for a request that explicitly named a different one.
+    """
     name = (profile or "").strip()
     if not name:
         return None
     try:
         from hermes_cli import profiles as profiles_mod
 
-        home = Path(profiles_mod.get_profile_dir(name))
+        canon = profiles_mod.normalize_profile_name(name)
+        # normalize_profile_name lowercases but does NOT reject path
+        # components, and ``profiles/..`` resolves to the deploy root — which
+        # the own-profile check below would misclassify as the launch profile.
+        # Validate the NORMALIZED name before touching the filesystem.
+        if canon != "default" and (
+            canon in (".", "..") or "/" in canon or "\\" in canon or os.sep in canon
+        ):
+            raise ValueError("invalid profile name")
+        home = Path(profiles_mod.get_profile_dir(canon))
     except Exception:
-        return None
+        raise _UnknownProfileError(name) from None
     # Already the launch profile? No override needed.
     if home.resolve() == Path(_hermes_home).resolve():
         return None
-    return home if (home / "state.db").exists() or home.exists() else None
+    if (home / "state.db").exists() or home.exists():
+        return home
+    raise _UnknownProfileError(name)
 
 
 def _profile_scoped(handler):
@@ -1760,7 +1797,15 @@ def handle_request(req: dict) -> dict | None:
     fn = _methods.get(method)
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
-    return fn(rid, params)
+    try:
+        return fn(rid, params)
+    except _UnknownProfileError as exc:
+        # Fail closed: a request that names a profile absent on this host must
+        # never be served from the launch profile's home/state.db. 4028 is the
+        # dedicated code (4025 collides with handoff.request). The message
+        # echoes only the client-supplied string, never local profile names or
+        # host paths.
+        return _err(rid, 4028, f"requested profile {exc.profile!r} is not available on this host")
 
 
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:

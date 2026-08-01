@@ -331,7 +331,7 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
                 "Persisted Copilot JWT store exceeds %d bytes; ignoring", _JWT_DISK_MAX_BYTES
             )
             return None
-        loaded = json.loads(path.read_text())
+        loaded = json.loads(path.read_text(encoding="utf-8"))
         return loaded if isinstance(loaded, dict) else None
     except Exception as exc:
         logger.debug("Failed to read persisted Copilot JWT store: %s", exc)
@@ -360,7 +360,7 @@ def evict_cached_exchanged_token(raw_token: str) -> None:
         if store is not None and fp in store:
             del store[fp]
             tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(store))
+            tmp.write_text(json.dumps(store), encoding="utf-8")
             try:
                 os.chmod(tmp, 0o600)
             except Exception:
@@ -425,7 +425,7 @@ def _save_jwt_to_disk(
             "base_url": base_url,
         }
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(store))
+        tmp.write_text(json.dumps(store), encoding="utf-8")
         try:
             os.chmod(tmp, 0o600)
         except Exception:

@@ -433,6 +433,10 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     """Return the plugin path if it exists, or exit with an error listing installed plugins."""
     target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     if not target.exists():
+        # Model-provider plugins are installed under model-providers/.
+        model_provider_target = (plugins_dir / "model-providers" / name).resolve()
+        if model_provider_target.exists():
+            return model_provider_target
         installed = ", ".join(d.name for d in plugins_dir.iterdir() if d.is_dir()) or "(none)"
         console.print(
             f"[red]Error:[/red] Plugin '{name}' not found in {plugins_dir}.\n"
@@ -502,8 +506,16 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
         )
 
+        # Model-provider plugins go under model-providers/ so the Provider
+        # Registry (providers/__init__.py) can discover them.
+        if manifest.get("kind") == "model-provider":
+            install_base = plugins_dir / "model-providers"
+            install_base.mkdir(parents=True, exist_ok=True)
+        else:
+            install_base = plugins_dir
+
         try:
-            target = _sanitize_plugin_name(plugin_name, plugins_dir)
+            target = _sanitize_plugin_name(plugin_name, install_base)
         except ValueError as e:
             raise PluginOperationError(str(e)) from e
 

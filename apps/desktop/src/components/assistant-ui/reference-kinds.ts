@@ -171,3 +171,19 @@ export function textWithoutReferenceLines(text: string): string {
     .join('\n')
     .trim()
 }
+
+/** Remove optional wire-format quotes and terminal prose punctuation from a reference value. */
+export function unwrapReferenceValue(raw: string): string {
+  if (raw.length < 2) {
+    return raw
+  }
+
+  const head = raw[0]
+  const tail = raw[raw.length - 1]
+
+  if ((head === '`' && tail === '`') || (head === '"' && tail === '"') || (head === "'" && tail === "'")) {
+    return raw.slice(1, -1)
+  }
+
+  return raw.replace(/[,.;!?]+$/, '')
+}

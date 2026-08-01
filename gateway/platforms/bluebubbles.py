@@ -890,10 +890,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     "partIndex": 0,
                 },
             )
-            status = response.get("status") if isinstance(response, dict) else None
-            if status is not None and not (200 <= int(status) < 300):
+            status = response.get("status")
+            if not isinstance(status, int) or not 200 <= status < 300:
                 logger.debug(
-                    "[bluebubbles] reaction rejected with envelope status %s",
+                    "[bluebubbles] reaction returned invalid or unsuccessful status %r",
                     status,
                 )
                 return False

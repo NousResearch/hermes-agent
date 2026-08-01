@@ -448,6 +448,14 @@ class TestBlueBubblesReplyUX:
             "user@example.com", "inbound-guid", "like"
         ) is False
 
+        async def malformed_api_post(path, payload):
+            return {}
+
+        monkeypatch.setattr(adapter, "_api_post", malformed_api_post)
+        assert await adapter._send_reaction(
+            "user@example.com", "inbound-guid", "like"
+        ) is False
+
     @pytest.mark.asyncio
     async def test_processing_start_reacts_without_text_ack(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

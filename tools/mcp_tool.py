@@ -108,7 +108,7 @@ import time
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
-from typing import Any, Coroutine, Dict, List, Optional
+from typing import Any, Coroutine, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 from tools.registry import tool_error
@@ -4553,6 +4553,57 @@ def _interpolate_env_vars(value):
     return value
 
 
+# (server_name, dotted key path) pairs already warned about — see
+# _warn_hidden_whitespace(); config loads happen on every discovery pass.
+_whitespace_warned: Set[Tuple[str, str]] = set()
+
+
+def _warn_hidden_whitespace(server_name: str, config: dict) -> List[str]:
+    """Warn about MCP config string values with hidden leading/trailing whitespace.
+
+    A token pasted with a trailing newline or a URL copied with a leading
+    space produces opaque auth/connect failures (the server rejects the
+    credential, TLS/DNS fails on ``"example.com "``), and the whitespace is
+    invisible when eyeballing config.yaml. Inspired by Claude Code v2.1.219,
+    which added the same startup warning for its MCP config values.
+
+    Advisory only — values are never mutated (whitespace could theoretically
+    be intentional in an arg). Returns the list of dotted key paths flagged,
+    for testability. Values themselves are never logged (they are often
+    secrets); only the key path is named. Each (server, key path) is warned
+    about once per process — ``_load_mcp_config()`` runs on every discovery/
+    status call and repeating the warning would be noise.
+    """
+    flagged: List[str] = []
+
+    def _walk(value: Any, path: str) -> None:
+        if isinstance(value, str):
+            if value != value.strip():
+                flagged.append(path)
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                _walk(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(value, list):
+            for i, v in enumerate(value):
+                _walk(v, f"{path}[{i}]")
+
+    _walk(config, "")
+    for key_path in flagged:
+        dedupe_key = (server_name, key_path)
+        if dedupe_key in _whitespace_warned:
+            continue
+        _whitespace_warned.add(dedupe_key)
+        logger.warning(
+            "MCP server '%s': config value '%s' has hidden leading or "
+            "trailing whitespace — this often causes authentication or "
+            "connection failures. Check for stray spaces/newlines in "
+            "config.yaml (or the referenced env var).",
+            server_name,
+            key_path,
+        )
+    return flagged
+
+
 def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
     try:
@@ -4611,6 +4662,7 @@ def _load_mcp_config() -> Dict[str, dict]:
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
+                _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
         return safe_servers
     except Exception as exc:
@@ -5917,13 +5969,17 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
+    # Only attempt servers that aren't already connected (or currently
+    # connecting) and are enabled.  Checking ``_server_connecting`` prevents
+    # duplicate subprocess spawns when ``discover_mcp_tools()`` is called
+    # from multiple entry-points before the first batch finishes (#58862).
     with _lock:
+        connecting = set(_server_connecting)
         new_servers = {
             k: v
             for k, v in servers.items()
             if k not in _servers
+            and k not in connecting
             and _parse_boolish(v.get("enabled", True), default=True)
             # Skip a server still serving its post-failure backoff. Without
             # this, a server that fails to connect (and is therefore never
@@ -6009,6 +6065,28 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         _set_interrupt(False)
     try:
         _run_on_mcp_loop(_discover_all, timeout=120)
+    except (TimeoutError, InterruptedError) as _e:
+        # When the outer timeout fires or the user interrupts,
+        # _discover_all's gather may not have finished, leaving
+        # entries stranded in _server_connecting.  Those stale
+        # entries would block future reconnection attempts (#58862).
+        with _lock:
+            stale = [n for n in new_servers if n in _server_connecting]
+            if stale:
+                logger.warning(
+                    "MCP discovery %s while %d server(s) were still "
+                    "connecting; clearing stale connecting set: %s",
+                    "timed out" if isinstance(_e, TimeoutError) else "interrupted",
+                    len(stale),
+                    ", ".join(stale),
+                )
+                _server_connecting.difference_update(stale)
+                for _sn in stale:
+                    _server_connect_errors.setdefault(
+                        _sn,
+                        f"Connection attempt {'timed out' if isinstance(_e, TimeoutError) else 'interrupted'} during discovery",
+                    )
+        raise
     finally:
         if _was_interrupted:
             _set_interrupt(True)
@@ -6081,10 +6159,13 @@ def discover_mcp_tools() -> List[str]:
 
     try:
         with _lock:
+            connecting = set(_server_connecting)
             new_server_names = [
                 name
                 for name, cfg in servers.items()
-                if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
+                if name not in _servers
+                and name not in connecting
+                and _parse_boolish(cfg.get("enabled", True), default=True)
             ]
 
         tool_names = register_mcp_servers(servers)

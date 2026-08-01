@@ -1860,12 +1860,12 @@ def anthropic_prompt_cache_policy(
     gateway implements the Anthropic cache_control contract
     (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
 
-    Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
-    Alibaba (DashScope) also honour Anthropic-style ``cache_control``
-    markers on OpenAI-wire chat completions. Upstream pi-mono #3392 /
-    pi #3393 documented this for opencode-go Qwen. Without markers
-    these providers serve zero cache hits, re-billing the full prompt
-    on every turn.
+    Qwen models on OpenCode and direct Alibaba (DashScope), plus DeepSeek
+    models on OpenCode, also honour Anthropic-style ``cache_control`` markers
+    on OpenAI-wire chat completions. Upstream pi-mono #3392 / pi #3393
+    documented this for opencode-go Qwen; #24617 reports the same gateway
+    contract for DeepSeek. Without markers these providers serve zero cache
+    hits, re-billing the full prompt on every turn.
     """
     eff_provider = (provider if provider is not None else agent.provider) or ""
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
@@ -1980,16 +1980,22 @@ def anthropic_prompt_cache_policy(
         if is_minimax_provider or is_minimax_host:
             return True, True
 
-    # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
-    # transport that accepts Anthropic-style cache_control markers and
-    # rewards them with real cache hits.  Without this branch
-    # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
-    # through the subscription on every turn.
+    # Qwen on OpenCode (Zen/Go) and native DashScope, plus DeepSeek on
+    # OpenCode only: OpenAI-wire transports that accept Anthropic-style
+    # cache_control markers and reward them with real cache hits. Keep direct
+    # Alibaba specific to Qwen; its catalog does not establish the same
+    # contract for DeepSeek.
     model_is_qwen = "qwen" in model_lower
+    model_is_deepseek = "deepseek" in model_lower
+    provider_is_opencode = provider_lower in {
+        "opencode", "opencode-zen", "opencode-go",
+    }
     provider_is_alibaba_family = provider_lower in {
         "opencode", "opencode-zen", "opencode-go", "alibaba",
     }
-    if provider_is_alibaba_family and model_is_qwen:
+    if (provider_is_alibaba_family and model_is_qwen) or (
+        provider_is_opencode and model_is_deepseek
+    ):
         # Envelope layout (native_anthropic=False): markers on inner
         # content parts, not top-level tool messages.  Matches
         # pi-mono's "alibaba" cacheControlFormat.
@@ -2082,6 +2088,31 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # restore, request-scoped); auxiliary_client builds its own clients and keeps
     # SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
+    # Defense-in-depth: guarantee Copilot requests carry the integration
+    # headers regardless of which build path we came through. The primary
+    # header wiring lives in `_apply_client_headers_for_base_url`, but two
+    # rebuild paths (`primary_recovery`, `restore_primary` in this module)
+    # reconstruct the client purely from a `_primary_runtime` snapshot and do
+    # NOT re-run that wiring. If the snapshot's client_kwargs ever lacks
+    # `default_headers` (older snapshot, header-less resolver result), the
+    # client goes out WITHOUT `Copilot-Integration-Id: vscode-chat`; the
+    # Copilot server then routes it to the "copilot-language-server" integrator
+    # whose model allowlist omits enterprise-only models (claude-opus-4.8) →
+    # HTTP 400 model_not_available_for_integrator on every turn. This chokepoint
+    # is the single place every primary OpenAI client passes through, so filling
+    # missing Copilot headers here closes the whole class. We only ADD missing
+    # keys — never override headers a caller deliberately set.
+    try:
+        if base_url_host_matches(str(client_kwargs.get("base_url", "")), "githubcopilot.com"):
+            from hermes_cli.models import copilot_default_headers
+            existing = dict(client_kwargs.get("default_headers") or {})
+            existing_lower = {k.lower() for k in existing}
+            for hk, hv in copilot_default_headers().items():
+                if hk.lower() not in existing_lower:
+                    existing[hk] = hv
+            client_kwargs["default_headers"] = existing
+    except Exception:
+        _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

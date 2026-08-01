@@ -44,7 +44,7 @@ export function TerminalRail() {
 
   return (
     <div
-      className="group/rail relative z-40 flex h-full w-9 shrink-0 flex-col items-center border-l border-(--ui-stroke-quaternary) bg-(--ui-editor-surface-background)"
+      className="group/rail relative z-40 flex h-full w-9 shrink-0 flex-col items-center border-l border-(--ui-stroke-quaternary) bg-(--ui-terminal-surface-background)"
       // The rail sits at the pane's outer edge, under the collapsed sidebars'
       // hover-reveal triggers; mark it so those triggers go pointer-transparent
       // while it's hovered (see the suppression rules in styles.css) and a reach

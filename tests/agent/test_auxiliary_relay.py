@@ -260,3 +260,90 @@ def test_partial_auxiliary_stream_failure_closes_before_recovery(
         turn.lease.host.release_managed_execution(consumer)
 
 
+
+
+def test_auxiliary_stream_unwraps_completed_response(relay_turn):
+    """MoA aggregator on an Anthropic-protocol provider: the client returns a
+    completed response for ``stream=True`` (the adapter ignores the flag), so
+    ``_relay_sync_stream`` must surface it raw for the consumer's
+    ``hasattr(stream, "choices")`` handling — regression of #11732/#55933 via
+    the Relay integration (SimpleNamespace is not iterable)."""
+    _relay, _turn = relay_turn
+    completed = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="aggregated"),
+                finish_reason="stop",
+            )
+        ],
+        model="kimi-k3",
+    )
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: completed)
+        )
+    )
+
+    @auxiliary_client._relay_auxiliary_call
+    def run(task):
+        auxiliary_client._set_relay_auxiliary_route(
+            "kimi-coding",
+            "kimi-k3",
+            "chat_completions",
+        )
+        return auxiliary_client._relay_sync_stream(
+            client,
+            {"model": "kimi-k3", "messages": [], "stream": True},
+        )
+
+    assert run("moa_aggregator") is completed
+
+
+
+def test_call_llm_stream_unwraps_completed_response(relay_turn, monkeypatch):
+    """Outermost seam: ``call_llm(stream=True)`` — decorated with
+    ``@_relay_auxiliary_call`` in production, so the Relay context is always
+    set — with an Anthropic-shaped client that ignores ``stream=True`` and
+    returns a completed response (the MoA aggregator on kimi-coding /
+    MiniMax / ZAI / any /anthropic gateway). Must return the raw response for
+    the consumer's ``hasattr(stream, "choices")`` handling, not crash with
+    ``TypeError: 'types.SimpleNamespace' object is not iterable``."""
+    _relay, _turn = relay_turn
+    captured = {}
+    completed = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="aggregated"),
+                finish_reason="stop",
+            )
+        ],
+        model="kimi-k3",
+    )
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return completed
+
+    client = SimpleNamespace(
+        base_url="https://api.kimi.com/coding/v1",
+        chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)),
+    )
+    monkeypatch.setattr(
+        auxiliary_client,
+        "_get_cached_client",
+        lambda *args, **kwargs: (client, "kimi-k3"),
+    )
+
+    result = auxiliary_client.call_llm(
+        "moa_aggregator",
+        provider="kimi-coding",
+        model="kimi-k3",
+        api_key="sk-test",
+        messages=[{"role": "user", "content": "q"}],
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+
+    assert result is completed
+    assert captured["stream"] is True
+    assert captured["stream_options"] == {"include_usage": True}

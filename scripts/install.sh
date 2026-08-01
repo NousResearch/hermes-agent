@@ -1725,6 +1725,29 @@ EOF
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
+    # Also expose `hermes-agent`. The `hermes-agent` console script declared in
+    # pyproject.toml's [project.scripts] lives inside the venv, which is not on
+    # the login-shell PATH. Without this launcher users can't invoke the agent
+    # entrypoint directly from outside the venv. (#74819)
+    rm -f "$command_link_dir/hermes-agent"
+    if [ "$USE_VENV" = true ]; then
+        cat > "$command_link_dir/hermes-agent" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" "$INSTALL_DIR/run_agent.py" "\$@"
+EOF
+    else
+        cat > "$command_link_dir/hermes-agent" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$HERMES_BIN" run_agent.py "\$@"
+EOF
+    fi
+    chmod +x "$command_link_dir/hermes-agent"
+    log_success "Installed hermes-agent launcher → $command_link_display_dir/hermes-agent"
+
     # Also expose `hermes-acp`. ACP hosts (Zed, JetBrains, Buzz) resolve the
     # agent by command name on the login-shell PATH, and the `hermes-acp`
     # console script lives inside the venv, which is not on that PATH. Without

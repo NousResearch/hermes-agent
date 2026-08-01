@@ -47,10 +47,20 @@ const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session
 const PRIVY_SESSION_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token', 'privy-session']
 
 function normalizeRemoteBaseUrl(rawUrl) {
-  const value = String(rawUrl || '').trim()
+  let value = String(rawUrl || '').trim()
 
   if (!value) {
     throw new Error('Remote gateway URL is required.')
+  }
+
+  // Users routinely paste scheme-less "host:port" (a Tailscale IP, a LAN
+  // hostname). Without this, `new URL('100.64.0.1:9119')` either throws or —
+  // worse — parses `host:` as the protocol and produces a baffling
+  // "must be http:// or https://, got myhost:" error. Only a real
+  // `scheme://` prefix opts out, so explicit non-http schemes (ftp://,
+  // file://) still reach the protocol check below and get rejected.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    value = `http://${value}`
   }
 
   let parsed

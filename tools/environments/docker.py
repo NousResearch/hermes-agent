@@ -349,6 +349,29 @@ _BASE_SECURITY_ARGS = [
 # cgroup ``pids`` controller is available (see ``_cgroup_limits_available``).
 _DEFAULT_PIDS_LIMIT = "256"
 
+# Default /dev/shm size. Docker's built-in default is a tiny 64 MB, which
+# silently breaks shared-memory-hungry workloads inside the sandbox: Chromium /
+# Playwright renderers crash tabs, and PyTorch DataLoader workers die with
+# "bus error" / "insufficient shared memory" once they exceed it. tmpfs is
+# lazily allocated, so a 1g ceiling costs nothing until actually used (and
+# usage still counts against the container's --memory cgroup limit).
+# Configurable via ``terminal.docker_shm_size`` in config.yaml; an empty value
+# (or "0") omits the flag and falls back to Docker's 64 MB default.
+# Ported from nanocoai/nanoclaw#2748.
+_DEFAULT_SHM_SIZE = "1g"
+
+
+def _extra_args_set_shm_size(extra_args: list) -> bool:
+    """True when user-supplied docker_extra_args already set ``--shm-size``.
+
+    In that case we skip our default so the user's value is unambiguous
+    (rather than relying on flag-ordering / last-wins behavior).
+    """
+    return any(
+        isinstance(a, str) and (a == "--shm-size" or a.startswith("--shm-size="))
+        for a in (extra_args or [])
+    )
+
 # /run is split out from _BASE_SECURITY_ARGS because s6-overlay images need it
 # mounted ``exec``: s6 stage0 later runs ``exec /run/s6/basedir/bin/init``, which
 # fails with "Permission denied" (exit 126) on a ``noexec`` mount. For all other
@@ -839,6 +862,7 @@ class DockerEnvironment(BaseEnvironment):
         run_as_host_user: bool = False,
         extra_args: list = None,
         persist_across_processes: bool = True,
+        shm_size: str = _DEFAULT_SHM_SIZE,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -874,6 +898,12 @@ class DockerEnvironment(BaseEnvironment):
             resource_args.extend(["--memory", f"{memory}m"])
         if _cgroup_limits_available(image):
             resource_args.extend(["--pids-limit", _DEFAULT_PIDS_LIMIT])
+        # /dev/shm size (not cgroup-gated: --shm-size is a tmpfs mount option,
+        # no controller delegation required). Skip when the user already sets
+        # it via docker_extra_args, or opted out with an empty/"0" value.
+        shm = str(shm_size or "").strip()
+        if shm and shm != "0" and not _extra_args_set_shm_size(extra_args):
+            resource_args.extend(["--shm-size", shm])
         if disk > 0 and sys.platform != "darwin":
             if self._storage_opt_supported():
                 resource_args.extend(["--storage-opt", f"size={disk}m"])

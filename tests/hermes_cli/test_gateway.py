@@ -2,7 +2,6 @@
 
 import argparse
 import os
-import pty
 import signal
 import subprocess
 import sys
@@ -111,6 +110,13 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
     master_fd = slave_fd = None
     try:
         if stdin_is_tty:
+            # Imported here, not at module scope: ``pty`` pulls in ``termios``,
+            # which does not exist on Windows, so a top-level import raises
+            # ModuleNotFoundError during *collection* — before the skipif above
+            # can take effect — and takes the whole module's Windows-viable
+            # tests down with it.
+            import pty
+
             master_fd, slave_fd = pty.openpty()
             stdin = slave_fd
         else:
@@ -219,6 +225,10 @@ class TestContainerSystemdSupport:
 
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="systemd user-linger is Linux-only (drives os.getuid())",
+)
 def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 

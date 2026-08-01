@@ -122,6 +122,28 @@ def _assert_anti_pattern_guidance(prompt: str, label: str) -> None:
     )
 
 
+def _assert_unresolved_failure_guidance(prompt: str, label: str) -> None:
+    """Unresolved task attempts must not become persistent skill guidance."""
+    lower = prompt.lower()
+    assert "unresolved failures" in lower, f"{label}: must identify unresolved failures"
+    assert "working method" in lower, f"{label}: must require a working method"
+    assert "told the user to check manually" in lower, (
+        f"{label}: must recognize an explicitly unresolved session"
+    )
+    assert "never the dead ends" in lower, f"{label}: must exclude failed attempts"
+    assert "independently confident" in lower, (
+        f"{label}: must limit exceptions to verified alternatives"
+    )
+
+
+def test_skill_review_prompt_rejects_unresolved_failures():
+    _assert_unresolved_failure_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+
+
+def test_combined_review_prompt_rejects_unresolved_failures():
+    _assert_unresolved_failure_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+
+
 
 
 
@@ -129,4 +151,3 @@ def _assert_anti_pattern_guidance(prompt: str, label: str) -> None:
 # ---------------------------------------------------------------------------
 # _MEMORY_REVIEW_PROMPT — unchanged, still memory-focused
 # ---------------------------------------------------------------------------
-

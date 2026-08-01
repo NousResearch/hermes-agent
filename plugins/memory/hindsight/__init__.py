@@ -559,15 +559,61 @@ def _embedded_profile_env_path(config: dict[str, Any]):
     return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
+def _secure_write_profile_env(profile_env, content: str) -> None:
+    """Create/overwrite *profile_env* with owner-only (0600) permissions.
+
+    The file carries the embedded daemon's plaintext LLM API key
+    (``HINDSIGHT_API_LLM_API_KEY``), so it must never be created with the
+    default umask-derived mode. A pre-existing file is tightened *before*
+    the new secret bytes are written.
+    """
+    if profile_env.exists():
+        try:
+            os.chmod(profile_env, 0o600)
+        except OSError:
+            pass
+    fd = os.open(str(profile_env), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+
+def _validate_profile_env_permissions(profile_env) -> None:
+    """Post-write validation: the secret file must be owner-only on POSIX."""
+    if os.name != "posix":
+        # POSIX mode bits do not model Windows ACLs.
+        return
+    import stat
+
+    mode = stat.S_IMODE(profile_env.stat().st_mode)
+    if mode != 0o600:
+        try:
+            os.chmod(profile_env, 0o600)
+        except OSError:
+            pass
+        mode = stat.S_IMODE(profile_env.stat().st_mode)
+        if mode != 0o600:
+            raise PermissionError(
+                f"Embedded Hindsight profile environment is not owner-only: {profile_env}"
+            )
+
+
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
     """Write the profile-scoped env file that standalone hindsight-embed uses."""
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    profile_env.write_text(
-        "".join(f"{key}={value}\n" for key, value in env_values.items()),
-        encoding="utf-8",
-    )
+    content = "".join(f"{key}={value}\n" for key, value in env_values.items())
+    try:
+        _secure_write_profile_env(profile_env, content)
+        _validate_profile_env_permissions(profile_env)
+    except BaseException:
+        # Never leave a plaintext API key behind in a file whose permissions
+        # could not be verified.
+        try:
+            profile_env.unlink()
+        except OSError:
+            pass
+        raise
     return profile_env
 
 def _sanitize_bank_segment(value: str) -> str:

@@ -1840,7 +1840,11 @@ class GatewaySlashCommandsMixin:
                                 enrich_model_switch_warnings_for_gateway,
                             )
 
-                            enrich_model_switch_warnings_for_gateway(
+                            # Offload: merge_preflight_compression_warning()
+                            # calls the sync resolve_display_context_length()
+                            # provider probe ladder — must not run on the loop.
+                            await asyncio.to_thread(
+                                enrich_model_switch_warnings_for_gateway,
                                 result,
                                 _self,
                                 session_key=_session_key,
@@ -2011,7 +2015,7 @@ class GatewaySlashCommandsMixin:
                         lines = [t("gateway.model.switched", model=format_model_for_display(result.new_model))]
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
-                        from hermes_cli.model_switch import resolve_display_context_length
+                        from hermes_cli.model_switch import resolve_display_context_length_async
                         _sw_config_ctx = None
                         _sw_model_cfg = {}
                         try:
@@ -2025,7 +2029,7 @@ class GatewaySlashCommandsMixin:
                             pass
                         if not isinstance(_sw_model_cfg, dict):
                             _sw_model_cfg = {}
-                        ctx = resolve_display_context_length(
+                        ctx = await resolve_display_context_length_async(
                             result.new_model,
                             result.target_provider,
                             base_url=result.base_url or current_base_url or "",
@@ -2145,7 +2149,11 @@ class GatewaySlashCommandsMixin:
                 enrich_model_switch_warnings_for_gateway,
             )
 
-            enrich_model_switch_warnings_for_gateway(
+            # Offload: merge_preflight_compression_warning() calls the sync
+            # resolve_display_context_length() provider probe ladder — must
+            # not run on the loop.
+            await asyncio.to_thread(
+                enrich_model_switch_warnings_for_gateway,
                 result,
                 self,
                 session_key=session_key,
@@ -2333,7 +2341,7 @@ class GatewaySlashCommandsMixin:
             # Context: always resolve via the provider-aware chain so Codex OAuth,
             # Copilot, and Nous-enforced caps win over the raw models.dev entry.
             mi = result.model_info
-            from hermes_cli.model_switch import resolve_display_context_length
+            from hermes_cli.model_switch import resolve_display_context_length_async
             _sw2_config_ctx = None
             _sw2_model_cfg = {}
             try:
@@ -2347,7 +2355,7 @@ class GatewaySlashCommandsMixin:
                 pass
             if not isinstance(_sw2_model_cfg, dict):
                 _sw2_model_cfg = {}
-            ctx = resolve_display_context_length(
+            ctx = await resolve_display_context_length_async(
                 result.new_model,
                 result.target_provider,
                 base_url=result.base_url or current_base_url or "",
@@ -4307,7 +4315,9 @@ class GatewaySlashCommandsMixin:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
-        source = event.source
+        source = await asyncio.to_thread(
+            self._normalize_source_for_session_key, event.source
+        )
         session_key = self._session_key_for_source(source)
         raw_args = event.get_command_args().strip()
         try:
@@ -4330,7 +4340,12 @@ class GatewaySlashCommandsMixin:
 
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
+            widen = allow_all and self._resume_caller_is_admin(source)
+            sessions = await self._session_db.list_sessions_rich(
+                source=user_source,
+                session_key=None if widen else session_key,
+                limit=10,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
@@ -4474,7 +4489,6 @@ class GatewaySlashCommandsMixin:
             query_session_listing,
         )
 
-        source = event.source
         raw_args = event.get_command_args().strip()
         try:
             include_all, include_unnamed, target, search_query = (
@@ -4490,6 +4504,11 @@ class GatewaySlashCommandsMixin:
             resume_event = dataclasses.replace(event, text=f"/resume {target}")
             return await self._handle_resume_command(resume_event)
 
+        source = await asyncio.to_thread(
+            self._normalize_source_for_session_key, event.source
+        )
+        session_key = self._session_key_for_source(source)
+
         # A cross-origin listing (`/sessions all`) is honored only for an
         # admin, mirroring the `/resume --all` override. `all` is just a parsed
         # user argument, so without this gate any caller could run
@@ -4501,6 +4520,7 @@ class GatewaySlashCommandsMixin:
             query_session_listing,
             getattr(self._session_db, "_db", self._session_db),
             source=source.platform.value if source.platform else None,
+            session_key=None if cross_origin else session_key,
             current_session_id=current_entry.session_id,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,

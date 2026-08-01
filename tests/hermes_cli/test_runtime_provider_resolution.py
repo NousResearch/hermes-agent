@@ -281,6 +281,65 @@ def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     assert resolved["source"] == "explicit"
 
 
+@pytest.mark.parametrize(
+    "case_name, model_cfg, expected_api_mode",
+    [
+        (
+            "stale_anthropic_api_mode_is_ignored_on_provider_switch",
+            {
+                "provider": "anthropic",
+                "api_mode": "anthropic_messages",
+                "default": "claude-3-5-sonnet",
+            },
+            "chat_completions",
+        ),
+        (
+            "matching_provider_still_honors_persisted_api_mode",
+            {
+                "provider": "gemini",
+                "api_mode": "anthropic_messages",
+                "default": "gemini-2.5-pro",
+            },
+            "anthropic_messages",
+        ),
+        (
+            "no_persisted_provider_still_honors_api_mode",
+            {
+                "api_mode": "anthropic_messages",
+                "default": "gemini-2.5-pro",
+            },
+            "anthropic_messages",
+        ),
+    ],
+)
+def test_resolve_runtime_provider_gemini_explicit_api_mode_provider_guard(
+    monkeypatch, case_name, model_cfg, expected_api_mode
+):
+    """A persisted model.api_mode from a different provider must not leak
+    into an explicitly-resolved provider after a switch (issue #74318).
+
+    Only when ``model_cfg["provider"]`` matches the provider actually being
+    resolved (or is unset) should the persisted api_mode be honoured.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "gemini")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(
+        requested="gemini",
+        explicit_api_key="fake-gemini-key",
+        explicit_base_url="https://fake-gemini-endpoint.example.com/v1beta/",
+    )
+
+    assert resolved["provider"] == "gemini", case_name
+    assert resolved["api_mode"] == expected_api_mode, case_name
+    assert resolved["api_key"] == "fake-gemini-key", case_name
+    assert resolved["base_url"] == "https://fake-gemini-endpoint.example.com/v1beta", case_name
+    assert resolved["source"] == "explicit", case_name
+
+
 def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
     class _Entry:
         access_token = "pool-key"

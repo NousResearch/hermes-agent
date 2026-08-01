@@ -81,7 +81,7 @@ _CRON_THREAT_PATTERNS = [
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|id_rsa|id_ed25519|id_ecdsa)', "read_secrets"),
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
@@ -180,12 +180,18 @@ def _strip_cron_safe_constructs(prompt: str) -> str:
     github-pr-workflow + github-code-review) contains several such blocks,
     and the old ``re.search`` + single ``str.replace`` left the rest to trip
     the exfil_curl_auth_header detector on every run. The trailing
-    ``[^\\n]*`` also consumes the rest of the URL path so no dangling
-    fragment remains.
+    ``[^\\s;&|$`]*`` consumes only the URL path — never whitespace, command
+    separators, or subshell openers — so a payload smuggled onto the same
+    line (``;``, ``&&``, ``|``, ``$(...)``, backticks) survives the strip
+    and is still scanned. The host must be exactly ``api.github.com``
+    followed by ``/``, whitespace, quote, or end: lookalike authorities
+    (``api.github.com.evil.com``, ``api.github.com@evil.com``) are not the
+    trusted construct and fall through to the exfil detectors, while
+    legitimately quoted bare-host URLs stay exempt.
     """
     return re.sub(
-        rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?:/|\b)[^\n]*',
+        rf'curl\s+[^\n;&|$`]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
+        r'\s+["\']?https://api\.github\.com(?::\d+)?(?:/|\s|$|["\'])[^\s;&|$`]*',
         'curl https://api.github.com/user',
         prompt,
         flags=re.IGNORECASE,

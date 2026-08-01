@@ -160,6 +160,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner._kanban_sub_fail_counts = {}
+    runner._kanban_dispatcher_lock_handle = object()
 
     fake_adapter = MagicMock()
     fake_adapter.name = "telegram"

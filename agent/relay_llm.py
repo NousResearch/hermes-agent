@@ -247,6 +247,14 @@ async def execute_current_async(
     )
 
 
+def _has_running_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def stream_current(
     request: dict[str, Any],
     stream_factory: Callable[[dict[str, Any]], Any],
@@ -256,12 +264,34 @@ def stream_current(
     finalizer: Callable[[], Any],
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
+    completed_response_predicate: Callable[[Any], bool] | None = None,
 ) -> Any:
-    """Run a provider stream under the inherited Hermes turn when present."""
+    """Run a provider stream under the inherited Hermes turn when present.
+
+    When ``completed_response_predicate`` is set and the stream_factory returns
+    a complete response instead of an iterator (e.g. AnthropicAuxiliaryClient
+    and other shims that ignore ``stream=True``), unwrap and return the
+    completed response directly. This mirrors the pre-Relay behavior where
+    ``call_llm(stream=True)`` returned the raw response and the consumer's
+    own ``hasattr(stream, "choices")`` check handled it (#11732, #55933) —
+    without the unwrap the response stays trapped as ``final_response`` on the
+    inner ManagedLlmStream and the outer consumer sees an empty stream.
+    """
     turn = relay_runtime.active_turn()
     if turn is None:
         return stream_factory(request)
-    return stream(
+    if _has_running_event_loop():
+        # Managed provider callbacks execute on the Relay session's event
+        # loop. A nested ManagedLlmStream built here would be synchronously
+        # iterated on that same loop thread, which asyncio forbids
+        # ("Cannot run the event loop while another loop is running").
+        # Return the raw factory result instead: the outer managed stream
+        # already provides Relay tracking for the enclosing attempt, and its
+        # own completed_response_predicate traps a completed response (e.g.
+        # the MoA facade's auxiliary ``call_llm(stream=True)`` returning a
+        # full response when an adapter ignores ``stream=True``).
+        return stream_factory(request)
+    managed = stream(
         request,
         stream_factory,
         session_id=turn.lease.session_id,
@@ -270,7 +300,17 @@ def stream_current(
         finalizer=finalizer,
         metadata=metadata,
         defer_logical_completion=defer_logical_completion,
+        completed_response_predicate=completed_response_predicate,
     )
+    # In the non-managed path the factory already ran eagerly during __init__,
+    # so a completed response is visible immediately and must surface raw.
+    # In the managed path the factory runs lazily on first pull, so
+    # final_response is still None here and the managed stream is returned.
+    if completed_response_predicate is not None:
+        completed = getattr(managed, "final_response", None)
+        if completed is not None:
+            return completed
+    return managed
 
 
 def stream(

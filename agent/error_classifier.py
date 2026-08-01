@@ -836,6 +836,19 @@ def classify_api_error(
         if classified is not None:
             return classified
 
+    # Local MoA streaming compatibility errors are adapter-shape bugs, not a
+    # provider outage. Falling back to another model would silently switch the
+    # user's selected MoA route to a single-model answer (#55933 follow-up).
+    if provider_lower == "moa" and (
+        "'types.SimpleNamespace' object is not iterable" in str(error)
+        or "'types.SimpleNamespace' object has no attribute 'index'" in str(error)
+    ):
+        return _result(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=False,
+        )
+
     # Local MoA config drift is deterministic: a persisted session can retain
     # a preset name that was later renamed/deleted. Retrying the same lookup
     # cannot recover and makes a clear config error look like an API outage.

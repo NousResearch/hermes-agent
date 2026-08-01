@@ -125,6 +125,11 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   )
 }
 
+/** Convert URL references back to the literal URL for code-block clipboard text. */
+export function copyableCodeText(code: string): string {
+  return code.replaceAll('@url:', '')
+}
+
 export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   components: { Pre },
   language,
@@ -155,7 +160,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
         iconClassName="size-3"
         label={t.assistant.tool.copyCode}
         showLabel={false}
-        text={content}
+        text={copyableCodeText(content)}
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>

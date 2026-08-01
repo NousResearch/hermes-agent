@@ -7,10 +7,21 @@ subagent that runs on a module-level daemon executor and returns a handle
 immediately, so the user and the model can keep working while the child runs.
 
 When a child finishes, its completion event is written to the durable ledger
-and pushed onto the shared ``process_registry.completion_queue`` for existing
-between-turn delivery. Batch children have independent durable identities,
-while all-ready finalization and restart recovery expose one transient grouped
-envelope for backward compatibility.
+and pushed onto the shared ``process_registry.completion_queue``. The event's
+``result_delivery`` selects one of two consumers without creating a parallel
+execution system:
+
+  - ``after_turn`` (default) keeps the existing CLI/gateway synthetic-turn
+    path. A batch publishes one consolidated result after all children finish.
+  - ``inject`` lets the originating conversation loop claim already-ready
+    events at append-only safe boundaries, after a complete tool-result block
+    and before the next model request. Batch children publish independently as
+    they finish. A result that misses its originating turn remains on the same
+    queue and follows the normal synthetic-turn path.
+
+Both paths use the same durable claim/recovery ledger. Neither waits or polls
+for a running child, past history is never rewritten, and competing consumers
+cannot acknowledge the same event twice.
 
 The completion payload carries a rich, self-contained task-source block (the
 original goal, the context the parent supplied, toolsets, model, dispatch
@@ -73,8 +84,9 @@ _MAX_DURABLE_PENDING = 1000
 # attempts so an unroutable row converges to a terminal 'dropped' state
 # instead of replaying on every restart forever.
 _MAX_DELIVERY_ATTEMPTS = 8
-# Durable claims are leases, not ownership transfers. A live consumer renews
-# this timestamp; after a process crash another consumer can recover the row.
+# Durable claims are leases, not ownership transfers. Active same-turn injects
+# renew this timestamp while the provider request/retry lifecycle is alive;
+# after a process crash the absent heartbeat lets another consumer recover it.
 _DELIVERY_CLAIM_LEASE_SECONDS = 300
 _DB_LOCK = threading.Lock()
 
@@ -166,12 +178,16 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         # completions recovered after a process restart are unroutable on
         # api_server (the in-memory record that carried it is gone).
         ("origin_session_id", "TEXT"),
+        # Delivery mode captured at dispatch: 'inject' delivers at safe
+        # conversation-loop boundaries; 'after_turn' preserves the legacy
+        # synthetic-turn path. Missing/invalid values mean 'after_turn'.
+        ("result_delivery", "TEXT"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
     # Child-level delivery records extend the existing durable claim ledger.
     # A batch parent remains one execution unit, while each completed child is
-    # independently claimable and recoverable on the between-turn rail.
+    # independently claimable/recoverable for result_delivery=inject.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS async_delegation_events (
             delegation_id TEXT NOT NULL,
@@ -225,22 +241,27 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
             "role",
             "model",
             "is_batch",
+            "result_delivery",
+            "parent_turn_id",
         )
         if key in record
     }
+    _result_delivery = str(record.get("result_delivery") or "after_turn").strip().lower()
+    if _result_delivery not in {"inject", "after_turn"}:
+        _result_delivery = "after_turn"
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id, result_delivery)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload),
-             record.get("origin_session_id", "")),
+             record.get("origin_session_id", ""), _result_delivery),
         )
     _prune_durable_records()
 
@@ -363,6 +384,7 @@ def _build_batch_child_event(
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
         "goal": goal,
         "goals": goals,
         "context": record.get("context"),
@@ -383,6 +405,9 @@ def _build_batch_child_event(
         ),
         "dispatched_at": record.get("dispatched_at"),
         "completed_at": completed_at,
+        "result_delivery": str(
+            record.get("result_delivery") or "after_turn"
+        ).strip().lower(),
     }
 
 
@@ -444,10 +469,22 @@ def publish_batch_child_completion(
 ) -> bool:
     """Durably enqueue one ready child from an asynchronous batch.
 
-    The parent batch remains the execution/stall unit. This function creates an
-    independently claimable between-turn delivery event, keyed by task index.
-    Repeated publication is idempotent and never resets a delivered claim.
+    The parent batch remains the execution/stall unit. This function only
+    creates an independently claimable delivery event, keyed by task index.
+    ``result_delivery`` changes which consumer may claim it, not when the child
+    row becomes durable. Repeated publication is idempotent and never resets a
+    delivered claim.
     """
+    with _records_lock:
+        record = dict(_records.get(delegation_id) or {})
+    if not record or not bool(record.get("is_batch")):
+        return False
+    if str(record.get("result_delivery") or "after_turn").lower() not in {
+        "inject",
+        "after_turn",
+    }:
+        return False
+
     event = _persist_batch_child_completion_event(
         delegation_id, task_index, result
     )
@@ -494,10 +531,12 @@ def coalesce_ready_after_turn_events(
     groups: Dict[str, Dict[str, Any]] = {}
     seen_keys: Dict[str, set[str]] = {}
     for event in events:
+        delivery = str(event.get("result_delivery") or "after_turn").strip().lower()
         event_keys = _event_delivery_keys(event)
         delegation_id = str(event.get("delegation_id") or "")
         coalescible = (
             event.get("type") == "async_delegation"
+            and delivery == "after_turn"
             and bool(event.get("is_batch"))
             and bool(event_keys)
             and all(key.startswith("task:") for key in event_keys)
@@ -578,6 +617,7 @@ def _build_batch_terminal_event(
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "parent_turn_id": event_record.get("parent_turn_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -590,6 +630,9 @@ def _build_batch_terminal_event(
         "error": combined.get("error"),
         "dispatched_at": event_record.get("dispatched_at"),
         "completed_at": now,
+        "result_delivery": str(
+            event_record.get("result_delivery") or "after_turn"
+        ).strip().lower(),
     }
     for key in (
         "stalled_after_quiet_seconds",
@@ -649,9 +692,9 @@ def _persist_batch_child_finalization(
             _insert_batch_event(conn, terminal_event, now=now)
             queue_event_keys.append(terminal_event["delivery_event_key"])
 
-        # The aggregate row is bookkeeping-only. Commit its terminal state in
-        # the same transaction as the idempotent child safety net so restart
-        # recovery can never observe a half-finalized parent.
+        # The aggregate row is bookkeeping-only for inject batches. Commit its
+        # terminal state in the same transaction as the idempotent child safety
+        # net so restart recovery can never observe a half-finalized parent.
         _update_completion_row(
             conn,
             parent_event,
@@ -709,12 +752,13 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json, origin_session_id,
+                      result_delivery
                FROM async_delegations WHERE state IN ('running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
+             pid, started, task_json, origin_session_id, result_delivery) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -723,6 +767,9 @@ def recover_abandoned_delegations() -> int:
             if live:
                 continue
             task = json.loads(task_json or "{}")
+            restored_delivery = str(
+                result_delivery or task.get("result_delivery") or "after_turn"
+            ).lower()
             child_rows = []
             if bool(task.get("is_batch")):
                 child_rows = conn.execute(
@@ -731,7 +778,9 @@ def recover_abandoned_delegations() -> int:
                        ORDER BY event_key""",
                     (delegation_id,),
                 ).fetchall()
-            if bool(task.get("is_batch")) and bool(child_rows):
+            if bool(task.get("is_batch")) and (
+                restored_delivery == "inject" or bool(child_rows)
+            ):
                 # Child-scoped batches never recover through a contradictory
                 # aggregate. A crash after one or more child inserts must
                 # preserve the already-delivered/pending task identities.
@@ -772,6 +821,7 @@ def recover_abandoned_delegations() -> int:
                     "origin_ui_session_id": origin_ui,
                     "origin_session_id": origin_session_id or "",
                     "parent_session_id": parent_id,
+                    "parent_turn_id": task.get("parent_turn_id", ""),
                     "goal": task.get("goal", ""),
                     "goals": goals,
                     "context": task.get("context"),
@@ -779,6 +829,7 @@ def recover_abandoned_delegations() -> int:
                     "role": task.get("role"),
                     "model": task.get("model"),
                     "dispatched_at": dispatched_at,
+                    "result_delivery": restored_delivery,
                 }
                 if not complete_children:
                     terminal_event = _build_batch_terminal_event(
@@ -795,6 +846,7 @@ def recover_abandoned_delegations() -> int:
                     "results": child_results,
                     "error": recovery_error,
                     "completed_at": now,
+                    "result_delivery": restored_delivery,
                 }
                 _update_completion_row(
                     conn,
@@ -812,9 +864,11 @@ def recover_abandoned_delegations() -> int:
                 # after a restart remain routable to api_server sessions.
                 "origin_session_id": origin_session_id or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""),
+                "parent_turn_id": task.get("parent_turn_id", ""),
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "result_delivery": restored_delivery,
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -883,7 +937,7 @@ def restore_undelivered_completions(target_queue) -> int:
 
 
 def mark_completion_delivered(delegation_id: str) -> bool:
-    """Atomically acknowledge successful delivery of a durable completion."""
+    """Atomically acknowledge successful injection of a durable completion."""
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
@@ -1618,6 +1672,8 @@ def dispatch_async_delegation(
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    result_delivery: Optional[str] = None,
+    parent_turn_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -1683,6 +1739,11 @@ def dispatch_async_delegation(
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
+        # Delivery mode: 'inject' (new tool-result carrier)
+        # or 'after_turn' (legacy completion_queue path). Default 'after_turn'
+        # for backward compatibility with old task_json entries.
+        "result_delivery": str(result_delivery or "after_turn").strip().lower(),
+        "parent_turn_id": str(parent_turn_id or ""),
     }
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
@@ -1821,6 +1882,7 @@ def _push_completion_event(
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -1836,6 +1898,10 @@ def _push_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
+        # Delivery mode: 'inject' (new tool-result carrier) or 'after_turn'
+        # (legacy completion_queue path). Consumers use this to choose a live
+        # carrier or the next available separate-turn boundary.
+        "result_delivery": record.get("result_delivery", "after_turn"),
     }
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
@@ -1874,6 +1940,8 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    result_delivery: Optional[str] = None,
+    parent_turn_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -1885,9 +1953,11 @@ def dispatch_async_delegation_batch(
     parallelism is bounded separately by ``max_concurrent_children``), so a
     single ``delegate_task`` fan-out never exhausts the async pool by itself.
 
-    Each child uses an independently durable row. Finalization preserves the
-    existing between-turn grouped envelope and idempotently fills any child row
-    missed by a completion callback.
+    Both delivery modes publish each child into an independently durable row as
+    it becomes ready. ``inject`` may claim rows at same-turn safe boundaries;
+    ``after_turn`` coalesces every ready row at the next available turn boundary.
+    Finalization only persists aggregate status for observability/recovery and
+    idempotently fills any child row missed by its completion callback.
 
     Returns ``{"status": "dispatched", "delegation_id": ...}`` on success or
     ``{"status": "rejected", "error": ...}`` when the async pool is at
@@ -1921,6 +1991,9 @@ def dispatch_async_delegation_batch(
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
+        # Delivery mode for the batch; missing values preserve after_turn.
+        "result_delivery": str(result_delivery or "after_turn").strip().lower(),
+        "parent_turn_id": str(parent_turn_id or ""),
     }
     with _records_lock:
         running = sum(
@@ -2014,6 +2087,7 @@ def _push_batch_completion_event(
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "parent_turn_id": event_record.get("parent_turn_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -2033,6 +2107,8 @@ def _push_batch_completion_event(
         "total_duration_seconds": combined.get("total_duration_seconds"),
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
+        # Delivery mode for the batch: 'inject' or 'after_turn'.
+        "result_delivery": event_record.get("result_delivery", "after_turn"),
     }
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
@@ -2044,9 +2120,12 @@ def _push_batch_completion_event(
     ):
         if _k in combined:
             evt[_k] = combined[_k]
-    # Child callbacks persist incrementally without changing legacy delivery
-    # timing. The finalizer idempotently inserts any missed child, commits the
-    # parent terminal row, then queues one grouped envelope after commit.
+    # Child callbacks publish incrementally in both delivery modes. The
+    # finalizer idempotently inserts any missed child and commits the parent
+    # terminal row in one SQLite transaction; only events without a successful
+    # process-local queue handoff are queued after commit. Consumers decide
+    # whether ready children belong in the current turn (inject) or the next
+    # turn (after_turn).
     _persist_batch_child_finalization(event_record, evt, combined, status)
 
 

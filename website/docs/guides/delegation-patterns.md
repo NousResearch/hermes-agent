@@ -84,9 +84,17 @@ delegate_task(
     Auth files: src/auth/login.py, src/auth/jwt.py, src/auth/middleware.py
     Test command: pytest tests/auth/ -v
     Focus on: SQL injection, JWT validation, password hashing, session management.
-    Fix issues found and verify tests pass."""
+    Fix issues found and verify tests pass.""",
+    result_delivery="inject",
 )
 ```
+
+`inject` is appropriate here because the review can change the parent's current
+implementation. Hermes does not wait for the reviewer: if the review is ready
+when the parent produces another tool-result batch, it is carried on that new
+result before the next model request. Otherwise it stays durable and arrives
+later through the normal `after_turn` path. Use the default `after_turn` for
+independent work whose result does not need to change the current turn.
 
 :::warning The Context Problem
 Subagents know **absolutely nothing** about your conversation. They start completely fresh. If you delegate "fix the bug we were discussing," the subagent has no idea what bug you mean. Always pass file paths, error messages, project structure, and constraints explicitly.

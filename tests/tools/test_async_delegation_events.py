@@ -28,6 +28,8 @@ def _clean_async_state():
 def _record(
     *,
     goals=("audit",),
+    turn_id="turn-current",
+    delivery="inject",
     parent_session_id="parent-session",
 ):
     delegation_id = f"deleg_test_{uuid.uuid4().hex}"
@@ -43,10 +45,12 @@ def _record(
         "origin_ui_session_id": "",
         "origin_session_id": "",
         "parent_session_id": parent_session_id,
+        "parent_turn_id": turn_id,
         "status": "running",
         "dispatched_at": time.time(),
         "completed_at": None,
         "is_batch": True,
+        "result_delivery": delivery,
     }
     with ad._records_lock:
         ad._records[delegation_id] = record
@@ -104,7 +108,7 @@ def _durable_event_keys(delegation_id: str):
         ]
 
 def test_after_turn_coalesced_claim_is_atomic_across_ready_children():
-    delegation_id = _record(goals=("A", "B"), )
+    delegation_id = _record(goals=("A", "B"), delivery="after_turn")
     assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "A"))
     assert ad.publish_batch_child_completion(delegation_id, 1, _child(1, "B"))
     children = [
@@ -129,7 +133,7 @@ def test_after_turn_coalesced_claim_is_atomic_across_ready_children():
 
 
 def test_group_release_prunes_attempt_capped_child_without_blocking_sibling():
-    delegation_id = _record(goals=("fresh", "near-cap"), )
+    delegation_id = _record(goals=("fresh", "near-cap"), delivery="after_turn")
     for index, summary in enumerate(("fresh", "near-cap")):
         assert ad.publish_batch_child_completion(
             delegation_id, index, _child(index, summary)
@@ -161,7 +165,7 @@ def test_group_release_prunes_attempt_capped_child_without_blocking_sibling():
     assert ad.complete_event_delivery(grouped, retry_claim)
     assert _event_state(delegation_id, "task:0") == ("delivered", 2)
 
-def test_batch_finalization_rolls_back_children_if_parent_update_fails(
+def test_inject_batch_finalization_rolls_back_children_if_parent_update_fails(
     monkeypatch,
 ):
     delegation_id = _record(goals=("A", "B"))
@@ -189,7 +193,7 @@ def test_batch_finalization_rolls_back_children_if_parent_update_fails(
 
 
 def test_after_turn_finalization_keeps_one_legacy_queue_envelope():
-    delegation_id = _record(goals=("A", "B"), )
+    delegation_id = _record(goals=("A", "B"), delivery="after_turn")
     with ad._records_lock:
         event_record = dict(ad._records[delegation_id])
     children = [_child(0, "A"), _child(1, "B")]
@@ -214,7 +218,7 @@ def test_after_turn_finalization_keeps_one_legacy_queue_envelope():
 
 
 def test_persisted_children_wait_for_legacy_batch_finalization():
-    delegation_id = _record(goals=("A", "B"))
+    delegation_id = _record(goals=("A", "B"), delivery="after_turn")
     children = [_child(0, "A"), _child(1, "B")]
 
     assert ad.persist_batch_child_completion(delegation_id, 0, children[0])
@@ -244,8 +248,9 @@ def test_persisted_children_wait_for_legacy_batch_finalization():
     assert process_registry.completion_queue.empty()
 
 
-def test_published_child_is_not_requeued_by_batch_finalization():
-    delegation_id = _record(goals=("A",))
+@pytest.mark.parametrize("delivery", ["inject", "after_turn"])
+def test_published_child_is_not_requeued_by_batch_finalization(delivery):
+    delegation_id = _record(goals=("A",), delivery=delivery)
     child = _child(0, "A")
     assert ad.publish_batch_child_completion(delegation_id, 0, child)
     assert process_registry.completion_queue.qsize() == 1
@@ -269,10 +274,12 @@ def test_published_child_is_not_requeued_by_batch_finalization():
     assert process_registry.completion_queue.qsize() == 1
     event = process_registry.completion_queue.get_nowait()
     assert event["delivery_event_key"] == "task:0"
+    assert event["result_delivery"] == delivery
 
 
-def test_recovery_with_complete_children_suppresses_parent_aggregate():
-    delegation_id = _record(goals=("A", "B"))
+@pytest.mark.parametrize("delivery", ["inject", "after_turn"])
+def test_recovery_with_complete_children_suppresses_parent_aggregate(delivery):
+    delegation_id = _record(goals=("A", "B"), delivery=delivery)
     assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "A"))
     assert ad.publish_batch_child_completion(delegation_id, 1, _child(1, "B"))
     while not process_registry.completion_queue.empty():
@@ -290,14 +297,21 @@ def test_recovery_with_complete_children_suppresses_parent_aggregate():
     assert _durable_event_keys(delegation_id) == ["task:0", "task:1"]
     restored = __import__("queue").Queue()
     assert ad.restore_undelivered_completions(restored) == 2
-    grouped = restored.get_nowait()
-    assert grouped["delivery_event_keys"] == ["task:0", "task:1"]
-    assert [result["summary"] for result in grouped["results"]] == ["A", "B"]
-    assert restored.empty()
+    if delivery == "after_turn":
+        grouped = restored.get_nowait()
+        assert grouped["delivery_event_keys"] == ["task:0", "task:1"]
+        assert [result["summary"] for result in grouped["results"]] == ["A", "B"]
+        assert restored.empty()
+    else:
+        assert {restored.get_nowait()["delivery_event_key"] for _ in range(2)} == {
+            "task:0",
+            "task:1",
+        }
 
 
-def test_recovery_with_partial_children_emits_only_terminal_gap_event():
-    delegation_id = _record(goals=("A", "B"))
+@pytest.mark.parametrize("delivery", ["inject", "after_turn"])
+def test_recovery_with_partial_children_emits_only_terminal_gap_event(delivery):
+    delegation_id = _record(goals=("A", "B"), delivery=delivery)
     assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "A"))
     process_registry.completion_queue.get_nowait()
     with ad._DB_LOCK, ad._transaction() as conn:
@@ -327,11 +341,13 @@ def test_recovery_with_partial_children_emits_only_terminal_gap_event():
         event for event in events if event.get("delivery_event_key") == "terminal"
     )
     assert terminal["status"] == "unknown"
+    assert terminal["result_delivery"] == delivery
     assert "1/2 batch child results" in terminal["error"]
 
 
-def test_recovery_requires_exact_expected_batch_child_keys():
-    delegation_id = _record(goals=("A", "B"))
+@pytest.mark.parametrize("delivery", ["inject", "after_turn"])
+def test_recovery_requires_exact_expected_batch_child_keys(delivery):
+    delegation_id = _record(goals=("A", "B"), delivery=delivery)
     assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "A"))
     process_registry.completion_queue.get_nowait()
     with ad._records_lock:
@@ -382,7 +398,7 @@ def test_pending_child_event_restores_with_same_durable_identity(tmp_path, monke
     event = restored_queue.get_nowait()
     assert event["restored"] is True
     assert event["delegation_id"] == delegation_id
-    assert event["delivery_event_keys"] == ["task:0"]
+    assert event["delivery_event_key"] == "task:0"
 
     claim = ad.claim_event_delivery(event, "restart-consumer")
     assert claim

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
+from agent.runtime_cwd import _is_install_tree
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,12 @@ class SubdirectoryHintTracker:
                 return False
         except OSError:
             return False
-        return path not in self._loaded_dirs and self._within_working_dir(path) and not self._is_excluded(path)
+        return (
+            path not in self._loaded_dirs
+            and not _is_install_tree(path)
+            and self._within_working_dir(path)
+            and not self._is_excluded(path)
+        )
 
     def _is_excluded(self, path: Path) -> bool:
         """True when a segment *below* the working dir is an excluded copy dir

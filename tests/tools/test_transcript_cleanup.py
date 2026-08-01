@@ -226,6 +226,10 @@ def test_topic_is_truncated_and_input_is_json_data(monkeypatch):
     assert len(messages) == 2
     assert messages[0]["role"] == "system"
     assert "JSON data" in messages[0]["content"]
+    assert (
+        "Return only a JSON object with exactly cleaned_text (string) and confidence "
+        "(number from 0 to 1)." in messages[0]["content"]
+    )
     assert messages[1]["role"] == "user"
     assert json.loads(messages[1]["content"]) == {
         "raw_transcript": raw,

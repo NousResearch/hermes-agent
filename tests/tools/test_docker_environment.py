@@ -1,4 +1,5 @@
 import logging
+import os
 from io import StringIO
 import subprocess
 
@@ -292,6 +293,68 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     second_cmd = calls[1][0]
     assert "SERVICE_TOKEN=token-for-profile-a" not in second_cmd
     assert "unset SERVICE_TOKEN" in second_cmd[-1]
+
+
+def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, tmp_path):
+    """The shared snapshot must not resurrect an explicit forward-only value."""
+    from agent import secret_scope as ss
+
+    env = _make_execute_only_env(forward_env=["EXPLICIT_TOKEN"])
+    env.cwd = str(tmp_path)
+    env._snapshot_path = str(tmp_path / "snapshot.sh")
+    env._cwd_file = str(tmp_path / "cwd.txt")
+    env._snapshot_passthrough_names = set()
+    (tmp_path / "snapshot.sh").write_text(
+        "export EXPLICIT_TOKEN=stale-from-previous-profile\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EXPLICIT_TOKEN", "token-for-default")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+
+    def _run_fake_docker_exec(cmd, stdin_data=None):
+        """Execute the generated docker exec command in a real local bash."""
+        container_index = cmd.index(env._container_id)
+        child_env = os.environ.copy()
+        index = 2
+        while index < container_index:
+            assert cmd[index] == "-e"
+            key, value = cmd[index + 1].split("=", 1)
+            child_env[key] = value
+            index += 2
+        assert cmd[container_index + 1 : container_index + 3] == ["bash", "-c"]
+        return subprocess.Popen(
+            ["bash", "-c", cmd[container_index + 3]],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
+        )
+
+    monkeypatch.setattr(docker_env, "_popen_bash", _run_fake_docker_exec)
+    ss.set_multiplex_active(True)
+
+    try:
+        for scope, expected in (
+            ({"EXPLICIT_TOKEN": "token-for-profile-a"}, "token-for-profile-a"),
+            ({"EXPLICIT_TOKEN": "token-for-profile-b"}, "token-for-profile-b"),
+            ({}, "unset"),
+        ):
+            scope_token = ss.set_secret_scope(scope)
+            try:
+                result = env.execute("printf '%s' \"${EXPLICIT_TOKEN-unset}\"")
+            finally:
+                ss.reset_secret_scope(scope_token)
+
+            assert result["returncode"] == 0
+            assert result["output"] == expected
+            assert "EXPLICIT_TOKEN=" not in (
+                tmp_path / "snapshot.sh"
+            ).read_text(encoding="utf-8")
+    finally:
+        ss.set_multiplex_active(False)
 
 
 # ── docker_env tests ──────────────────────────────────────────────

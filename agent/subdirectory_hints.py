@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _scan_context_content
+from agent.runtime_cwd import _is_install_tree
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,8 @@ class SubdirectoryHintTracker:
         except OSError:
             return False
         if path in self._loaded_dirs:
+            return False
+        if _is_install_tree(path):
             return False
         # Reject paths outside the working directory tree.
         # path.resolve() may differ from working_dir.resolve() due to symlinks,

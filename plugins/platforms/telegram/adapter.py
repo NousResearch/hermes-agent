@@ -530,6 +530,19 @@ _RICH_PROTECTED_REGION_RE = re.compile(
 )
 
 
+# Block-construct line shapes for the hard-break skip below. A single newline
+# adjacent to one of these is already a hard BLOCK boundary in Markdown, so a
+# hard-break marker there is meaningless at best (CommonMark strips trailing
+# spaces from ATX headings; list items are separate blocks natively) and
+# malformed at worst — a ``<br>`` welded onto a block opener is exactly the
+# kind of ambiguous structure client renderers disagree on (#69444 documented
+# rich truncation stopping precisely at a heading and at a paragraph→list
+# boundary, both lines this function previously stamped with "  \n").
+_RICH_ATX_HEADING_LINE_RE = re.compile(r'^[ \t]{0,3}#{1,6}(?:[ \t]|$)')
+_RICH_LIST_ITEM_LINE_RE = re.compile(r'^[ \t]{0,3}(?:[-*+][ \t]|\d{1,9}[.)][ \t])')
+_RICH_QUOTE_LINE_RE = re.compile(r'^[ \t]{0,3}>')
+
+
 def _rich_normalize_linebreaks(text: str) -> str:
     """Convert single ``\\n`` to Markdown hard breaks for the rich-message path.
 
@@ -539,26 +552,50 @@ def _rich_normalize_linebreaks(text: str) -> str:
     paragraph.  Adding two trailing spaces before each single newline
     forces a hard line break (``<br>``) in the rendered output.
 
-    Paragraph breaks (``\\n\\n``), fenced code blocks, and GFM pipe-table
-    blocks are left untouched: tables render natively in the rich path and a
-    hard break injected into a row separator would corrupt the table.
+    Injection is limited to prose-to-prose newlines. Left untouched:
+
+    - paragraph breaks (``\\n\\n``);
+    - fenced code blocks and GFM pipe-table interiors (native rendering — a
+      hard break in a row separator would corrupt the table);
+    - newlines adjacent to block constructs: after an ATX heading line,
+      before a heading / list item / table / fenced code, and before a
+      blockquote opener when not already inside the quote.  Those newlines
+      are hard block boundaries already, so the marker adds nothing — and a
+      trailing hard break welded onto a block opener is malformed Markdown
+      that rich-message client renderers handle inconsistently (#69444).
+
+    Blockquote interiors keep their hard breaks: ``> a\\n> b`` soft-wraps
+    into one line without them, so there the marker is load-bearing.
+    Lazy list-item continuations (``- item\\ncontinued``) likewise keep
+    theirs to preserve the visible line break inside the item.
     """
     if not text or '\n' not in text:
         return text
 
-    out: list[str] = []
-    # Split off protected regions (fenced code OR table blocks) and only inject
-    # hard breaks in the prose between them. Boundary newlines are handled by
-    # the original single-\n regex, which sees each prose run as a whole string.
-    pos = 0
-    for m in _RICH_PROTECTED_REGION_RE.finditer(text):
-        prose = text[pos:m.start()]
-        out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', prose))
-        out.append(m.group(0))  # protected region kept verbatim
-        pos = m.end()
-    tail = text[pos:]
-    out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', tail))
-    return ''.join(out)
+    # Spans of fenced code / table blocks: newline matches inside them are
+    # kept verbatim, and a newline that ENTERS one (its end is a span start)
+    # is a block boundary — no marker.
+    protected = [(m.start(), m.end()) for m in _RICH_PROTECTED_REGION_RE.finditer(text)]
+
+    def _repl(m: "re.Match[str]") -> str:
+        i = m.start()
+        if any(s <= i < e for s, e in protected):
+            return m.group(0)  # inside a fence/table — keep verbatim
+        if any(s == m.end() for s, _e in protected):
+            return m.group(0)  # next line opens a fence/table block
+        line_start = text.rfind('\n', 0, i) + 1
+        cur_line = text[line_start:i]
+        next_nl = text.find('\n', m.end())
+        next_line = text[m.end():next_nl if next_nl != -1 else len(text)]
+        if _RICH_ATX_HEADING_LINE_RE.match(cur_line):
+            return m.group(0)
+        if _RICH_ATX_HEADING_LINE_RE.match(next_line) or _RICH_LIST_ITEM_LINE_RE.match(next_line):
+            return m.group(0)
+        if _RICH_QUOTE_LINE_RE.match(next_line) and not _RICH_QUOTE_LINE_RE.match(cur_line):
+            return m.group(0)
+        return '  \n'
+
+    return re.sub(r'(?<!\n)\n(?!\n)', _repl, text)
 
 
 # Watchdog bound for `await updater.stop()`. When the underlying TCP socket is

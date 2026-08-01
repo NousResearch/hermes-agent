@@ -74,8 +74,8 @@ def _load_security_config() -> dict:
         "tirith_fail_open": True,
     }
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config().get("security", {}) or {}
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly().get("security", {}) or {}
     except Exception:
         cfg = {}
 

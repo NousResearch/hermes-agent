@@ -3044,6 +3044,24 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
+  const handoffConflict = updateHandoffConflict(HERMES_HOME)
+
+  if (handoffConflict) {
+    // Same hazard as applyUpdates (#75778): a live foreign updater already
+    // owns the marker. Spawning another here would overwrite its claim and
+    // race a second updater over the same install tree. The live updater
+    // is already working on this exact install and will restart us when
+    // it finishes, so treat this the same as a successful hand-off instead
+    // of clobbering it with our own.
+    rememberLog(`[bootstrap] refusing recovery hand-off: ${handoffConflict.message}`)
+    isQuittingForHandoff = true
+    setTimeout(() => {
+      app.quit()
+    }, UPDATE_HANDOFF_DWELL_MS)
+
+    return true
+  }
+
   const updateRoot = resolveUpdateRoot()
   const { branch: configuredBranch } = readDesktopUpdateConfig()
 

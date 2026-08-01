@@ -133,6 +133,30 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+
+def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
+    """Normalize a per-task reasoning effort into a storable level.
+
+    Accepts any level in ``hermes_constants.VALID_REASONING_EFFORTS`` plus
+    ``"none"`` (thinking disabled), case-insensitively. Empty / None means
+    "inherit the worker profile's own ``agent.reasoning_effort``" and stores
+    NULL. Anything else is rejected rather than silently dropped — a typo'd
+    level must not quietly hand the task back to the profile default.
+    """
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    value = str(effort or "").strip().lower()
+    if not value:
+        return None
+    if value == "none" or value in VALID_REASONING_EFFORTS:
+        return value
+    allowed = ", ".join(("none", *VALID_REASONING_EFFORTS))
+    raise ValueError(
+        f"reasoning_effort must be one of {allowed}, got {effort!r}"
+    )
+
+
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
@@ -929,6 +953,12 @@ class Task:
     # model (pre-existing behaviour). Solves the "model from provider A,
     # profile configured for provider B" mismatch class.
     provider_override: Optional[str] = None
+    # Per-task reasoning effort for the worker (one of
+    # ``hermes_constants.VALID_REASONING_EFFORTS``, or ``"none"`` for thinking
+    # off). When set, the dispatcher passes ``--reasoning <level>`` so the
+    # worker runs at that depth regardless of the profile's
+    # ``agent.reasoning_effort``. NULL = the worker profile's own setting.
+    reasoning_effort: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -1030,6 +1060,11 @@ class Task:
             provider_override=(
                 row["provider_override"]
                 if "provider_override" in keys and row["provider_override"]
+                else None
+            ),
+            reasoning_effort=(
+                row["reasoning_effort"]
+                if "reasoning_effort" in keys and row["reasoning_effort"]
                 else None
             ),
             max_retries=(
@@ -1200,6 +1235,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- worker resolves the model against the right backend instead of the
     -- profile's configured provider. NULL = profile provider.
     provider_override    TEXT,
+    -- Per-task reasoning effort for the worker (minimal|low|medium|high|
+    -- xhigh|max|ultra, or 'none' for thinking off). When set, the dispatcher
+    -- passes --reasoning <level> so the worker runs at that depth regardless
+    -- of the profile's agent.reasoning_effort. NULL = profile setting.
+    reasoning_effort     TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -2388,6 +2428,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "provider_override", "provider_override TEXT"
         )
 
+    if "reasoning_effort" not in cols:
+        # Per-task thinking depth for the worker. NULL = the worker profile's
+        # own agent.reasoning_effort, which is what existing rows were getting.
+        _add_column_if_missing(
+            conn, "tasks", "reasoning_effort", "reasoning_effort TEXT"
+        )
+
     if "goal_mode" not in cols:
         # Ralph-style goal loop toggle for the dispatched worker. 0 (the
         # default) = classic single-shot worker, preserving the behaviour
@@ -2851,6 +2898,7 @@ def create_task(
     max_retries: Optional[int] = None,
     model_override: Optional[str] = None,
     provider_override: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
@@ -2887,6 +2935,11 @@ def create_task(
     config — passed to the worker as ``-m <model> [--provider <name>]``.
     ``provider_override`` requires ``model_override``.
 
+    ``reasoning_effort`` pins the worker's thinking depth for this task
+    (``minimal``…``ultra``, or ``none`` to disable thinking), passed as
+    ``--reasoning <level>``. It is independent of ``model_override``: a task
+    can run the profile's own model at a different depth.
+
     ``project_source_task_id`` is an internal cross-profile fallback for a
     worker-created child. When the active profile cannot resolve ``project_id``
     in its own projects.db, a matching canonical project-linked task in this
@@ -2895,6 +2948,7 @@ def create_task(
     """
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
+    reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
@@ -3162,8 +3216,9 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
+                        reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3185,6 +3240,7 @@ def create_task(
                         int(max_retries) if max_retries is not None else None,
                         model_override,
                         provider_override,
+                        reasoning_effort,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
@@ -3423,6 +3479,44 @@ def set_model_override(
         _append_event(
             conn, task_id, "model_override_set",
             {"model": model, "provider": provider},
+        )
+        return True
+
+
+def set_reasoning_effort(
+    conn: sqlite3.Connection,
+    task_id: str,
+    effort: Optional[str],
+) -> bool:
+    """Set (or clear) the per-task reasoning effort.
+
+    ``effort=None`` (or empty) clears the override — the worker falls back to
+    its profile's own ``agent.reasoning_effort``. ``"none"`` is a real value,
+    not a clear: it pins thinking OFF for this task.
+
+    Deliberately independent of :func:`set_model_override`: a task may run the
+    profile's own model at a different depth, and clearing a model override
+    must not silently reset the depth the operator chose. Like the model
+    override, it takes effect on the NEXT dispatch, so it is settable on a
+    running task. Returns True on success.
+    """
+    effort = normalize_reasoning_effort(effort)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] == "archived":
+            raise RuntimeError(
+                f"cannot set reasoning effort on archived task {task_id}"
+            )
+        conn.execute(
+            "UPDATE tasks SET reasoning_effort = ? WHERE id = ?",
+            (effort, task_id),
+        )
+        _append_event(
+            conn, task_id, "reasoning_effort_set", {"reasoning_effort": effort}
         )
         return True
 
@@ -9026,6 +9120,11 @@ def _default_spawn(
         # the classic mis-set that stalls a board).
         if task.provider_override:
             cmd.extend(["--provider", task.provider_override])
+    # Per-task thinking depth. Independent of the model override — a task can
+    # run the profile's own model at a different depth — so this is its own
+    # branch, not a nested one.
+    if task.reasoning_effort:
+        cmd.extend(["--reasoning", task.reasoning_effort])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])

@@ -2140,6 +2140,14 @@ def compress_context(
                         _profile_for_child = None
                     old_title = agent._session_db.get_session_title(agent.session_id)
                     old_session_id = agent.session_id
+                    try:
+                        from agent.codex_websocket_transport import (
+                            cleanup_codex_websocket_session,
+                        )
+
+                        cleanup_codex_websocket_session(old_session_id)
+                    except Exception:
+                        pass
                     new_session_id = (
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
                         f"{uuid.uuid4().hex[:6]}"
@@ -2159,6 +2167,8 @@ def compress_context(
                         require_compression_lease=_lock_holder is not None,
                     )
                     agent.session_id = new_session_id
+                    # Ordering contract: the agent thread updates the contextvar here;
+                    # the gateway propagates to SessionEntry after run_in_executor returns.
                     try:
                         from gateway.session_context import set_current_session_id
 

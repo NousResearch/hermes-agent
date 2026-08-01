@@ -146,6 +146,33 @@ class TestRestorePrimaryRuntime:
         assert agent.model == original_model
         assert agent.provider == original_provider
 
+    def test_restores_responses_transport_after_codex_fallback(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "responses_transport": "websocket-cached",
+            },
+        )
+        mock_client = _mock_resolve(
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "gpt-5.5"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.responses_transport == "websocket-cached"
+        assert agent._primary_runtime["responses_transport"] == "sse"
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+
+        assert agent.responses_transport == "sse"
+
     def test_resets_fallback_index(self):
         """After restore, the full fallback chain should be available again."""
         agent = _make_agent(

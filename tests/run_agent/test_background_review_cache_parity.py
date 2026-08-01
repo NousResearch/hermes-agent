@@ -187,6 +187,25 @@ def test_review_fork_pins_session_start_and_session_id():
     )
 
 
+def test_review_fork_uses_isolated_sse_transport():
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent.responses_transport = "websocket-cached"
+
+    captured = {}
+    recorder = _make_recorder_class(captured)
+
+    with patch.object(run_agent, "AIAgent", recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert captured["init_kwargs"]["responses_transport"] == "sse"
+
 
 
 

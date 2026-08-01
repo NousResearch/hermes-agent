@@ -413,6 +413,7 @@ def _run_agent(
             provider=runtime.get("provider"),
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
+            responses_transport=runtime.get("responses_transport", "sse"),
             model=effective_model,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,

@@ -18,6 +18,7 @@ def test_make_agent_passes_resolved_provider():
         "base_url": "https://api.anthropic.com",
         "api_key": "sk-test-key",
         "api_mode": "anthropic_messages",
+        "responses_transport": "websocket-cached",
         "command": None,
         "args": None,
         "credential_pool": None,
@@ -58,6 +59,7 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+        assert call_kwargs.kwargs["responses_transport"] == "websocket-cached"
 
 
 def test_probe_config_health_flags_null_sections():
@@ -90,6 +92,7 @@ def test_apply_model_switch_does_not_leak_process_env():
         base_url = "https://api.z.ai/v1"
         api_key = "sk-glm"
         api_mode = "chat_completions"
+        responses_transport = "sse"
 
     class _FakeAgent:
         def __init__(self):

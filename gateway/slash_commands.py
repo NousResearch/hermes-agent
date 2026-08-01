@@ -1866,6 +1866,7 @@ class GatewaySlashCommandsMixin:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    responses_transport=result.responses_transport,
                                 )
                             except Exception as exc:
                                 # The in-place swap rolled the agent back to the
@@ -1924,6 +1925,7 @@ class GatewaySlashCommandsMixin:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "responses_transport": result.responses_transport,
                         }
 
                         # Write-through the non-secret parts to the session
@@ -2174,6 +2176,7 @@ class GatewaySlashCommandsMixin:
                         api_key=result.api_key,
                         base_url=result.base_url,
                         api_mode=result.api_mode,
+                        responses_transport=result.responses_transport,
                     )
                 except Exception as exc:
                     # In-place swap rolled the agent back to the OLD working
@@ -2231,6 +2234,7 @@ class GatewaySlashCommandsMixin:
                 "api_key": result.api_key,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
+                "responses_transport": result.responses_transport,
             }
             if one_turn:
                 if not hasattr(self, "_pending_one_turn_model_restores"):
@@ -2241,7 +2245,7 @@ class GatewaySlashCommandsMixin:
             elif hasattr(self, "_pending_one_turn_model_restores"):
                 self._pending_one_turn_model_restores.pop(session_key, None)
 
-            # Write-through the non-secret parts (model/provider/base_url) to
+            # Write-through the non-secret parts (model/provider/base_url/transport) to
             # the session store so the override survives a gateway restart.
             # api_key/api_mode are never persisted — they are re-resolved via
             # runtime provider resolution on rehydration.

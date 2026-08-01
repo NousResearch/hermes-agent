@@ -248,7 +248,7 @@ export interface Translations {
     enterHud: string
     exitHud: string
     layoutEditor: string
-    layoutEditorTitle: string
+    layoutEditorTitle: (modifier: string) => string
   }
 
   keybinds: {

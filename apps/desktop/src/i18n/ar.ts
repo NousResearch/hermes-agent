@@ -176,7 +176,7 @@ export const ar = defineLocale({
     enterHud: 'وضع HUD',
     exitHud: 'إنهاء وضع HUD',
     layoutEditor: 'محرر التخطيط',
-    layoutEditorTitle: 'محرر التخطيط — انقر مع ⌘ لإعادة ضبط التخطيط'
+    layoutEditorTitle: modifier => `محرر التخطيط — انقر مع ${modifier} لإعادة ضبط التخطيط`
   },
   keybinds: {
     title: 'اختصارات لوحة المفاتيح',

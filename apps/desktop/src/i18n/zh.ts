@@ -201,7 +201,7 @@ export const zh: Translations = {
     enterHud: 'HUD 模式',
     exitHud: '退出 HUD 模式',
     layoutEditor: '布局编辑器',
-    layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局'
+    layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
   },
 
   keybinds: {

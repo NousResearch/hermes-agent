@@ -103,6 +103,12 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     reads every iteration): stash the pick for the NEXT turn start. Selection guards run HERE (the
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
     start) — on a warning nothing is stashed."""
+    from hermes_cli.model_switch import resolve_persist_behavior
+    # A persisting pick is refused NOW: queued, it would be acked here and fail only at turn start, as a
+    # generic error event. resolve_persist_behavior, not --global alone: persist_switch_by_default counts.
+    if not getattr(parsed, "is_reset", False) and resolve_persist_behavior(
+            parsed.is_global, parsed.is_session, is_once=parsed.is_once, explicit_provider=parsed.explicit_provider):
+        _refuse_managed_keys("model.default", "model.provider", "model.base_url")
     try:
         pending_model = parsed.model_input
     except Exception:

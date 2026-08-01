@@ -25,6 +25,7 @@ from typing import Callable, Dict, Any, List, Optional
 import copy
 
 from hermes_constants import display_hermes_home, get_hermes_dir
+from hermes_logging import truncate_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -368,9 +369,14 @@ def _media_tag(paths: list[str], voice_compatible: bool) -> str:
 
 
 def _tool_failure(prefix: str, provider: str, exc: BaseException) -> str:
-    """Log and wrap a synthesis failure as the standard error envelope (traceback except for config errors)."""
+    """Log and wrap a synthesis failure as the standard error envelope.
+
+    The log line is truncated and has no traceback: HTTP client exceptions
+    embed the response body, and ``exc_info`` would write that body again.
+    The returned tool error keeps the full text.
+    """
     error_msg = f"{prefix} ({provider}): {exc}"
-    logger.error("%s", error_msg, exc_info=not isinstance(exc, ValueError))
+    logger.error("%s", truncate_for_log(error_msg))
     return tool_error(error_msg, success=False)
 
 

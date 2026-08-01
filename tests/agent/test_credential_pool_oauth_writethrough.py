@@ -264,14 +264,6 @@ def test_write_through_fires_on_every_refresh_not_just_first(
     )
 
     provider = "openai-codex"
-    call_count = [0]
-
-    def counting_root_write(provider_id, state):
-        call_count[0] += 1
-
-    monkeypatch.setattr(
-        CP, "_write_through_provider_state_to_global_root", counting_root_write
-    )
     # After patching A's module-level attributes, the bare-name imports in
     # credential_pool.py still hold references to the original functions
     # (``from X import Y`` creates a local binding that does not update when
@@ -280,6 +272,9 @@ def test_write_through_fires_on_every_refresh_not_just_first(
     # are ``agent.credential_pool.__dict__`` — sees the mocked paths.
     monkeypatch.setattr(CP, "_global_auth_file_path", lambda: root_path)
     monkeypatch.setattr(CP, "_same_path", lambda a, b: a == b)
+    # Let _write_through_provider_state_to_global_root run for real so it
+    # persists the rotated token pair to the root auth.json — the test
+    # asserts the on-disk values after each refresh.
 
     # ---- REFRESH 1 ----
     _write_store(profile_path, {"version": 1})
@@ -288,7 +283,12 @@ def test_write_through_fires_on_every_refresh_not_just_first(
     )
     pool1 = CredentialPool(provider, [entry1])
     pool1._sync_device_code_entry_to_auth_store(entry1)
-    assert call_count[0] == 1, "refresh 1: write-through must fire (#74339)"
+
+    # Verify root was updated with the rotated tokens from refresh 1.
+    root_store = _read_store(root_path)
+    root_tokens = root_store["providers"]["openai-codex"]["tokens"]
+    assert root_tokens["access_token"] == "ac1"
+    assert root_tokens["refresh_token"] == "rf1"
 
     # After refresh 1 the profile should NOT have a providers.openai-codex
     # block (the fix skipped _store_provider_state because the grant came
@@ -306,8 +306,14 @@ def test_write_through_fires_on_every_refresh_not_just_first(
     )
     pool2 = CredentialPool(provider, [entry2])
     pool2._sync_device_code_entry_to_auth_store(entry2)
-    assert call_count[0] == 2, (
-        "refresh 2: write-through must fire even after a prior sync-back. "
-        "The old code self-disabled here (#74339)"
+
+    # Verify root was updated with the rotated tokens from refresh 2.
+    # The old key-presence check would have silently skipped this write.
+    root_store = _read_store(root_path)
+    root_tokens = root_store["providers"]["openai-codex"]["tokens"]
+    assert root_tokens["access_token"] == "ac2", (
+        "refresh 2: root must carry the rotated token pair. "
+        "The old code self-disabled write-through here (#74339)"
     )
+    assert root_tokens["refresh_token"] == "rf2"
 

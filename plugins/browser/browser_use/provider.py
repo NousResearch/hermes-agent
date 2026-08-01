@@ -246,6 +246,10 @@ class BrowserUseBrowserProvider(BrowserProvider):
             "session_name": session_name,
             "bb_session_id": session_data["id"],
             "cdp_url": cdp_url,
+            # Browser Use sessions have a fixed server-side lifetime. Preserve
+            # the authority returned by the API so the dispatcher can retire an
+            # expired CDP endpoint instead of reconnecting to it indefinitely.
+            "expires_at": session_data.get("timeoutAt"),
             "features": {"browser_use": True},
             "external_call_id": external_call_id,
         }

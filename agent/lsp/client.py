@@ -38,6 +38,11 @@ SHUTDOWN_GRACE = 1.0  # seconds after `exit` before SIGTERM, and between SIGTERM
 # Retry policy for transient ContentModified errors: 0.5, 1.0, 2.0s.
 MAX_CONTENT_MODIFIED_RETRIES = 3
 RETRY_BASE_DELAY = 0.5
+# Cap on tracked documents: each _DocState pins the file's full text here AND the server mirrors
+# every open document, so an uncapped dict pins everything a long session ever touched on both
+# sides of the pipe until the idle reaper kills the whole client (#62950).  64 covers an active
+# edit loop's working set; evicted files are didClose'd and re-didOpen'ed on their next touch.
+MAX_TRACKED_FILES = 64
 
 _WRITE_ERRORS = (BrokenPipeError, ConnectionResetError, OSError)
 _LIVE_STATES = {"starting", "running"}
@@ -508,12 +513,16 @@ class LSPClient:
         )
         if doc is None:
             # Fresh state: anything a pre-open push stashed under this path (relatedDocuments spillover) is discarded.
+            self._docs.pop(abs_path, None)
             self._docs[abs_path] = _DocState(version=0, text=text)
             await self._send_notification(
                 "textDocument/didOpen",
                 {"textDocument": {"uri": uri, "languageId": language_id, "version": 0, "text": text}},
             )
+            await self._evict_lru_docs()
             return 0
+        # pop + reinsert refreshes LRU recency (dicts are insertion-ordered).
+        self._docs[abs_path] = self._docs.pop(abs_path)
         change: Dict[str, Any] = {"text": text}
         if self._sync_kind == 2:
             change["range"] = {"start": {"line": 0, "character": 0}, "end": _end_position(doc.text)}
@@ -529,6 +538,15 @@ class LSPClient:
             {"textDocument": {"uri": uri, "version": new_version}, "contentChanges": [change]},
         )
         return new_version
+
+    async def _evict_lru_docs(self) -> None:
+        """Drop least-recently-touched documents beyond MAX_TRACKED_FILES; didClose the ones the server
+        has open so it releases its mirror too (version -1 entries were never opened)."""
+        while len(self._docs) > MAX_TRACKED_FILES:
+            old_path, old = next(iter(self._docs.items()))
+            del self._docs[old_path]
+            if old.version >= 0:
+                await self._send_notification("textDocument/didClose", {"textDocument": {"uri": file_uri(old_path)}})
 
     async def save_file(self, path: str) -> None:
         """Send didSave for ``path``.  Some linters re-scan only on save."""

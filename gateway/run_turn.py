@@ -45,6 +45,33 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+_tool_call_logger_lock = threading.Lock()
+
+
+def _tool_call_logger() -> logging.Logger:
+    """Process-wide ``hermes.tool_calls`` Logger + one RotatingFileHandler on logs/tool_calls.log.
+    Named Loggers live in ``logging.Logger.manager.loggerDict`` forever, so the former per-turn name
+    (``hermes.tool_calls.<id(log_queue)>``) leaked one Logger per logged turn (#62950); a single
+    shared handler also keeps concurrent turns from double-writing lines."""
+    tool_logger = logging.getLogger("hermes.tool_calls")
+    with _tool_call_logger_lock:
+        if not tool_logger.handlers:
+            from logging.handlers import RotatingFileHandler
+            from agent.redact import RedactingFormatter
+            from gateway.run import _hermes_home
+
+            log_dir = _hermes_home / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            handler = RotatingFileHandler(
+                log_dir / "tool_calls.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
+            )
+            handler.setFormatter(RedactingFormatter("%(message)s"))
+            tool_logger.setLevel(logging.INFO)
+            tool_logger.propagate = False
+            tool_logger.addHandler(handler)
+    return tool_logger
+
+
 
 _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "context length", "context size", "context window",
@@ -3097,22 +3124,9 @@ class GatewayTurnMixin:
         """Drain log_queue and append tool-call lines to tool_calls.log (tool_progress=log).
 
         RotatingFileHandler (5MB × 3) bounds the log; RedactingFormatter keeps secrets off disk."""
-        from gateway.run import _hermes_home
         if log_queue is None:
             return
-        from logging.handlers import RotatingFileHandler
-        from agent.redact import RedactingFormatter
-
-        log_dir = _hermes_home / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            log_dir / "tool_calls.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
-        )
-        file_handler.setFormatter(RedactingFormatter("%(message)s"))
-        tool_logger = logging.getLogger(f"hermes.tool_calls.{id(log_queue)}")
-        tool_logger.setLevel(logging.INFO)
-        tool_logger.propagate = False
-        tool_logger.addHandler(file_handler)
+        tool_logger = _tool_call_logger()
         try:
             while True:
                 try:
@@ -3129,10 +3143,9 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 while True:
                     tool_logger.info("%s", log_queue.get_nowait())
-            tool_logger.removeHandler(file_handler)
             with suppress(Exception):
-                file_handler.flush()
-                file_handler.close()
+                for handler in tool_logger.handlers:
+                    handler.flush()
 
     def _run_agent_start_streaming_tts(
         self, source: SessionSource, message_type: Optional[str],

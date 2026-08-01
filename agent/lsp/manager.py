@@ -26,6 +26,7 @@ from agent.lsp.workspace import clear_cache, resolve_workspace_for_file
 logger = logging.getLogger("agent.lsp.manager")
 
 DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
+_DELTA_BASELINE_CAP = 256  # per-file pre-write snapshots; paths never written again would otherwise live forever (#62950)
 MIN_IDLE_TIMEOUT = 30  # floor for config values; must exceed any per-op wait budget
 
 _Key = Tuple[str, str]
@@ -222,7 +223,14 @@ class LSPService:
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
             self._mark_broken_for_file(file_path, e)
             diags = []
-        self._delta_baseline[os.path.abspath(file_path)] = diags or []
+        self._set_delta_baseline(os.path.abspath(file_path), diags or [])
+
+    def _set_delta_baseline(self, abs_path: str, diags: _Diags) -> None:
+        """Store a baseline, refreshing recency (pop + reinsert) so eviction tracks write order."""
+        self._delta_baseline.pop(abs_path, None)
+        self._delta_baseline[abs_path] = diags
+        while len(self._delta_baseline) > _DELTA_BASELINE_CAP:
+            del self._delta_baseline[next(iter(self._delta_baseline))]
 
     def get_diagnostics_sync(
         self, file_path: str, *, delta: bool = True, timeout: Optional[float] = None,
@@ -281,7 +289,7 @@ class LSPService:
         except Exception:  # noqa: BLE001
             fresh = []
         if fresh:
-            self._delta_baseline[abs_path] = fresh
+            self._set_delta_baseline(abs_path, fresh)
         return diags
 
     def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:

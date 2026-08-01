@@ -31,8 +31,9 @@ import { $previewTarget, openPreview } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 
 // ---------------------------------------------------------------------------
-// Logs — live agent-log tail. OPTIONAL chrome: not in any default layout,
-// hidden until the ⌘K "Toggle logs" command opens it ($logsOpen).
+// Logs — live agent-log tail. ⌘K-only chrome: the pane contribution exists
+// only while the "Toggle logs" palette command has it summoned ($logsOpen in
+// the controller) — never in a default layout, never a standing tab.
 // ---------------------------------------------------------------------------
 
 export function LogsPane() {

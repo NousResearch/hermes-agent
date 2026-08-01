@@ -56,7 +56,7 @@ export const SidebarSurface = memo(function SidebarSurface({
 
 export const TerminalSurface = memo(function TerminalSurface() {
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-editor-surface-background)">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-terminal-surface-background)">
       <TerminalPaneChrome />
     </div>
   )

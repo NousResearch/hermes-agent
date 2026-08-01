@@ -317,6 +317,11 @@ DEFAULT_CONFIG = {
         # Docker runs with --network=none so commands cannot reach the network.
         "docker_network": True,
         "docker_extra_args": [],        # Extra flags passed verbatim to docker run
+        # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently
+        # breaks Chromium/Playwright and PyTorch DataLoader workers; tmpfs is
+        # lazily allocated so the higher ceiling costs nothing until used.
+        # Set to "" (or "0") to omit the flag and use Docker's default.
+        "docker_shm_size": "1g",
         # Explicit opt-in: run the Docker container as the host user's uid:gid
         # (via `--user`).  When enabled, files written into bind-mounted dirs
         # (docker_volumes, the persistent workspace, or the auto-mounted cwd)

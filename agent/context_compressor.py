@@ -764,13 +764,50 @@ def _serialized_length_for_budget(value: Any) -> int:
 # Responses sessions in particular carry ``codex_reasoning_items`` blobs of
 # ``encrypted_content`` that can dominate the serialized session (a measured
 # 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+#
+# ``reasoning_details`` is handled separately (see
+# ``_reasoning_details_text_chars``): its signed/base64 envelope is excluded
+# from the budget, mirroring the preflight estimator's exclusion in
+# ``model_metadata._estimate_message_tokens_without_images`` (#73298).
 _REPLAY_BUDGET_KEYS = (
     "reasoning",
     "reasoning_content",
-    "reasoning_details",
     "codex_reasoning_items",
     "codex_message_items",
 )
+
+
+def _reasoning_details_text_chars(value: Any) -> int:
+    """Textual thinking chars inside a ``reasoning_details`` envelope.
+
+    ``reasoning_details`` carries provider thinking blocks: the actual
+    thinking TEXT plus opaque signed/base64 envelope blobs (Anthropic
+    ``signature``, redacted ``data``, encrypted payloads).  The envelope is
+    never billed at anything near chars/4 by the provider and — on every
+    transport except Codex Responses — is replayed for at most the newest
+    assistant turn, so charging it on every message inflated the tail-budget
+    walk and silently shrank the surviving tail (#73298, second site).
+
+    Count only the thinking text (the #51800 lesson: real reasoning text
+    MUST stay visible to the budget), skip everything else.
+    """
+    if not value:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    total = 0
+    if isinstance(value, dict):
+        value = [value]
+    if isinstance(value, list):
+        for part in value:
+            if isinstance(part, str):
+                total += len(part)
+            elif isinstance(part, dict):
+                for text_key in ("thinking", "text", "summary"):
+                    text = part.get(text_key)
+                    if isinstance(text, str):
+                        total += len(text)
+    return total
 
 
 def _estimate_msg_budget_tokens(msg: dict) -> int:
@@ -804,6 +841,17 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
             tokens += estimate_tokens_rough(str(tc))
     for key in _REPLAY_BUDGET_KEYS:
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+    # reasoning_details: charge only the thinking TEXT, never the signed /
+    # base64 envelope (#73298 second site; mirrors the preflight estimator's
+    # exclusion in model_metadata).  When the same thinking text already rides
+    # in ``reasoning``/``reasoning_content`` (measured byte-identical on
+    # Anthropic-wire sessions), skip it here entirely so the prose is not
+    # charged twice on top of the envelope exclusion.
+    if not (msg.get("reasoning") or msg.get("reasoning_content")):
+        tokens += (
+            _reasoning_details_text_chars(msg.get("reasoning_details"))
+            // _CHARS_PER_TOKEN
+        )
     return tokens
 
 
@@ -2166,6 +2214,10 @@ class ContextCompressor(ContextEngine):
         self._micro_compact_consecutive_failures: int = 0
         self._micro_compact_last_failure_cursor: int = -1
         self._micro_compact_defrag_threshold_tokens: int = 2000
+        # Set by _defrag_rolling_summary when it pops _DB_PERSISTED_MARKER
+        # from a live dict in place; consumed by finalize_turn to invalidate
+        # the agent's bounded flush-scan cursor (sibling of the #75170 site).
+        self._flush_scan_cursor_invalidated: bool = False
         self._micro_compact_passes: int = 0
         self._micro_compact_tokens_saved_total: int = 0
         # Cadence: run a pass every Nth completed turn. Each pass rewrites
@@ -4236,6 +4288,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         end: int,
     ) -> list[tuple[int, str]]:
         """Find handoff summaries inside a compression window."""
+        n = len(messages)
+        # Defensive: clamp bounds so a caller passing an out-of-range end
+        # (e.g. tail-cut returning len(messages)+1 when head_end >= n)
+        # cannot trigger IndexError.  (#75588)
+        start = max(0, min(start, n))
+        end = max(start, min(end, n))
         summaries: list[tuple[int, str]] = []
         for idx in range(start, end):
             content = messages[idx].get("content")
@@ -5005,7 +5063,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # exists to prevent.  Re-align FORWARD (never backward, which would give
         # the floor's message back) so a raised cut skips to the end of the
         # group and the whole call/result pair is summarised together.
-        return self._align_boundary_forward(messages, max(cut_idx, head_end + 1))
+        return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))
 
     # ------------------------------------------------------------------
     # ContextEngine: manual /compress preflight
@@ -5322,6 +5380,15 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Content changed after a possible flush — clear the persisted
                 # stamp so the DB sync/flush rewrites the row.
                 entry.pop(_DB_PERSISTED_MARKER, None)
+                # Sibling of the finalize_turn pop site (#75170): this pop
+                # also strips the marker from a LIVE dict in place, so the
+                # bounded flush-scan cursor would identity-skip the rewritten
+                # marker and the defragged summary would never reach state.db.
+                # The compressor holds no agent reference, so raise a flag the
+                # finalizer consumes to invalidate agent._db_flush_scan_prefix.
+                # (The pop sites at module scope — fresh copies in
+                # strip-marker helpers — break identity and need no flag.)
+                self._flush_scan_cursor_invalidated = True
                 break
         logger.info(
             "Micro-compaction defrag: rolling summary re-summarized "
@@ -6258,16 +6325,18 @@ This compaction should PRIORITISE preserving all information related to the focu
                 None,
             )
         first_tail_role = None
+        first_tail_visible_idx: Optional[int] = None
         if tail_messages:
-            first_tail_role = next(
+            first_tail_visible_idx, first_tail_role = next(
                 (
-                    role
-                    for role in (
-                        _template_visible_role(m) for m in tail_messages
+                    (idx, role)
+                    for idx, role in (
+                        (idx, _template_visible_role(m))
+                        for idx, m in enumerate(tail_messages)
                     )
                     if role is not None
                 ),
-                None,
+                (None, None),
             )
         # When the only protected head message is the system prompt, the
         # summary becomes the first *visible* message in the API request
@@ -6294,11 +6363,27 @@ This compaction should PRIORITISE preserving all information related to the focu
         # If no user-role message survives in either the protected head or the
         # preserved tail, the summary MUST carry role="user" so the request
         # always has at least one user turn.
+        #
+        # A bare role check is not enough: the tail's sole surviving user
+        # turn can be image-only (a screenshot with no caption). The newest
+        # image-bearing user message is the ``_strip_historical_media``
+        # anchor and is kept byte-for-byte, so it never gains a text
+        # placeholder — its role is "user" but its text content is empty,
+        # which backends checking for actual query text still reject. Count
+        # only user messages with non-empty text as "surviving"; when the
+        # guard fires, the real (never fabricated) summary text lands in a
+        # role="user" slot, which is always non-empty (falls back to
+        # ``_build_static_fallback_summary`` above when generation fails).
         if not _force_user_leading:
+            def _is_nonempty_user_turn(message: Dict[str, Any]) -> bool:
+                return message.get("role") == "user" and bool(
+                    _content_text_for_contains(message.get("content")).strip()
+                )
+
             _user_survives = any(
-                message.get("role") == "user" for message in compressed
+                _is_nonempty_user_turn(message) for message in compressed
             ) or any(
-                message.get("role") == "user" for message in tail_messages
+                _is_nonempty_user_turn(message) for message in tail_messages
             )
             if not _user_survives:
                 _force_user_leading = True
@@ -6354,9 +6439,27 @@ This compaction should PRIORITISE preserving all information related to the focu
                 ),
             })
 
+        # Default merge target: literal tail index 0. For an ordinary
+        # alternation collision the summary only has to stay *invisible* to
+        # the template, and a leading template-exempt row (bare tool-call
+        # assistant message, tool result) is the ideal carrier — it absorbs
+        # the summary without adding a visible turn, and it leaves the live
+        # tail user message intact as the model's actual prompt. Retargeting
+        # to the first template-visible row here would convert that live
+        # request into the summary carrier for no benefit.
+        #
+        # The forced repair path is the exception. There the merge is not
+        # about alternation but about guaranteeing at least one genuinely
+        # non-empty role="user" message (an image-only or otherwise
+        # text-empty surviving user row). An exempt carrier cannot satisfy
+        # that invariant, so the summary text must land on the
+        # template-visible row itself.
+        _merge_target_idx = 0
+        if _force_user_leading and first_tail_visible_idx is not None:
+            _merge_target_idx = first_tail_visible_idx
         for tail_idx, msg in enumerate(tail_messages):
-            if _merge_summary_into_tail and tail_idx == 0:
-                # Merge the summary into the first (post-strip) tail message.
+            if _merge_summary_into_tail and tail_idx == _merge_target_idx:
+                # Merge the summary into the tail message that collided.
                 old_content = msg.get("content", "")
                 if _force_user_leading and summary_role == "user":
                     # The summary must be part of the first user-visible

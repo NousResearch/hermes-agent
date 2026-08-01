@@ -1214,9 +1214,8 @@ export function applyTree(tree: LayoutNode, presetId: string) {
   // (the terminal, whose visibility a store owns) would otherwise stay
   // collapsed after the tree changes — so reveal the ones that opt in through
   // their owning store, keeping the ⌃`/toggle state truthful. Iterate the
-  // preset's DECLARED panes (not the adopted result): logs is auto-adopted
-  // hidden into every tree, so only a preset that explicitly places it (Quad)
-  // should turn it on.
+  // preset's DECLARED panes (not the adopted result) so only panes a preset
+  // explicitly places are turned on.
   const panes = registry.getArea('panes')
 
   for (const paneId of allPaneIds(tree)) {

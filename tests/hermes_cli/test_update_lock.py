@@ -224,3 +224,41 @@ class TestHandoffFromOrchestratingUpdater:
         assert lock.acquire() is True
         assert lock.acquired is True
         assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getpid()
+
+
+class TestAncestryHandoff:
+    """Staged updaters older than the HANDOFF_PID_ENV export never send it.
+
+    ``hermes-setup`` under ``~/.hermes`` is only refreshed by a full installer
+    run, so an updated checkout (new lock) driven by a pre-handoff staged
+    updater (old parent) deadlocks on exit 2 forever unless the child also
+    recognizes a live holder that is its own process ancestor.
+
+    ``_pid_alive`` is pinned True here because the hermetic conftest guards
+    ``os.kill`` probes of pids outside the test subtree (our ppid included);
+    liveness has its own coverage above — ancestry is what's under test.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _liveness_pinned_true(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+
+    def test_marker_owned_by_our_parent_process_is_our_orchestrator(self, marker):
+        marker.write_text(f"{os.getppid()}\n{int(time.time())}\n", encoding="utf-8")
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is True, "a live ancestor's claim is the one we run under"
+        assert lock.acquired is False, "the parent's claim is not ours to own"
+
+        lock.release()
+        assert marker.exists(), "the parent still needs its marker after our stage ends"
+        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getppid()
+
+    def test_live_non_ancestor_holder_is_still_refused(self, marker):
+        """Ancestry must not open the lock to unrelated concurrent updaters."""
+        marker.write_text(f"{DEAD_PID}\n{int(time.time())}\n", encoding="utf-8")
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is False
+        assert lock.holder is not None
+        assert lock.holder.pid == DEAD_PID

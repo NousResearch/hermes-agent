@@ -1509,23 +1509,6 @@ class TestLeastUsedStrategy:
 
 # ── OpenAI Codex OAuth cross-process sync tests ────────────────────────────
 
-def _codex_auth_store(access: str, refresh: str) -> dict:
-    return {
-        "version": 1,
-        "active_provider": "openai-codex",
-        "providers": {
-            "openai-codex": {
-                "auth_mode": "chatgpt",
-                "tokens": {
-                    "access_token": access,
-                    "refresh_token": refresh,
-                    "id_token": "id-" + access,
-                },
-                "last_refresh": "2026-04-28T00:00:00Z",
-            }
-        },
-    }
-
 
 
 

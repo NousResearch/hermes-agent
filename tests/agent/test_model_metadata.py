@@ -79,6 +79,71 @@ class TestEstimateMessagesTokensRough:
         # string representation.
         assert 1500 <= result < 2000
 
+    def test_api_content_substitutes_for_content_not_added_to_it(self):
+        """``api_content`` replaces ``content`` on the wire, so count one.
+
+        ``turn_context.substitute_api_content()`` pops the sidecar and
+        overwrites ``content`` at every API-bound build site. Counting both
+        doubled the estimate for any message carrying a sidecar.
+        """
+        body = "cached prompt bytes " * 2000
+        wire_shape = {"role": "user", "content": body}
+        persisted_shape = {"role": "user", "content": body, "api_content": body}
+
+        assert estimate_messages_tokens_rough([persisted_shape]) == \
+            estimate_messages_tokens_rough([wire_shape])
+
+    def test_api_content_is_counted_when_it_differs_from_content(self):
+        """The sidecar is what's sent, so its size is the one that matters."""
+        big_sidecar = "cached prompt bytes " * 2000
+        msg = {"role": "user", "content": "short", "api_content": big_sidecar}
+
+        result = estimate_messages_tokens_rough([msg])
+
+        # Lower bound: fails if the sidecar were dropped rather than
+        # substituted (which would undercount the real request).
+        assert result >= (len(big_sidecar) // 4) * 0.9
+
+    def test_non_string_api_content_does_not_displace_content(self):
+        """Only a sidecar shape the wire actually substitutes may displace content.
+
+        ``substitute_api_content()`` overwrites ``content`` only for a
+        non-empty STRING sidecar on a user/assistant row; every other shape
+        is popped and discarded, leaving the clean ``content`` on the wire.
+        The shadow must mirror that guard — substituting unconditionally
+        would drop the real content from the estimate and UNDERcount, which
+        is the dangerous direction (compaction fires too late and the turn
+        dies on a hard context error).
+        """
+        body = "clean stored content " * 2000
+        baseline = estimate_messages_tokens_rough([{"role": "user", "content": body}])
+
+        for bad_sidecar in (None, "", 42, ["not", "a", "string"]):
+            msg = {"role": "user", "content": body, "api_content": bad_sidecar}
+            assert estimate_messages_tokens_rough([msg]) >= baseline, bad_sidecar
+
+        # Same for a role the substitution never applies to.
+        tool_row = {"role": "tool", "content": body, "api_content": "ignored"}
+        assert estimate_messages_tokens_rough([tool_row]) >= baseline
+
+    def test_image_stripping_survives_shadow_extraction(self):
+        """Non-regression for the ``_wire_message_shadow()`` extraction.
+
+        Both estimator helpers now share one shadow builder; this pins the
+        flat per-image accounting that the extraction moved, independent of
+        the ``api_content`` fix (a valid sidecar is a string, so it cannot
+        carry an image list).
+        """
+        import base64
+        import os
+
+        payload = "data:image/png;base64," + base64.b64encode(os.urandom(300_000)).decode()
+        msg = {"role": "user",
+               "content": [{"type": "image_url", "image_url": {"url": payload}}]}
+
+        # Raw base64 would be ~100K tokens; the flat per-image model is ~1.5K.
+        assert estimate_messages_tokens_rough([msg]) < 5_000
+
 
 
 class TestEstimateRequestTokensRough:
@@ -134,6 +199,42 @@ class TestEstimateRequestTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_nvidia_deepseek_v4_pro_context_is_endpoint_scoped(self):
+        """NVIDIA's 262K NIM window must not lower DeepSeek V4 globally."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            accepted_urls = (
+                "https://integrate.api.nvidia.com/v1",
+                "https://INTEGRATE.API.NVIDIA.COM/v1/",
+                "https://integrate.api.nvidia.com:443/v1",
+            )
+            rejected_urls = (
+                "http://integrate.api.nvidia.com/v1",
+                "https://integrate.api.nvidia.com:8443/v1",
+                "https://integrate.api.nvidia.com/v1/other",
+                "https://integrate.api.nvidia.com/v1?route=other",
+                "https://example.invalid/v1",
+                "https://api.deepseek.com/v1",
+                "https://openrouter.ai/api/v1",
+            )
+
+            for base_url in accepted_urls:
+                assert get_model_context_length(
+                    "deepseek-ai/deepseek-v4-pro",
+                    provider="nvidia",
+                    base_url=base_url,
+                ) == 262_144
+
+            for base_url in rejected_urls:
+                assert get_model_context_length(
+                    "deepseek-ai/deepseek-v4-pro",
+                    provider="nvidia",
+                    base_url=base_url,
+                ) == 1_000_000
+
     def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
         """The bare ``k3`` slug's 1 Mi context must not leak to unverified endpoints.
 
@@ -1076,4 +1177,3 @@ class TestMoAContextLength:
         assert compressor.context_length == configured_context
         assert compressor.threshold_tokens == configured_context // 2
         endpoint_probe.assert_not_called()
-

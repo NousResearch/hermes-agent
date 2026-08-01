@@ -53,6 +53,7 @@ def _make_dummy_env(**kwargs):
         run_as_host_user=kwargs.get("run_as_host_user", False),
         extra_args=kwargs.get("extra_args", []),
         persist_across_processes=kwargs.get("persist_across_processes", True),
+        shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
     )
 
 
@@ -1282,3 +1283,73 @@ def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
     result = env.execute("badcmd")
     assert result.get("returncode") == 127
     assert "command not found" in result.get("output", "")
+
+
+# ── /dev/shm size tests (ported from nanocoai/nanoclaw#2748) ─────────────────
+
+
+def _shm_run_args(calls):
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    return run_calls[0][0]
+
+
+def test_shm_size_default_applied(monkeypatch):
+    """Docker's 64 MB /dev/shm default breaks Chromium and PyTorch DataLoader
+    workers; the sandbox must raise it by default."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()
+
+    run_args = _shm_run_args(calls)
+    assert "--shm-size" in run_args
+    assert run_args[run_args.index("--shm-size") + 1] == docker_env._DEFAULT_SHM_SIZE
+
+
+def test_shm_size_custom_value(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(shm_size="256m")
+
+    run_args = _shm_run_args(calls)
+    assert run_args[run_args.index("--shm-size") + 1] == "256m"
+
+
+@pytest.mark.parametrize("opt_out", ["", "0", "  ", None])
+def test_shm_size_opt_out_omits_flag(monkeypatch, opt_out):
+    """Empty / '0' / None fall back to Docker's built-in default (no flag)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(shm_size=opt_out)
+
+    run_args = _shm_run_args(calls)
+    assert "--shm-size" not in run_args
+    assert not any(isinstance(a, str) and a.startswith("--shm-size=") for a in run_args)
+
+
+@pytest.mark.parametrize("extra", [["--shm-size", "4g"], ["--shm-size=4g"]])
+def test_shm_size_skipped_when_user_sets_it_via_extra_args(monkeypatch, extra):
+    """A user-supplied --shm-size in docker_extra_args must win unambiguously:
+    our default is skipped rather than relying on flag-ordering behavior."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(extra_args=list(extra))
+
+    run_args = _shm_run_args(calls)
+    joined = " ".join(run_args)
+    assert joined.count("--shm-size") == 1, joined
+    assert "4g" in joined
+
+
+def test_extra_args_set_shm_size_helper():
+    assert docker_env._extra_args_set_shm_size(["--shm-size", "2g"]) is True
+    assert docker_env._extra_args_set_shm_size(["--shm-size=2g"]) is True
+    assert docker_env._extra_args_set_shm_size(["--memory", "512m"]) is False
+    assert docker_env._extra_args_set_shm_size([]) is False
+    assert docker_env._extra_args_set_shm_size(None) is False
+    # non-string entries must not crash (config.yaml can be malformed)
+    assert docker_env._extra_args_set_shm_size([42, None, "--shm-size=1g"]) is True

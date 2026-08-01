@@ -34,7 +34,7 @@ import {
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { notify } from '@/store/notifications'
+import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
@@ -59,6 +59,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { dropSessionState } from '@/store/session-states'
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
@@ -329,6 +330,23 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             notifySessionsChanged()
           }
         }
+
+        return
+      } else if (event.type === 'session.reclaimed') {
+        // The backend reclaimed a live session we may still be holding (idle
+        // TTL, LRU cap, or the WS-orphan reap). Without this the runtime id
+        // stays cached until something fails against it, which reads as the
+        // session vanishing rather than being reclaimed. Drop the cached state
+        // now — the stored row is untouched, so the sidebar keeps the
+        // conversation and reopening it resumes from the DB.
+        const reclaimedRuntimeId = String((payload as { session_id?: string } | undefined)?.session_id ?? '')
+
+        if (reclaimedRuntimeId) {
+          dropSessionState(reclaimedRuntimeId)
+        }
+
+        // The row's ended_at moved, so refresh the lists that render it.
+        notifySessionsChanged()
 
         return
       } else if (event.type === 'session.info') {
@@ -1143,6 +1161,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
+        } else if (isDiskFullErrorMessage(errorMessage)) {
+          notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
         } else {
           // Toast globally, not just when the failing thread is focused: a
           // turn-ending error (e.g. out of funds) blocks every thread, so the

@@ -348,3 +348,41 @@ def test_patched_is_windows_reaches_the_venv_path_derivation():
         venv_python_path("/nope/venv", windows=True).as_posix()
         == "/nope/venv/Scripts/python.exe"
     )
+
+
+# ---------------------------------------------------------------------------
+# Crash between "move dst aside" and "move staging in" (Phase 2 review HIGH)
+# ---------------------------------------------------------------------------
+
+def test_staging_restores_backup_when_dst_is_missing(tmp_path, monkeypatch):
+    """A previous run that died mid-swap leaves dst missing and the backup as
+    the ONLY copy of that entry. On retry, _stage_replacement must restore
+    the backup to dst BEFORE clearing leftovers — otherwise a staging failure
+    right after (disk exhaustion is likeliest exactly then) leaves a hole in
+    the install with nothing to roll back to."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    live.mkdir()
+    _live_tree(new, {"agent": "new"})
+    # Simulate the crashed state: dst gone, backup holds the old tree.
+    backup = live / "agent.hermes-update-old"
+    backup.mkdir()
+    (backup / "version.txt").write_text("old")
+
+    # Staging fails (disk full) on the fresh copy.
+    def boom(src, dst, *a, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(update_cmd.shutil, "copytree", boom)
+    with pytest.raises(OSError):
+        update_cmd._stage_replacement(str(new / "agent"), str(live / "agent"))
+    monkeypatch.undo()
+
+    # The old tree must have been restored to dst before the failure.
+    assert (live / "agent" / "version.txt").read_text() == "old"
+    assert not backup.exists()
+
+    # And a clean retry completes the update normally.
+    staged = _stage_all(live, new, ["agent"])
+    update_cmd._commit_staged_replacements(staged)
+    assert (live / "agent" / "version.txt").read_text() == "new"
+    assert not [p for p in os.listdir(live) if "hermes-update" in p]

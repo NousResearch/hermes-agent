@@ -177,6 +177,72 @@ class TestResolveConfigPath:
         assert _get_default_hermes_home() == default_home
         assert result == default_cfg
 
+    def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(Path, "home", return_value=fake_home), \
+             patch(
+                 "plugins.memory.honcho.client.get_hermes_home",
+                 return_value=fake_home / ".hermes",
+             ), \
+             patch(
+                 "plugins.memory.honcho.client._get_default_hermes_home",
+                 return_value=fake_home / ".hermes",
+             ):
+            os.environ.pop("HERMES_HOME", None)
+            result = resolve_config_path()
+        assert result == fake_home / ".honcho" / "config.json"
+
+    def test_global_fallback_uses_home_at_call_time(self, tmp_path):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=fake_home):
+            assert resolve_global_config_path() == fake_home / ".honcho" / "config.json"
+            assert resolve_config_path() == fake_home / ".honcho" / "config.json"
+
+    def test_from_global_config_uses_default_profile_fallback(self, tmp_path, monkeypatch):
+        # Profile mode: from_global_config() reads the default-profile honcho.json
+        # via the HOME-anchored helper, not Path.home() / ".hermes".
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        default_home = fake_home / ".hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        default_cfg = default_home / "honcho.json"
+        default_cfg.write_text(json.dumps({
+            "apiKey": "default-key",
+            "workspace": "default-ws",
+        }))
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        config = HonchoClientConfig.from_global_config()
+
+        assert config.api_key == "default-key"
+        assert config.workspace_id == "default-ws"
+
+    def test_from_global_config_uses_local_path(self, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        local_cfg = hermes_home / "honcho.json"
+        local_cfg.write_text(json.dumps({
+            "apiKey": "***",
+            "workspace": "local-ws",
+        }))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=tmp_path):
+            config = HonchoClientConfig.from_global_config()
+        assert config.api_key == "***"
+        assert config.workspace_id == "local-ws"
+
 
 class TestResolveActiveHost:
     def test_profile_host_key_uses_honcho_safe_separator(self):

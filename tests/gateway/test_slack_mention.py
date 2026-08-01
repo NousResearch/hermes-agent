@@ -452,6 +452,29 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
 # thread it was mentioned in, the next message from the other agent in that
 # thread would re-trigger the bot and defeat the entire feature.
 
+def test_config_bridges_slack_resolve_permalinks(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  resolve_permalinks: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("SLACK_RESOLVE_PERMALINKS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    import os as _os
+    assert _os.environ["SLACK_RESOLVE_PERMALINKS"] == "true"
+    adapter = SlackAdapter(config.platforms[Platform.SLACK])
+    assert adapter._slack_resolve_permalinks() is True
+
 def test_mention_in_strict_mode_does_not_register_thread():
     adapter = _make_adapter(strict_mention=True)
     adapter._bot_user_id = "U_BOT"

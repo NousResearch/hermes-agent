@@ -62,6 +62,11 @@ class SubdirectoryHintTracker:
 
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        # Explicit callers may deliberately use a Hermes checkout as their workspace.
+        # A fallback cwd must opt in explicitly.
+        self.allow_install_tree = (
+            working_dir is not None if allow_install_tree is None else allow_install_tree
+        )
         # The working dir is pre-marked loaded (startup context handles it).
         self._loaded_dirs: Set[Path] = {self.working_dir}
         # Content digests already injected: the same file reached through
@@ -144,7 +149,7 @@ class SubdirectoryHintTracker:
             return False
         return (
             path not in self._loaded_dirs
-            and (not _is_install_tree(path) or _is_install_tree(self.working_dir))
+            and (not _is_install_tree(path) or self.allow_install_tree)
             and self._within_working_dir(path)
             and not self._is_excluded(path)
         )
@@ -161,7 +166,7 @@ class SubdirectoryHintTracker:
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""
         self._loaded_dirs.add(directory)
-        if _is_install_tree(directory) and not _is_install_tree(self.working_dir):
+        if _is_install_tree(directory) and not self.allow_install_tree:
             return None
         if not self._within_working_dir(directory):
             logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)

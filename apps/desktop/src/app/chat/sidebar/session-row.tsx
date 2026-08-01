@@ -479,9 +479,7 @@ function SidebarSessionRowImpl({
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title}>
                       <SidebarRowLabel
-                        className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
-                        onPointerEnter={armMarquee}
-                        onPointerLeave={disarmMarquee}
+                        className="line-clamp-2 break-words font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
                       >
                         <span className="hover-marquee-inner">{title}</span>
                       </SidebarRowLabel>

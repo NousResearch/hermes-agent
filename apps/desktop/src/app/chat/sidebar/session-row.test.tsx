@@ -243,6 +243,15 @@ describe('SidebarSessionRow', () => {
     expect(tipTrigger(kebab)).toBeNull()
   })
 
+  it('allows a long session title to wrap to two lines instead of applying single-line truncation', () => {
+    const title = 'Fix background process exit error during Hermes auto-update'
+    renderRow(makeSession({ title }))
+
+    const label = screen.getByText(title)
+    expect(label.className).toContain('line-clamp-2')
+    expect(label.className).not.toContain('truncate')
+  })
+
   // Full-title tooltip on hover (#83000-class ask): the label is a tooltip
   // trigger, but the tip only opens when the title is actually truncated.
   describe('full-title overflow tooltip', () => {

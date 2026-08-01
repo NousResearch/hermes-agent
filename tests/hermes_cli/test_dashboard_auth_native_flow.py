@@ -401,6 +401,60 @@ def test_native_password_login_expired_broker_returns_400(pw_gated_client):
     assert "restart" in r.json()["detail"].lower()
 
 
+def test_native_password_login_rejects_cross_provider_completion(
+    pw_gated_client,
+):
+    """A native flow started for provider A must not be completable with
+    provider B's credentials: /login renders every provider's form, and the
+    pending authorization is bound to the provider recorded in the
+    server-set PKCE cookie. The mismatch is rejected BEFORE credential
+    verification and preserves the pending entry, so the user can still
+    submit the form the flow was started for."""
+    from tests.hermes_cli.test_dashboard_auth_password_login import (
+        PasswordProvider,
+    )
+
+    class SecondPasswordProvider(PasswordProvider):
+        name = "testpw2"
+        display_name = "Test Password 2"
+
+    register_provider(SecondPasswordProvider())
+
+    verifier, challenge = _make_pkce()
+    # Native flow initiated for provider A ("testpw").
+    cookies = _start_native_password_login(pw_gated_client, challenge=challenge)
+
+    # Valid credentials for provider B ("testpw2") must NOT complete A's
+    # pending authorization.
+    r = pw_gated_client.post(
+        "/auth/password-login",
+        json={
+            "provider": "testpw2", "username": "admin", "password": "hunter2",
+        },
+        cookies=cookies,
+    )
+    assert r.status_code == 400, r.text
+    assert "different provider" in r.json()["detail"]
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "hermes_session_at" not in set_cookie
+
+    # The pending entry survived — provider A completes normally.
+    r2 = pw_gated_client.post(
+        "/auth/password-login",
+        json={
+            "provider": "testpw", "username": "admin", "password": "hunter2",
+        },
+        cookies=cookies,
+    )
+    assert r2.status_code == 200, r2.text
+    qs = parse_qs(urlparse(r2.json()["next"]).query)
+    tokens = pw_gated_client.post(
+        "/auth/native/token",
+        json={"code": qs["code"][0], "code_verifier": verifier},
+    ).json()
+    assert tokens["provider"] == "testpw"
+
+
 def test_password_login_without_broker_still_mints_cookies(pw_gated_client):
     """Guard: an ordinary browser password login (no native broker cookie)
     keeps the existing cookie-minting behaviour."""

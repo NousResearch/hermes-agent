@@ -728,6 +728,41 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         )
         raise HTTPException(status_code=404, detail="Unknown provider")
 
+    # Native-app branch discriminator (see docstring): a broker handle in
+    # the PKCE cookie means this sign-in was initiated by
+    # /auth/native/authorize for a desktop app, not a browser session. The
+    # cookie is server-set (never client-supplied), so it is trustworthy —
+    # and it also records WHICH provider the native flow was initiated for.
+    # /login renders a form for every session provider, so without this
+    # check a flow started for provider A could be completed with provider
+    # B's credentials, binding B's session into A's pending authorization.
+    # Enforce equality BEFORE verifying credentials: nothing is minted, the
+    # pending authorization is preserved, and the user can submit the form
+    # the flow was actually started for.
+    broker_state = ""
+    cookie_provider = ""
+    pkce_raw = read_pkce_cookie(request)
+    if pkce_raw:
+        pkce_parts = dict(
+            seg.split("=", 1) for seg in pkce_raw.split(";") if "=" in seg
+        )
+        broker_state = pkce_parts.get("broker", "")
+        cookie_provider = pkce_parts.get("provider", "")
+    if broker_state and cookie_provider != body.provider:
+        audit_log(
+            AuditEvent.NATIVE_TOKEN_FAILURE,
+            provider=body.provider,
+            reason="provider_mismatch",
+            ip=ip,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This native sign-in was started for a different provider; "
+                "use that provider's form or restart sign-in."
+            ),
+        )
+
     try:
         session = p.complete_password_login(
             username=body.username, password=body.password
@@ -763,17 +798,8 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         ip=ip,
     )
 
-    # Native-app branch (see docstring): a broker handle in the PKCE cookie
-    # means this sign-in was initiated by /auth/native/authorize for a
-    # desktop app, not a browser session. The cookie is server-set (never
-    # client-supplied), so its presence is the trustworthy discriminator.
-    broker_state = ""
-    pkce_raw = read_pkce_cookie(request)
-    if pkce_raw:
-        pkce_parts = dict(
-            seg.split("=", 1) for seg in pkce_raw.split(";") if "=" in seg
-        )
-        broker_state = pkce_parts.get("broker", "")
+    # Native-app branch: the broker handle was parsed (and its provider
+    # binding enforced) above, before credential verification.
     if broker_state:
         from hermes_cli.dashboard_auth import native_flow
 

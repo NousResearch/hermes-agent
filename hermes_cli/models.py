@@ -2494,9 +2494,9 @@ def fetch_ollama_local_models(
     base_url: Optional[str] = None,
     timeout: float = 2.0,
     headers: Optional[dict[str, str]] = None,
-) -> list[str]:
-    """Fetch local Ollama-compatible models, returning [] on probe failure."""
-    return probe_ollama_local_models(base_url, timeout, headers=headers) or []
+) -> Optional[list[str]]:
+    """Fetch local Ollama-compatible models, preserving probe failure as ``None``."""
+    return probe_ollama_local_models(base_url, timeout, headers=headers)
 
 
 def _same_ollama_native_root(left: str, right: str) -> bool:
@@ -3216,7 +3216,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 _root_for_ollama_native_api(base_url), headers or None
             )
             if native_models or _OLLAMA_LOCAL_PROBE_REACHABLE.get(native_key) is True:
-                return native_models
+                return native_models or []
         else:
             # Non-native Ollama-compatible endpoints (including Ollama Cloud)
             # retain the generic OpenAI-compatible catalog path.

@@ -632,6 +632,12 @@ class TestLocalOllamaModelDiscovery:
 
         assert probe_ollama_local_models("http://127.0.0.1:bad-port/v1") is None
 
+    def test_fetch_ollama_models_preserves_probe_failure(self):
+        from hermes_cli.models import fetch_ollama_local_models
+
+        with patch("hermes_cli.models.probe_ollama_local_models", return_value=None):
+            assert fetch_ollama_local_models("http://127.0.0.1:11434") is None
+
     def test_ollama_port_detection_requires_working_api_tags(self):
         from hermes_cli.models import should_use_ollama_native_catalog
 

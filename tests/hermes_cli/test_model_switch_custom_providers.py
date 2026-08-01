@@ -12,7 +12,11 @@ the behavior under test.
 
 import hermes_cli.providers as providers_mod
 import pytest
-from hermes_cli.model_switch import list_authenticated_providers, switch_model
+from hermes_cli.model_switch import (
+    _fetch_picker_live_models,
+    list_authenticated_providers,
+    switch_model,
+)
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -37,6 +41,25 @@ def _disable_live_custom_provider_model_probe(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.models.fetch_ollama_local_models", lambda *_a, **_kw: None
     )
+
+
+def test_picker_native_probe_failure_falls_back_to_openai_catalog(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.models.should_use_ollama_native_catalog", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {}
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_ollama_local_models", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models", lambda *a, **k: ["fallback-model"]
+    )
+
+    assert _fetch_picker_live_models(
+        "key", "http://127.0.0.1:11434/v1", "ollama", False
+    ) == ["fallback-model"]
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):

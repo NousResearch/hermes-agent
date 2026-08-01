@@ -2882,7 +2882,14 @@ def list_authenticated_providers(
                         has_explicit_models,
                         headers=_extra_headers_from_config(ep_cfg) or None,
                     )
-                    if live_models:
+                    if (
+                        live_models
+                        or (
+                            native_catalog_provider == "ollama"
+                            and live_models == []
+                            and not has_explicit_models
+                        )
+                    ):
                         models_list = live_models
                 except _MODEL_DISCOVERY_ERRORS:
                     pass

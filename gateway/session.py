@@ -3489,7 +3489,9 @@ class SessionStore:
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
-    session_entry: Optional[SessionEntry] = None
+    session_entry: Optional[SessionEntry] = None,
+    *,
+    authenticated_api_helper: Optional[bool] = None,
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
@@ -3504,11 +3506,14 @@ def build_session_context(
         if home:
             home_channels[platform] = home
 
-    platform_config = config.platforms.get(source.platform)
-    authenticated_api_helper = bool(
-        platform_config
-        and platform_config.extra.get("authenticated_api_helper") is True
-    )
+    if authenticated_api_helper is None:
+        platform_config = config.platforms.get(source.platform)
+        authenticated_api_helper = bool(
+            platform_config
+            and platform_config.extra.get("authenticated_api_helper") is True
+        )
+    else:
+        authenticated_api_helper = authenticated_api_helper is True
     
     context = SessionContext(
         source=source,

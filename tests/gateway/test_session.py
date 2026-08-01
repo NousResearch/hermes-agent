@@ -216,6 +216,75 @@ class TestBuildSessionContextPrompt:
         assert "operations and targets authorized" in prompt
         assert "verify writes by reading back" in prompt
 
+    def test_multiplex_helper_guidance_uses_routed_profile_config(self):
+        """A primary profile declaration must not bleed into a secondary turn."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._gateway_profile_name = "primary"
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=True,
+                    extra={"authenticated_api_helper": True},
+                ),
+            },
+        )
+        runner._profile_gateway_configs = {
+            "secondary": GatewayConfig(
+                platforms={
+                    Platform.SLACK: PlatformConfig(
+                        enabled=True,
+                        extra={"authenticated_api_helper": False},
+                    ),
+                },
+            ),
+        }
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            profile="secondary",
+        )
+
+        context = runner._session_context_for_source(source, session_entry=None)
+
+        assert context.authenticated_api_helper is False
+
+        primary_source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C999",
+            chat_type="group",
+            profile="primary",
+        )
+
+        context = runner._session_context_for_source(
+            primary_source, session_entry=None
+        )
+
+        assert context.authenticated_api_helper is True
+
+        runner._profile_gateway_configs["secondary"].platforms[
+            Platform.SLACK
+        ].extra["authenticated_api_helper"] = True
+        runner.config.platforms[Platform.SLACK].extra[
+            "authenticated_api_helper"
+        ] = False
+
+        context = runner._session_context_for_source(source, session_entry=None)
+
+        assert context.authenticated_api_helper is True
+
+        runner._profile_gateway_configs.clear()
+        runner.config.platforms[Platform.SLACK].extra[
+            "authenticated_api_helper"
+        ] = True
+
+        context = runner._session_context_for_source(source, session_entry=None)
+
+        assert context.authenticated_api_helper is False
+
 
     def test_slack_tools_loaded_detects_real_mcp_registration(self):
         """Regression (review of #63234): a connected MCP server whose tools

@@ -409,6 +409,7 @@ class TestSecondaryProfileConfigHandling:
         assert secondary.connected is True
         assert secondary.disconnected is False
         assert runner._profile_adapters["reviewer"][photon] is secondary
+        assert runner._profile_gateway_configs["reviewer"] is reviewer_cfg
 
     @pytest.mark.asyncio
     async def test_failed_photon_connect_releases_listener_for_later_profile(

@@ -1440,3 +1440,33 @@ def test_default_config_has_no_duplicate_top_level_keys():
             if "model" in keys and "kanban" in keys:  # the DEFAULT_CONFIG literal
                 dupes = {k for k in keys if keys.count(k) > 1}
                 assert not dupes, f"duplicate DEFAULT_CONFIG keys: {sorted(dupes)}"
+
+
+class TestSetConfigListValuedGuard:
+    """`hermes config set` refuses scalar writes to list-valued keys."""
+
+    def test_list_valued_key_refused(self, tmp_path, monkeypatch, capsys):
+        """Setting a list-valued key (e.g. toolsets) is refused instead of
+        corrupting the config with a scalar string."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model: test/model\n", encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_path)
+        monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+        with pytest.raises(SystemExit) as exc_info:
+            set_config_value("toolsets", "foo")
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "list-valued" in captured.err
+
+    def test_scalar_key_still_works(self, tmp_path, monkeypatch):
+        """A scalar key (e.g. terminal.backend) is set normally."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model: test/model\n", encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: config_path)
+        monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+        set_config_value("terminal.backend", "local")
+        import yaml
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["terminal"]["backend"] == "local"
+

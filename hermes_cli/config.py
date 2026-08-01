@@ -4863,6 +4863,21 @@ def set_config_value(key: str, value: str, force: bool = False):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
+    # Guard: refuse scalar writes to list-valued keys. `hermes config set`
+    # writes a single scalar, which corrupts list-typed settings (e.g.
+    # `plugins.enabled` becomes a quoted string instead of a YAML list).
+    _list_default = _default_value_for_key(key)
+    if isinstance(_list_default, list):
+        _yaml_list = "\n".join(f"  - {v}" for v in _list_default) if _list_default else "  (empty list)"
+        print(
+            f"✗ '{key}' is a list-valued setting. `hermes config set` writes a\n"
+            f"  scalar and would corrupt it (writes a quoted string instead of a\n"
+            f"  YAML list). Edit config.yaml directly, or use `hermes config edit`:\n"
+            f"    {key}:\n{_yaml_list}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Preserve values for string-typed settings.  In particular, enum members
     # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
     # retain the historical best-effort coercion behavior.

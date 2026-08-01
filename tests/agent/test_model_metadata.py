@@ -1247,6 +1247,24 @@ class TestFallbackWarning:
         ]
         assert len(fallback_warnings) == 1
 
+    def test_warning_emitted_on_custom_endpoint_fallback(self, caplog):
+        """The sibling step-3b fallback (custom/local endpoint, probes down,
+        no catalog match) is the same silent-256K bug class and must warn too."""
+        import logging
+
+        with self._patch_all_lookups(), \
+             patch("agent.model_metadata._query_local_context_length", return_value=None):
+            with caplog.at_level(logging.WARNING, logger="agent.model_metadata"):
+                result = get_model_context_length(
+                    "totally-unknown-model-xyz",
+                    base_url="http://192.168.1.50:8080/v1",
+                )
+
+        assert result == DEFAULT_FALLBACK_CONTEXT
+        warning_msgs = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("totally-unknown-model-xyz" in r.getMessage() for r in warning_msgs)
+        assert any("model.context_length" in r.getMessage() for r in warning_msgs)
+
     def test_no_warning_when_cached(self, caplog):
         """No fallback warning when the context length is found in the cache."""
         import logging

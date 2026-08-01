@@ -118,7 +118,25 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_REQUIRE_MENTION` | No | `false` | Require a mention pattern before responding in group chats |
 | `BLUEBUBBLES_MENTION_PATTERNS` | No | Hermes wake words | JSON array, newline-separated, or comma-separated regex patterns for group mention matching |
 
-Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
+Behavior settings such as reactions, typing, read receipts, and paragraph splitting belong in `config.yaml`:
+
+Set these keys directly under `platforms.bluebubbles` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  bluebubbles:
+    enabled: true
+    auto_react: true
+    auto_react_type: like
+    typing_indicators: true
+    typing_refresh_interval: 4
+    send_read_receipts: true
+    split_paragraph_replies: false
+```
+
+By default, Hermes immediately adds one `like` tapback when processing starts, keeps the native typing indicator active through the shared gateway lifecycle, marks the message read, and sends a normal response as one iMessage bubble. Messages longer than the platform limit are still split. Set `split_paragraph_replies: true` only if each paragraph must be a separate bubble.
+
+The Private API helper is required for reactions, typing indicators, and read receipts. Basic text and media still work when the helper is not available.
 
 ## Features
 

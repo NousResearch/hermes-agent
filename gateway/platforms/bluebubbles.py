@@ -93,6 +93,15 @@ _TAPBACK_REMOVED = {
     3000: "love", 3001: "like", 3002: "dislike",
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
+_VALID_REACTIONS = {"love", "like", "dislike", "laugh", "emphasize", "question"}
+_REACTION_ALIASES = {
+    "loved": "love",
+    "liked": "like",
+    "disliked": "dislike",
+    "laughed": "laugh",
+    "emphasized": "emphasize",
+    "questioned": "question",
+}
 
 # Only new-message (plus the legacy message alias) starts an agent turn.
 # BlueBubbles emits updated-message for receipt, delivery, and attachment state
@@ -140,7 +149,13 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
-
+def _bool_setting(value: Any, default: bool = False) -> bool:
+    """Parse config booleans without treating the string ``false`` as true."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +189,35 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         )
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
-        self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        self.send_read_receipts = _bool_setting(
+            extra.get("send_read_receipts"), default=True
+        )
+        self.typing_indicators = _bool_setting(
+            extra.get("typing_indicators"),
+            default=getattr(config, "typing_indicator", True),
+        )
+        self.config.typing_indicator = self.typing_indicators
+        try:
+            self.typing_refresh_interval = max(
+                1.0, float(extra.get("typing_refresh_interval", 4.0))
+            )
+        except (TypeError, ValueError):
+            self.typing_refresh_interval = 4.0
+        self.auto_react = _bool_setting(extra.get("auto_react"), default=True)
+        configured_reaction = str(extra.get("auto_react_type") or "like").strip().lower()
+        configured_reaction = _REACTION_ALIASES.get(
+            configured_reaction, configured_reaction
+        )
+        if configured_reaction not in _VALID_REACTIONS:
+            logger.warning(
+                "[bluebubbles] invalid auto_react_type %r; using 'like'",
+                configured_reaction,
+            )
+            configured_reaction = "like"
+        self.auto_react_type = configured_reaction
+        self.split_paragraph_replies = _bool_setting(
+            extra.get("split_paragraph_replies"), default=False
+        )
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
             _require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
@@ -287,7 +330,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # cap on every read path — including chunked requests that carry no
         # Content-Length (same pattern as webhook.py / raft, #58536/#58902).
         app = web.Application(client_max_size=_WEBHOOK_MAX_BODY_BYTES)
-        app.router.add_get("/health", lambda _: web.Response(text="ok"))
+
+        async def health(_request):
+            return web.Response(text="ok")
+
+        app.router.add_get("/health", health)
         app.router.add_post(self.webhook_path, self._handle_webhook)
         # The webhook auth value is carried in the query string because the
         # BlueBubbles webhook API cannot send custom headers. Do not let
@@ -296,7 +343,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
         await site.start()
-        self._mark_connected()
         logger.info(
             "[bluebubbles] webhook listening on http://%s:%s%s",
             self.webhook_host,
@@ -304,10 +350,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.webhook_path,
         )
 
-        # Register webhook with BlueBubbles server
-        # This is required for the server to know where to send events
-        await self._register_webhook()
+        # Inbound delivery is not healthy until BlueBubbles accepts the
+        # registration. Return a failed connection so the gateway can retry
+        # instead of advertising a connected-but-dead adapter.
+        if not await self._register_webhook():
+            logger.error("[bluebubbles] webhook registration failed")
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+            if self.client:
+                await self.client.aclose()
+                self.client = None
+            self._mark_disconnected()
+            return False
 
+        self._mark_connected()
         return True
 
     async def disconnect(self) -> None:
@@ -353,16 +410,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return f"{base}?password=***"
         return base
 
-    async def _find_registered_webhooks(self, url: str) -> list:
-        """Return list of BB webhook entries matching *url*."""
+    async def _find_registered_webhooks(self, url: str) -> Optional[list]:
+        """Return matching registrations, or ``None`` when lookup fails."""
         try:
             res = await self._api_get("/api/v1/webhook")
             data = res.get("data")
             if isinstance(data, list):
                 return [wh for wh in data if wh.get("url") == url]
-        except Exception:
-            pass
-        return []
+            logger.warning("[bluebubbles] webhook lookup returned invalid data")
+        except Exception as exc:
+            logger.warning("[bluebubbles] webhook lookup failed: %s", exc)
+        return None
 
     async def _register_webhook(self) -> bool:
         """Register this webhook URL with the BlueBubbles server.
@@ -378,6 +436,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         # Crash resilience — reuse an existing registration if present
         existing = await self._find_registered_webhooks(webhook_url)
+        if existing is None:
+            return False
         if existing:
             logger.info(
                 "[bluebubbles] webhook already registered: %s",
@@ -426,7 +486,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         removed = False
 
         try:
-            for wh in await self._find_registered_webhooks(webhook_url):
+            for wh in (await self._find_registered_webhooks(webhook_url)) or []:
                 wh_id = wh.get("id")
                 if wh_id:
                     res = await self.client.delete(
@@ -530,25 +590,66 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        # Split on paragraph breaks first (double newlines) so each thought
-        # becomes its own iMessage bubble, then truncate any that are still
-        # too long.
-        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
-        chunks: List[str] = []
-        for para in (paragraphs or [text]):
-            if len(para) <= self.MAX_MESSAGE_LENGTH:
-                chunks.append(para)
-            else:
-                chunks.extend(self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH))
+        # Keep a normal assistant response in one iMessage bubble. Paragraph
+        # splitting made one answer look like duplicate replies. It remains an
+        # explicit opt-in, while over-limit messages are always chunked.
+        if self.split_paragraph_replies:
+            paragraphs = [
+                p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()
+            ]
+            chunks: List[str] = []
+            for para in paragraphs or [text]:
+                if len(para) <= self.MAX_MESSAGE_LENGTH:
+                    chunks.append(para)
+                else:
+                    chunks.extend(
+                        self.truncate_message(
+                            para, max_length=self.MAX_MESSAGE_LENGTH
+                        )
+                    )
+        elif len(text) <= self.MAX_MESSAGE_LENGTH:
+            chunks = [text]
+        else:
+            chunks = self.truncate_message(
+                text, max_length=self.MAX_MESSAGE_LENGTH
+            )
         last = SendResult(success=True)
-        for chunk in chunks:
-            guid = await self._resolve_chat_guid(chat_id)
+        guid: Optional[str] = None
+        for index, chunk in enumerate(chunks):
             if not guid:
-                # If the target looks like an address, try creating a new chat
+                guid = await self._resolve_chat_guid(chat_id)
+            if not guid:
+                # If the target looks like an address, create the chat with the
+                # first chunk, then resolve it before sending any remainder.
                 if self._private_api_enabled and (
                     "@" in chat_id or re.match(r"^\+\d+", chat_id)
                 ):
-                    return await self._create_chat_for_handle(chat_id, chunk)
+                    created = await self._create_chat_for_handle(chat_id, chunk)
+                    if not created.success or index == len(chunks) - 1:
+                        return created
+                    last = created
+                    raw = created.raw_response if isinstance(created.raw_response, dict) else {}
+                    data = raw.get("data") if isinstance(raw, dict) else {}
+                    if isinstance(data, dict):
+                        guid = data.get("chatGuid") or data.get("chatGUID")
+                        chat = data.get("chat")
+                        if not guid and isinstance(chat, dict):
+                            guid = chat.get("guid") or chat.get("chatGuid")
+                    if guid:
+                        self._guid_cache[chat_id] = str(guid)
+                    else:
+                        guid = await self._resolve_chat_guid(chat_id)
+                    if not guid:
+                        return SendResult(
+                            success=False,
+                            error=(
+                                "BlueBubbles created the chat but could not resolve it "
+                                "to deliver the remaining message chunks"
+                            ),
+                            message_id=created.message_id,
+                            raw_response=created.raw_response,
+                        )
+                    continue
                 return SendResult(
                     success=False,
                     error=f"BlueBubbles chat not found for target: {chat_id}",
@@ -708,7 +809,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Typing indicators
     # ------------------------------------------------------------------
 
+    def get_typing_refresh_interval(self) -> float:
+        """Use BlueBubbles' cadence in the shared base typing lifecycle."""
+        return self.typing_refresh_interval
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        if not self.typing_indicators:
+            return
         if not self._private_api_enabled or not self._helper_connected or not self.client:
             return
         try:
@@ -718,10 +825,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await self.client.post(
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[bluebubbles] send_typing failed: %s", exc)
 
     async def stop_typing(self, chat_id: str) -> None:
+        if not self.typing_indicators:
+            return
         if not self._private_api_enabled or not self._helper_connected or not self.client:
             return
         try:
@@ -731,8 +840,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await self.client.delete(
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[bluebubbles] stop_typing failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Read receipts
@@ -754,8 +863,54 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return False
 
     # ------------------------------------------------------------------
-    # Tapback reactions
+    # Tapback reactions and processing UX
     # ------------------------------------------------------------------
+
+    async def _send_reaction(
+        self, chat_id: str, message_id: Optional[str], reaction: str
+    ) -> bool:
+        if (
+            not self._private_api_enabled
+            or not self._helper_connected
+            or not self.client
+            or not chat_id
+            or not message_id
+        ):
+            return False
+        try:
+            guid = await self._resolve_chat_guid(chat_id)
+            if not guid:
+                return False
+            response = await self._api_post(
+                "/api/v1/message/react",
+                {
+                    "chatGuid": guid,
+                    "selectedMessageGuid": message_id,
+                    "reaction": reaction,
+                    "partIndex": 0,
+                },
+            )
+            status = response.get("status") if isinstance(response, dict) else None
+            if status is not None and not (200 <= int(status) < 300):
+                logger.debug(
+                    "[bluebubbles] reaction rejected with envelope status %s",
+                    status,
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.debug("[bluebubbles] reaction failed: %s", exc)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Acknowledge processing with one native tapback and no text ack."""
+        if not self.auto_react:
+            return
+        await self._send_reaction(
+            getattr(event.source, "chat_id", ""),
+            getattr(event, "message_id", None),
+            self.auto_react_type,
+        )
 
     # ------------------------------------------------------------------
     # Chat info
@@ -1016,13 +1171,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         msg_type = MessageType.TEXT
         attachment_failed = False
 
-        try:
-            for att in attachments:
+        for att in attachments:
+            try:
                 if not isinstance(att, dict):
                     attachment_failed = True
                     continue
                 att_guid = att.get("guid", "")
                 if not att_guid:
+                    attachment_failed = True
                     continue
                 cached = await self._download_attachment_with_retries(att_guid, att)
                 if not cached:
@@ -1041,13 +1197,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     msg_type = MessageType.VIDEO
                 else:
                     msg_type = MessageType.DOCUMENT
-        except asyncio.CancelledError:
-            self._finish_inbound_claim(message_id, claim, accepted=False)
-            raise
-        except Exception:
-            self._finish_inbound_claim(message_id, claim, accepted=False)
-            logger.exception("[bluebubbles] inbound attachment processing failed")
-            return web.Response(text="attachment unavailable", status=503)
+            except asyncio.CancelledError:
+                self._finish_inbound_claim(message_id, claim, accepted=False)
+                raise
+            except Exception:
+                attachment_failed = True
+                logger.exception(
+                    "[bluebubbles] inbound attachment failed; preserving other content"
+                )
 
         if attachment_failed:
             logger.warning(

@@ -113,31 +113,51 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     }
 
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
 
-    setIsLoadingConfig(true)
-    setConfigLoadError(null)
+    const loadLocale = () => {
+      setIsLoadingConfig(true)
+      setConfigLoadError(null)
 
-    configClient
-      .getConfig()
-      .then(config => {
-        if (!cancelled) {
-          setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
-        }
-      })
-      .catch(error => {
-        if (!cancelled) {
+      return configClient
+        .getConfig()
+        .then(config => {
+          if (!cancelled) {
+            setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+          }
+        })
+        .catch(error => {
+          if (cancelled) {
+            return
+          }
+
           setConfigLoadError(toError(error))
-          setLocaleState(DEFAULT_LOCALE)
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingConfig(false)
-        }
-      })
+
+          // The desktop races its own backend at startup: the renderer mounts
+          // before the backend is ready, and the first /api/config call times
+          // out (60s). Falling back to the default locale permanently made the
+          // UI stuck in English until a manual language switch. Retry with a
+          // short delay instead — the backend comes up, the next attempt
+          // succeeds, and the persisted display.language takes effect.
+          retryTimer = setTimeout(() => {
+            loadLocale()
+          }, 3_000)
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setIsLoadingConfig(false)
+          }
+        })
+    }
+
+    loadLocale()
 
     return () => {
       cancelled = true
+
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+      }
     }
   }, [configClient, initialLocale])
 

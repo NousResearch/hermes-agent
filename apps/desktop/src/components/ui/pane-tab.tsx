@@ -1,6 +1,6 @@
 import * as React from 'react'
 
-import { middleClickHandlers } from '@/lib/middle-click'
+import { isMetaClose, middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
 
 /** Inset stroke for a vertical tab rail — content-facing edge. */
@@ -42,12 +42,6 @@ interface PaneTabProps extends React.ComponentProps<'div'> {
   /** Content-facing edge of a vertical rail — the strip line the active tab cuts. */
   side?: 'left' | 'right'
 }
-
-/** ⌘-click (metaKey + primary button) — the Mac has no middle button, so this
- *  is the trackpad equivalent of middle-click-to-close. Guarded on metaKey so
- *  it never collides with left-click (activate/drag) or ⌃-click (macOS context
- *  menu). */
-const isMetaClose = (event: { button: number; metaKey: boolean }) => event.button === 0 && event.metaKey
 
 /**
  * Editor tab shell — preview rail + zone headers + collapsed vertical rails.

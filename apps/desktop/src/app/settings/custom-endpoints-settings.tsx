@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -75,6 +76,7 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
 }
 
 export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+  const { t } = useI18n()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -229,7 +231,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     <SettingsContent>
       <div className="space-y-6">
         <section>
-          <SectionHeading icon={Globe} meta={`${endpoints.length}`} title="Custom Endpoints" />
+          <SectionHeading icon={Globe} meta={`${endpoints.length}`} title={t.settings.nav.providerCustomEndpoints} />
           <div className="divide-y divide-border/40 rounded-md border border-border/50">
             {endpoints.length ? (
               endpoints.map(endpoint => (
@@ -247,7 +249,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                       {endpoint.is_current && (
                         <Pill tone="primary">
                           <Check className="size-3" />
-                          Active
+                          {t.settings.endpoints.active}
                         </Pill>
                       )}
                       {endpoint.source === 'direct-config' && <Pill>config.yaml</Pill>}
@@ -257,7 +259,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     </div>
                     <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
                       <span>{endpoint.model}</span>
-                      {endpoint.has_api_key && <span>{endpoint.api_key_preview ?? 'API key set'}</span>}
+                      {endpoint.has_api_key && <span>{endpoint.api_key_preview ?? t.settings.endpoints.apiKeySet}</span>}
                     </div>
                   </button>
                   <div className="flex items-center gap-2 sm:justify-end">
@@ -276,7 +278,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                         disabled={deleting === endpoint.id}
                         onClick={() => void handleDelete(endpoint)}
                         size="icon-sm"
-                        title="Delete endpoint"
+                        title={t.settings.endpoints.deleteAria}
                         variant="ghost"
                       >
                         {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
@@ -286,13 +288,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 </div>
               ))
             ) : (
-              <EmptyState description="Add an OpenAI-compatible endpoint below." title="No custom endpoints" />
+              <EmptyState description={t.settings.endpoints.emptyDesc} title={t.settings.endpoints.emptyTitle} />
             )}
           </div>
         </section>
 
         <section>
-          <SectionHeading icon={Plus} title={form.id ? 'Edit Endpoint' : 'Add Endpoint'} />
+          <SectionHeading icon={Plus} title={form.id ? t.settings.endpoints.edit : t.settings.endpoints.add} />
           <div className="grid gap-3 rounded-md border border-border/50 p-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="grid gap-1.5 text-xs text-muted-foreground">
@@ -340,7 +342,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 <Input
                   inputMode="numeric"
                   onChange={event => setForm(current => ({ ...current, contextLength: event.target.value }))}
-                  placeholder="Auto"
+                  placeholder={t.settings.endpoints.auto}
                   value={form.contextLength}
                 />
               </label>

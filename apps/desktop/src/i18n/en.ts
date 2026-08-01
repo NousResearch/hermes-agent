@@ -42,7 +42,14 @@ export const en: Translations = {
     update: 'Update',
     tryHint: term => `Try “${term}”`,
     on: 'On',
-    off: 'Off'
+    off: 'Off',
+    newSession: 'New session',
+    showOptions: 'Show options',
+    search: 'Search',
+    searchResults: 'Search results',
+    active: 'Active',
+    generatedImage: 'Generated image',
+    moreActions: 'More actions'
   },
 
   fileMenu: {
@@ -351,6 +358,46 @@ export const en: Translations = {
       notifications: 'Notifications',
       plugins: 'Plugins'
     },
+    billingPage: {
+      plan: 'Plan',
+      paymentCredits: 'Payment & credits',
+      usage: 'Usage',
+      invoices: 'Invoices',
+      plans: 'Plans',
+      currentPlan: 'Current plan',
+      scheduled: 'Scheduled',
+      tryAgain: 'Try again',
+      confirmDowngrade: 'Confirm downgrade',
+      scheduling: 'Scheduling…',
+      checkingChange: 'Checking this change…',
+      downgrade: 'Downgrade',
+      undo: 'Undo',
+      undoing: 'Undoing…',
+      turnOffAutoRefill: 'Turn off auto-refill?',
+      turnOff: 'Turn off',
+      disable: 'Disable',
+      autoRefillUpdated: 'Auto-refill updated.',
+      autoRefillTurnedOff: 'Auto-refill turned off.',
+      customCreditAmountAria: 'Custom credit amount',
+      autoRefillThreshold: 'Threshold',
+      autoRefillReloadTo: 'Reload to',
+      autoRefillThresholdAria: 'Auto-refill threshold',
+      autoRefillReloadToAria: 'Auto-refill reload-to amount',
+      cannotChange: 'That change cannot be made here.',
+      cannotSchedule: 'This change cannot be scheduled here.',
+      alreadyOnPlan: (name: string) => `You are already on ${name} — nothing to change.`,
+      changeTakesEffect: (name: string, date: string, creditsDelta: string) =>
+        `Change to ${name} — takes effect ${date}. No charge now; you keep your current plan until then.${
+          creditsDelta ? ` Monthly credits change: ${creditsDelta}.` : ''
+        }`,
+      backToBilling: 'Back to billing',
+      verifyToContinue: 'Verify to continue',
+      waitingForVerification: 'Waiting for verification link…',
+      dismiss: 'Dismiss',
+      openPortal: 'Open portal',
+      openVerificationPage: 'Open verification page',
+      devFixture: 'Billing preview fixture (dev only)'
+    },
     plugins: {
       title: 'Desktop plugins',
       blurb: 'Bundled or dropped into the desktop-plugins folder. Disable to unload live.',
@@ -468,6 +515,7 @@ export const en: Translations = {
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
       importedBadge: 'Imported',
+      searchThemes: 'Search your themes or the VS Code Marketplace…',
       pet: {
         title: 'Pet',
         intro:
@@ -570,7 +618,78 @@ export const en: Translations = {
       shortcutDesc: 'Needs at least one modifier, e.g. CommandOrControl+Shift+Space.',
       active: 'Shortcut is active.',
       takenBy: 'Another app already uses this shortcut — pick a different one.',
-      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.'
+      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.',
+      windowAriaLabel: 'Quick Entry',
+      targetSessionAria: 'Target session',
+      sendTo: 'Send to',
+      currentTarget: 'Current chat',
+      newTarget: 'New session'
+    },
+    endpoints: {
+      add: 'Add Endpoint',
+      edit: 'Edit Endpoint',
+      emptyTitle: 'No custom endpoints',
+      emptyDesc: 'Add an OpenAI-compatible endpoint below.',
+      deleteAria: 'Delete endpoint',
+      active: 'Active',
+      apiKeySet: 'API key set',
+      auto: 'Auto'
+    },
+
+    uninstall: {
+      heading: 'Danger zone',
+      title: 'Uninstall Hermes',
+      checking: "Checking what's installed…",
+      confirmTitle: 'Confirm uninstall',
+      confirmDesc: consequence => `This removes ${consequence}. This can't be undone.`,
+      appPath: path => `App: ${path}`,
+      uninstalling: 'Uninstalling…',
+      yes: 'Yes, uninstall',
+      couldNotStart: 'Uninstall could not start.',
+      intro:
+        'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+      optionGui: 'Uninstall Chat GUI only',
+      optionGuiDesc: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+      optionGuiConsequence: 'the desktop Chat GUI (this app and its data)',
+      optionLite: 'Uninstall GUI + agent, keep my data',
+      optionLiteDesc:
+        'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+      optionLiteConsequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)',
+      optionFull: 'Uninstall everything',
+      optionFullDesc:
+        'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+      optionFullConsequence:
+        'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+    },
+    computerUse: {
+      checking: 'Checking Computer Use status…',
+      notSupported: platform => `Computer Use isn't supported on this platform (${platform}).`,
+      notInstalled: 'Install the cua-driver backend below to drive this machine.',
+      notInstalledGrant: ' Then grant Accessibility and Screen Recording here.',
+      grantsNote:
+        "Grants attach to CuaDriver's own identity (com.trycua.driver), not Hermes — so the dialog is attributed to the process that drives your Mac.",
+      platformNoteLinux: 'Drives your desktop via the X11/XWayland accessibility stack — no permission prompt.',
+      platformNoteWin:
+        'First run may trigger a Windows SmartScreen prompt for the cua-driver UIAccess worker — allow it.',
+      recheck: 'Recheck',
+      accessibility: 'Accessibility',
+      accessibilityHint: 'Lets cua-driver post clicks, keystrokes, and read the accessibility tree.',
+      screenRecording: 'Screen Recording',
+      screenRecordingHint: 'Lets cua-driver capture screenshots of app windows.',
+      driverHealth: 'Driver health',
+      ready: 'Ready',
+      notReady: 'Not ready',
+      unknown: 'Unknown',
+      granted: 'Granted',
+      notGranted: 'Not granted',
+      readyMessage: 'Computer Use is ready. Ask the agent to capture an app and click around.',
+      waitingApproval: 'Waiting for approval…',
+      grantPermissions: 'Grant permissions',
+      approveTitle: 'Approve in System Settings',
+      approveMessage:
+        'macOS will show a permission dialog attributed to CuaDriver. Approve it, then return here.',
+      errorRead: 'Could not read Computer Use status',
+      errorRequest: 'Could not request permissions'
     },
     credentials: {
       pasteKey: 'Paste key',
@@ -779,6 +898,8 @@ export const en: Translations = {
       catalogInstalled: 'Installed',
       catalogEnabled: 'Enabled',
       catalogNeedsInstall: 'Needs build',
+      oauth: 'OAuth',
+      apiKey: 'API key',
       catalogInstall: 'Install',
       catalogInstalling: 'Installing...',
       catalogInstallStarted: name => `Installing ${name}... applies to new sessions when done.`,
@@ -821,6 +942,14 @@ export const en: Translations = {
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      moaTitle: 'Mixture of Agents',
+      moaDesc:
+        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model.',
+      moaPreset: 'Preset',
+      moaNewPreset: 'new preset',
+      moaAggregator: 'Aggregator',
+      moaEnabled: 'Enabled',
+      moaAddPreset: 'Add preset',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
@@ -1085,6 +1214,7 @@ export const en: Translations = {
     close: 'Close memory graph',
     refresh: 'Refresh',
     memory: 'Memory',
+    skill: 'skill',
     filterAll: 'All',
     filterUsed: 'Used',
     filterLearned: 'Learned',
@@ -1105,7 +1235,9 @@ export const en: Translations = {
     importEmpty: 'Paste a map code to load it.',
     importSuccess: nodes => `Loaded a map with ${nodes} ${nodes === 1 ? 'node' : 'nodes'}.`,
     importedBadge: 'imported map',
-    resetToMine: 'Back to my map'
+    resetToMine: 'Back to my map',
+    legend: 'core = oldest · outer = newer',
+    timelineScrubber: 'Timeline scrubber'
   },
   agents: {
     close: 'Close agents',
@@ -1199,6 +1331,8 @@ export const en: Translations = {
       genericError: 'Generation failed — try again or pick a suggestion.',
       referenceImageTooLarge: 'Reference image is too large. Use one under 16 MB.',
       referenceImageInvalid: 'Could not read that reference image. Try a PNG, JPG, WebP, or GIF.',
+      removeReference: 'Remove reference',
+      grabKeyFrom: 'Grab a key from',
       adopt: 'Adopt',
       startOver: 'Start over'
     },
@@ -2379,6 +2513,7 @@ export const en: Translations = {
   shell: {
     windowControls: 'Window controls',
     paneControls: 'Pane controls',
+    moaPresets: 'MoA presets',
     appControls: 'App controls',
     modelMenu: {
       search: 'Search models',
@@ -2688,6 +2823,13 @@ export const en: Translations = {
   assistant: {
     thread: {
       loadingSession: 'Loading session',
+      couldntOpenSession: "Couldn't open this session",
+      conversationTimeline: 'Conversation timeline',
+      searchReactions: 'Search…',
+      loadingEmoji: 'Loading emoji…',
+      noEmoji: 'No emoji found.',
+      moreEmoji: 'More emoji',
+      reactedByHermes: 'Reacted by Hermes',
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
       resumeWhenBackgroundDone: count =>
@@ -2953,5 +3095,22 @@ export const en: Translations = {
       description: 'Displays the mobile sidebar.',
       toggle: open => `${open ? 'Show' : 'Hide'} sidebar`
     }
+  },
+
+  workspace: {
+    clickFileHint: 'click a file in the files pane',
+    logs: 'LOGS',
+    preview: 'PREVIEW',
+    toggleLogs: 'Toggle logs'
+  },
+
+  pet: {
+    hatchingProgress: 'Hatching progress',
+    openInHermes: 'Open in Hermes'
+  },
+
+  embeds: {
+    spotify: 'Spotify embed',
+    youtube: 'YouTube embed'
   }
 }

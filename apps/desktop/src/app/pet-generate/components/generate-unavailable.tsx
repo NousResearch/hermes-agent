@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { PawPrint, Settings2 } from '@/lib/icons'
 
@@ -10,6 +11,7 @@ interface GenerateUnavailableProps {
 // impossible, so we replace the prompt entirely with a friendly path to set one
 // up (in-app) plus where to grab a key.
 export function GenerateUnavailable({ onSetup }: GenerateUnavailableProps) {
+  const { t } = useI18n()
   return (
     <div className="flex flex-col items-center gap-4 text-center">
       <span className="grid size-11 place-items-center rounded-full bg-primary/10 text-primary">
@@ -28,7 +30,7 @@ export function GenerateUnavailable({ onSetup }: GenerateUnavailableProps) {
         Set up image generation
       </Button>
       <p className="flex flex-wrap items-center justify-center gap-x-1.5 text-[0.6875rem] text-(--ui-text-tertiary)">
-        <span>Grab a key from</span>
+        <span>{t.commandCenter.generatePet.grabKeyFrom}</span>
         <ExternalLink href="https://portal.nousresearch.com" showExternalIcon={false}>
           Nous Portal
         </ExternalLink>

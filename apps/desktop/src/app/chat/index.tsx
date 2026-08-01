@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
-import { useLocation } from 'react-router'
+import { useLocation } from 'react-router-dom'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
@@ -110,11 +110,12 @@ function ChatHeader({
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const profiles = useStore($profiles)
+  const { t } = useI18n()
 
   const activeStoredSession =
     (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
 
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : t.keybinds.actions['session.new']
 
   // Which agent/persona owns this chat — glanceable in the header once a
   // second profile exists, so the open session's ownership is never ambiguous

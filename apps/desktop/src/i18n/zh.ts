@@ -42,7 +42,14 @@ export const zh: Translations = {
     update: '更新',
     tryHint: term => `试试“${term}”`,
     on: '开',
-    off: '关'
+    off: '关',
+    newSession: '新会话',
+    showOptions: '显示选项',
+    search: '搜索',
+    searchResults: '搜索结果',
+    active: '启用',
+    generatedImage: '生成的图片',
+    moreActions: '更多操作'
   },
 
   fileMenu: {
@@ -342,6 +349,46 @@ export const zh: Translations = {
       notifications: '通知',
       plugins: '插件'
     },
+    billingPage: {
+      plan: '方案',
+      paymentCredits: '付款与余额',
+      usage: '用量',
+      invoices: '账单明细',
+      plans: '方案列表',
+      currentPlan: '当前方案',
+      scheduled: '已计划',
+      tryAgain: '重试',
+      confirmDowngrade: '确认降级',
+      scheduling: '计划中…',
+      checkingChange: '正在检查此更改…',
+      downgrade: '降级',
+      undo: '撤销',
+      undoing: '撤销中…',
+      turnOffAutoRefill: '关闭自动充值？',
+      turnOff: '关闭',
+      disable: '停用',
+      autoRefillUpdated: '自动充值已更新。',
+      autoRefillTurnedOff: '自动充值已关闭。',
+      customCreditAmountAria: '自定义充值金额',
+      autoRefillThreshold: '阈值',
+      autoRefillReloadTo: '充值至',
+      autoRefillThresholdAria: '自动充值阈值',
+      autoRefillReloadToAria: '充值至金额',
+      cannotChange: '此更改无法在此处完成。',
+      cannotSchedule: '此更改无法在此处安排。',
+      alreadyOnPlan: (name: string) => `您已经在 ${name} 方案上 — 无需更改。`,
+      changeTakesEffect: (name: string, date: string, creditsDelta: string) =>
+        `切换到 ${name} — ${date} 生效。现在不扣费；在此之前保持当前方案。${
+          creditsDelta ? ` 每月额度变化：${creditsDelta}。` : ''
+        }`,
+      backToBilling: '返回计费',
+      verifyToContinue: '验证后继续',
+      waitingForVerification: '等待验证链接…',
+      dismiss: '关闭',
+      openPortal: '打开门户',
+      openVerificationPage: '打开验证页面',
+      devFixture: '计费预览固定内容（仅开发）'
+    },
     plugins: {
       title: '桌面插件',
       blurb:
@@ -459,6 +506,7 @@ export const zh: Translations = {
       installed: name => `已安装「${name}」。`,
       removeTheme: '移除主题',
       importedBadge: '已导入',
+      searchThemes: '搜索主题或 VS Code Marketplace…',
       pet: {
         title: '宠物',
         intro:
@@ -779,7 +827,72 @@ export const zh: Translations = {
       shortcutDesc: '至少需要一个修饰键，例如 CommandOrControl+Shift+Space。',
       active: '快捷键已生效。',
       takenBy: '此快捷键已被其他应用占用，请换一个。',
-      invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。'
+      invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。',
+      windowAriaLabel: '快速输入',
+      targetSessionAria: '目标会话',
+      sendTo: '发送到',
+      currentTarget: '当前聊天',
+      newTarget: '新会话'
+    },
+    endpoints: {
+      add: '添加端点',
+      edit: '编辑端点',
+      emptyTitle: '没有自定义端点',
+      emptyDesc: '在下方添加一个 OpenAI 兼容端点。',
+      deleteAria: '删除端点',
+      active: '启用',
+      apiKeySet: '已设置 API 密钥',
+      auto: '自动'
+    },
+
+    uninstall: {
+      heading: '危险区域',
+      title: '卸载 Hermes',
+      checking: '正在检查已安装内容…',
+      confirmTitle: '确认卸载',
+      confirmDesc: consequence => `这将删除 ${consequence}。此操作无法撤销。`,
+      appPath: path => `应用：${path}`,
+      uninstalling: '正在卸载…',
+      yes: '是，卸载',
+      couldNotStart: '无法开始卸载。',
+      intro: '选择要删除的内容。应用将关闭以完成操作；随时可以重新打开安装程序恢复。',
+      optionGui: '仅卸载聊天界面',
+      optionGuiDesc: '删除桌面应用。Hermes 代理、配置和聊天记录都会保留。',
+      optionGuiConsequence: '桌面聊天界面（此应用及其数据）',
+      optionLite: '卸载界面和代理，保留数据',
+      optionLiteDesc: '删除应用和 Hermes 代理，但保留配置、聊天记录和密钥，以便将来重新安装。',
+      optionLiteConsequence: '聊天界面和 Hermes 代理（保留配置、聊天记录和密钥）',
+      optionFull: '全部卸载',
+      optionFullDesc: '删除应用、代理和所有用户数据 — 配置、聊天记录、定时任务、密钥、日志。',
+      optionFullConsequence: '全部 — 聊天界面、Hermes 代理以及所有配置、聊天记录、密钥和日志'
+    },
+    computerUse: {
+      checking: '正在检查 Computer Use 状态…',
+      notSupported: platform => `此平台不支持 Computer Use（${platform}）。`,
+      notInstalled: '请安装下方的 cua-driver 后端以控制此电脑。',
+      notInstalledGrant: ' 然后在此授予屏幕录制和辅助功能权限。',
+      grantsNote:
+        '权限绑定到 CuaDriver 自身的身份（com.trycua.driver），而不是 Hermes — 因此对话框归属于驱动此 Mac 的进程。',
+      platformNoteLinux: '通过 X11/XWayland 辅助功能栈驱动桌面 — 无权限提示。',
+      platformNoteWin: '首次运行可能触发 cua-driver UIAccess 工作进程的 Windows SmartScreen 提示 — 请允许。',
+      recheck: '重新检查',
+      accessibility: '辅助功能',
+      accessibilityHint: '允许 cua-driver 发送点击、按键并读取辅助功能树。',
+      screenRecording: '屏幕录制',
+      screenRecordingHint: '允许 cua-driver 截取应用窗口。',
+      driverHealth: '驱动健康状态',
+      ready: '就绪',
+      notReady: '未就绪',
+      unknown: '未知',
+      granted: '已授予',
+      notGranted: '未授予',
+      readyMessage: 'Computer Use 已就绪。让代理打开应用并点击操作。',
+      waitingApproval: '等待批准…',
+      grantPermissions: '授予权限',
+      approveTitle: '在系统设置中批准',
+      approveMessage: 'macOS 将显示归属 CuaDriver 的权限对话框。批准后返回此处。',
+      errorRead: '无法读取 Computer Use 状态',
+      errorRequest: '无法请求权限'
     },
     credentials: {
       pasteKey: '粘贴密钥',
@@ -983,6 +1096,8 @@ export const zh: Translations = {
       catalogInstalled: '已安装',
       catalogEnabled: '已启用',
       catalogNeedsInstall: '需要构建',
+      oauth: 'OAuth',
+      apiKey: 'API 密钥',
       catalogInstall: '安装',
       catalogInstalling: '安装中…',
       catalogInstallStarted: name => `正在安装 ${name}… 完成后对新会话生效。`,
@@ -1025,6 +1140,14 @@ export const zh: Translations = {
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
+      moaTitle: 'Mixture of Agents',
+      moaDesc:
+        '配置命名的预设，它们会作为 Mixture of Agents 提供方的模型显示。聚合器是实际执行的模型。',
+      moaPreset: '预设',
+      moaNewPreset: '新预设',
+      moaAggregator: '聚合器',
+      moaEnabled: '已启用',
+      moaAddPreset: '添加预设',
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         web_extract: { label: '网页提取', hint: '页面总结' },
@@ -1283,6 +1406,7 @@ export const zh: Translations = {
     close: '关闭记忆图谱',
     refresh: '刷新',
     memory: '记忆',
+    skill: '技能',
     filterAll: '全部',
     filterUsed: '已使用',
     filterLearned: '已学习',
@@ -1302,7 +1426,9 @@ export const zh: Translations = {
     importEmpty: '粘贴图谱代码以加载。',
     importSuccess: nodes => `已加载包含 ${nodes} 个节点的图谱。`,
     importedBadge: '导入的图谱',
-    resetToMine: '返回我的图谱'
+    resetToMine: '返回我的图谱',
+    legend: '中心 = 最早 · 外圈 = 较新',
+    timelineScrubber: '时间线拖动条'
   },
   agents: {
     close: '关闭代理',
@@ -1395,6 +1521,8 @@ export const zh: Translations = {
       genericError: '生成失败——请重试或选择一个建议。',
       referenceImageTooLarge: '参考图过大。请使用小于 16 MB 的图片。',
       referenceImageInvalid: '无法读取该参考图。请尝试 PNG、JPG、WebP 或 GIF。',
+      removeReference: '移除参考图',
+      grabKeyFrom: '从以下获取密钥',
       adopt: '领养',
       startOver: '重新开始'
     },
@@ -2560,6 +2688,7 @@ export const zh: Translations = {
   shell: {
     windowControls: '窗口控件',
     paneControls: '面板控件',
+    moaPresets: 'MoA 预设',
     appControls: '应用控件',
     modelMenu: {
       search: '搜索模型',
@@ -2866,6 +2995,13 @@ export const zh: Translations = {
   assistant: {
     thread: {
       loadingSession: '正在加载会话',
+      couldntOpenSession: '无法打开此会话',
+      conversationTimeline: '对话时间线',
+      searchReactions: '搜索…',
+      loadingEmoji: '正在加载表情符号…',
+      noEmoji: '未找到表情符号。',
+      moreEmoji: '更多表情符号',
+      reactedByHermes: 'Hermes 已回应',
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
       resumeWhenBackgroundDone: count =>
@@ -3114,5 +3250,22 @@ export const zh: Translations = {
       description: '显示移动端侧边栏。',
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
+  },
+
+  workspace: {
+    clickFileHint: '在文件面板中点击一个文件',
+    logs: '日志',
+    preview: '预览',
+    toggleLogs: '切换日志'
+  },
+
+  pet: {
+    hatchingProgress: '孵化进度',
+    openInHermes: '在 Hermes 中打开'
+  },
+
+  embeds: {
+    spotify: 'Spotify 嵌入',
+    youtube: 'YouTube 嵌入'
   }
 }

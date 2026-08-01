@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
@@ -26,6 +27,8 @@ export function AutoReloadRow({
 }) {
   const api = useBillingApi()
   const queryClient = useQueryClient()
+  const { t } = useI18n()
+  const b = t.settings.billingPage
   const [confirmDisable, setConfirmDisable] = useState(false)
   const [editing, setEditing] = useState(false)
   // Validation errors are silent until the user edits a field or attempts a
@@ -95,7 +98,7 @@ export function AutoReloadRow({
     }
 
     await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill updated.' })
+    setMessage({ kind: 'success', text: b.autoRefillUpdated })
     setEditing(false)
   }
 
@@ -125,7 +128,7 @@ export function AutoReloadRow({
     }
 
     await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setMessage({ kind: 'success', text: 'Auto-refill turned off.' })
+    setMessage({ kind: 'success', text: b.autoRefillTurnedOff })
     setEditing(false)
   }
 
@@ -178,9 +181,9 @@ export function AutoReloadRow({
             <div aria-hidden={!editing} className={cn('space-y-2 [grid-area:stack]', !editing && 'invisible')}>
               <div className="grid gap-2 @2xl:grid-cols-2">
                 <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  Threshold
+                  {b.autoRefillThreshold}
                   <Input
-                    aria-label="Auto-refill threshold"
+                    aria-label={b.autoRefillThresholdAria}
                     className="mt-1 py-[3px]"
                     disabled={busy || !editing}
                     inputMode="decimal"
@@ -195,9 +198,9 @@ export function AutoReloadRow({
                   />
                 </label>
                 <label className="min-w-0 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  Reload to
+                  {b.autoRefillReloadTo}
                   <Input
-                    aria-label="Auto-refill reload-to amount"
+                    aria-label={b.autoRefillReloadToAria}
                     className="mt-1 py-[3px]"
                     disabled={busy || !editing}
                     inputMode="decimal"
@@ -218,9 +221,9 @@ export function AutoReloadRow({
               </div>
               {confirmDisable ? (
                 <div className="flex min-w-0 flex-wrap items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  <span>Turn off auto-refill?</span>
+                  <span>{b.turnOffAutoRefill}</span>
                   <Button disabled={busy} onClick={() => void disable()} size="sm" type="button" variant="outline">
-                    Turn off
+                    {b.turnOff}
                   </Button>
                   <Button
                     disabled={busy}
@@ -229,7 +232,7 @@ export function AutoReloadRow({
                     type="button"
                     variant="ghost"
                   >
-                    Cancel
+                    {t.common.cancel}
                   </Button>
                 </div>
               ) : (
@@ -241,7 +244,7 @@ export function AutoReloadRow({
                   type="button"
                   variant="outline"
                 >
-                  Disable
+                  {b.disable}
                 </Button>
               )}
               {/* Refusal stays INSIDE the reserved layer so it never pushes Usage. */}
@@ -261,7 +264,7 @@ export function AutoReloadRow({
           {editing ? (
             <>
               <Button disabled={busy || !validation.values} onClick={() => void save()} size="sm" type="button">
-                {busy ? 'Saving…' : 'Save'}
+                {busy ? t.common.saving : t.common.save}
               </Button>
               <Button disabled={busy} onClick={cancelEdit} size="sm" type="button" variant="outline">
                 Cancel

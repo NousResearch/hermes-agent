@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import { ErrorBoundary } from '@/components/error-boundary'
+import { I18nProvider } from '@/i18n'
 import { ThemeProvider } from '@/themes/context'
 
 import { QuickEntryApp } from './quick-entry-app'
@@ -29,9 +30,11 @@ export function mountQuickEntry(): void {
   createRoot(root).render(
     <StrictMode>
       <ErrorBoundary label="quick-entry">
-        <ThemeProvider>
-          <QuickEntryApp />
-        </ThemeProvider>
+        <I18nProvider>
+          <ThemeProvider>
+            <QuickEntryApp />
+          </ThemeProvider>
+        </I18nProvider>
       </ErrorBoundary>
     </StrictMode>
   )

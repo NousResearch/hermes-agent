@@ -7,6 +7,7 @@ import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { IdleMount } from '@/components/idle-mount'
+import { translateNow } from '@/i18n'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
@@ -156,7 +157,7 @@ registry.registerMany([
     id: 'workspace',
     area: 'panes',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
-    title: 'New session',
+    title: translateNow('common.newSession'),
     data: {
       placement: 'main',
       minWidth: '22vw',
@@ -433,7 +434,7 @@ const syncWorkspaceTitle = () => {
   registry.register({
     id: 'workspace',
     area: 'panes',
-    title: stored ? storedSessionTitle(stored) : 'New session',
+    title: stored ? storedSessionTitle(stored) : translateNow('common.newSession'),
     data: {
       // The tab's status dot — the SAME primitive the sidebar row and session
       // tiles render, so the main tab never disagrees with its sidebar row. No
@@ -491,12 +492,7 @@ function bindPaneVisibility(
 // TOOL PANELS (terminal, logs): like bindPaneVisibility but the toggle COLLAPSES
 // the zone to a persistent rail (tab stays) instead of hiding it — the
 // IntelliJ/VS-Code tool-window model. Restore routes back through `open` (rail
-// click / chevron) so ⌃`/the button stay truthful; Close removes the tab.
-//
-// OPEN goes through revealTreePane, not setPaneCollapsed: Close DISMISSES the
-// pane, and setPaneCollapsed can't act on a pane that has left the tree — the
-// toggle would flip its store with nothing coming back. revealTreePane
-// un-dismisses and re-adopts.
+// click / chevron) so ⌃`/the button stay truthful; the tab's ✕ removes it.
 function bindPaneCollapse(
   paneId: string,
   $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
@@ -505,7 +501,7 @@ function bindPaneCollapse(
 ) {
   markCollapsePane(paneId)
   setPaneCollapsed(paneId, !$open.get())
-  $open.listen(isOpen => (isOpen ? revealTreePane(paneId) : setPaneCollapsed(paneId, true)))
+  $open.listen(isOpen => setPaneCollapsed(paneId, !isOpen))
   registerPaneCloser(paneId, close)
   registerPaneOpener(paneId, open)
 }
@@ -600,7 +596,7 @@ bindPaneCollapse(
 registry.register(
   paletteToggle({
     id: 'logs.toggle',
-    label: 'Toggle logs',
+    label: translateNow('workspace.toggleLogs'),
     icon: FileText,
     keywords: ['logs', 'agent log', 'tail', 'debug'],
     get: () => $logsOpen.get(),

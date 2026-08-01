@@ -34,7 +34,7 @@ import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { Tip } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -453,7 +453,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     (part.toolName === 'terminal' || part.toolName === 'execute_code' || part.toolName === 'read_file')
 
   const hasSearchHits = Boolean(view.searchHits?.length)
-  const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
+  const searchResultsLabel = part.toolName === 'web_search' ? translateNow('common.searchResults') : view.detailLabel
 
   const hasExpandableContent = Boolean(
     view.imageUrl ||
@@ -614,7 +614,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
               {view.searchQuery && (
                 <p className="mb-1 flex min-w-0 gap-1.5 wrap-anywhere">
-                  <span className="shrink-0 font-medium text-(--ui-text-tertiary)">Search</span>
+                  <span className="shrink-0 font-medium text-(--ui-text-tertiary)">{translateNow('common.search')}</span>
                   <span>{view.searchQuery}</span>
                 </p>
               )}

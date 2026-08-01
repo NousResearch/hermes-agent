@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
@@ -155,6 +156,8 @@ function AccountRow({ billing, row }: { billing?: BillingStateResponse; row: Bil
 }
 
 function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: BillingAccountRowView }) {
+  const { t } = useI18n()
+  const b = t.settings.billingPage
   const presets = useMemo(
     () =>
       billing.charge_presets.map((amount, index) => ({
@@ -192,7 +195,7 @@ function BuyCreditsRow({ billing, row }: { billing: BillingStateResponse; row: B
             value={amount}
           />
           <Input
-            aria-label="Custom credit amount"
+            aria-label={b.customCreditAmountAria}
             containerClassName="w-16"
             disabled={controlsDisabled}
             inputMode="decimal"
@@ -375,13 +378,15 @@ function BillingFixtureSelect({
   onValueChange: (value: BillingFixtureSelection) => void
   value: BillingFixtureSelection
 }) {
+  const { t } = useI18n()
+
   return (
     <div className="flex items-center gap-1.5 text-(--ui-text-tertiary)">
       <Wrench className="size-3.5 shrink-0" />
       <span className="text-xs font-normal">preview</span>
       <Select onValueChange={value => onValueChange(value as BillingFixtureSelection)} value={value}>
         <SelectTrigger
-          aria-label="Billing preview fixture (dev only)"
+          aria-label={t.settings.billingPage.devFixture}
           className="h-7 w-36 border-dashed border-(--ui-stroke-secondary) bg-transparent px-2 text-xs font-normal text-(--ui-text-tertiary) shadow-none hover:bg-(--ui-bg-tertiary) focus-visible:ring-0 focus-visible:ring-offset-0 data-[state=open]:bg-(--ui-bg-tertiary)"
           size="sm"
         >
@@ -407,11 +412,13 @@ function BillingHeader({
   fixtureName?: BillingFixtureSelection
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
+  const { t } = useI18n()
+
   return (
     <div className="mb-2.5 flex items-center justify-between gap-3 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
       <div className="flex min-w-0 items-center gap-2">
         <BarChart3 className="size-4 shrink-0 text-muted-foreground" />
-        <span>Billing</span>
+        <span>{t.settings.nav.billing}</span>
       </div>
       {import.meta.env.DEV && fixtureName && onFixtureChange ? (
         <BillingFixtureSelect onValueChange={onFixtureChange} value={fixtureName} />
@@ -456,6 +463,8 @@ function BillingSettingsContent({
   onFixtureChange?: (value: BillingFixtureSelection) => void
 }) {
   const [subView, setSubView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+  const { t } = useI18n()
+  const b = t.settings.billingPage
 
   // Fixture mode flows through the SAME query path — the simulated api (supplied by
   // BillingApiProvider in the DEV wrapper) backs these fetches — so there is no
@@ -515,7 +524,7 @@ function BillingSettingsContent({
       </div>
 
       {view.plan && (
-        <SettingsSection icon={Package} title="Plan">
+        <SettingsSection icon={Package} title={b.plan}>
           <CurrentPlanCard onViewPlans={() => setSubView('plans')} plan={view.plan} />
         </SettingsSection>
       )}
@@ -524,7 +533,7 @@ function BillingSettingsContent({
         <SettingsSection
           aside={paymentRow ? <PaymentMethodAside row={paymentRow} /> : undefined}
           icon={CreditCard}
-          title="Payment & credits"
+          title={b.paymentCredits}
         >
           {accountRows.map(row => (
             <AccountRow billing={billing} key={row.id} row={row} />
@@ -533,7 +542,7 @@ function BillingSettingsContent({
       )}
 
       {view.usageRows.length > 0 && (
-        <SettingsSection icon={BarChart3} title="Usage">
+        <SettingsSection icon={BarChart3} title={b.usage}>
           <div className="@container">
             {view.usageRows.map(row => (
               <UsageRow key={row.id} row={row} />
@@ -544,7 +553,7 @@ function BillingSettingsContent({
 
       {
         // no endpoint yet — NAS capability-board gap
-        FEATURE_BILLING_INVOICES ? <SectionHeading icon={BarChart3} title="Invoices" /> : null
+        FEATURE_BILLING_INVOICES ? <SectionHeading icon={BarChart3} title={b.invoices} /> : null
       }
     </SettingsContent>
   )

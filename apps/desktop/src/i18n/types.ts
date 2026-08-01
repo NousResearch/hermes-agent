@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -89,6 +89,13 @@ export interface Translations {
     tryHint: (term: string) => string
     on: string
     off: string
+    newSession: string
+    showOptions: string
+    search: string
+    searchResults: string
+    active: string
+    generatedImage: string
+    moreActions: string
   }
 
   fileMenu: {
@@ -303,6 +310,43 @@ export interface Translations {
       notifications: string
       plugins: string
     }
+    billingPage: {
+      plan: string
+      paymentCredits: string
+      usage: string
+      invoices: string
+      plans: string
+      currentPlan: string
+      scheduled: string
+      tryAgain: string
+      confirmDowngrade: string
+      scheduling: string
+      checkingChange: string
+      downgrade: string
+      undo: string
+      undoing: string
+      turnOffAutoRefill: string
+      turnOff: string
+      disable: string
+      autoRefillUpdated: string
+      autoRefillTurnedOff: string
+      customCreditAmountAria: string
+      autoRefillThreshold: string
+      autoRefillReloadTo: string
+      autoRefillThresholdAria: string
+      autoRefillReloadToAria: string
+      cannotChange: string
+      cannotSchedule: string
+      alreadyOnPlan: (name: string) => string
+      changeTakesEffect: (name: string, date: string, creditsDelta: string) => string
+      backToBilling: string
+      verifyToContinue: string
+      waitingForVerification: string
+      dismiss: string
+      openPortal: string
+      openVerificationPage: string
+      devFixture: string
+    }
     plugins: {
       title: string
       blurb: string
@@ -375,6 +419,7 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      searchThemes: string
       pet: {
         title: string
         intro: string
@@ -473,6 +518,70 @@ export interface Translations {
       active: string
       takenBy: string
       invalidShortcut: string
+      windowAriaLabel: string
+      targetSessionAria: string
+      sendTo: string
+      currentTarget: string
+      newTarget: string
+    }
+    endpoints: {
+      add: string
+      edit: string
+      emptyTitle: string
+      emptyDesc: string
+      deleteAria: string
+      active: string
+      apiKeySet: string
+      auto: string
+    }
+
+    uninstall: {
+      heading: string
+      title: string
+      checking: string
+      confirmTitle: string
+      confirmDesc: (consequence: string) => string
+      appPath: (path: string) => string
+      uninstalling: string
+      yes: string
+      couldNotStart: string
+      intro: string
+      optionGui: string
+      optionGuiDesc: string
+      optionGuiConsequence: string
+      optionLite: string
+      optionLiteDesc: string
+      optionLiteConsequence: string
+      optionFull: string
+      optionFullDesc: string
+      optionFullConsequence: string
+    }
+    computerUse: {
+      checking: string
+      notSupported: (platform: string) => string
+      notInstalled: string
+      notInstalledGrant: string
+      grantsNote: string
+      platformNoteLinux: string
+      platformNoteWin: string
+      recheck: string
+      accessibility: string
+      accessibilityHint: string
+      screenRecording: string
+      screenRecordingHint: string
+      driverHealth: string
+      ready: string
+      notReady: string
+      unknown: string
+      granted: string
+      notGranted: string
+      readyMessage: string
+      waitingApproval: string
+      grantPermissions: string
+      approveTitle: string
+      approveMessage: string
+      errorRead: string
+      errorRequest: string
     }
     credentials: {
       pasteKey: string
@@ -668,6 +777,8 @@ export interface Translations {
       catalogInstalled: string
       catalogEnabled: string
       catalogNeedsInstall: string
+      oauth: string
+      apiKey: string
       catalogInstall: string
       catalogInstalling: string
       catalogInstallStarted: (name: string) => string
@@ -710,6 +821,13 @@ export interface Translations {
       fallbackEmpty: string
       notInCatalog: string
       tasks: Record<string, AuxTaskCopy>
+      moaTitle: string
+      moaDesc: string
+      moaPreset: string
+      moaNewPreset: string
+      moaAggregator: string
+      moaEnabled: string
+      moaAddPreset: string
     }
     providers: {
       connectAccount: string
@@ -948,6 +1066,7 @@ export interface Translations {
     close: string
     refresh: string
     memory: string
+    skill: string
     filterAll: string
     filterUsed: string
     filterLearned: string
@@ -968,6 +1087,8 @@ export interface Translations {
     importSuccess: (nodes: number) => string
     importedBadge: string
     resetToMine: string
+    legend: string
+    timelineScrubber: string
   }
   agents: {
     close: string
@@ -1060,6 +1181,8 @@ export interface Translations {
       genericError: string
       referenceImageTooLarge: string
       referenceImageInvalid: string
+      removeReference: string
+      grabKeyFrom: string
       adopt: string
       startOver: string
     }
@@ -1991,6 +2114,7 @@ export interface Translations {
       refreshModels: string
       fast: string
     }
+    moaPresets: string
     modelOptions: {
       noOptions: string
       options: string
@@ -2288,6 +2412,13 @@ export interface Translations {
   assistant: {
     thread: {
       loadingSession: string
+      couldntOpenSession: string
+      conversationTimeline: string
+      searchReactions: string
+      loadingEmoji: string
+      noEmoji: string
+      moreEmoji: string
+      reactedByHermes: string
       showEarlier: string
       loadingResponse: string
       resumeWhenBackgroundDone: (count: number) => string
@@ -2511,5 +2642,22 @@ export interface Translations {
       description: string
       toggle: (open: boolean) => string
     }
+  }
+
+  workspace: {
+    clickFileHint: string
+    logs: string
+    preview: string
+    toggleLogs: string
+  }
+
+  pet: {
+    hatchingProgress: string
+    openInHermes: string
+  }
+
+  embeds: {
+    spotify: string
+    youtube: string
   }
 }

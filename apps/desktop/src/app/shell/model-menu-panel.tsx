@@ -239,12 +239,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
       ...groups.flatMap(group =>
         collapsedProviders.includes(group.provider.slug) && !search
           ? []
-          : group.families.map((family): KbRow => ({
-              family,
-              key: `${group.provider.slug}:${family.id}`,
-              kind: 'family',
-              provider: group.provider
-            }))
+          : group.families.map(
+              (family): KbRow => ({
+                family,
+                key: `${group.provider.slug}:${family.id}`,
+                kind: 'family',
+                provider: group.provider
+              })
+            )
       ),
       ...shownMoaPresets.map((preset): KbRow => ({ key: `moa:${preset}`, kind: 'moa', preset }))
     ],
@@ -494,7 +496,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
 
       {shownMoaPresets.length > 0 ? (
         <div className={cn(quietRows)}>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{t.shell.moaPresets}</DropdownMenuLabel>
           {shownMoaPresets.map(preset => {
             const isCurrentMoa = optionsProvider === 'moa' && optionsModel === preset
 

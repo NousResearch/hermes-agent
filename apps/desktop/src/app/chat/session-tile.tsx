@@ -27,11 +27,11 @@ import { ModelMenuPanel } from '@/app/shell/model-menu-panel'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
-import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupHeaderHidden } from '@/components/pane-shell/tree/store'
+import { $layoutTree, moveTreePane, setTreeGroupHeaderHidden } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { createComposerAttachmentScope } from '@/store/composer'
@@ -193,6 +193,7 @@ function TileChat({
 }
 
 export function SessionTilePane({ storedSessionId }: { storedSessionId: string }) {
+  const { t } = useI18n()
   const tiles = useStore($sessionTiles)
   const tile = tiles.find(t => t.storedSessionId === storedSessionId)
   const runtimeId = tile?.runtimeId ?? null
@@ -300,10 +301,10 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
     return (
       <div className="grid h-full place-items-center p-4">
         <div className="max-w-[24rem] space-y-2 text-center font-mono text-[11px]">
-          <div className="text-(--ui-danger,#f87171)">Couldn't open this session</div>
+          <div className="text-(--ui-danger,#f87171)">{t.assistant.thread.couldntOpenSession}</div>
           <div className="break-words text-(--ui-text-quaternary)">{tile.error}</div>
           <Button onClick={() => patchSessionTile(storedSessionId, { error: undefined })} size="sm" variant="outline">
-            Retry
+            {t.common.retry}
           </Button>
         </div>
       </div>
@@ -349,7 +350,7 @@ function tileTitle(storedSessionId: string): string {
 
   // A tab-strip "+" tab is unlisted until its first turn persists, so it isn't
   // in $sessions yet — label it "New session" rather than a bare "Session".
-  return stored ? sessionTitle(stored) : 'New session'
+  return stored ? sessionTitle(stored) : translateNow('common.newSession')
 }
 
 /** The `@session` link payload for a tile tab drag — id + owning profile + title. */
@@ -504,10 +505,9 @@ export function SessionTabMenu({
 }
 
 /** The MAIN tab's menu: the same session verbs targeting the primary's loaded
- *  session, plus Close (the tab empties to a fresh draft — the workspace pane
- *  itself never leaves the tree) and the bar's off switch (the bar sticky-shows
- *  once a tab is ever gained; this is the explicit way back). A fresh draft has
- *  no session — no menu. */
+ *  session, plus the bar's off switch (the bar sticky-shows once a tab is
+ *  ever gained; this is the explicit way back). A fresh draft has no session —
+ *  no menu. */
 export function WorkspaceTabMenu({ children }: { children: React.ReactElement }) {
   const selected = useStore($selectedStoredSessionId)
 
@@ -525,12 +525,7 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
   }
 
   return (
-    <SessionTabMenu
-      onClose={() => closeTreePane('workspace')}
-      onHideTabBar={hideTabBar}
-      storedSessionId={selected}
-      tabPaneId="workspace"
-    >
+    <SessionTabMenu onHideTabBar={hideTabBar} storedSessionId={selected} tabPaneId="workspace">
       {children}
     </SessionTabMenu>
   )

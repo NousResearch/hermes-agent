@@ -25,6 +25,7 @@ import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
+import { translateNow, useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $previewTarget, openPreview } from '@/store/preview'
@@ -49,7 +50,7 @@ export function LogsPane() {
   if (!data) {
     return (
       <div className="grid h-full place-items-center">
-        <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text="LOGS" />
+        <DecodeText className="text-(--ui-text-quaternary)" cursor prefix={1} text={translateNow('workspace.logs')} />
       </div>
     )
   }
@@ -79,8 +80,8 @@ export function PreviewRailPane() {
     return (
       <div className="grid h-full place-items-center px-4 text-center">
         <div className="flex flex-col items-center gap-1.5">
-          <DecodeText className="text-(--ui-text-quaternary)" prefix={1} text="PREVIEW" />
-          <span className="text-[0.68rem] text-(--ui-text-quaternary)">click a file in the files pane</span>
+          <DecodeText className="text-(--ui-text-quaternary)" prefix={1} text={translateNow('workspace.preview')} />
+          <span className="text-[0.68rem] text-(--ui-text-quaternary)">{translateNow('workspace.clickFileHint')}</span>
         </div>
       </div>
     )

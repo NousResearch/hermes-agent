@@ -9,6 +9,7 @@
 
 import { PixelEggSprite } from '@/components/pet/pixel-egg-sprite'
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/i18n'
 import { Progress } from '@/components/ui/progress'
 
 interface PetEggHatchProps {
@@ -23,12 +24,13 @@ interface PetEggHatchProps {
  * return together, so a count would just snap 0→100).
  */
 export function PetProgress({ done, total }: { done?: number; total?: number }) {
+  const { t } = useI18n()
   const determinate = typeof done === 'number' && typeof total === 'number' && total > 0
 
   return (
     <Progress
       animated
-      aria-label="Hatching progress"
+      aria-label={t.pet.hatchingProgress}
       className="bg-[color-mix(in_srgb,var(--ui-accent)_15%,transparent)]"
       fillClassName="bg-(--ui-accent)"
       indeterminate={!determinate}

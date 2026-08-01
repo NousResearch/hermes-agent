@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react'
 
+import { useI18n } from '@/i18n'
 import {
   initialQuickComposerState,
   QUICK_TARGET_CURRENT,
@@ -27,6 +28,7 @@ import {
  */
 export function QuickEntryApp() {
   const inputRef = useRef<HTMLInputElement>(null)
+  const { t } = useI18n()
 
   // The reducer returns { send, state }; this wrapper performs the side effect
   // (hand the payload to the shell, ask to hide) and stores the next state, so
@@ -110,7 +112,7 @@ export function QuickEntryApp() {
             ›
           </span>
           <input
-            aria-label="Quick Entry"
+            aria-label={t.settings.quickEntry.windowAriaLabel}
             autoCapitalize="off"
             autoComplete="off"
             autoCorrect="off"
@@ -158,10 +160,10 @@ export function QuickEntryApp() {
               userSelect: 'none'
             }}
           >
-            Send to
+            {t.settings.quickEntry.sendTo}
           </label>
           <select
-            aria-label="Target session"
+            aria-label={t.settings.quickEntry.targetSessionAria}
             disabled={!state.connected}
             id="quick-entry-target"
             onChange={event => dispatch({ target: event.target.value, type: 'target' })}
@@ -182,8 +184,8 @@ export function QuickEntryApp() {
             }}
             value={state.target}
           >
-            <option value={QUICK_TARGET_CURRENT}>Current chat</option>
-            <option value={QUICK_TARGET_NEW}>New session</option>
+            <option value={QUICK_TARGET_CURRENT}>{t.settings.quickEntry.currentTarget}</option>
+            <option value={QUICK_TARGET_NEW}>{t.settings.quickEntry.newTarget}</option>
             {state.sessions.map(session => (
               <option key={session.id} value={session.id}>
                 {session.title}

@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 
 import type { TimeAxis } from './time-axis'
 
@@ -109,6 +110,7 @@ export const Timeline = memo(function Timeline({
   revealStore,
   ringStops = []
 }: TimelineProps) {
+  const { t } = useI18n()
   const trackRef = useRef<HTMLDivElement | null>(null)
   const draggingRef = useRef(false)
   const markerRefs = useRef<HTMLDivElement[]>([])
@@ -194,7 +196,7 @@ export const Timeline = memo(function Timeline({
       </button>
 
       <div
-        aria-label="Timeline scrubber"
+        aria-label={t.starmap.timelineScrubber}
         aria-valuemax={100}
         aria-valuemin={0}
         aria-valuenow={Math.round(revealStore.get() * 100)}

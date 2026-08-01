@@ -24,6 +24,7 @@ Three concerns live here:
 ``run_agent`` keeps thin wrappers for each so existing call sites
 (``self._compress_context(...)``) keep working.  Tests that exercise
 these paths see no behavioural change.
+
 """
 
 from __future__ import annotations
@@ -441,6 +442,13 @@ class CompressionCommitFence:
         # flight" even while the commit itself is hung — which is exactly when
         # the overrun warning must be able to fire.
         self._commit_phase = threading.Event()
+        # Lock-free admission revocation (#76354 review F2). Set by
+        # :meth:`revoke_commit_admission` on ANY host unwind (KeyboardInterrupt,
+        # cancellation, unexpected exception) without touching the fence lock,
+        # so a host that cannot afford to block behind an in-flight commit can
+        # still guarantee no FUTURE commit is admitted. Plain bool store —
+        # atomic in CPython.
+        self._admission_revoked = False
         # Forward-progress telemetry: the compression worker touches this
         # whenever the streamed summary call produces a token (see
         # ContextCompressor._call_summary_llm). Waiters use it to distinguish
@@ -497,10 +505,7 @@ class CompressionCommitFence:
     def begin_commit(self, cancel_event: Any = None) -> bool:
         """Atomically admit commit unless a hard cancellation already won."""
         self._lock.acquire()
-        if self._cancelled or (
-            cancel_event is not None and bool(cancel_event.is_set())
-        ):
-            self._cancelled = True
+        if self._cancelled or self._admission_revoked:
             self._lock.release()
             return False
         self._commit_started = True
@@ -529,7 +534,23 @@ class CompressionCommitFence:
     @property
     def is_cancelled(self) -> bool:
         """True after cancellation won before the commit boundary."""
-        return self._cancelled
+        return self._cancelled or self._admission_revoked
+
+    def revoke_commit_admission(self) -> None:
+        """Revoke FUTURE commit admission without acquiring the fence lock.
+
+        #76354 review F2: every host unwind path (KeyboardInterrupt, task
+        cancellation, unexpected exception while waiting) must guarantee a
+        detached worker cannot later enter the commit boundary and mutate
+        durable/session state. This is deliberately lock-free: a commit that
+        is ALREADY in flight cannot be safely abandoned (the invariant
+        "commit never abandoned mid-mutation" holds), but no NEW commit will
+        be admitted after this call — ``begin_commit`` re-checks the flag
+        under the fence lock.
+        """
+        self._admission_revoked = True
+
+
 
 
 # Defaults for the in-agent (non-hygiene) progress-aware compress_context wrap.
@@ -552,6 +573,7 @@ _compress_timeout_executor_lock = threading.Lock()
 # silent unbounded future.result(). Clamped down to the ceiling for tiny test
 # ceilings so overrun reporting stays observable at test timescales.
 _COMMIT_OVERRUN_WAIT_SLICE_SECONDS = 30.0
+
 
 
 def _get_compress_timeout_executor():
@@ -683,115 +705,144 @@ def run_compress_context_with_progress_timeout(
     # parent conversation/approval context into the worker.
     future = executor.submit(propagate_context_to_thread(worker), fence)
     wait_started = time.monotonic()
-    while True:
-        waited = time.monotonic() - wait_started
-        remaining_ceiling = ceiling - waited
-        if remaining_ceiling <= 0:
-            break
-        wait_slice = min(idle, remaining_ceiling)
-        try:
-            return future.result(timeout=wait_slice)
-        except concurrent.futures.TimeoutError:
-            waited = time.monotonic() - wait_started
-            since_progress = fence.seconds_since_progress()
-            if since_progress < idle and waited < ceiling:
-                logger.info(
-                    "Context compression still streaming after %.0fs "
-                    "(last progress %.1fs ago) — extending wait "
-                    "(ceiling %.0fs)",
-                    waited,
-                    since_progress,
-                    ceiling,
-                )
-                continue
-            break
-
-    cancelled: Optional[bool] = None
-    while cancelled is None:
-        # F1: ``begin_commit`` retains the fence lock until ``finish_commit``,
-        # so a hung commit makes ``try_cancel_before_commit`` return None
-        # forever. The lock-free phase marker breaks the spin so the
-        # overrun-warning loop below is reachable WHILE the commit is still
-        # blocked.
-        if fence.commit_in_flight:
-            cancelled = False
-            break
-        cancelled = fence.try_cancel_before_commit()
-        if cancelled is None:
-            time.sleep(0.001)
-    if not cancelled:
-        # Pre-commit ceiling already elapsed, but begin_commit() won the race.
-        # Waiting is intentional: SessionDB mutation cannot be fence-cancelled.
-        # The wait is bounded in increments against the remaining ceiling: a
-        # commit that overruns total_ceiling_seconds is logged loudly and
-        # surfaced once (on_commit_overrun), then waited on in bounded slices
-        # with escalating log level until it completes. Guarantee: summary
-        # phase bounded by ceiling; commit phase logged + surfaced if it
-        # exceeds it — never silently hung, never abandoned mid-commit.
-        overrun_surfaced = False
-        overrun_reports = 0
+    # F2: EVERY host unwind (KeyboardInterrupt, task cancellation, unexpected
+    # exception while waiting) must revoke future commit admission before the
+    # host resumes, or a detached worker could later commit and mutate durable
+    # state behind the caller's back. ``handled_exit`` marks the paths that
+    # settle admission themselves (worker result returned, or fence cancel
+    # won); everything else revokes in the ``finally``.
+    handled_exit = False
+    try:
         while True:
             waited = time.monotonic() - wait_started
-            remaining = ceiling - waited
-            if remaining <= 0:
-                # Ceiling breached while the commit is in flight. Wait in
-                # bounded increments so each overrun window is visible in
-                # logs rather than one silent unbounded block.
-                remaining = min(
-                    _COMMIT_OVERRUN_WAIT_SLICE_SECONDS,
-                    max(ceiling, 0.05),
-                )
-                overrun_reports += 1
-                log = logger.warning if overrun_reports <= 2 else logger.error
-                log(
-                    "Context compression SessionDB commit still running "
-                    "%.1fs past the total ceiling (waited %.1fs, ceiling "
-                    "%.1fs); commit cannot be abandoned mid-flight — "
-                    "continuing to wait (check SessionDB health if this "
-                    "persists)",
-                    waited - ceiling,
-                    waited,
-                    ceiling,
-                )
-                if not overrun_surfaced and on_commit_overrun is not None:
-                    overrun_surfaced = True
-                    try:
-                        on_commit_overrun(waited, ceiling)
-                    except Exception:
-                        logger.debug(
-                            "compress_context commit-overrun callback failed",
-                            exc_info=True,
-                        )
+            remaining_ceiling = ceiling - waited
+            if remaining_ceiling <= 0:
+                break
+            wait_slice = min(idle, remaining_ceiling)
             try:
-                return future.result(timeout=remaining)
+                result = future.result(timeout=wait_slice)
+                handled_exit = True
+                return result
             except concurrent.futures.TimeoutError:
-                # Fence progress (commit-phase touch_progress) is informative
-                # only — the commit must complete regardless; loop and
-                # re-report with the updated overrun window.
-                continue
+                waited = time.monotonic() - wait_started
+                since_progress = fence.seconds_since_progress()
+                if since_progress < idle and waited < ceiling:
+                    logger.info(
+                        "Context compression still streaming after %.0fs "
+                        "(last progress %.1fs ago) — extending wait "
+                        "(ceiling %.0fs)",
+                        waited,
+                        since_progress,
+                        ceiling,
+                    )
+                    continue
+                break
 
-    waited = time.monotonic() - wait_started
-    since_progress = fence.seconds_since_progress()
-    if on_timeout is not None:
-        try:
-            on_timeout(idle, waited, since_progress)
-        except Exception:
-            logger.debug(
-                "compress_context timeout callback failed",
-                exc_info=True,
+
+        cancelled: Optional[bool] = None
+        while cancelled is None:
+            # F1: ``begin_commit`` retains the fence lock until
+            # ``finish_commit``, so a hung commit makes
+            # ``try_cancel_before_commit`` return None forever. The lock-free
+            # phase marker breaks the spin so the overrun-warning loop below
+            # is reachable WHILE the commit is still blocked.
+            if fence.commit_in_flight:
+                cancelled = False
+                break
+            cancelled = fence.try_cancel_before_commit()
+            if cancelled is None:
+                time.sleep(0.001)
+        if not cancelled:
+            # Pre-commit ceiling already elapsed, but begin_commit() won the
+            # race. Waiting is intentional: SessionDB mutation cannot be
+            # fence-cancelled. The wait is bounded in increments against the
+            # remaining ceiling: a commit that overruns total_ceiling_seconds
+            # is logged loudly and surfaced once (on_commit_overrun), then
+            # waited on in bounded slices with escalating log level until it
+            # completes. Guarantee: summary phase bounded by ceiling; commit
+            # phase logged + surfaced if it exceeds it — never silently hung,
+            # never abandoned mid-commit. F1: this loop is reachable WHILE
+            # the commit is blocked (commit_in_flight is lock-free), so the
+            # warning + on_commit_overrun fire during the hang, not after it.
+            overrun_surfaced = False
+            overrun_reports = 0
+            while True:
+                waited = time.monotonic() - wait_started
+                remaining = ceiling - waited
+                if remaining <= 0:
+                    # Ceiling breached while the commit is in flight. Wait in
+                    # bounded increments so each overrun window is visible in
+                    # logs rather than one silent unbounded block.
+                    remaining = min(
+                        _COMMIT_OVERRUN_WAIT_SLICE_SECONDS,
+                        max(ceiling, 0.05),
+                    )
+                    overrun_reports += 1
+                    log = (
+                        logger.warning if overrun_reports <= 2 else logger.error
+                    )
+                    log(
+                        "Context compression SessionDB commit still running "
+                        "%.1fs past the total ceiling (waited %.1fs, ceiling "
+                        "%.1fs); commit cannot be abandoned mid-flight — "
+                        "continuing to wait (check SessionDB health if this "
+                        "persists)",
+                        waited - ceiling,
+                        waited,
+                        ceiling,
+                    )
+                    if not overrun_surfaced and on_commit_overrun is not None:
+                        overrun_surfaced = True
+                        try:
+                            on_commit_overrun(waited, ceiling)
+                        except Exception:
+                            logger.debug(
+                                "compress_context commit-overrun callback "
+                                "failed",
+                                exc_info=True,
+                            )
+                try:
+                    result = future.result(timeout=remaining)
+                    handled_exit = True
+                    return result
+                except concurrent.futures.TimeoutError:
+                    # Fence progress (commit-phase touch_progress) is
+                    # informative only — the commit must complete regardless;
+                    # loop and re-report with the updated overrun window.
+                    continue
+
+        # Idle-timeout path: cancellation won before the commit boundary.
+        # The fence blocks any future commit.
+        handled_exit = True
+        waited = time.monotonic() - wait_started
+        since_progress = fence.seconds_since_progress()
+        if on_timeout is not None:
+            try:
+                on_timeout(idle, waited, since_progress)
+            except Exception:
+                logger.debug(
+                    "compress_context timeout callback failed",
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Context compression made no progress for %.1fs "
+                "(total wait %.1fs, ceiling %.1fs); continuing without "
+                "compression",
+                since_progress,
+                waited,
+                ceiling,
             )
-    else:
-        logger.warning(
-            "Context compression made no progress for %.1fs "
-            "(total wait %.1fs, ceiling %.1fs); continuing without "
-            "compression",
-            since_progress,
-            waited,
-            ceiling,
-        )
-    # Leave the future on the shared pool: fence cancel won, so a late
-    # commit cannot land (same detachment model as gateway hygiene).
-    return messages, _resolve_fallback_prompt()
+        # Leave the future on the shared pool: fence cancel won, so a late
+        # commit cannot land (same detachment model as gateway hygiene).
+        return messages, _resolve_fallback_prompt()
+    finally:
+        if not handled_exit:
+            # F2: KeyboardInterrupt / cancellation / any unexpected exception
+            # while waiting — revoke commit admission (and release the
+            # worker's durable lease via the holder-qualified hook) before
+            # the host unwinds, so the detached worker can never publish.
+            fence.revoke_commit_admission()
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:

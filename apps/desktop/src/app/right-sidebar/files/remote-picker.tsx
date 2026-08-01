@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { readDesktopDir, setDesktopFsRemotePicker } from '@/lib/desktop-fs'
+import { displayPath, pathLeaf } from '@/lib/display-path'
 import { cn } from '@/lib/utils'
 
 function clean(path: string) {
@@ -24,7 +25,7 @@ function parentDir(path: string) {
 }
 
 function pathName(path: string) {
-  return path.split('/').filter(Boolean).pop() || path
+  return pathLeaf(path) || path
 }
 
 interface PendingSelection {
@@ -167,7 +168,7 @@ export function RemoteFolderPicker() {
         </div>
 
         <div className="shrink-0 flex items-center justify-between gap-2 border-t border-border/70 px-4 py-3">
-          <div className="min-w-0 truncate text-xs text-muted-foreground">{currentPath}</div>
+          <div className="min-w-0 truncate text-xs text-muted-foreground">{displayPath(currentPath)}</div>
           <div className="flex shrink-0 items-center gap-2">
             <Button onClick={() => close()} size="sm" variant="ghost">
               {t.common.cancel}

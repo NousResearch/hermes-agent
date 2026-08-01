@@ -1261,8 +1261,8 @@ def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
     each new call site had to re-derive it, and #76091 shipped an eighth copy
     because the correct behaviour lived 2400 lines away in another function.
     A few sites outside ``hermes_cli`` (``tools/code_execution_tool.py``,
-    ``agent/lsp/install.py``) still hand-roll it — convert them as they are
-    touched.
+    ``agent/lsp/install.py``, ``agent/lsp/servers.py``) still hand-roll it —
+    convert them as they are touched.
 
     *windows* lets a caller pass its own platform verdict. Several callers
     resolve this through predicates the test-suite patches to exercise

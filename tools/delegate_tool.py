@@ -869,13 +869,18 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     teaching subagents a fake container path while still helping them avoid
     guessing `/workspace/...` for local repo tasks.
     """
+    # Parent-specific fields FIRST. TERMINAL_CWD is process-wide state: when
+    # the gateway is launched outside the target project, it holds the
+    # gateway's own directory, and preferring it here would pin the child to
+    # exactly the wrong place this hint exists to avoid. It stays only as the
+    # last-resort fallback when the parent carries no workspace of its own.
     candidates = [
-        os.getenv("TERMINAL_CWD"),
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),
         getattr(parent_agent, "terminal_cwd", None),
         getattr(parent_agent, "cwd", None),
+        os.getenv("TERMINAL_CWD"),
     ]
     for candidate in candidates:
         if not candidate:
@@ -893,12 +898,15 @@ def _run_child_in_workspace(child, workspace_path: Optional[str], *args, **kwarg
     """Run a child with its logical cwd pinned to the parent's workspace."""
     if not workspace_path:
         return child.run_conversation(*args, **kwargs)
-    from agent.runtime_cwd import _SESSION_CWD, set_session_cwd
+    from agent.runtime_cwd import set_session_cwd
+
+    # The Token carries its ContextVar as token.var — reset through it rather
+    # than importing the private _SESSION_CWD module global.
     token = set_session_cwd(workspace_path)
     try:
         return child.run_conversation(*args, **kwargs)
     finally:
-        _SESSION_CWD.reset(token)
+        token.var.reset(token)
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:

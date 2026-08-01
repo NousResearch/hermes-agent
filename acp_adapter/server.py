@@ -1079,22 +1079,36 @@ class HermesACPAgent(acp.Agent):
                 if not join_mcp_discovery(timeout=30.0):
                     return
 
-                # Session may have been closed while we waited.
-                current = self.session_manager.get_session(session_id)
+                # Session may have been closed while we waited.  In-memory-only
+                # lookup on purpose: ``get_session()`` falls through to a DB
+                # restore that builds a whole new AIAgent as a side effect just
+                # to decide "no-op" here (the TUI equivalent also checks its
+                # in-memory dict only).
+                with self.session_manager._lock:
+                    current = self.session_manager._sessions.get(session_id)
                 if current is None or current.agent is not agent:
                     return
 
                 # Cache safety: never rebuild the tool list once the conversation
                 # has started — that would invalidate the cached prompt prefix.
-                if (
-                    int(getattr(agent, "_user_turn_count", 0) or 0) > 0
-                    or int(getattr(agent, "_api_call_count", 0) or 0) > 0
-                ):
-                    return
+                # Serialized with turn start: ``prompt()`` flips ``is_running``
+                # under ``runtime_lock`` before dispatching, so holding it here
+                # (and bailing when a turn is already running) closes the window
+                # where the guard passes but the first prompt starts before the
+                # refresh publishes — which would swap ``tools=`` mid-turn and
+                # break the just-created cache prefix.
+                with current.runtime_lock:
+                    if current.is_running:
+                        return
+                    if (
+                        int(getattr(agent, "_user_turn_count", 0) or 0) > 0
+                        or int(getattr(agent, "_api_call_count", 0) or 0) > 0
+                    ):
+                        return
 
-                from tools.mcp_tool import refresh_agent_mcp_tools
+                    from tools.mcp_tool import refresh_agent_mcp_tools
 
-                added = refresh_agent_mcp_tools(agent)
+                    added = refresh_agent_mcp_tools(agent, quiet_mode=True)
                 if added:
                     logger.info(
                         "Session %s: late MCP refresh added %d tools: %s",

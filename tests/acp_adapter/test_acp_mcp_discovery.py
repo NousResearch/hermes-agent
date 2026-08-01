@@ -262,3 +262,66 @@ def test_acp_late_refresh_skips_after_first_turn(monkeypatch):
     time.sleep(0.5)
 
     assert not refreshed, "late-refresh rebuilt tools after the first turn — cache broken!"
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — late-refresh is serialized with turn start: skips while running
+# ---------------------------------------------------------------------------
+
+
+def test_acp_late_refresh_skips_while_turn_running(monkeypatch):
+    """A turn in flight (state.is_running) must block the rebuild even when
+    the agent's counters still read zero — closes the guard/turn-start race."""
+
+    discovery_block = threading.Event()
+
+    def _slow_discover():
+        discovery_block.wait(timeout=5.0)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        _mod(
+            "hermes_cli.config",
+            read_raw_config=lambda: {"mcp_servers": {"slow": {"url": "https://mcp.example.test"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        _mod("tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        _mod("tools.mcp_tool", discover_mcp_tools=_slow_discover),
+    )
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=SimpleNamespace(debug=lambda *_a, **_k: None),
+        thread_name="test-acp-running",
+    )
+
+    fake = FakeAgent()  # counters are 0 — only is_running blocks the refresh
+    manager = SessionManager(agent_factory=lambda **_k: fake, db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd=".")
+    state.is_running = True  # simulate: first prompt dispatched concurrently
+
+    refreshed = []
+
+    def _fake_refresh(agent, **_kw):
+        refreshed.append(agent)
+        return set()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        _mod("tools.mcp_tool", refresh_agent_mcp_tools=_fake_refresh),
+    )
+
+    acp_agent._schedule_mcp_late_refresh(state)
+    discovery_block.set()
+    time.sleep(0.5)
+
+    assert not refreshed, "late-refresh rebuilt tools while a turn was running!"

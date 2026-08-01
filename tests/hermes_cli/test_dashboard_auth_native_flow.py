@@ -233,6 +233,188 @@ def test_status_loopback_mode_has_no_auth_flows():
 
 
 # ---------------------------------------------------------------------------
+# Native flow for password providers (system-browser autofill path)
+# ---------------------------------------------------------------------------
+#
+# A password provider has no IDP round trip, but the native flow still buys
+# the desktop the one thing an embedded webview can never have: the system
+# browser's OS-password-manager autofill. /auth/native/authorize lands the
+# browser on /login (broker_state in the PKCE cookie) and a successful
+# /auth/password-login completes the pending authorization exactly like the
+# OAuth callback does.
+
+
+@pytest.fixture
+def pw_gated_client():
+    from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+    from tests.hermes_cli.test_dashboard_auth_password_login import (
+        PasswordProvider,
+    )
+
+    clear_providers()
+    register_provider(PasswordProvider())
+    _reset_password_rate_limit()
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+    client = TestClient(
+        web_server.app, base_url="https://fly-app.fly.dev",
+        follow_redirects=False,
+    )
+    yield client
+    clear_providers()
+    _reset_password_rate_limit()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
+
+
+def test_status_advertises_native_pkce_for_password_only_gateway(
+    pw_gated_client,
+):
+    body = pw_gated_client.get("/api/status").json()
+    assert body["auth_required"] is True
+    assert "cookie" in body["auth_flows"]
+    assert "native_pkce" in body["auth_flows"]
+
+
+def test_native_authorize_password_provider_redirects_to_login(
+    pw_gated_client,
+):
+    """Empty ``provider`` auto-picks the single password provider and lands
+    the system browser on /login with the broker in the PKCE cookie."""
+    _verifier, challenge = _make_pkce()
+    r = pw_gated_client.get(
+        "/auth/native/authorize",
+        params={
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "http://127.0.0.1:53999/cb",
+            "state": "desk-state",
+        },
+    )
+    assert r.status_code == 302, r.text
+    assert r.headers["location"].endswith("/login")
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "pkce" in set_cookie
+    assert "broker=" in set_cookie
+
+
+def _start_native_password_login(client, *, challenge, state="desk-state"):
+    r = client.get(
+        "/auth/native/authorize",
+        params={
+            "provider": "testpw",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "http://127.0.0.1:53999/cb",
+            "state": state,
+        },
+    )
+    assert r.status_code == 302, r.text
+    return r.cookies
+
+
+def test_native_password_login_full_roundtrip(pw_gated_client):
+    """authorize → /login → password-login → loopback code → bearer tokens."""
+    verifier, challenge = _make_pkce()
+    cookies = _start_native_password_login(pw_gated_client, challenge=challenge)
+
+    # The browser form POSTs the credentials; the PKCE cookie rides along.
+    r = pw_gated_client.post(
+        "/auth/password-login",
+        json={"provider": "testpw", "username": "admin", "password": "hunter2"},
+        cookies=cookies,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    # ``next`` is the desktop's loopback redirect carrying code + state —
+    # NOT a dashboard path.
+    assert body["next"].startswith("http://127.0.0.1:53999/cb?")
+    qs = parse_qs(urlparse(body["next"]).query)
+    assert qs["state"][0] == "desk-state"
+    code = qs["code"][0]
+    # No browser session on the native branch; the PKCE cookie is cleared.
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "hermes_session_at" not in set_cookie, (
+        f"native password login must NOT set a session cookie; got {set_cookie!r}"
+    )
+    assert "pkce" in set_cookie  # the clearing Set-Cookie
+
+    # Desktop redeems the loopback code with its PKCE verifier.
+    tokens = pw_gated_client.post(
+        "/auth/native/token",
+        json={"code": code, "code_verifier": verifier},
+    ).json()
+    assert tokens["provider"] == "testpw"
+    assert tokens["user_id"] == "admin"
+
+    # Cookieless bearer auth of a gated route — the point of the flow.
+    r2 = pw_gated_client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["user_id"] == "admin"
+
+
+def test_native_password_login_wrong_password_keeps_pending(pw_gated_client):
+    """A failed credential attempt must not consume the pending
+    authorization — the user retypes and succeeds on the same broker."""
+    verifier, challenge = _make_pkce()
+    cookies = _start_native_password_login(pw_gated_client, challenge=challenge)
+
+    r = pw_gated_client.post(
+        "/auth/password-login",
+        json={"provider": "testpw", "username": "admin", "password": "wrong"},
+        cookies=cookies,
+    )
+    assert r.status_code == 401
+
+    r2 = pw_gated_client.post(
+        "/auth/password-login",
+        json={"provider": "testpw", "username": "admin", "password": "hunter2"},
+        cookies=cookies,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["next"].startswith("http://127.0.0.1:53999/cb?")
+
+
+def test_native_password_login_expired_broker_returns_400(pw_gated_client):
+    """A broker cookie whose pending entry lapsed (TTL) is a clean 400
+    telling the user to restart sign-in — never a silent cookie login."""
+    _verifier, challenge = _make_pkce()
+    cookies = _start_native_password_login(pw_gated_client, challenge=challenge)
+
+    native_flow._reset_for_tests()  # simulate the pending TTL lapsing
+
+    r = pw_gated_client.post(
+        "/auth/password-login",
+        json={"provider": "testpw", "username": "admin", "password": "hunter2"},
+        cookies=cookies,
+    )
+    assert r.status_code == 400
+    assert "restart" in r.json()["detail"].lower()
+
+
+def test_password_login_without_broker_still_mints_cookies(pw_gated_client):
+    """Guard: an ordinary browser password login (no native broker cookie)
+    keeps the existing cookie-minting behaviour."""
+    r = pw_gated_client.post(
+        "/auth/password-login",
+        json={"provider": "testpw", "username": "admin", "password": "hunter2"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["next"] == "/"
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "hermes_session_at" in set_cookie
+
+
+# ---------------------------------------------------------------------------
 # Native refresh
 # ---------------------------------------------------------------------------
 

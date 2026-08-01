@@ -840,7 +840,20 @@ def _update_via_zip(args):
             _discard_staged(staged)
             raise
 
-        _commit_staged_replacements(staged)
+        try:
+            _commit_staged_replacements(staged)
+        except Exception:
+            # The rollback already restored every swapped entry, but staging
+            # copies for the not-yet-swapped entries (potentially most of a
+            # full tree) are still on disk. Drop them, or the retry's
+            # up-front free-space check — which runs BEFORE the lazy
+            # per-entry leftover cleanup — fails on litter this attempt
+            # left behind: the exact "retry fails harder" failure mode
+            # _discard_staged exists to prevent. Safe post-rollback: swapped
+            # entries' staging paths were renamed away, and _discard_staged
+            # skips paths that no longer exist.
+            _discard_staged(staged)
+            raise
         update_count = len(staged)
 
         print(f"✓ Updated {update_count} items from ZIP")

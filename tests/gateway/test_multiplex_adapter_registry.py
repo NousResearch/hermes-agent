@@ -172,6 +172,46 @@ def _install_secondary_reconnect_context(monkeypatch, runner, adapter, scoped_ho
 
 class TestSecondaryProfileFatalRecovery:
     @pytest.mark.asyncio
+    async def test_disabled_reconnect_replaces_stale_helper_capability(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        runner._profile_gateway_configs = {
+            "reviewer": GatewayConfig(
+                platforms={
+                    Platform.SLACK: PlatformConfig(
+                        enabled=True,
+                        extra={"authenticated_api_helper": True},
+                    ),
+                },
+            ),
+        }
+        reloaded = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=False,
+                    extra={"authenticated_api_helper": False},
+                ),
+            },
+        )
+
+        @contextmanager
+        def fake_scope(profile_home):
+            yield
+
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name
+        )
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config", lambda: reloaded
+        )
+
+        await runner._run_secondary_profile_reconnect("reviewer", Platform.SLACK)
+
+        assert runner._profile_gateway_configs["reviewer"] is reloaded
+
+    @pytest.mark.asyncio
     async def test_retryable_secondary_fatal_reconnects_with_its_profile_scope(
         self, monkeypatch
     ):

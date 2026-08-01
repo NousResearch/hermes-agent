@@ -13586,6 +13586,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         current_task = asyncio.current_task()
         try:
             while self._running:
+                # Reconnect is a config re-read boundary. Drop the prior
+                # profile snapshot first so a malformed/removed declaration
+                # cannot leave stale affirmative capability guidance behind.
+                self._forget_profile_gateway_config(profile_name)
                 adapter = None
                 try:
                     from hermes_cli.profiles import get_profile_dir
@@ -13594,10 +13598,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     profile_home = get_profile_dir(profile_name)
                     with _profile_runtime_scope(profile_home):
                         profile_cfg = load_gateway_config()
+                        self._remember_profile_gateway_config(profile_name, profile_cfg)
                         profile_config = profile_cfg.platforms.get(platform)
                         if profile_config is None or not profile_config.enabled:
                             return
-                        self._remember_profile_gateway_config(profile_name, profile_cfg)
                         adapter = self._create_adapter(platform, profile_config)
                         if adapter is None:
                             logger.warning(
@@ -23489,6 +23493,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile_configs = {}
             self._profile_gateway_configs = profile_configs
         profile_configs[profile_name] = profile_config
+
+    def _forget_profile_gateway_config(self, profile_name: str) -> None:
+        """Drop a secondary config so capability guidance fails closed."""
+        profile_configs = getattr(self, "_profile_gateway_configs", None)
+        if isinstance(profile_configs, dict):
+            profile_configs.pop(profile_name, None)
 
     def _session_context_for_source(
         self,

@@ -3203,7 +3203,7 @@ def list_authenticated_providers(
                     live_models = _fetch_picker_live_models(
                         api_key,
                         api_url,
-                        "custom",
+                        slug,
                         bool(grp.get("has_explicit_models")),
                         headers=grp.get("extra_headers") or None,
                     )

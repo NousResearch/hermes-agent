@@ -3207,7 +3207,9 @@ def list_authenticated_providers(
                         bool(grp.get("has_explicit_models")),
                         headers=grp.get("extra_headers") or None,
                     )
-                    if live_models:
+                    if live_models is not None and (
+                        live_models or str(slug).lower().endswith("ollama")
+                    ):
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)
                         # Auto-save discovered models back to config so

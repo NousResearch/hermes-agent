@@ -2594,7 +2594,7 @@ def should_use_ollama_native_catalog(
     if requested not in local_like_providers and not requested.startswith("custom:"):
         return False
 
-    if requested == "custom:ollama":
+    if requested == "custom:ollama" or requested.endswith("-ollama"):
         return True
 
     try:

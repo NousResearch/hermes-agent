@@ -88,6 +88,13 @@ def _build_agent_with_db(
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
+    # The compressor is a stub — the one-time compression-model feasibility
+    # probe would resolve a REAL auxiliary provider (credential pools, live
+    # token exchanges over the network on some dev machines). That makes the
+    # first _compress_context call in a test nondeterministically slow (>2s)
+    # and flakes event-based timing assertions. Mark it done: these tests
+    # exercise locking/fencing/rotation, never aux-model feasibility.
+    agent._compression_feasibility_checked = True
     # These tests cover the ROTATION fallback path (forking, child sessions,
     # lock contention) — pin in_place=False so they keep exercising it
     # regardless of the global default (which flipped to True in #38763).

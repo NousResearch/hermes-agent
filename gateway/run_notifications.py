@@ -1369,7 +1369,14 @@ class GatewayNotificationsMixin:
                     for evt in coalesce_ready_after_turn_events(async_events):
                         self._enrich_async_delegation_routing(evt)
                         key = str(evt.get("session_key") or "").strip()
-                        if getattr(self, "_running_agents", {}).get(key) is not None:
+                        from gateway.run import _AGENT_PENDING_SENTINEL
+                        parent = getattr(self, "_running_agents", {}).get(key)
+                        delivery = str(evt.get("result_delivery") or "after_turn").strip().lower()
+                        event_turn = str(evt.get("parent_turn_id") or "")
+                        if (parent is _AGENT_PENDING_SENTINEL
+                                or (parent is not None and delivery != "inject")
+                                or (parent is not None and event_turn
+                                    and str(getattr(parent, "_active_turn_id", "") or "") == event_turn)):
                             _pr.completion_queue.put(evt)
                         else:
                             idle_events.append(evt)

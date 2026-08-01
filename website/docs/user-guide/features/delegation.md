@@ -8,7 +8,7 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 The `delegate_task` tool spawns child AIAgent instances with isolated context, inherited tool access, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
 
-Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue, then posts the result back as a new message. An orchestrator subagent waits for its own workers so it can synthesize their results before returning.
+Top-level model calls run in the background automatically. Hermes returns a handle immediately so the conversation can continue. The model chooses how the result comes back with `result_delivery`: the backward-compatible default, `after_turn`, posts a separate synthetic turn; `inject` lets an auditor or dependency re-enter a still-running parent turn when that turn produces another tool-result boundary. An orchestrator subagent still waits for its own workers so it can synthesize their results before returning.
 
 ## Single Task
 
@@ -30,6 +30,49 @@ delegate_task(tasks=[
     {"goal": "Fix the build", "context": "Project root: /home/user/project"}
 ])
 ```
+
+## Result Delivery
+
+`delegate_task` is always asynchronous at the top level and never waits for a
+running child. `result_delivery` controls only when an already-completed result
+is shown to the parent model:
+
+- **`after_turn` (default):** at each available turn boundary, every completed
+  but undelivered child from the batch is grouped into one synthetic turn. It
+  never waits for unfinished siblings: if 1/3 is ready, that result is delivered;
+  if two more are ready at a later boundary, those two are grouped into the next
+  turn.
+
+:::note Ready-set invariant
+At one delivery boundary, one batch produces exactly one envelope containing
+all of its currently completed, undelivered child rows. The envelope is claimed
+and acknowledged atomically. Unfinished siblings are never waited on; children
+that finish later form the ready-set at a later boundary.
+:::
+
+- **`inject`:** intended for auditors, reviewers, and dependent work that can
+  change what the parent should do now. At a newly completed tool batch, ready
+  child evidence is appended to the last tool result from that batch before it
+  is sent to the provider. No user/system/developer message is manufactured and
+  previously sent history is never rewritten. Batch children do not wait for
+  slower siblings. If there is no later tool-result carrier, no follow-up model
+  budget, or the originating turn has ended, the durable event stays pending
+  and follows the normal `after_turn` path.
+
+```python
+delegate_task(
+    goal="Audit the patch for correctness and race conditions",
+    context="Project: /home/user/project; review the current uncommitted diff",
+    result_delivery="inject",
+)
+```
+
+Injection is best-effort and role-safe: Hermes enriches only a tool result made
+by the current, not-yet-sent batch. Multiple results already ready at that
+boundary share one carrier. It never adds an iteration, waits, polls, mutates a
+previously sent tool result, or reopens a provisional final answer. Results that
+miss this bounded carrier stay on the same durable rail and arrive later through
+`after_turn`.
 
 ## How Subagent Context Works
 
@@ -117,7 +160,7 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
+When a top-level agent provides a `tasks` array, Hermes returns one background handle and runs the subagents in parallel. With the default `after_turn` delivery, every ready child at an available turn boundary is grouped into one result turn; unfinished siblings do not block it and appear in a later ready-set. With `inject`, children ready at one tool boundary share that tool-result carrier; later children use a later carrier or fall through to `after_turn`. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
@@ -130,12 +173,19 @@ Synchronous single-task delegation from an orchestrator runs directly without th
 ### Durable background completions
 
 When a background delegation finishes, Hermes stores its completion event in
-the active profile's `state.db` before publishing it to the normal fresh-turn
-queue. If Hermes restarts after completion but before delivery, the pending
-event is restored and routed through the same ownership checks. Competing
-consumers use a durable claim, so only the consumer that successfully accepts
-the synthetic turn acknowledges delivery; failed attempts release the claim for
-retry.
+the active profile's `state.db` before publishing it to the shared completion
+queue. Both `inject` and `after_turn` batches use one execution record plus
+independently claimable child-delivery records. At an idle `after_turn` boundary,
+currently-ready child rows are folded into a transient grouped envelope; the
+envelope is not a second aggregate database row. Legacy aggregate records from
+older Hermes versions remain deliverable through the compatibility path. If
+Hermes restarts after completion but before delivery, pending events are
+restored and routed through the same ownership checks. Competing consumers use
+a durable claim, so only the consumer which durably commits the tool carrier,
+or which successfully appends the separate after-turn input, acknowledges each
+event. Failed attempts release the claim for retry; a restored row whose
+previous process still owns a live lease is rescheduled for the lease boundary
+without spinning the completion queue.
 
 This does not resume child execution after a crash. A delegation whose owner
 process disappears while it is still running is recorded as `unknown`, because

@@ -107,6 +107,69 @@ def _patch_delegate(monkeypatch):
     return dt
 
 
+def test_inject_batch_emits_fast_child_before_slow_child(monkeypatch):
+    """Exercise delegate_tool's real per-child callback seam, not just ledger APIs."""
+    dt = _patch_delegate(monkeypatch)
+    slow_gate = __import__("threading").Event()
+
+    def staggered_child(task_index, goal, child=None, parent_agent=None, **kw):
+        if task_index == 1:
+            slow_gate.wait(timeout=5)
+        return {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": f"done: {goal}",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+            "model": "m",
+            "exit_reason": "completed",
+        }
+
+    monkeypatch.setattr(dt, "_run_single_child", staggered_child)
+    set_session_vars(
+        platform="telegram",
+        chat_id="7",
+        session_key="agent:main:telegram:dm:7",
+        session_id="parent-sess",
+        async_delivery=True,
+    )
+    parent = _fake_parent()
+    parent._active_turn_id = "turn-live"
+    parsed = json.loads(
+        dt.delegate_task(
+            tasks=[{"goal": "fast child"}, {"goal": "slow child"}],
+            background=True,
+            result_delivery="inject",
+            parent_agent=parent,
+        )
+    )
+    assert parsed["status"] == "dispatched", parsed
+
+    first = _drain_one(timeout=2)
+    assert first is not None
+    assert first["delivery_event_key"] == "task:0"
+    assert first["parent_turn_id"] == "turn-live"
+    assert first["results"][0]["summary"] == "done: fast child"
+    import tools.async_delegation as ad
+
+    claim = ad.claim_event_delivery(first, "test-consumer")
+    assert claim
+    ad.complete_event_delivery(first, claim)
+
+    slow_gate.set()
+    second = _drain_one(timeout=2)
+    assert second is not None
+    assert second["delivery_event_key"] == "task:1"
+    assert second["results"][0]["summary"] == "done: slow child"
+    claim = ad.claim_event_delivery(second, "test-consumer")
+    assert claim
+    ad.complete_event_delivery(second, claim)
+    deadline = time.time() + 2
+    while ad.active_count() and time.time() < deadline:
+        time.sleep(0.01)
+    assert ad.active_count() == 0
+
+
 def test_after_turn_batch_delivers_ready_children_without_waiting_and_coalesces(monkeypatch):
     """Ready siblings share one turn; an unfinished sibling cannot block them."""
     dt = _patch_delegate(monkeypatch)
@@ -145,6 +208,7 @@ def test_after_turn_batch_delivers_ready_children_without_waiting_and_coalesces(
         dt.delegate_task(
             tasks=[{"goal": "task number zero"}, {"goal": "task number one"}, {"goal": "task number two"}],
             background=True,
+            result_delivery="after_turn",
             parent_agent=_fake_parent(),
         )
     )

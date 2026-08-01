@@ -350,6 +350,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    result_delivery: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -373,8 +374,12 @@ def delegate_task(
 
     top_role = _normalize_role(role)
     # background applies to single tasks AND batches: a batch is ONE async unit
-    # that joins on every child and re-enters as a single consolidated message.
+    # with child-scoped delivery; result_delivery selects the eligible continuation boundary.
     background = is_truthy_value(background, default=False) if background is not None else False
+
+    _delivery = str(result_delivery or "after_turn").strip().lower()
+    if _delivery not in {"inject", "after_turn"}:
+        _delivery = "after_turn"
 
     depth = getattr(parent_agent, "_delegate_depth", 0)
     max_spawn = _get_max_spawn_depth()
@@ -427,7 +432,7 @@ def delegate_task(
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
-        live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        live_deleg_id, live_writers, live_paths, *origin, overall_start, result_delivery=_delivery,
     )
     return _run_batch(batch, background)
 
@@ -457,8 +462,8 @@ _DESCRIPTION_HEAD = (
     "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
     "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
     "(limit in the tasks description).\n\n"
-    "Runs in the background: dispatch returns immediately with live transcript paths, and the completed result (one "
-    "consolidated message, results in task order) re-enters the conversation on its own. Do NOT wait or poll; continue "
+    "Runs in the background: dispatch returns immediately with live transcript paths. Result timing follows "
+    "result_delivery. Do NOT wait or poll; continue "
     "other work. While children run, `action` (list/steer/stop) controls them live — steer when a transcript shows a "
     "child drifting.\n\n"
     "USE FOR: reasoning-heavy subtasks, work that would flood your context with intermediate data, or independent "
@@ -569,6 +574,25 @@ DELEGATE_TASK_SCHEMA = {
                 "For action='steer': the course correction, appended to "
                 "the child's next tool result mid-run. Be directive and specific.",
             ),
+            "result_delivery": {
+                "type": "string",
+                "enum": ["inject", "after_turn"],
+                "default": "after_turn",
+                "description": (
+                    "How child results are delivered back to the parent context. "
+                    "'inject': use for auditors, reviewers, and dependent work "
+                    "whose result can affect the current turn; a result that is "
+                    "ready when a new tool batch completes is carried on that batch's "
+                    "last tool result before the next model request. Ready batch "
+                    "siblings share one carrier; results that miss the bounded tool "
+                    "boundary become separate late-result turns. "
+                    "'after_turn' (default): use for independent background work; "
+                    "at each available turn boundary, all currently ready children "
+                    "are grouped into one synthetic turn, while slower siblings "
+                    "arrive in later grouped turns. Running children are never "
+                    "waited on."
+                ),
+            },
         },
         "required": [],
     },
@@ -604,6 +628,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        result_delivery=args.get("result_delivery"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

@@ -3,7 +3,7 @@
 
 Each finished child is persisted and published before waiting for slower siblings.
 Existing between-turn consumers coalesce the children ready at their boundary;
-there is no active-loop carrier at this layer. Parent rows remain execution and
+opted-in results may instead use an unsent tool-result carrier in the originating turn. Parent rows remain execution and
 recovery bookkeeping, and every result uses the shared completion queue and ledger.
 """
 
@@ -125,7 +125,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # origin_session_id: raw api_server session id of the ORIGINATING request
     # (wake target); without it restart-recovered completions are unroutable there.
     for name, sql_type in (("owner_pid", "INTEGER"), ("owner_started_at", "INTEGER"), ("task_json", "TEXT"),
-                           ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT")):
+                           ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT"),
+                           ("result_delivery", "TEXT")):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
 
@@ -188,18 +189,19 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "result_delivery", "parent_turn_id", *_ROUTING_KEYS)
         if key in record}
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""INSERT OR REPLACE INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id, result_delivery)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""), record.get("origin_ui_session_id", ""),
              record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
-             json.dumps(task_payload), record.get("origin_session_id", "")))
+             json.dumps(task_payload), record.get("origin_session_id", ""),
+             record.get("result_delivery", "after_turn")))
     _prune_durable_records()
 
 
@@ -286,6 +288,7 @@ def _build_batch_child_event(
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
         "goal": goal,
         "goals": goals,
         "context": record.get("context"),
@@ -308,6 +311,9 @@ def _build_batch_child_event(
         "completed_at": completed_at,
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result},
+        "result_delivery": str(
+            record.get("result_delivery") or "after_turn"
+        ).strip().lower(),
     }
 
 
@@ -369,10 +375,22 @@ def publish_batch_child_completion(
 ) -> bool:
     """Durably enqueue one ready child from an asynchronous batch.
 
-    The parent batch remains the execution/stall unit. This function creates an
-    independently claimable between-turn delivery event, keyed by task index.
-    Repeated publication is idempotent and never resets a delivered claim.
+    The parent batch remains the execution/stall unit. This function only
+    creates an independently claimable delivery event, keyed by task index.
+    ``result_delivery`` changes which consumer may claim it, not when the child
+    row becomes durable. Repeated publication is idempotent and never resets a
+    delivered claim.
     """
+    with _records_lock:
+        record = dict(_records.get(delegation_id) or {})
+    if not record or not bool(record.get("is_batch")):
+        return False
+    if str(record.get("result_delivery") or "after_turn").lower() not in {
+        "inject",
+        "after_turn",
+    }:
+        return False
+
     event = _persist_batch_child_completion_event(
         delegation_id, task_index, result
     )
@@ -419,10 +437,12 @@ def coalesce_ready_after_turn_events(
     groups: Dict[str, Dict[str, Any]] = {}
     seen_keys: Dict[str, set[str]] = {}
     for event in events:
+        delivery = str(event.get("result_delivery") or "after_turn").strip().lower()
         event_keys = _event_delivery_keys(event)
         delegation_id = str(event.get("delegation_id") or "")
         coalescible = (
             event.get("type") == "async_delegation"
+            and delivery == "after_turn"
             and bool(event.get("is_batch"))
             and bool(event_keys)
             and all(key.startswith("task:") for key in event_keys)
@@ -503,6 +523,7 @@ def _build_batch_terminal_event(
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "parent_turn_id": event_record.get("parent_turn_id", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -516,6 +537,9 @@ def _build_batch_terminal_event(
         "dispatched_at": event_record.get("dispatched_at"),
         "completed_at": now,
         **{k: event_record[k] for k in _ROUTING_KEYS if event_record.get(k)},
+        "result_delivery": str(
+            event_record.get("result_delivery") or "after_turn"
+        ).strip().lower(),
     }
     for key in (
         "stalled_after_quiet_seconds",
@@ -563,9 +587,9 @@ def _persist_batch_child_finalization(
             _insert_batch_event(conn, terminal_event, now=now)
             queue_event_keys.append(terminal_event["delivery_event_key"])
 
-        # The aggregate row is bookkeeping-only. Commit its terminal state in
-        # the same transaction as the idempotent child safety net so restart
-        # recovery can never observe a half-finalized parent.
+        # The aggregate row is bookkeeping-only for all child-scoped batches. Commit its
+        # terminal state in the same transaction as the idempotent child safety
+        # net so restart recovery can never observe a half-finalized parent.
         _update_completion_row(
             conn,
             parent_event,
@@ -999,12 +1023,13 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json, origin_session_id,
+                      result_delivery
                FROM async_delegations WHERE state IN ('running','stalling','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
+             pid, started, task_json, origin_session_id, result_delivery) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -1013,6 +1038,9 @@ def recover_abandoned_delegations() -> int:
             if live:
                 continue
             task = json.loads(task_json or "{}")
+            restored_delivery = str(
+                result_delivery or task.get("result_delivery") or "after_turn"
+            ).lower()
             child_rows = []
             if bool(task.get("is_batch")):
                 child_rows = conn.execute(
@@ -1021,7 +1049,9 @@ def recover_abandoned_delegations() -> int:
                        ORDER BY event_key""",
                     (delegation_id,),
                 ).fetchall()
-            if bool(task.get("is_batch")) and bool(child_rows):
+            if bool(task.get("is_batch")) and (
+                restored_delivery == "inject" or bool(child_rows)
+            ):
                 # Child-scoped batches never recover through a contradictory
                 # aggregate. A crash after one or more child inserts must
                 # preserve the already-delivered/pending task identities.
@@ -1062,6 +1092,7 @@ def recover_abandoned_delegations() -> int:
                     "origin_ui_session_id": origin_ui,
                     "origin_session_id": origin_session_id or "",
                     "parent_session_id": parent_id,
+                    "parent_turn_id": task.get("parent_turn_id", ""),
                     "goal": task.get("goal", ""),
                     "goals": goals,
                     "context": task.get("context"),
@@ -1070,6 +1101,7 @@ def recover_abandoned_delegations() -> int:
                     "model": task.get("model"),
                     "dispatched_at": dispatched_at,
                     **{k: task[k] for k in _ROUTING_KEYS if task.get(k)},
+                    "result_delivery": restored_delivery,
                 }
                 if not complete_children:
                     terminal_event = _build_batch_terminal_event(
@@ -1086,6 +1118,7 @@ def recover_abandoned_delegations() -> int:
                     "results": child_results,
                     "error": recovery_error,
                     "completed_at": now,
+                    "result_delivery": restored_delivery,
                 }
                 _update_completion_row(
                     conn,
@@ -1103,9 +1136,11 @@ def recover_abandoned_delegations() -> int:
                 # after a restart remain routable to api_server sessions.
                 "origin_session_id": origin_session_id or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""),
+                "parent_turn_id": task.get("parent_turn_id", ""),
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "result_delivery": restored_delivery,
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -1455,12 +1490,16 @@ def _dispatch(
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str,
+    result_delivery: str = "after_turn", parent_turn_id: str = "",
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
     and exceed the cap. At capacity the dispatch is REJECTED (never queued) so a runaway model
     can't pile up unbounded background work."""
     is_batch = goals is not None
+    result_delivery = str(result_delivery or "after_turn").strip().lower()
+    if result_delivery not in {"inject", "after_turn"}:
+        result_delivery = "after_turn"
     label = " batch" if is_batch else ""
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
     crash_result = _batch_crash if is_batch else _single_crash
@@ -1470,6 +1509,7 @@ def _dispatch(
         "context": context, "toolsets": list(toolsets) if toolsets else None, "role": role, "model": model,
         "session_key": session_key, "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id, "parent_session_id": parent_session_id,
+        "result_delivery": result_delivery, "parent_turn_id": parent_turn_id,
         **_capture_routing_origin(),
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
@@ -1515,6 +1555,7 @@ def dispatch_async_delegation(
     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, progress_fn: Optional[Callable[[], tuple]] = None,
+    result_delivery: Optional[str] = None, parent_turn_id: str = "",
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
@@ -1526,6 +1567,7 @@ def dispatch_async_delegation(
         delegation_id=delegation_id, goal=goal, goals=None, context=context,
         toolsets=toolsets, role=role, model=model, session_key=session_key,
         parent_session_id=parent_session_id, runner=runner,
+        result_delivery=result_delivery, parent_turn_id=parent_turn_id,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
         capacity_error=(
@@ -1544,6 +1586,7 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    result_delivery: Optional[str] = None, parent_turn_id: str = "",
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit: ``runner`` runs the
     entire batch and returns the combined ``{"results": [...], "total_duration_seconds": N}``
@@ -1556,6 +1599,7 @@ def dispatch_async_delegation_batch(
         delegation_id=delegation_id, goal=combined_goal, goals=goals, context=context,
         toolsets=toolsets, role=role, model=model, session_key=session_key,
         parent_session_id=parent_session_id, runner=runner,
+        result_delivery=result_delivery, parent_turn_id=parent_turn_id,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
         capacity_error=(
@@ -1622,6 +1666,8 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "parent_turn_id": record.get("parent_turn_id", ""),
+        "result_delivery": record.get("result_delivery", "after_turn"),
         "goal": record.get("goal", ""), **({"goals": record.get("goals")} if is_batch else {}),
         "context": record.get("context"), "toolsets": record.get("toolsets"), "role": record.get("role"),
         "model": record.get("model") if is_batch else (result.get("model") or record.get("model")),

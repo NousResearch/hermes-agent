@@ -8,7 +8,6 @@ iteration.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import logging
 import re
@@ -1660,57 +1659,39 @@ class MoAChatCompletions:
         extra_body: Any = agg_kwargs.get("extra_body")
         agg_runtime = _slot_runtime(aggregator)
         try:
-            from types import SimpleNamespace
-
             from agent.agent_runtime_helpers import (
-                _direct_native_anthropic_tool_cache_capability,
-                anthropic_prompt_cache_policy,
-            )
-            from agent.prompt_caching import (
-                build_prompt_cache_plan,
-                strip_anthropic_cache_control,
-                strip_anthropic_tool_cache_control,
+                plan_cache_sections_for_destination,
             )
 
             guidance = prepared.get("guidance")
-            canonical_messages = copy.deepcopy(agg_messages)
+            planning_messages = agg_messages
             if guidance:
-                canonical_messages = peel_reference_guidance(
-                    canonical_messages,
+                planning_messages = peel_reference_guidance(
+                    agg_messages,
                     str(guidance),
                 )
-            strip_anthropic_cache_control(canonical_messages)
-            canonical_tools = strip_anthropic_tool_cache_control(tools)
-            cache_stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
-            should_cache, native_layout = anthropic_prompt_cache_policy(
-                cache_stub,
+            # plan_cache_sections_for_destination never mutates its inputs
+            # and always returns request-local copies, so the prepared
+            # state stays canonical.
+            agg_messages, tools = plan_cache_sections_for_destination(
+                planning_messages,
+                tools,
                 provider=agg_runtime.get("provider") or "",
                 base_url=agg_runtime.get("base_url") or "",
                 api_mode=agg_runtime.get("api_mode") or "",
                 model=agg_runtime.get("model") or "",
             )
-            if should_cache:
-                plan = build_prompt_cache_plan(
-                    canonical_messages,
-                    canonical_tools,
-                    native_anthropic=native_layout,
-                    direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
-                        cache_stub,
-                        provider=agg_runtime.get("provider") or "",
-                        base_url=agg_runtime.get("base_url") or "",
-                        api_mode=agg_runtime.get("api_mode") or "",
-                        model=agg_runtime.get("model") or "",
-                    ),
-                )
-                agg_messages = plan.messages
-                tools = plan.tools
-            else:
-                agg_messages = canonical_messages
-                tools = canonical_tools
             if guidance:
                 _attach_reference_guidance(agg_messages, str(guidance))
         except Exception as exc:  # pragma: no cover - cache planning must not block MoA
-            logger.debug("MoA aggregator cache plan skipped: %s", exc)
+            # Warning, not debug: since the call-block site skips MoA, this
+            # block is the aggregator's ONLY decoration path — a silent
+            # failure here ships an undecorated request and regresses the
+            # exact 0%-cache MoA failure the planning exists to prevent.
+            logger.warning(
+                "MoA aggregator cache plan failed — sending undecorated "
+                "request (cache misses expected): %s", exc,
+            )
         # Record the exact aggregator INPUT (incl. the injected reference
         # context) into the pending trace so a trace captures what the
         # aggregator actually saw, not a reconstruction. Traces are a

@@ -13,7 +13,7 @@ vi.mock('@/hermes', () => ({
 import { $pinnedSessionIds } from '@/store/layout'
 import { $sessions } from '@/store/session'
 
-import { watchSessionPins } from './session-pin-sync'
+import { watchSessionPins, __resetSessionPinSyncForTests } from './session-pin-sync'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -28,12 +28,15 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  __resetSessionPinSyncForTests()
   $sessions.set([])
   $pinnedSessionIds.set([])
   patch.mockClear()
+  patch.mockImplementation(() => Promise.resolve({ ok: true }))
 })
 
 afterEach(() => {
+  __resetSessionPinSyncForTests()
   $sessions.set([])
   $pinnedSessionIds.set([])
 })
@@ -120,6 +123,9 @@ describe('watchSessionPins remote pull', () => {
     $pinnedSessionIds.set(['gone'])
     $sessions.set([row('gone', { pinned: true })])
     await flush()
+    // Server has confirmed the pin; sticky intent is cleared.
+    $sessions.set([row('gone', { pinned: true })])
+    await flush()
     patch.mockClear()
 
     // Another app unpinned it; our next refresh carries the new truth.
@@ -155,14 +161,114 @@ describe('watchSessionPins remote pull', () => {
 
     expect($pinnedSessionIds.get()).toContain('race')
 
-    // Once the write is acked, later server truth is honoured again.
     settle({ ok: true })
     await flush()
     await flush()
 
+    // After ack, lagging false pages still must not strip a just-pinned chat.
     $sessions.set([row('race', { pinned: false }), row('other')])
     await flush()
+    expect($pinnedSessionIds.get()).toContain('race')
 
+    // Server confirmation clears sticky; later remote unpin can win.
+    $sessions.set([row('race', { pinned: true }), row('other')])
+    await flush()
+    $sessions.set([row('race', { pinned: false }), row('other')])
+    await flush()
     expect($pinnedSessionIds.get()).not.toContain('race')
+  })
+
+  it('does not re-adopt a just-unpinned chat from a still-true server page', async () => {
+    // Repro: user unpins while the session list still carries pinned=true.
+    // Pull used to run before the unpin write, put the id back, and the
+    // sidebar Pinned section never dropped the row.
+    $sessions.set([row('sticky', { pinned: true, profile: 'dewey' })])
+    $pinnedSessionIds.set(['sticky'])
+    await flush()
+    $sessions.set([row('sticky', { pinned: true, profile: 'dewey' })])
+    await flush()
+    patch.mockClear()
+
+    let settle: (v: { ok: boolean }) => void = () => {}
+    patch.mockImplementationOnce(() => new Promise(resolve => (settle = resolve)))
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('sticky', false, 'dewey')
+    // Stale list refresh while the unpin PATCH is still in flight.
+    $sessions.set([row('sticky', { pinned: true, profile: 'dewey' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('sticky')
+
+    settle({ ok: true })
+    await flush()
+    // Server still lagging one more tick must not bounce the pin back.
+    $sessions.set([row('sticky', { pinned: true, profile: 'dewey' })])
+    await flush()
+    expect($pinnedSessionIds.get()).not.toContain('sticky')
+
+    // Once the backend agrees, stay unpinned.
+    $sessions.set([row('sticky', { pinned: false, profile: 'dewey' })])
+    await flush()
+    expect($pinnedSessionIds.get()).not.toContain('sticky')
+  })
+
+  it('unpins a lineage-root id even when the live tip still reports pinned', async () => {
+    $sessions.set([row('tip', { _lineage_root_id: 'root', pinned: true, profile: 'dewey' })])
+    $pinnedSessionIds.set(['root'])
+    await flush()
+    $sessions.set([row('tip', { _lineage_root_id: 'root', pinned: true, profile: 'dewey' })])
+    await flush()
+    patch.mockClear()
+
+    $pinnedSessionIds.set([])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('root', false, 'dewey')
+    expect($pinnedSessionIds.get()).not.toContain('root')
+    expect($pinnedSessionIds.get()).not.toContain('tip')
+
+    // Stale tip page must not re-pin under the durable root.
+    $sessions.set([row('tip', { _lineage_root_id: 'root', pinned: true, profile: 'dewey' })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual([])
+  })
+
+  it('does not strip a just-pinned chat from a still-false server page', async () => {
+    // Symmetric race to the sticky-unpin bug: user pins while the list still
+    // carries pinned=false. Pull must not delete the local pin before/while
+    // the PATCH lands.
+    $sessions.set([row('fresh', { pinned: false, profile: 'dewey' })])
+    await flush()
+    patch.mockClear()
+
+    let settle: (v: { ok: boolean }) => void = () => {}
+    patch.mockImplementationOnce(() => new Promise(resolve => (settle = resolve)))
+
+    $pinnedSessionIds.set(['fresh'])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('fresh', true, 'dewey')
+    expect($pinnedSessionIds.get()).toContain('fresh')
+
+    // Stale list refresh while the pin PATCH is still in flight.
+    $sessions.set([row('fresh', { pinned: false, profile: 'dewey' })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('fresh')
+
+    settle({ ok: true })
+    await flush()
+
+    // Still lagging false after ack must not strip the pin.
+    $sessions.set([row('fresh', { pinned: false, profile: 'dewey' })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('fresh')
+
+    // Server confirmation clears sticky; pin remains via local + server true.
+    $sessions.set([row('fresh', { pinned: true, profile: 'dewey' })])
+    await flush()
+    expect($pinnedSessionIds.get()).toContain('fresh')
   })
 })

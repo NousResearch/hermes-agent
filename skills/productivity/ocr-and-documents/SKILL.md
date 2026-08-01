@@ -8,14 +8,15 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [PDF, Documents, Research, Arxiv, Text-Extraction, OCR]
-    related_skills: [powerpoint]
+    related_skills: [pdf, docx, powerpoint]
 ---
 
 # PDF & Document Extraction
 
-For DOCX: use `python-docx` (parses actual document structure, far better than OCR).
-For PPTX: see the `powerpoint` skill (uses `python-pptx` with full slide/notes support).
-This skill covers **PDFs and scanned documents**.
+For DOCX: see the `docx` skill (create/edit) or use `python-docx` for structured reads.
+For PPTX: see the `powerpoint` skill (full create/read/edit support).
+For PDF manipulation (merge, split, forms, watermarks, creation): see the `pdf` skill.
+This skill covers **text extraction from PDFs and scanned documents**.
 
 ## Step 1: Remote URL Available?
 

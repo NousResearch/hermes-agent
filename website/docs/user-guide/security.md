@@ -32,7 +32,7 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 ```yaml
 approvals:
   mode: smart                     # smart | manual | off
-  timeout: 60                     # seconds to wait for user response (default: 60)
+  timeout: 300                    # seconds to wait for user response (default: 300)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
@@ -43,7 +43,7 @@ The full set of keys:
 | Key | Default | What it controls |
 |---|---|---|
 | `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
-| `timeout` | `60` | Seconds Hermes waits for an approval reply before timing out. |
+| `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. TUI uses its own modal overlay (set `HERMES_TUI_NO_CONFIRM=1` to opt out there). |
@@ -145,7 +145,7 @@ Configure the timeout in `~/.hermes/config.yaml`:
 
 ```yaml
 approvals:
-  timeout: 60  # seconds (default: 60)
+  timeout: 300  # seconds (default: 300)
 ```
 
 ### What Triggers Approval
@@ -182,9 +182,13 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
+| `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
+| `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
+| `docker context use` | Switches the default daemon for all future docker commands |
+| `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### Approval Flow (CLI)
@@ -232,6 +236,43 @@ These patterns are loaded at startup and silently approved in all future session
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
 :::
+
+### Mining Approval History (`hermes approvals suggest`)
+
+Instead of answering the same prompt session after session, you can mine your
+past approval decisions into allowlist proposals:
+
+```bash
+hermes approvals suggest            # dry run — prints a numbered proposal
+hermes approvals suggest --apply 1,3  # merge picks into command_allowlist
+hermes approvals suggest --json     # machine-readable output
+```
+
+The command scans the session database (`~/.hermes/state.db`) for
+dangerous-classified commands that actually executed — i.e. commands you
+approved — aggregates them into patterns (`git push *`, or the dangerous-class
+key for compound commands), and ranks them by approval frequency:
+
+```
+Proposed command_allowlist additions (from approval history, last 90 days):
+
+  1. git push *    — approved 14x
+  2. docker restart/stop/kill (container lifecycle)    — approved 9x (class key)
+```
+
+Safety rules:
+
+- **Nothing is ever applied automatically** — the default run is read-only;
+  only an explicit `--apply N[,M...]` writes to `config.yaml`.
+- **Destructive classes are never proposed**, no matter how often they were
+  approved: recursive deletes, `sudo`, disk/device writes, credential and
+  system-config edits, pipe-to-shell, SQL DROP/TRUNCATE, process kills, and
+  every hardline class are excluded outright. `rm -rf build/` approved 100
+  times still never yields an `rm` entry.
+- Proposals already covered by your existing `command_allowlist` are skipped.
+
+Useful flags: `--days N` (history window, default 90), `--min-count N`
+(minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.
 
 ## File Write Safety {#file-write-safety}
 
@@ -442,7 +483,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 :::warning
@@ -459,6 +500,7 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **singularity** | Container | ❌ Skipped | HPC environments |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
+| **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 

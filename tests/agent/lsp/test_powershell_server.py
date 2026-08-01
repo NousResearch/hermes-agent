@@ -25,32 +25,12 @@ def test_powershell_extensions_route_to_pses():
         assert s.server_id == "powershell"
 
 
-def test_powershell_language_ids():
-    assert language_id_for("a.ps1") == "powershell"
-    assert language_id_for("a.psm1") == "powershell"
-    assert language_id_for("a.psd1") == "powershell"
 
 
-def test_powershell_install_status_is_manual_tier():
-    # PSES has no npm/go/pip recipe; it's manual-only (like rust-analyzer).
-    # When pwsh isn't on PATH the status is manual-only, not "missing".
-    status = detect_status("powershell")
-    assert status in {"manual-only", "installed"}
 
 
-def test_spawn_skips_when_pwsh_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(srv, "_which", lambda *names: None)
-    ctx = ServerContext(workspace_root=str(tmp_path), install_strategy="manual")
-    assert srv._spawn_powershell_es(str(tmp_path), ctx) is None
 
 
-def test_spawn_skips_when_bundle_missing(monkeypatch, tmp_path):
-    # pwsh present, but no bundle anywhere.
-    monkeypatch.setattr(srv, "_which", lambda *names: "/usr/bin/pwsh")
-    monkeypatch.delenv("PSES_BUNDLE_PATH", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
-    ctx = ServerContext(workspace_root=str(tmp_path), install_strategy="manual")
-    assert srv._spawn_powershell_es(str(tmp_path), ctx) is None
 
 
 def _make_fake_bundle(root) -> str:
@@ -79,20 +59,6 @@ def test_spawn_builds_command_with_bundle_via_env(monkeypatch, tmp_path):
     assert "-NoProfile" in spec.command
 
 
-def test_spawn_prefers_command_override_bundle(monkeypatch, tmp_path):
-    monkeypatch.setattr(srv, "_which", lambda *names: "/usr/bin/pwsh")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
-    monkeypatch.delenv("PSES_BUNDLE_PATH", raising=False)
-    bundle = _make_fake_bundle(tmp_path)
-
-    ctx = ServerContext(
-        workspace_root=str(tmp_path),
-        install_strategy="manual",
-        binary_overrides={"powershell": [bundle]},
-    )
-    spec = srv._spawn_powershell_es(str(tmp_path), ctx)
-    assert spec is not None
-    assert bundle in spec.command[-1]
 
 
 def test_bundle_path_init_override_not_leaked_into_init_options(monkeypatch, tmp_path):

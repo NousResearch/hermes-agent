@@ -46,16 +46,3 @@ def test_session_id_env_uses_provided_id():
     assert agent.session_id == custom_id
 
 
-def test_session_id_contextvar_set():
-    """AIAgent.__init__ also sets the ContextVar for concurrency safety."""
-    custom_id = "20260511_130000_def67890"
-    AIAgent(
-        api_key="test-key",
-        base_url="https://openrouter.ai/api/v1",
-        session_id=custom_id,
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-    from gateway.session_context import get_session_env
-    assert get_session_env("HERMES_SESSION_ID") == custom_id

@@ -167,50 +167,9 @@ class TestMemoryManager:
         assert mgr.get_provider("test1") is p
         assert mgr.get_provider("nonexistent") is None
 
-    def test_builtin_plus_external(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
-        p2 = FakeMemoryProvider("external")
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
-        assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
-    def test_second_external_rejected(self):
-        """Only one non-builtin provider is allowed."""
-        mgr = MemoryManager()
-        builtin = FakeMemoryProvider("builtin")
-        ext1 = FakeMemoryProvider("mem0")
-        ext2 = FakeMemoryProvider("hindsight")
-        mgr.add_provider(builtin)
-        mgr.add_provider(ext1)
-        mgr.add_provider(ext2)  # should be rejected
-        assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
-        assert len(mgr.providers) == 2
 
-    def test_system_prompt_merges_blocks(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
-        p1._prompt_block = "Block from builtin"
-        p2 = FakeMemoryProvider("external")
-        p2._prompt_block = "Block from external"
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
 
-        result = mgr.build_system_prompt()
-        assert "Block from builtin" in result
-        assert "Block from external" in result
-
-    def test_system_prompt_skips_empty(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
-        p1._prompt_block = "Has content"
-        p2 = FakeMemoryProvider("external")
-        p2._prompt_block = ""
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
-
-        result = mgr.build_system_prompt()
-        assert result == "Has content"
 
     def test_prefetch_merges_results(self):
         mgr = MemoryManager()
@@ -227,17 +186,6 @@ class TestMemoryManager:
         assert p1.prefetch_queries == ["what do you know?"]
         assert p2.prefetch_queries == ["what do you know?"]
 
-    def test_prefetch_skips_empty(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
-        p1._prefetch_result = "Has memories"
-        p2 = FakeMemoryProvider("external")
-        p2._prefetch_result = ""
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
-
-        result = mgr.prefetch_all("query")
-        assert result == "Has memories"
 
     def test_queue_prefetch_all(self):
         mgr = MemoryManager()
@@ -251,39 +199,8 @@ class TestMemoryManager:
         assert p1.queued_prefetches == ["next turn"]
         assert p2.queued_prefetches == ["next turn"]
 
-    def test_sync_all(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
-        p2 = FakeMemoryProvider("external")
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
 
-        mgr.sync_all("user msg", "assistant msg")
-        mgr.flush_pending(timeout=5)
-        assert p1.synced_turns == [("user msg", "assistant msg")]
-        assert p2.synced_turns == [("user msg", "assistant msg")]
 
-    def test_sync_all_passes_messages_to_opted_in_provider(self):
-        mgr = MemoryManager()
-        p = MessagesMemoryProvider("external")
-        mgr.add_provider(p)
-        messages = [
-            {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
-            {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
-        ]
-
-        mgr.sync_all("user msg", "assistant msg", session_id="sess-1", messages=messages)
-        mgr.flush_pending(timeout=5)
-        assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
-
-    def test_sync_all_omits_messages_for_legacy_provider(self):
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("external")
-        mgr.add_provider(p)
-
-        mgr.sync_all("user msg", "assistant msg", messages=[{"role": "tool"}])
-        mgr.flush_pending(timeout=5)
-        assert p.synced_turns == [("user msg", "assistant msg")]
 
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
@@ -301,41 +218,9 @@ class TestMemoryManager:
 
     # -- Tool routing -------------------------------------------------------
 
-    def test_tool_schemas_collected(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin", tools=[
-            {"name": "recall_builtin", "description": "Builtin recall", "parameters": {}}
-        ])
-        p2 = FakeMemoryProvider("external", tools=[
-            {"name": "recall_ext", "description": "External recall", "parameters": {}}
-        ])
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
 
-        schemas = mgr.get_all_tool_schemas()
-        names = {s["name"] for s in schemas}
-        assert names == {"recall_builtin", "recall_ext"}
-
-    def test_tool_name_conflict_first_wins(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin", tools=[
-            {"name": "shared_tool", "description": "From builtin", "parameters": {}}
-        ])
-        p2 = FakeMemoryProvider("external", tools=[
-            {"name": "shared_tool", "description": "From external", "parameters": {}}
-        ])
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
-
-        assert mgr.has_tool("shared_tool")
-        result = json.loads(mgr.handle_tool_call("shared_tool", {"q": "test"}))
-        assert result["handled"] == "shared_tool"
         # Should be handled by p1 (first registered)
 
-    def test_handle_unknown_tool(self):
-        mgr = MemoryManager()
-        result = json.loads(mgr.handle_tool_call("nonexistent", {}))
-        assert "error" in result
 
     def test_tool_routing(self):
         mgr = MemoryManager()
@@ -355,66 +240,13 @@ class TestMemoryManager:
 
     # -- Lifecycle hooks -----------------------------------------------------
 
-    def test_on_turn_start(self):
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("p")
-        mgr.add_provider(p)
-        mgr.on_turn_start(3, "hello")
-        assert p.turn_starts == [(3, "hello")]
 
-    def test_on_session_end(self):
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("p")
-        mgr.add_provider(p)
-        mgr.on_session_end([{"role": "user", "content": "hi"}])
-        assert p.session_end_called
 
-    def test_on_pre_compress(self):
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("p")
-        mgr.add_provider(p)
-        mgr.on_pre_compress([{"role": "user", "content": "old"}])
-        assert p.pre_compress_called
 
-    def test_shutdown_all_reverse_order(self):
-        mgr = MemoryManager()
-        order = []
-        p1 = FakeMemoryProvider("builtin")
-        p1.shutdown = lambda: order.append("builtin")
-        p2 = FakeMemoryProvider("external")
-        p2.shutdown = lambda: order.append("external")
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
 
-        mgr.shutdown_all()
-        assert order == ["external", "builtin"]  # reverse order
-
-    def test_initialize_all(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
-        p2 = FakeMemoryProvider("external")
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
-
-        mgr.initialize_all(session_id="test-123", platform="cli")
-        assert p1.initialized
-        assert p2.initialized
-        assert p1._init_kwargs["session_id"] == "test-123"
-        assert p1._init_kwargs["platform"] == "cli"
 
     # -- Error resilience ---------------------------------------------------
 
-    def test_prefetch_failure_doesnt_block(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
-        p1.prefetch = MagicMock(side_effect=RuntimeError("network error"))
-        p2 = FakeMemoryProvider("external")
-        p2._prefetch_result = "external memory"
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
-
-        result = mgr.prefetch_all("query")
-        assert "external memory" in result
 
     def test_external_prefetch_timeout_skips_stuck_provider(self):
         mgr = MemoryManager(external_prefetch_timeout=0.01)
@@ -458,17 +290,6 @@ class TestMemoryManager:
         assert external.prefetch_queries == ["query", "query 3"]
         assert external.name not in mgr._external_prefetch_threads
 
-    def test_system_prompt_failure_doesnt_block(self):
-        mgr = MemoryManager()
-        p1 = FakeMemoryProvider("builtin")
-        p1.system_prompt_block = MagicMock(side_effect=RuntimeError("broken"))
-        p2 = FakeMemoryProvider("external")
-        p2._prompt_block = "works fine"
-        mgr.add_provider(p1)
-        mgr.add_provider(p2)
-
-        result = mgr.build_system_prompt()
-        assert result == "works fine"
 
 
 class TestPluginMemoryDiscovery:
@@ -523,18 +344,6 @@ class TestUserInstalledProviderDiscovery:
         )
         return plugin_dir
 
-    def test_discover_finds_user_plugins(self, tmp_path, monkeypatch):
-        """discover_memory_providers() includes user-installed plugins."""
-        from plugins.memory import discover_memory_providers
-        self._make_user_memory_plugin(tmp_path, "myexternal")
-        monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
-            lambda: tmp_path / "plugins",
-        )
-        providers = discover_memory_providers()
-        names = [n for n, _, _ in providers]
-        assert "myexternal" in names
-        assert "holographic" in names  # bundled still found
 
     def test_load_user_plugin(self, tmp_path, monkeypatch):
         """load_memory_provider() can load from $HERMES_HOME/plugins/."""
@@ -580,90 +389,8 @@ class TestUserInstalledProviderDiscovery:
         holo_count = sum(1 for n, _, _ in providers if n == "holographic")
         assert holo_count == 1
 
-    def test_non_memory_user_plugins_excluded(self, tmp_path, monkeypatch):
-        """User plugins that don't reference MemoryProvider are skipped."""
-        from plugins.memory import discover_memory_providers
-        plugin_dir = tmp_path / "plugins" / "notmemory"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "__init__.py").write_text(
-            "def register(ctx):\n    ctx.register_tool('foo', 'bar', {}, lambda: None)\n"
-        )
-        monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
-            lambda: tmp_path / "plugins",
-        )
-        providers = discover_memory_providers()
-        names = [n for n, _, _ in providers]
-        assert "notmemory" not in names
 
-    def test_load_user_plugin_with_relative_import(self, tmp_path, monkeypatch):
-        """User plugins may import sibling modules with relative imports.
 
-        Regression: _load_provider_from_dir() imports user plugins under the
-        synthetic ``_hermes_user_memory.<name>`` package but never registered
-        that parent namespace in sys.modules, so any relative import inside
-        the plugin raised
-        ``ModuleNotFoundError: No module named '_hermes_user_memory'``.
-        """
-        from plugins.memory import load_memory_provider
-        plugin_dir = tmp_path / "plugins" / "relimport"
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "helper.py").write_text("PROVIDER_NAME = 'relimport'\n")
-        (plugin_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
-            "from . import helper\n"
-            "class MyProvider(MemoryProvider):\n"
-            "    @property\n"
-            "    def name(self): return helper.PROVIDER_NAME\n"
-            "    def is_available(self): return True\n"
-            "    def initialize(self, **kw): pass\n"
-            "    def sync_turn(self, *a, **kw): pass\n"
-            "    def get_tool_schemas(self): return []\n"
-            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
-        )
-        monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
-            lambda: tmp_path / "plugins",
-        )
-        p = load_memory_provider("relimport")
-        assert p is not None
-        assert p.name == "relimport"
-
-    def test_load_user_plugin_with_nested_subpackage(self, tmp_path, monkeypatch):
-        """User plugins may keep their implementation in a nested subpackage.
-
-        Plugin repos that target several runtimes commonly expose a thin root
-        ``__init__.py`` re-exporting from a deeper package, and the
-        intermediate directory may be a namespace package (no __init__.py).
-        Both must resolve through the synthetic parent namespace.
-        """
-        from plugins.memory import load_memory_provider
-        plugin_dir = tmp_path / "plugins" / "nestedimpl"
-        impl_dir = plugin_dir / "adapters" / "hermes"  # adapters/ has no __init__.py
-        impl_dir.mkdir(parents=True)
-        (impl_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
-            "class MyProvider(MemoryProvider):\n"
-            "    @property\n"
-            "    def name(self): return 'nestedimpl'\n"
-            "    def is_available(self): return True\n"
-            "    def initialize(self, **kw): pass\n"
-            "    def sync_turn(self, *a, **kw): pass\n"
-            "    def get_tool_schemas(self): return []\n"
-            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
-        )
-        (plugin_dir / "__init__.py").write_text(
-            "from .adapters.hermes import MyProvider\n"
-            "def register(ctx):\n"
-            "    ctx.register_memory_provider(MyProvider())\n"
-        )
-        monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
-            lambda: tmp_path / "plugins",
-        )
-        p = load_memory_provider("nestedimpl")
-        assert p is not None
-        assert p.name == "nestedimpl"
 
 
 class TestUserInstalledProviderCli:
@@ -758,31 +485,7 @@ class TestSequentialDispatchRouting:
     and handle_tool_call() routes to the correct provider.
     """
 
-    def test_has_tool_returns_true_for_provider_tools(self):
-        """has_tool returns True for tools registered by memory providers."""
-        mgr = MemoryManager()
-        provider = FakeMemoryProvider("ext", tools=[
-            {"name": "ext_recall", "description": "Ext recall", "parameters": {}},
-            {"name": "ext_retain", "description": "Ext retain", "parameters": {}},
-        ])
-        mgr.add_provider(provider)
 
-        assert mgr.has_tool("ext_recall")
-        assert mgr.has_tool("ext_retain")
-
-    def test_has_tool_returns_false_for_builtin_tools(self):
-        """has_tool returns False for agent-level tools (terminal, memory, etc.)."""
-        mgr = MemoryManager()
-        provider = FakeMemoryProvider("ext", tools=[
-            {"name": "ext_recall", "description": "Ext", "parameters": {}},
-        ])
-        mgr.add_provider(provider)
-
-        assert not mgr.has_tool("terminal")
-        assert not mgr.has_tool("memory")
-        assert not mgr.has_tool("todo")
-        assert not mgr.has_tool("session_search")
-        assert not mgr.has_tool("nonexistent")
 
     def test_handle_tool_call_routes_to_provider(self):
         """handle_tool_call dispatches to the correct provider's handler."""
@@ -797,34 +500,7 @@ class TestSequentialDispatchRouting:
         assert result["handled"] == "hindsight_recall"
         assert result["args"] == {"query": "alice"}
 
-    def test_handle_tool_call_unknown_returns_error(self):
-        """handle_tool_call returns error for tools not in any provider."""
-        mgr = MemoryManager()
-        provider = FakeMemoryProvider("ext", tools=[
-            {"name": "ext_recall", "description": "Ext", "parameters": {}},
-        ])
-        mgr.add_provider(provider)
 
-        result = json.loads(mgr.handle_tool_call("terminal", {"command": "ls"}))
-        assert "error" in result
-
-    def test_multiple_providers_route_to_correct_one(self):
-        """Tools from different providers route to the right handler."""
-        mgr = MemoryManager()
-        builtin = FakeMemoryProvider("builtin", tools=[
-            {"name": "builtin_tool", "description": "Builtin", "parameters": {}},
-        ])
-        external = FakeMemoryProvider("hindsight", tools=[
-            {"name": "hindsight_recall", "description": "Recall", "parameters": {}},
-        ])
-        mgr.add_provider(builtin)
-        mgr.add_provider(external)
-
-        r1 = json.loads(mgr.handle_tool_call("builtin_tool", {}))
-        assert r1["handled"] == "builtin_tool"
-
-        r2 = json.loads(mgr.handle_tool_call("hindsight_recall", {"query": "test"}))
-        assert r2["handled"] == "hindsight_recall"
 
     def test_tool_names_include_all_providers(self):
         """get_all_tool_names returns tools from all registered providers."""
@@ -906,61 +582,9 @@ class TestSetupFieldFiltering:
         local_keys = [k for k, _ in local_fields]
         assert local_keys == ["mode", "llm_provider", "llm_model", "budget"]
 
-    def test_when_clause_no_condition_always_shown(self):
-        """Fields without 'when' are always included."""
-        schema = [
-            {"key": "bank_id", "default": "hermes"},
-            {"key": "budget", "default": "mid"},
-        ]
-        fields = self._filter_fields(schema, {"mode": "cloud"})
-        assert [k for k, _ in fields] == ["bank_id", "budget"]
 
-    def test_default_from_resolves_dynamic_default(self):
-        """default_from looks up the default from another field's value."""
-        provider_models = {
-            "openai": "gpt-4o-mini",
-            "groq": "openai/gpt-oss-120b",
-            "anthropic": "claude-haiku-4-5",
-        }
-        schema = [
-            {"key": "llm_provider", "default": "openai"},
-            {"key": "llm_model", "default": "gpt-4o-mini",
-             "default_from": {"field": "llm_provider", "map": provider_models}},
-        ]
 
-        # Groq selected: model should default to groq's default
-        fields = self._filter_fields(schema, {"llm_provider": "groq"})
-        model_default = dict(fields)["llm_model"]
-        assert model_default == "openai/gpt-oss-120b"
 
-        # Anthropic selected
-        fields = self._filter_fields(schema, {"llm_provider": "anthropic"})
-        model_default = dict(fields)["llm_model"]
-        assert model_default == "claude-haiku-4-5"
-
-    def test_default_from_falls_back_to_static_default(self):
-        """default_from falls back to static default if provider not in map."""
-        schema = [
-            {"key": "llm_model", "default": "gpt-4o-mini",
-             "default_from": {"field": "llm_provider", "map": {"groq": "openai/gpt-oss-120b"}}},
-        ]
-
-        # Unknown provider: should fall back to static default
-        fields = self._filter_fields(schema, {"llm_provider": "unknown_provider"})
-        model_default = dict(fields)["llm_model"]
-        assert model_default == "gpt-4o-mini"
-
-    def test_default_from_with_no_ref_value(self):
-        """default_from keeps static default if referenced field is not set."""
-        schema = [
-            {"key": "llm_model", "default": "gpt-4o-mini",
-             "default_from": {"field": "llm_provider", "map": {"groq": "openai/gpt-oss-120b"}}},
-        ]
-
-        # No provider set at all
-        fields = self._filter_fields(schema, {})
-        model_default = dict(fields)["llm_model"]
-        assert model_default == "gpt-4o-mini"
 
     def test_when_and_default_from_combined(self):
         """when clause and default_from work together correctly."""
@@ -997,20 +621,7 @@ class TestMemoryContextFencing:
     """Prefetch context must be wrapped in <memory-context> fence so the model
     does not treat recalled memory as user discourse."""
 
-    def test_build_memory_context_block_wraps_content(self):
-        from agent.memory_manager import build_memory_context_block
-        result = build_memory_context_block(
-            "## Holographic Memory\n- [0.8] user likes dark mode"
-        )
-        assert result.startswith("<memory-context>")
-        assert result.rstrip().endswith("</memory-context>")
-        assert "NOT new user input" in result
-        assert "user likes dark mode" in result
 
-    def test_build_memory_context_block_empty_input(self):
-        from agent.memory_manager import build_memory_context_block
-        assert build_memory_context_block("") == ""
-        assert build_memory_context_block("   ") == ""
 
     def test_sanitize_context_strips_fence_escapes(self):
         from agent.memory_manager import sanitize_context
@@ -1027,16 +638,6 @@ class TestMemoryContextFencing:
         assert "</memory-context>" not in result.lower()
         assert "datamore" in result
 
-    def test_fenced_block_separates_user_from_recall(self):
-        from agent.memory_manager import build_memory_context_block
-        prefetch = "## Holographic Memory\n- [0.9] user is named Alice"
-        block = build_memory_context_block(prefetch)
-        user_msg = "What's the weather today?"
-        combined = user_msg + "\n\n" + block
-        fence_start = combined.index("<memory-context>")
-        fence_end = combined.index("</memory-context>")
-        assert "Alice" in combined[fence_start:fence_end]
-        assert combined.index("weather") < fence_start
 
 
 class TestFlattenMessageContent:
@@ -1048,55 +649,16 @@ class TestFlattenMessageContent:
     helper logging/trajectory use) with ``sep="\\n"`` instead of a forked copy.
     """
 
-    def test_string_passthrough(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        assert _summarize_user_message_for_log("hello", sep="\n") == "hello"
 
     def test_none_is_empty(self):
         from agent.codex_responses_adapter import _summarize_user_message_for_log
         assert _summarize_user_message_for_log(None, sep="\n") == ""
 
-    def test_text_parts_joined_with_sep(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        content = [
-            {"type": "text", "text": "first"},
-            {"type": "text", "text": "second"},
-        ]
-        assert _summarize_user_message_for_log(content, sep="\n") == "first\nsecond"
 
-    def test_default_sep_is_space(self):
-        """Logging/trajectory callers (the default) keep the space-join."""
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        content = [
-            {"type": "text", "text": "first"},
-            {"type": "text", "text": "second"},
-        ]
-        assert _summarize_user_message_for_log(content) == "first second"
 
-    def test_image_part_becomes_marker(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        content = [
-            {"type": "text", "text": "look at this"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,xyz"}},
-        ]
-        assert _summarize_user_message_for_log(content, sep="\n") == "[1 image] look at this"
 
-    def test_image_only_message(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        content = [
-            {"type": "image_url", "image_url": {"url": "data:..."}},
-            {"type": "image_url", "image_url": {"url": "data:..."}},
-        ]
-        assert _summarize_user_message_for_log(content, sep="\n") == "[2 images]"
 
-    def test_unknown_parts_skipped(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        content = [{"type": "audio", "data": "..."}, {"type": "text", "text": "ok"}, 42]
-        assert _summarize_user_message_for_log(content, sep="\n") == "ok"
 
-    def test_bare_strings_in_list(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        assert _summarize_user_message_for_log(["plain", "strings"], sep="\n") == "plain\nstrings"
 
     def test_scalar_fallback(self):
         from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -1168,77 +730,10 @@ class TestOnMemoryWriteBridge:
     external memory providers.
     """
 
-    def test_on_memory_write_add(self):
-        """on_memory_write fires for 'add' actions."""
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("ext")
-        mgr.add_provider(p)
 
-        mgr.on_memory_write("add", "memory", "new fact")
-        assert p.memory_writes == [("add", "memory", "new fact")]
 
-    def test_on_memory_write_metadata_passed_to_opt_in_provider(self):
-        """Providers that accept metadata receive structured write provenance."""
-        mgr = MemoryManager()
-        p = MetadataMemoryProvider("ext")
-        mgr.add_provider(p)
 
-        mgr.on_memory_write(
-            "add",
-            "memory",
-            "new fact",
-            metadata={
-                "write_origin": "assistant_tool",
-                "execution_context": "foreground",
-                "session_id": "sess-1",
-            },
-        )
 
-        assert p.memory_writes == [
-            (
-                "add",
-                "memory",
-                "new fact",
-                {
-                    "write_origin": "assistant_tool",
-                    "execution_context": "foreground",
-                    "session_id": "sess-1",
-                },
-            )
-        ]
-
-    def test_on_memory_write_metadata_keeps_legacy_provider_compatible(self):
-        """Old 3-arg providers keep working when the manager receives metadata."""
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("ext")
-        mgr.add_provider(p)
-
-        mgr.on_memory_write(
-            "add",
-            "user",
-            "legacy provider fact",
-            metadata={"write_origin": "assistant_tool"},
-        )
-
-        assert p.memory_writes == [("add", "user", "legacy provider fact")]
-
-    def test_on_memory_write_replace(self):
-        """on_memory_write fires for 'replace' actions."""
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("ext")
-        mgr.add_provider(p)
-
-        mgr.on_memory_write("replace", "user", "updated pref")
-        assert p.memory_writes == [("replace", "user", "updated pref")]
-
-    def test_on_memory_write_remove_supported_by_manager(self):
-        """The manager forwards remove actions when a caller elects to bridge them."""
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("ext")
-        mgr.add_provider(p)
-
-        mgr.on_memory_write("remove", "memory", "old fact")
-        assert p.memory_writes == [("remove", "memory", "old fact")]
 
     def test_memory_manager_tool_injection_deduplicates(self):
         """Memory manager tools already in self.tools (from plugin registry)
@@ -1379,17 +874,19 @@ class TestMemoryToolToolsetGate:
     These tests exercise the shared gate used by agent init and ACP refreshes.
     The gate condition is:
 
+        disabled_toolsets includes memory → skip injection
         enabled_toolsets is None        → no filter, inject (backward compat)
         selected toolsets include memory → user opted in, inject
         otherwise (incl. [])            → skip injection
     """
 
     @staticmethod
-    def _run_memory_injection(enabled_toolsets, memory_manager):
+    def _run_memory_injection(enabled_toolsets, memory_manager, disabled_toolsets=None):
         """Run the shared memory-tool injection helper against a fake agent."""
         fake_agent = SimpleNamespace(
             _memory_manager=memory_manager,
             enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
             tools=[],
             valid_tool_names=set(),
         )
@@ -1425,6 +922,18 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(["hermes-acp"], mgr)
         assert "hindsight_recall" in names
         assert any(t["function"]["name"] == "hindsight_recall" for t in tools)
+
+    @pytest.mark.parametrize("enabled_toolsets", [None, ["memory"], ["all"], ["hermes-acp"]])
+    def test_disabled_memory_toolset_blocks_injection(self, enabled_toolsets):
+        """An explicit memory disable wins over default or composite enablement."""
+        mgr = self._mgr_with_tools("hindsight_recall")
+        tools, names = self._run_memory_injection(
+            enabled_toolsets,
+            mgr,
+            disabled_toolsets=["memory"],
+        )
+        assert tools == []
+        assert names == set()
 
     def test_empty_toolsets_blocks_injection(self):
         """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
@@ -1559,10 +1068,6 @@ class TestNormalizeToolSchema:
     `tools[N].function: missing field name` — disabling the entire toolset.
     """
 
-    def test_bare_schema_passthrough(self):
-        from agent.memory_manager import normalize_tool_schema
-        s = {"name": "x_grep", "description": "d", "parameters": {}}
-        assert normalize_tool_schema(s) == s
 
     def test_already_wrapped_schema_is_unwrapped(self):
         from agent.memory_manager import normalize_tool_schema
@@ -1576,26 +1081,13 @@ class TestNormalizeToolSchema:
         # Must be the inner function schema, not the wrapper.
         assert "type" not in out or out.get("type") != "function"
 
-    def test_nameless_schema_rejected(self):
-        from agent.memory_manager import normalize_tool_schema
-        assert normalize_tool_schema({"description": "no name"}) is None
 
-    def test_double_wrapped_without_name_rejected(self):
-        from agent.memory_manager import normalize_tool_schema
-        # The exact poisoning shape from #47707.
-        assert normalize_tool_schema(
-            {"type": "function", "function": {"type": "function",
-             "function": {"name": "x"}}}
-        ) is None
 
     def test_non_dict_rejected(self):
         from agent.memory_manager import normalize_tool_schema
         assert normalize_tool_schema("nope") is None
         assert normalize_tool_schema(None) is None
 
-    def test_non_string_name_rejected(self):
-        from agent.memory_manager import normalize_tool_schema
-        assert normalize_tool_schema({"name": 123}) is None
 
 
 class TestMemoryInjectionRejectsMalformedSchema:

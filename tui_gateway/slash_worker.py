@@ -27,6 +27,7 @@ import time
 
 import cli as cli_mod
 from cli import HermesCLI
+from tui_gateway._stdin_recovery import handle_spurious_eof
 from rich.console import Console
 
 # Env-overridable so the integration test can drive sub-second timing.
@@ -140,7 +141,21 @@ def main():
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
 
-    for raw in sys.stdin:
+    # Spurious stdin-EOF recovery (same O_NONBLOCK shared file-description
+    # issue as the gateway entry point — any child inheriting fd 0 can flip
+    # the flag and launder EAGAIN into an apparent EOF).
+    _sw_recovery_times: list[float] = []
+
+    def _sw_log(reason: str) -> None:
+        print(f"[slash-worker] {reason}", file=sys.stderr, flush=True)
+
+    while True:
+        raw = sys.stdin.readline()
+        if not raw:
+            if not handle_spurious_eof(_sw_recovery_times, _sw_log):
+                break
+            continue
+
         line = raw.strip()
         if not line:
             continue

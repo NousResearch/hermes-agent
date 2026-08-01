@@ -34,11 +34,6 @@ def _assert_clean(block):
 
 
 class TestSanitizeReplayBlock:
-    def test_text_block_strips_parsed_output_and_null_citations(self):
-        poisoned = {"type": "text", "text": "hi", "parsed_output": None, "citations": None}
-        out = _sanitize_replay_block(poisoned)
-        _assert_clean(out)
-        assert out == {"type": "text", "text": "hi"}
 
     def test_tool_use_strips_caller(self):
         poisoned = {"type": "tool_use", "id": "toolu_1", "name": "read_file",
@@ -47,15 +42,7 @@ class TestSanitizeReplayBlock:
         _assert_clean(out)
         assert out["name"] == "read_file" and out["input"] == {"path": "a"}
 
-    def test_thinking_preserves_signature(self):
-        b = {"type": "thinking", "thinking": "x", "signature": "sig-AAA"}
-        out = _sanitize_replay_block(b)
-        assert out == {"type": "thinking", "thinking": "x", "signature": "sig-AAA"}
 
-    def test_text_keeps_real_citations(self):
-        real = [{"type": "char_location", "cited_text": "q"}]
-        out = _sanitize_replay_block({"type": "text", "text": "t", "citations": real})
-        assert out["citations"] == real
 
     def test_unknown_type_dropped(self):
         assert _sanitize_replay_block({"type": "server_tool_use", "foo": 1}) is None

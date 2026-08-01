@@ -15,8 +15,18 @@ import type { GroupNode, LayoutNode } from '../model'
 import { allPaneIds } from '../model'
 
 import type { DoubleTapContext } from './drag-session'
+import type { FloatingAnchor } from './floating-rect'
 
 export const MIN_PANE_PX = 80
+
+/**
+ * The floor for a TOOL PANEL zone (terminal / logs) instead of `MIN_PANE_PX`.
+ * A tool panel is meant to be draggable down to nothing — the minimized rail
+ * (its header strip, `h-7`) is the smallest meaningful form, so the sash lets
+ * it shrink to exactly that and then collapses the zone rather than jamming
+ * against an 80px floor with a sliver of unusable content still showing.
+ */
+export const COLLAPSED_ZONE_PX = 28
 
 /** Optional CSS sizing a pane contributes (`data.width` / `data.minWidth`…).
  *  Applied to the pane's GROUP along the axis of the split that contains it —
@@ -34,13 +44,20 @@ export interface PaneSizing {
 }
 
 /** Chrome behavior flags a pane contributes. Read via `paneChrome`. */
-interface PaneChrome {
+interface PaneChrome extends PaneSizing {
   /** Leaves the grid on narrow viewports; revealed as an edge overlay. */
   collapsible?: boolean
   /** Extra ids accepted from PANE_TOGGLE_REVEAL_EVENT (the real app's pane
    *  ids, e.g. `chat-sidebar` for `sessions`). */
   revealAliases?: string[]
+  /** Tiling role in the tree, or `'floating'` — the one NON-tiling placement:
+   *  the pane is excluded from the tree entirely and rendered as a fixed card
+   *  above it (see renderer/floating-panes.tsx). A floating pane takes no
+   *  space from any zone, has no tab, and can't be docked or split. */
   placement?: string
+  /** Spawn corner for `placement: 'floating'` (default `'top-right'`). The
+   *  pane also TRACKS that corner's edges when the window resizes. */
+  anchor?: FloatingAnchor
   /** No Close in the tab menu — the one surface the app can't lose (the
    *  main workspace). Session tiles share `placement: 'main'` but close. */
   uncloseable?: boolean
@@ -58,6 +75,11 @@ interface PaneChrome {
    *  (artifacts/skills/plugin pages) are not tab-able surfaces. The flag is
    *  live: the workspace contribution re-registers it on route changes. */
   headerVeto?: boolean
+  /** A lead NODE for this pane's TAB, rendered before the label. A session
+   *  pane (main workspace + tiles) passes its live `SessionStatusDot` here so
+   *  the tab and the sidebar row render status/color from the ONE primitive
+   *  (self-subscribing — it updates without the strip re-registering). */
+  tabLead?: () => React.ReactNode
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome
@@ -135,6 +157,36 @@ export const cssMax = (values: (string | null | undefined)[]): string | undefine
 /** A minimized zone IS its strip: the vertical rail (row) / header (column)
  *  are both 28px thick. */
 export const MINIMIZED_TRACK = '1.75rem'
+
+/**
+ * In an all-fixed split, the last uncapped track may absorb leftover space
+ * (terminal/logs stacked at 38vh with nothing else to fill the column). A
+ * CAPPED track must never be the absorber: review/files declare maxWidth
+ * 20rem, and promoting them to grow-1 + dropping the clamp made ⌘G / ⌘J open
+ * a half-window rail and ignore sash-remembered sizes (flex-basis alone
+ * can't hold against grow).
+ *
+ * Returns the child index to absorb, or -1 when every fixed track is capped
+ * (leave dead space — better than a ballooned sidebar).
+ */
+export function allFixedAbsorberIndex(
+  growable: readonly number[],
+  maxAlongAxis: (index: number) => string | undefined
+): number {
+  if (growable.length === 0) {
+    return -1
+  }
+
+  for (let i = growable.length - 1; i >= 0; i--) {
+    const index = growable[i]
+
+    if (!maxAlongAxis(index)) {
+      return index
+    }
+  }
+
+  return -1
+}
 
 export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
   if (node.type === 'group') {

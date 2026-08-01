@@ -4,6 +4,8 @@ import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import type { ComposerAttachment } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
 
+import type { TriggerState } from './text-utils'
+
 export const COMPOSER_STACK_BREAKPOINT_PX = 320
 
 // Above the stack breakpoint but still cramped: the model pill sheds its label
@@ -50,11 +52,56 @@ export function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind 
   return 'command'
 }
 
+/** True for a skill completion — the only kind offered mid-message. */
+export const isSkillItem = (item: Unstable_TriggerItem) => slashChipKindForItem(item) === 'skill'
+
 /** A `/` query is at its arg stage once it's past the command name. */
 export const slashArgStage = (query: string) => query.includes(' ')
 
 /** The `/command` token of a slash query (`personality x` → `/personality`). */
 export const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
+
+export interface TriggerAcceptInput {
+  /** The user moved the highlight themselves (arrow keys) rather than
+   *  inheriting the list's default first row. */
+  activeExplicit: boolean
+  /** The trigger is a slash command whose argument is arbitrary prose. */
+  freeTextArgStage: boolean
+  key: string
+  kind: TriggerState['kind']
+  query: string
+}
+
+/**
+ * Whether a keypress accepts the highlighted completion while the popover is
+ * open. Tab is always an accept — it has no other meaning in the composer.
+ *
+ * Enter and Space are conditional, because both mean something else while a
+ * free-text argument is being written (`/goal ship the redesign`). Space types
+ * a space, and Enter sends the message; letting either take the popover's
+ * pre-highlighted row would swap the prose the user is mid-sentence on for a
+ * subcommand they never chose. Enter still accepts once the user has arrowed
+ * to a row deliberately, so the highlight never lies about what Enter will do.
+ */
+export function acceptsTriggerCompletion({
+  activeExplicit,
+  freeTextArgStage,
+  key,
+  kind,
+  query
+}: TriggerAcceptInput): boolean {
+  if (key === 'Tab') {
+    return true
+  }
+
+  if (key === 'Enter') {
+    return !freeTextArgStage || activeExplicit
+  }
+
+  // Space is slash-only (an `@` mention takes a literal space) and gated to a
+  // non-empty query so a bare `/ ` still types a space.
+  return key === ' ' && kind === '/' && Boolean(query.trim()) && !freeTextArgStage
+}
 
 export interface QueueEditState {
   attachments: ComposerAttachment[]

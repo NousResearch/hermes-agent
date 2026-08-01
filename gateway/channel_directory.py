@@ -9,6 +9,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,14 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+# Throttle window for repeated Slack channel-directory refresh failures.
+# The directory rebuilds on a timer, so a persistent workspace error (e.g.
+# missing scope, revoked token) would otherwise re-log the same warning on
+# every refresh. Warn once per (team, error detail) per interval; repeats
+# drop to DEBUG.
+_SLACK_DIRECTORY_WARNING_INTERVAL_SECONDS = 3600
+_slack_directory_warning_last: Dict[tuple[str, str], float] = {}
+
 # User-maintained friendly-name overlay. The directory is fully regenerated
 # from live adapters + session data on a timer, so hand-edits to
 # channel_directory.json don't survive. Aliases declared here are re-applied
@@ -103,6 +112,27 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
 
     topic_label = origin.get("chat_topic") or f"topic {thread_id}"
     return f"{base_name} / {topic_label}"
+
+
+def _warn_slack_directory(team_id: str, detail: str) -> None:
+    """Warn once per team/error per interval for recurring Slack refresh failures."""
+    key = (str(team_id), str(detail))
+    now = time.monotonic()
+    last = _slack_directory_warning_last.get(key)
+    if last is None or now - last >= _SLACK_DIRECTORY_WARNING_INTERVAL_SECONDS:
+        _slack_directory_warning_last[key] = now
+        logger.warning(
+            "Channel directory: failed to list Slack channels for team %s: %s",
+            team_id,
+            detail,
+        )
+    else:
+        logger.debug(
+            "Channel directory: suppressed repeated Slack channel list failure "
+            "for team %s: %s",
+            team_id,
+            detail,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +244,29 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
     return channels
 
 
+def _slack_api_error_code(error: Exception) -> Optional[str]:
+    """Return Slack Web API error code from SlackApiError-like exceptions."""
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        value = response.get("error")
+        return str(value) if value else None
+    if response is not None:
+        try:
+            value = response.get("error")
+            return str(value) if value else None
+        except Exception:
+            pass
+    return None
+
+
 async def _build_slack(adapter) -> List[Dict[str, Any]]:
     """List Slack channels the bot has joined across all workspaces.
 
     Uses ``users.conversations`` against each workspace's web client. Pulls
     public + private channels the bot is a member of, then merges in DMs
     discovered from session history (IMs aren't useful to enumerate
-    proactively).
+    proactively). If the Slack app lacks channels:read, fall back to session
+    history quietly instead of logging a recurring warning every refresh.
     """
     team_clients = getattr(adapter, "_team_clients", None) or {}
     if not team_clients:
@@ -240,11 +286,15 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                     cursor=cursor,
                 )
                 if not response.get("ok"):
-                    logger.warning(
-                        "Channel directory: users.conversations not ok for team %s: %s",
-                        team_id,
-                        response.get("error", "unknown"),
-                    )
+                    error_code = response.get("error", "unknown")
+                    if error_code == "missing_scope":
+                        logger.debug(
+                            "Channel directory: Slack team %s lacks channels:read; using session history only",
+                            team_id,
+                        )
+                    else:
+                        detail = f"users.conversations not ok: {error_code}"
+                        _warn_slack_directory(team_id, detail)
                     break
                 for ch in response.get("channels", []):
                     cid = ch.get("id")
@@ -261,17 +311,59 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                 if not cursor:
                     break
         except Exception as e:
-            logger.warning(
-                "Channel directory: failed to list Slack channels for team %s: %s",
-                team_id, e,
-            )
+            if _slack_api_error_code(e) == "missing_scope":
+                logger.debug(
+                    "Channel directory: Slack team %s lacks channels:read; using session history only",
+                    team_id,
+                )
+            else:
+                _warn_slack_directory(team_id, str(e))
             continue
 
     # Merge in DM/group entries discovered from session history.
+    # Build a lookup from API-discovered channels so we can enrich session entries.
+    api_name_lookup = {ch["id"]: ch["name"] for ch in channels}
+
     for entry in await asyncio.to_thread(_build_from_sessions, "slack"):
-        if entry.get("id") not in seen_ids:
+        eid = entry.get("id")
+        if eid not in seen_ids:
+            # If the entry name is still a raw Slack ID (e.g. C0xxx / D0xxx),
+            # try to resolve it from the API lookup first.
+            if entry.get("name", "").startswith(("C0", "D0", "G0")):
+                if eid in api_name_lookup:
+                    entry["name"] = api_name_lookup[eid]
             channels.append(entry)
-            seen_ids.add(entry.get("id"))
+            seen_ids.add(eid)
+
+    # Resolve remaining raw-ID entries (DMs, private channels not in bot scope)
+    # by calling conversations.info + users.info for each.
+    unresolved = [ch for ch in channels if ch.get("name", "").startswith(("C0", "D0", "G0"))]
+    if unresolved and team_clients:
+        client = next(iter(team_clients.values()))
+        for entry in unresolved:
+            try:
+                resp = await client.conversations_info(channel=entry["id"])
+                if not resp.get("ok"):
+                    continue
+                ch_info = resp.get("channel", {})
+                if ch_info.get("is_im"):
+                    peer_user = ch_info.get("user", "")
+                    if peer_user:
+                        user_resp = await client.users_info(user=peer_user)
+                        if user_resp.get("ok"):
+                            u = user_resp["user"]
+                            entry["name"] = (
+                                u.get("profile", {}).get("display_name")
+                                or u.get("real_name")
+                                or u.get("name")
+                                or entry["id"]
+                            )
+                            entry["type"] = "dm"
+                else:
+                    entry["name"] = ch_info.get("name") or ch_info.get("name_normalized") or entry["id"]
+            except Exception as e:
+                logger.debug("Channel directory: failed to resolve %s: %s", entry["id"], e)
+                continue
 
     return channels
 

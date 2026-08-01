@@ -61,8 +61,8 @@ export function getManagementProfile(): string {
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
 // _profile_scope or explicit per-profile DB opens). Anything else — ops,
-// pairing, cron (which has its own per-job profile params), profiles
-// themselves — is machine-global or self-scoped and must NOT be rewritten.
+// cron (which has its own per-job profile params), profiles themselves — is
+// machine-global or self-scoped and must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
   "/api/status",
   "/api/gateway",
@@ -80,6 +80,10 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  // A named profile keeps its own pairing whitelist, and its gateway only
+  // consults that one — approving into the global store would grant access
+  // the running gateway never sees.
+  "/api/pairing",
 ];
 
 function withManagementProfile(url: string): string {
@@ -304,6 +308,45 @@ function appendProfileParam(url: string, profile?: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
 }
 
+function appendQueryParam(url: string, key: string, value?: string): string {
+  if (!value) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
+}
+
+export interface SessionQueryOptions {
+  profile?: string;
+  order?: "created" | "recent";
+  source?: string | null;
+  sources?: string[];
+  excludeSources?: string[];
+}
+
+function normalizeSessionQueryOptions(
+  profileOrOptions?: string | SessionQueryOptions,
+  order: "created" | "recent" = "created",
+): SessionQueryOptions {
+  if (typeof profileOrOptions === "string") {
+    return { profile: profileOrOptions, order };
+  }
+  return {
+    profile: getManagementProfile(),
+    order,
+    ...(profileOrOptions ?? {}),
+  };
+}
+
+function appendSessionFilters(url: string, options: SessionQueryOptions): string {
+  let next = url;
+  next = appendQueryParam(next, "source", options.source ?? undefined);
+  if (options.sources && options.sources.length > 0) {
+    next = appendQueryParam(next, "sources", options.sources.join(","));
+  }
+  if (options.excludeSources && options.excludeSources.length > 0) {
+    next = appendQueryParam(next, "exclude_sources", options.excludeSources.join(","));
+  }
+  return appendProfileParam(next, options.profile);
+}
+
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
@@ -342,15 +385,17 @@ export const api = {
   getSessions: (
     limit = 20,
     offset = 0,
-    profile = getManagementProfile(),
+    profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
     order: "created" | "recent" = "created",
-  ) =>
-    fetchJSON<PaginatedSessions>(
-      appendProfileParam(
-        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
-        profile,
+  ) => {
+    const options = normalizeSessionQueryOptions(profileOrOptions, order);
+    return fetchJSON<PaginatedSessions>(
+      appendSessionFilters(
+        `/api/sessions?limit=${limit}&offset=${offset}&order=${options.order ?? order}`,
+        options,
       ),
-    ),
+    );
+  },
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
@@ -773,10 +818,18 @@ export const api = {
     ),
 
   // Session search (FTS5)
-  searchSessions: (q: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionSearchResponse>(
-      appendProfileParam(`/api/sessions/search?q=${encodeURIComponent(q)}`, profile),
-    ),
+  searchSessions: (
+    q: string,
+    profileOrOptions: string | SessionQueryOptions = getManagementProfile(),
+  ) => {
+    const options = normalizeSessionQueryOptions(profileOrOptions);
+    return fetchJSON<SessionSearchResponse>(
+      appendSessionFilters(
+        `/api/sessions/search?q=${encodeURIComponent(q)}`,
+        options,
+      ),
+    );
+  },
 
   // OAuth provider management
   getOAuthProviders: () =>
@@ -1041,18 +1094,29 @@ export const api = {
     ),
 
   // ── Admin: Pairing ──────────────────────────────────────────────────
+  // The mutating endpoints read the profile off the BODY, so the query-param
+  // rewrite in withManagementProfile doesn't reach them — send it explicitly
+  // or an approval lands in the wrong profile's whitelist.
   getPairing: () => fetchJSON<PairingResponse>("/api/pairing"),
-  approvePairing: (platform: string, code: string) =>
+  approvePairing: (platform: string, request_id: string) =>
     fetchJSON<{ ok: boolean; user: PairingUser }>("/api/pairing/approve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform, code }),
+      body: JSON.stringify({
+        platform,
+        request_id,
+        profile: getManagementProfile() || undefined,
+      }),
     }),
   revokePairing: (platform: string, user_id: string) =>
     fetchJSON<{ ok: boolean }>("/api/pairing/revoke", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform, user_id }),
+      body: JSON.stringify({
+        platform,
+        user_id,
+        profile: getManagementProfile() || undefined,
+      }),
     }),
   clearPendingPairing: () =>
     fetchJSON<{ ok: boolean; cleared: number }>("/api/pairing/clear-pending", {
@@ -1538,7 +1602,7 @@ export interface PairingUser {
   platform: string;
   user_id: string;
   user_name?: string;
-  code?: string;
+  request_id?: string;
   age_minutes?: number;
 }
 
@@ -1803,6 +1867,13 @@ export interface StatusResponse {
    * Empty in loopback mode; empty + ``auth_required=true`` is a
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
+  /** Supported dashboard auth flows for the client to choose from. In gated
+   * mode always includes ``"cookie"``; includes ``"native_pkce"`` when a
+   * brokerable OAuth provider is registered, signalling that the desktop can
+   * use the RFC 8252 system-browser + loopback + PKCE flow (no embedded
+   * webview, no session cookies). Absent / missing ``"native_pkce"`` ⇒ an
+   * older gateway ⇒ the desktop falls back to the embedded-webview flow. */
+  auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
    * updates are handled by the outer launcher instead of ``hermes update``. */
   can_update_hermes?: boolean;
@@ -2258,13 +2329,12 @@ export interface ToolsetEnvResult {
   is_set: Record<string, boolean>;
 }
 
-export interface SessionSearchResult {
+export interface SessionSearchResult extends SessionInfo {
   session_id: string;
   snippet: string;
   role: string | null;
-  source: string | null;
-  model: string | null;
   session_started: number | null;
+  lineage_root?: string;
 }
 
 export interface SessionSearchResponse {
@@ -2326,6 +2396,7 @@ export interface MoaModelSlot {
   model: string;
   /** Optional per-slot reasoning effort — round-tripped, not edited here. */
   reasoning_effort?: string;
+  enabled?: boolean;
 }
 
 export interface MoaConfigResponse {
@@ -2336,10 +2407,12 @@ export interface MoaConfigResponse {
     aggregator: MoaModelSlot;
     reference_temperature: number;
     aggregator_temperature: number;
+    reference_timeout: number | null;
+    degraded_reference_policy: "loud" | "silent";
     max_tokens: number;
     /** Optional advisor output cap — round-tripped, not edited here. */
     reference_max_tokens?: number | null;
-    /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
+    /** Fan-out cadence (user_turn default | per_iteration | every_n:N) — round-tripped. */
     fanout?: string;
     enabled: boolean;
   }>;
@@ -2347,6 +2420,8 @@ export interface MoaConfigResponse {
   aggregator: MoaModelSlot;
   reference_temperature: number;
   aggregator_temperature: number;
+  reference_timeout: number | null;
+  degraded_reference_policy: "loud" | "silent";
   max_tokens: number;
   enabled: boolean;
 }

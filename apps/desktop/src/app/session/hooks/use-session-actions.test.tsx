@@ -3,24 +3,40 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
+import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
+  $activeSessionStoredIdRotation,
   $currentCwd,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
   $messages,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
+  $selectedStoredSessionId,
   setActiveSessionId,
+  setActiveSessionStoredIdRotation,
   setCurrentCwd,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
   setMessages,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
+  setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 
+import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
@@ -28,16 +44,39 @@ import { useSessionActions } from './use-session-actions'
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
+  getSession: vi.fn(),
   getSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setSessionArchived: vi.fn()
 }))
 
+vi.mock('@/store/profile', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
+}))
+
+vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  noteActiveTreeGroup: vi.fn(),
+  revealTreePane: vi.fn()
+}))
+
 const RUNTIME_SESSION_ID = 'rt-new-001'
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
-  'createBackendSessionForSend' | 'startFreshSessionDraft'
+  'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
 >
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -60,9 +99,11 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 function Harness({
+  navigate = vi.fn(),
   onReady,
   requestGateway
 }: {
+  navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
@@ -75,7 +116,8 @@ function Harness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
-    navigate: vi.fn() as never,
+    getRoutedStoredSessionId: () => null,
+    navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
@@ -92,6 +134,249 @@ function Harness({
 
   return null
 }
+
+function StoredIdRotationHarness({
+  activeSessionIdRef,
+  getRoutedStoredSessionId,
+  navigate,
+  selectedStoredSessionIdRef
+}: {
+  activeSessionIdRef: MutableRefObject<string | null>
+  getRoutedStoredSessionId: () => null | string
+  navigate: (to: string, options?: { replace?: boolean }) => void
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  useSessionActions({
+    activeSessionId: activeSessionIdRef.current,
+    activeSessionIdRef,
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    getRoutedStoredSessionId,
+    navigate: navigate as never,
+    requestGateway: async () => ({}) as never,
+    resetViewSync: vi.fn(),
+    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    selectedStoredSessionId: selectedStoredSessionIdRef.current,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: () => ({}) as ClientSessionState
+  })
+
+  return null
+}
+
+describe('active stored-session id rotation routing', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setActiveSessionStoredIdRotation(null)
+    setSelectedStoredSessionId(null)
+    vi.restoreAllMocks()
+  })
+
+  it('follows a rotation while the same conversation still owns the foreground route', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-A'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
+    expect($selectedStoredSessionId.get()).toBe('stored-A-next')
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-A-next'), { replace: true })
+    expect($activeSessionStoredIdRotation.get()).toBeNull()
+  })
+
+  it('keeps draft on the previous tip when the new tip row is not loaded yet', async () => {
+    const tipBefore = 'tip-root'
+    const tipAfter = 'tip-new-unloaded'
+    const runtimeSessionId = 'runtime-gap'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: runtimeSessionId }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: tipBefore }
+    const navigate = vi.fn()
+
+    setSessions([])
+    stashSessionDraft(tipBefore, 'typed during gap', [])
+    setSelectedStoredSessionId(tipBefore)
+    setActiveSessionId(runtimeSessionId)
+
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => tipBefore}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: tipAfter,
+        previousStoredSessionId: tipBefore,
+        runtimeSessionId
+      })
+    })
+
+    await waitFor(() => expect($selectedStoredSessionId.get()).toBe(tipAfter))
+    expect(takeSessionDraft(tipBefore).text).toBe('typed during gap')
+    expect(takeSessionDraft(tipAfter).text).toBe('')
+
+    clearSessionDraft(tipBefore)
+    clearSessionDraft(tipAfter)
+    setActiveSessionId(null)
+  })
+
+  it('parks an in-progress composer draft on the lineage root across tip rotation', async () => {
+    // Desktop draft must stay on the durable composer key (lineage root), not
+    // move onto the fresh tip — ChatBar scopes drafts via resolveComposerSessionKey.
+    const tipBefore = '20260720_062637_ad96b3'
+    const tipAfter = '20260720_071049_a28905'
+    const runtimeSessionId = 'runtime-desktop-thinking'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: runtimeSessionId }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: tipBefore }
+    const navigate = vi.fn()
+    const typedWhileThinking = 'follow up I am still typing during thinking'
+
+    setSessions([storedSession({ id: tipAfter, message_count: 2, _lineage_root_id: tipBefore })])
+    stashSessionDraft(tipBefore, typedWhileThinking, [])
+    setSelectedStoredSessionId(tipBefore)
+    setActiveSessionId(runtimeSessionId)
+
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => tipBefore}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: tipAfter,
+        previousStoredSessionId: tipBefore,
+        runtimeSessionId
+      })
+    })
+
+    await waitFor(() => expect($selectedStoredSessionId.get()).toBe(tipAfter))
+    // Durable key remains the lineage root — same scope ChatBar will keep using.
+    expect(takeSessionDraft(tipBefore).text).toBe(typedWhileThinking)
+    expect(takeSessionDraft(tipAfter).text).toBe('')
+
+    clearSessionDraft(tipBefore)
+    clearSessionDraft(tipAfter)
+    setActiveSessionId(null)
+    setSessions([])
+  })
+
+  it('does not overwrite a newer route intent before its resume effect has synchronized selection', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-C'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect($activeSessionStoredIdRotation.get()).toBeNull())
+    expect(selectedStoredSessionIdRef.current).toBe('stored-A')
+    expect($selectedStoredSessionId.get()).toBe('stored-A')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('does not let the previous runtime jump back after selection already moved', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-C' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-C')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => 'stored-C'}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect($activeSessionStoredIdRotation.get()).toBeNull())
+    expect(selectedStoredSessionIdRef.current).toBe('stored-C')
+    expect($selectedStoredSessionId.get()).toBe('stored-C')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('updates the underlying selection without navigating out of an overlay or page', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'runtime-A' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-A' }
+    const navigate = vi.fn()
+
+    setSelectedStoredSessionId('stored-A')
+    render(
+      <StoredIdRotationHarness
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => null}
+        navigate={navigate}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+
+    act(() => {
+      setActiveSessionStoredIdRotation({
+        nextStoredSessionId: 'stored-A-next',
+        previousStoredSessionId: 'stored-A',
+        runtimeSessionId: 'runtime-A'
+      })
+    })
+
+    await waitFor(() => expect(selectedStoredSessionIdRef.current).toBe('stored-A-next'))
+    expect($selectedStoredSessionId.get()).toBe('stored-A-next')
+    expect(navigate).not.toHaveBeenCalled()
+  })
+})
 
 async function createWith(
   profileSetup: () => void,
@@ -130,6 +415,25 @@ async function createWith(
   return createParams
 }
 
+describe('startFreshSessionDraft', () => {
+  afterEach(() => cleanup())
+
+  it('can reset machine-bound session state without closing the current overlay route', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => handle!.startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null }))
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect($currentCwd.get()).toBe('')
+    expect($newChatWorkspaceTarget.get()).toBeNull()
+  })
+})
+
 describe('createBackendSessionForSend profile routing', () => {
   afterEach(() => {
     cleanup()
@@ -138,6 +442,10 @@ describe('createBackendSessionForSend profile routing', () => {
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
     $currentCwd.set('')
+    $currentFastMode.set(false)
+    $currentModel.set('')
+    $currentProvider.set('')
+    $currentReasoningEffort.set('')
     setNewChatWorkspaceTarget(undefined)
     vi.restoreAllMocks()
   })
@@ -185,6 +493,57 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/remote/worktree' })
+  })
+
+  it('freezes the visible selector state before profile readiness and sends fast: false explicitly', async () => {
+    const profileReady = deferred<void>()
+    vi.mocked(ensureGatewayProfile).mockReturnValueOnce(profileReady.promise)
+
+    setCurrentModel('anthropic/claude-sonnet-4.6')
+    setCurrentProvider('anthropic')
+    setCurrentReasoningEffort('high')
+    setCurrentFastMode(false)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: RUNTIME_SESSION_ID, stored_session_id: null } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={next => (handle = next)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    let createPromise!: Promise<null | string>
+    act(() => {
+      createPromise = handle!.createBackendSessionForSend()
+    })
+    await waitFor(() => expect(ensureGatewayProfile).toHaveBeenCalled())
+
+    // A background refresh or a second click can mutate the sticky atoms while
+    // the profile is waking. This send must still use what was visible at Enter.
+    setCurrentModel('openai/gpt-5.5')
+    setCurrentProvider('openai-codex')
+    setCurrentReasoningEffort('low')
+    setCurrentFastMode(true)
+    profileReady.resolve()
+
+    await act(async () => {
+      await createPromise
+    })
+
+    expect(createParams).toMatchObject({
+      fast: false,
+      model: 'anthropic/claude-sonnet-4.6',
+      provider: 'anthropic',
+      reasoning_effort: 'high'
+    })
   })
 
   it('falls back to the entered project cwd when the current cwd is blank', async () => {
@@ -235,6 +594,7 @@ function ResumeHarness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => null,
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: vi.fn(),
@@ -574,6 +934,7 @@ describe('resumeSession failure recovery', () => {
             busy: false,
             cwd: '',
             fast: false,
+            interimBoundaryPending: false,
             interrupted: false,
             messages: [],
             model: '',
@@ -623,22 +984,29 @@ describe('resumeSession failure recovery', () => {
 })
 
 function BranchHarness({
+  activeSessionId = null,
+  navigate = vi.fn(),
+  onCurrentReady,
   onReady,
   requestGateway
 }: {
+  activeSessionId?: string | null
+  navigate?: ReturnType<typeof vi.fn>
+  onCurrentReady?: (branchCurrentSession: (messageId?: string) => Promise<boolean>) => void
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
   const actions = useSessionActions({
-    activeSessionId: null,
-    activeSessionIdRef: ref<string | null>(null),
+    activeSessionId,
+    activeSessionIdRef: ref<string | null>(activeSessionId),
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
-    navigate: vi.fn() as never,
+    getRoutedStoredSessionId: () => null,
+    navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
@@ -651,7 +1019,8 @@ function BranchHarness({
 
   useEffect(() => {
     onReady(actions.branchStoredSession)
-  }, [actions.branchStoredSession, onReady])
+    onCurrentReady?.(actions.branchCurrentSession)
+  }, [actions.branchCurrentSession, actions.branchStoredSession, onCurrentReady, onReady])
 
   return null
 }
@@ -660,7 +1029,46 @@ describe('branchStoredSession desktop source tagging', () => {
   afterEach(() => {
     cleanup()
     setSessions([])
+    $sessionTiles.set([])
+    setSelectedStoredSessionId(null)
     vi.restoreAllMocks()
+  })
+
+  it('opens the branch as a new tab and leaves the parent chat selected', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    // Parent is the currently-open (primary) chat.
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    setSelectedStoredSessionId('stored-parent')
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    const navigate = vi.fn()
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        navigate={navigate}
+        onReady={branch => (branchStoredSession = branch)}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    // The branch opened as its own tab...
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)
+    // ...without stealing the primary selection or navigating away from the parent.
+    expect($selectedStoredSessionId.get()).toBe('stored-parent')
+    expect(navigate).not.toHaveBeenCalledWith(sessionRoute('branch-stored'))
   })
 
   it('tags desktop branch sessions as desktop sessions', async () => {
@@ -692,6 +1100,221 @@ describe('branchStoredSession desktop source tagging', () => {
       parent_session_id: 'stored-parent',
       source: 'desktop'
     })
+  })
+
+  it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
+    let branchParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.branch') {
+        branchParams = params
+
+        return {
+          session_id: 'branch-runtime',
+          stored_session_id: 'branch-stored',
+          title: 'Branch',
+          message_count: 2,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    setMessages([
+      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }] },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }] },
+      { id: 'q2', role: 'user', parts: [{ type: 'text', text: 'question two' }] },
+      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'answer two' }] }
+    ])
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    // Branch from the FIRST assistant reply ("a1"), not the last message �
+    // this is exactly the scenario that used to drop the question (bug #1):
+    // only the clicked message survived instead of everything up to it.
+    await expect(branchCurrentSession!('a1')).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('session.branch', {
+      session_id: 'live-parent',
+      count: 2
+    })
+    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+  })
+
+  // #67603: right-clicking a session outside the paginated sidebar window is a
+  // cache miss. Resolve its owning profile (cache → active → cross-profile) and
+  // swap to it before reading the transcript / creating the branch, so the fork
+  // is not created on whichever profile happens to be live.
+  it('resolves and swaps to the parent profile when the branched session is not cached', async () => {
+    setSessions([])
+    vi.mocked(getSession).mockResolvedValue(storedSession({ id: 'stored-parent', message_count: 1, profile: 'work' }))
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) | null =
+      null
+
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('work')
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-parent', 'work')
+    // The create itself must carry the owning profile: in app-global remote
+    // mode the soft gateway swap alone is not enough — an omitted profile
+    // lands the branch on the launch (default) profile's state.db.
+    expect(createParams).toMatchObject({ parent_session_id: 'stored-parent', profile: 'work' })
+
+    vi.mocked(getSession).mockReset()
+  })
+
+  it('creates the branch on the cached parent session profile', async () => {
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1, profile: 'work' })])
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(ensureGatewayProfile).toHaveBeenCalledWith('work')
+    expect(createParams).toMatchObject({ profile: 'work' })
+  })
+
+  it('omits profile for a profile-less parent so single-profile users are unchanged', async () => {
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(createParams).toBeDefined()
+    expect(createParams).not.toHaveProperty('profile')
+  })
+})
+
+// ── Main/tile dedup (the "same session open in main AND its own tab" bug) ─────
+// A session is EITHER the main thread OR a tile, never both. openSessionTile
+// enforces this from the tile side; resumeSession enforces it from the main
+// side by dropping an existing tile when the session loads into main (cold-start
+// restore, a pasted/⌘K route, a notification jump), so it can't render twice.
+describe('resumeSession drops a redundant tile when the session loads into main', () => {
+  afterEach(() => {
+    cleanup()
+    setActiveSessionId(null)
+    setResumeFailedSessionId(null)
+    setMessages([])
+    setSessions([])
+    $sessionTiles.set([])
+    vi.restoreAllMocks()
+  })
+
+  it('closes the tile so the session is not open in both main and its own tab', async () => {
+    // The session is already an open tile (e.g. persisted across a restart)...
+    $sessionTiles.set([{ storedSessionId: 'stored-1' }])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    // ...and now it loads into main.
+    await resume!('stored-1', true)
+
+    // Its tile is gone — main owns the session, so it renders exactly once.
+    expect($sessionTiles.get().some(t => t.storedSessionId === 'stored-1')).toBe(false)
+    expect($selectedStoredSessionId.get()).toBe('stored-1')
+  })
+
+  it('leaves OTHER sessions tiles untouched', async () => {
+    $sessionTiles.set([{ storedSessionId: 'stored-1' }, { storedSessionId: 'stored-2' }])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={r => (resume = r)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-1', true)
+
+    // Only the resumed session's tile closes; the sibling tile stays put.
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['stored-2'])
   })
 })
 
@@ -809,6 +1432,76 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(methods).not.toContain('session.resume')
     expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+
+  it('preserves cached image attachments through an idle persisted transcript refresh', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      {
+        id: 'cached-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'describe this image' }],
+        attachmentRefs: ['@image:/tmp/photo.png']
+      },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'It is a photo.' }]
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persistedMessages = [
+      { content: 'describe this image', role: 'user', timestamp: 1 },
+      { content: 'It is a photo.', role: 'assistant', timestamp: 2 }
+    ]
+
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: persistedMessages,
+      session_id: 'stored-A'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: persistedMessages.length,
+          messages: persistedMessages,
+          running: false,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(requestGateway.mock.calls.map(([method]) => method)).toContain('session.activate')
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect(resumedState?.messages[0]?.attachmentRefs).toEqual(['@image:/tmp/photo.png'])
   })
 
   it('repairs an idle warm cache from a divergent equal-length persisted transcript', async () => {
@@ -967,5 +1660,23 @@ describe('createBackendSessionForSend workspace target', () => {
     )
 
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+})
+describe('selectSidebarItem', () => {
+  it('fronts the workspace pane when navigating to a sidebar route (issue #72602)', async () => {
+    const navigate = vi.fn()
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(<Harness navigate={navigate} onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    act(() => {
+      handle!.selectSidebarItem({ icon: (() => null) as never, id: 'skills', label: 'Capabilities', route: '/skills' })
+    })
+
+    expect(navigate).toHaveBeenCalledWith('/skills', undefined)
+    expect(noteActiveTreeGroup).toHaveBeenCalledWith(null)
+    expect(revealTreePane).toHaveBeenCalledWith('workspace')
   })
 })

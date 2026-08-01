@@ -298,6 +298,21 @@ class QueueEvent:
     data: dict = field(default_factory=dict)
 
 
+def _ts_float(ts) -> float:
+    """Normalize a message timestamp (epoch int/float or ISO string) to float."""
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, str) and ts:
+        try:
+            return float(ts)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(ts).timestamp()
+            except Exception:
+                return 0.0
+    return 0.0
+
+
 class EventBridge:
     """Background poller that watches SessionDB for new messages and
     maintains an in-memory event queue with waiter support.
@@ -324,6 +339,13 @@ class EventBridge:
         """Start the background polling thread."""
         if self._running:
             return
+        # Snapshot existing history BEFORE the poll loop starts so pre-existing
+        # messages are not replayed as new events on startup (#13414). Sessions
+        # that first appear afterwards are absent from the baseline and default
+        # to last_seen=0.0 in _poll_once, so new-conversation delivery is
+        # preserved. Unit tests that drive _poll_once directly bypass start()
+        # and still observe first-poll delivery.
+        self._establish_baseline()
         self._running = True
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
@@ -425,6 +447,46 @@ class EventBridge:
                 self._queue.pop(0)
         self._new_event.set()
 
+    def _establish_baseline(self) -> None:
+        """Record the latest per-session message timestamp and the current
+        state.db mtime WITHOUT emitting events, so startup does not replay
+        history (#13414).
+
+        Only sessions that already exist at startup are baselined; a session
+        that first appears afterwards is absent here and defaults to
+        last_seen=0.0 in _poll_once, so a brand-new conversation's first
+        message is still delivered on its state.db-change tick.
+        """
+        db = _get_session_db()
+        if not db:
+            return
+        try:
+            from hermes_constants import get_hermes_home
+            db_file = get_hermes_home() / "state.db"
+        except ImportError:
+            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+        try:
+            self._state_db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
+        except OSError:
+            self._state_db_mtime = 0.0
+        try:
+            self._cached_sessions_index = _load_sessions_index()
+        except Exception:
+            self._cached_sessions_index = {}
+        for session_key, entry in self._cached_sessions_index.items():
+            session_id = entry.get("session_id", "")
+            if not session_id:
+                continue
+            try:
+                messages = db.get_messages(session_id)
+            except Exception:
+                continue
+            all_ts = [_ts_float(m.get("timestamp", 0)) for m in (messages or ())]
+            if all_ts:
+                latest = max(all_ts)
+                if latest > 0.0:
+                    self._last_poll_timestamps[session_key] = latest
+
     def _poll_loop(self):
         """Background loop: poll SessionDB for new messages."""
         db = _get_session_db()
@@ -486,23 +548,8 @@ class EventBridge:
             if not messages:
                 continue
 
-            # Normalize timestamps to float for comparison
-            def _ts_float(ts) -> float:
-                if isinstance(ts, (int, float)):
-                    return float(ts)
-                if isinstance(ts, str) and ts:
-                    try:
-                        return float(ts)
-                    except ValueError:
-                        # ISO string — parse to epoch
-                        try:
-                            from datetime import datetime
-                            return datetime.fromisoformat(ts).timestamp()
-                        except Exception:
-                            return 0.0
-                return 0.0
-
-            # Find messages newer than our last seen timestamp
+            # Find messages newer than our last seen timestamp (see the
+            # module-level _ts_float helper for timestamp normalization).
             new_messages = []
             for msg in messages:
                 ts = _ts_float(msg.get("timestamp", 0))

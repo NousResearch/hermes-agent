@@ -23,14 +23,23 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  gatewayTicketFailure,
+  gatewayWsUrlIpcResult,
+  isGatewayAuthRejection,
+  localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  profileHasRemoteConnection,
   profileRemoteOverride,
+  profileSshOverride,
   resolveAuthMode,
+  resolveProfileBackendRoute,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  savedProfileSsh,
   tokenPreview
 } from './connection-config'
 
@@ -124,6 +133,120 @@ test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
   assert.equal(profileRemoteOverride(null, 'coder'), null)
 })
 
+test('SSH remains separate from URL-shaped remote modes', () => {
+  assert.equal(modeIsRemoteLike('ssh'), false)
+  const config = { profiles: { coder: { mode: 'ssh', host: 'alice@box:2222', keyPath: '/key' } } }
+  assert.equal(profileRemoteOverride(config, 'coder'), null)
+  assert.deepEqual(profileSshOverride(config, 'coder'), {
+    mode: 'ssh',
+    host: 'box',
+    user: 'alice',
+    port: 2222,
+    keyPath: '/key'
+  })
+})
+
+test('normalizeSshConfig handles IPv6 and strict port bounds', () => {
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: '::1', port: 22 }), {
+    mode: 'ssh',
+    host: '::1'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: '[::1]:2222' }), {
+    mode: 'ssh',
+    host: '::1',
+    port: 2222
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', port: '2222junk' }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+  assert.deepEqual(normalizeSshConfig({ mode: 'ssh', host: 'box', port: 65536 }), {
+    mode: 'ssh',
+    host: 'box'
+  })
+})
+
+test('localProfileEntry preserves inactive SSH drafts but drops Cloud state', () => {
+  const ssh = { mode: 'ssh', host: 'box', user: 'alice', remoteHermesPath: '/hermes' }
+  assert.deepEqual(localProfileEntry(ssh), { mode: 'local', savedSsh: ssh })
+  assert.deepEqual(localProfileEntry({ mode: 'local', savedSsh: ssh }), {
+    mode: 'local',
+    savedSsh: ssh
+  })
+  assert.equal(localProfileEntry({ mode: 'cloud', url: 'https://agent' }), null)
+})
+
+test('saved SSH drafts are inactive and explicit overrides take precedence', () => {
+  const saved = { mode: 'ssh', host: 'saved' }
+  const config: any = { profiles: { coder: { mode: 'local', savedSsh: saved } } }
+  assert.deepEqual(savedProfileSsh(config, 'coder'), saved)
+  assert.equal(profileSshOverride(config, 'coder'), null)
+  assert.equal(profileHasRemoteConnection(config, 'coder'), false)
+
+  config.profiles.coder = { mode: 'ssh', host: 'active' }
+  assert.deepEqual(profileSshOverride(config, 'coder'), { mode: 'ssh', host: 'active' })
+  assert.equal(profileHasRemoteConnection(config, 'coder'), true)
+})
+
+// --- resolveProfileBackendRoute ---
+
+const ROUTES = [
+  {
+    name: 'the primary profile owns the window backend',
+    profile: 'default',
+    opts: { primaryProfile: 'default' },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a renamed primary profile still owns the window backend',
+    profile: ' coder ',
+    opts: { primaryProfile: 'coder', globalRemote: true },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'an unset profile resolves to the primary',
+    profile: '',
+    opts: { primaryProfile: 'default', globalRemote: true },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a profile inheriting the app-global remote shares the primary backend, scoped per request',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: true, profileRemoteOverride: false },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    name: 'a profile with its own remote override gets a pooled descriptor for that host',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: true, profileRemoteOverride: true },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'a local non-primary profile gets its own pooled backend',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: false, profileRemoteOverride: false },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  }
+]
+
+for (const route of ROUTES) {
+  test(`resolveProfileBackendRoute: ${route.name}`, () => {
+    assert.deepEqual(resolveProfileBackendRoute(route.profile, route.opts), route.expected)
+  })
+}
+
+test('resolveProfileBackendRoute only tags a descriptor when the backend is shared', () => {
+  // A pooled backend is already scoped to its profile, so tagging it would
+  // imply a second scope the caller must reconcile. Only the shared
+  // global-remote route carries one.
+  for (const route of ROUTES) {
+    const resolved = resolveProfileBackendRoute(route.profile, route.opts)
+
+    assert.equal(Boolean(resolved.descriptorProfile), resolved.scopePath)
+    assert.ok(!resolved.descriptorProfile || resolved.backend === 'primary')
+  }
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
@@ -133,6 +256,17 @@ test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => 
       profileRemoteOverride: false
     }),
     '/api/model/info?profile=iris'
+  )
+})
+
+test('pathWithGlobalRemoteProfile skips the primary profile, which the remote already serves', () => {
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/model/info', 'coder', {
+      globalRemote: true,
+      primaryProfile: 'coder',
+      profileRemoteOverride: false
+    }),
+    '/api/model/info'
   )
 })
 
@@ -215,6 +349,20 @@ test('normalizeRemoteBaseUrl rejects non-http(s) protocols', () => {
 test('normalizeRemoteBaseUrl rejects garbage', () => {
   assert.throws(() => normalizeRemoteBaseUrl('not a url'), /not valid/)
 })
+
+test('normalizeRemoteBaseUrl auto-prepends http:// for scheme-less host:port input', () => {
+  assert.equal(normalizeRemoteBaseUrl('100.64.0.1:9119'), 'http://100.64.0.1:9119')
+  assert.equal(normalizeRemoteBaseUrl('mini.tailnet-1234.ts.net:9119'), 'http://mini.tailnet-1234.ts.net:9119')
+  assert.equal(normalizeRemoteBaseUrl('localhost:9119'), 'http://localhost:9119')
+  assert.equal(normalizeRemoteBaseUrl('gw.example.com'), 'http://gw.example.com')
+  assert.equal(normalizeRemoteBaseUrl('gw.example.com/hermes/'), 'http://gw.example.com/hermes')
+})
+
+test('normalizeRemoteBaseUrl still rejects explicit non-http(s) schemes after scheme-less handling', () => {
+  assert.throws(() => normalizeRemoteBaseUrl('ws://host:9119'), /http:\/\/ or https:\/\//)
+  assert.throws(() => normalizeRemoteBaseUrl('ftp://host:21'), /http:\/\/ or https:\/\//)
+})
+
 
 // --- buildGatewayWsUrl (token) ---
 
@@ -431,12 +579,14 @@ test('resolveTestWsUrl (oauth, mint ok) builds a ?ticket= URL', async () => {
   assert.equal(url, 'wss://gw.example.com/api/ws?ticket=tkt-9')
 })
 
-test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validation', async () => {
+test('resolveTestWsUrl (oauth, auth rejected) requests sign-in and does not skip WS validation', async () => {
+  const cause = Object.assign(new Error('ticket mint failed'), { statusCode: 401 })
+
   await assert.rejects(
     () =>
       resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
         mintTicket: async () => {
-          throw new Error('401 ticket mint failed')
+          throw cause
         }
       }),
     (err: any) => {
@@ -450,6 +600,66 @@ test('resolveTestWsUrl (oauth, mint FAILS) throws — must NOT skip WS validatio
       return true
     }
   )
+})
+
+test('resolveTestWsUrl (oauth, transport failure) remains a retryable connection error', async () => {
+  const cause = new Error('socket timed out')
+
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw cause
+        }
+      }),
+    (err: any) => {
+      assert.match(err.message, /could not mint a WebSocket ticket/i)
+      assert.equal(err.needsOauthLogin, undefined)
+      assert.equal(err.cause, cause)
+
+      return true
+    }
+  )
+})
+
+test('gateway ticket failures classify only explicit auth rejection statuses as reauth', () => {
+  assert.equal(isGatewayAuthRejection({ statusCode: 401 }), true)
+  assert.equal(isGatewayAuthRejection({ statusCode: 403 }), true)
+  assert.equal(isGatewayAuthRejection({ needsOauthLogin: true }), true)
+  assert.equal(isGatewayAuthRejection({ statusCode: 500 }), false)
+  assert.equal(isGatewayAuthRejection(new Error('network timeout')), false)
+
+  const serverFailure = gatewayTicketFailure(new Error('network timeout'), 'sign in', 'retry connection') as any
+  assert.equal(serverFailure.message, 'retry connection')
+  assert.equal(serverFailure.needsOauthLogin, undefined)
+})
+
+test('gateway WS URL IPC result serializes success and the auth-vs-transport matrix', async () => {
+  assert.deepEqual(await gatewayWsUrlIpcResult(async () => 'wss://gateway.example.com/api/ws?ticket=fresh'), {
+    ok: true,
+    wsUrl: 'wss://gateway.example.com/api/ws?ticket=fresh'
+  })
+
+  for (const statusCode of [401, 403]) {
+    const error = Object.assign(new Error(`${statusCode}: rejected`), { statusCode })
+
+    assert.deepEqual(await gatewayWsUrlIpcResult(async () => Promise.reject(error)), {
+      error: `${statusCode}: rejected`,
+      needsOauthLogin: true,
+      ok: false
+    })
+  }
+
+  for (const error of [
+    Object.assign(new Error('500: unavailable'), { statusCode: 500 }),
+    new Error('Timed out connecting to Hermes backend after 8000ms'),
+    Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
+  ]) {
+    assert.deepEqual(await gatewayWsUrlIpcResult(async () => Promise.reject(error)), {
+      error: error.message,
+      ok: false
+    })
+  }
 })
 
 test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {

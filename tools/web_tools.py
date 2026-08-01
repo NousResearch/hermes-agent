@@ -422,7 +422,7 @@ def _web_requires_env() -> list[str]:
 DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 
 # Hard ceiling on the full-text file written to cache/web. The truncate-store
-# path otherwise calls path.write_text(content) with no upper bound, so a
+# path otherwise calls path.write_text(content, encoding="utf-8") with no upper bound, so a
 # multi-MB page (some backends return very large markdown) writes unbounded
 # bytes to disk on every extract. Cap the stored copy; the model only ever
 # sees char_limit anyway, and a 2MB page is already far more than any single
@@ -545,7 +545,6 @@ def _truncate_with_footer(
 
     total = len(content)
     stored_path = _store_full_text(url, content)
-    shown = len(head) + len(tail)
 
     footer_lines = [
         "",

@@ -23,5 +23,6 @@
     }
   },
   "include": ["src", "../shared/src"],
+  "exclude": ["e2e", "electron", "playwright.config.ts"],
   "references": [{ "path": "./tsconfig.electron.json" }]
 }

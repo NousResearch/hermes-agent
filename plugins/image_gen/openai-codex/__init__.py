@@ -40,30 +40,43 @@ from agent.image_gen_provider import (
 logger = logging.getLogger(__name__)
 
 
-class CodexImageGenerationUnsupportedError(RuntimeError):
-    """The active Codex account cannot use the hosted image tool."""
+# NOTE: do NOT reintroduce an "account capability" classifier keyed on
+# ``Tool choice 'image_generation' not found in 'tools' parameter``. That HTTP
+# 400 is a *request-shape* rejection (the Codex backend resolves tool_choice as
+# a function-tool name and never recognizes hosted-tool entries) — it is
+# emitted for every account, including accounts where image generation works.
+# A previous version of this file translated that 400 into "Image generation is
+# not enabled for the current Codex account. Switch the image provider to
+# OpenAI API key, FAL, or xAI.", which reported a universal bug in our own
+# payload as the user's entitlement problem and sent people away from a
+# provider that was never actually tried. The request-shape bug is fixed by
+# omitting tool_choice (see ``_build_responses_payload``); any remaining HTTP
+# error must surface verbatim so it stays diagnosable. See issues #19505,
+# #49008 and #31335.
+
+_MAX_ERROR_BODY_CHARS = 500
 
 
-_IMAGE_GENERATION_UNAVAILABLE_MESSAGE = (
-    "Image generation is not enabled for the current Codex account. "
-    "Switch the image provider to OpenAI API key, FAL, or xAI."
-)
-_IMAGE_GENERATION_UNSUPPORTED_ERROR = (
-    "Tool choice 'image_generation' not found in 'tools' parameter."
-)
+def _summarize_error_body(body: str) -> str:
+    """Return a bounded, information-preserving summary of an error body.
 
-
-def _is_image_generation_unsupported_error(status_code: int, body: str) -> bool:
-    """Match only Codex's account-capability rejection for the image tool."""
-    if status_code != 400:
-        return False
+    Prefers the parsed ``error.message`` field, because a blind head-truncation
+    of the raw body can cut the actual message off entirely — Codex error
+    payloads sometimes carry hundreds of bytes of leading metadata, so
+    ``body[:500]`` yielded a wall of padding and no diagnosis. Falls back to a
+    truncated raw body for non-JSON responses.
+    """
+    text = body or ""
     try:
-        payload = json.loads(body)
+        payload = json.loads(text)
         error = payload.get("error") if isinstance(payload, dict) else None
         message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:_MAX_ERROR_BODY_CHARS]
     except (TypeError, ValueError):
-        message = body
-    return isinstance(message, str) and message.strip() == _IMAGE_GENERATION_UNSUPPORTED_ERROR
+        pass
+    return text[:_MAX_ERROR_BODY_CHARS]
+
 
 
 # ---------------------------------------------------------------------------
@@ -329,11 +342,15 @@ def _build_responses_payload(
             "background": "opaque",
             "partial_images": 1,
         }],
-        "tool_choice": {
-            "type": "allowed_tools",
-            "mode": "required",
-            "tools": [{"type": "image_generation"}],
-        },
+        # No ``tool_choice`` is sent: the chatgpt.com/backend-api/codex backend
+        # rejects every shape we have for forcing the hosted ``image_generation``
+        # tool. ``{"type": "allowed_tools", "mode": "required", "tools": [{"type":
+        # "image_generation"}]}`` (and the simpler ``{"type": "image_generation"}``
+        # form) both 400 with ``Tool choice 'image_generation' not found in 'tools'
+        # parameter`` — the backend looks up tool_choice as a *function* name and
+        # never recognizes hosted-tool entries. Letting the host model decide is
+        # the only shape Codex currently accepts; the ``instructions`` above are
+        # what nudge it toward the tool. See issue #19505.
         "stream": True,
     }
 
@@ -443,15 +460,9 @@ def _collect_image_b64(
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 exc.response.read()
-                full_body = exc.response.text
-                if _is_image_generation_unsupported_error(
-                    exc.response.status_code,
-                    full_body,
-                ):
-                    raise CodexImageGenerationUnsupportedError(full_body) from exc
-                body = full_body[:500]
                 raise RuntimeError(
-                    f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
+                    f"Codex Responses API returned HTTP {exc.response.status_code}: "
+                    f"{_summarize_error_body(exc.response.text)}"
                 ) from exc
             for event in _iter_sse_json(response):
                 found = _extract_image_b64(event)
@@ -614,19 +625,6 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 quality=quality,
                 output_format=output_format,
                 input_images=input_images or None,
-            )
-        except CodexImageGenerationUnsupportedError:
-            logger.debug(
-                "Codex account does not expose image generation",
-                exc_info=True,
-            )
-            return error_response(
-                error=_IMAGE_GENERATION_UNAVAILABLE_MESSAGE,
-                error_type="capability_unsupported",
-                provider="openai-codex",
-                model=tier_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)

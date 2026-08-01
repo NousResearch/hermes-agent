@@ -33,14 +33,19 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     # Terminal + process management
     "terminal", "process",
-    # Read the desktop GUI's embedded terminal pane, and close an agent's
-    # read-only terminal tab (both gated on HERMES_DESKTOP via check_fn —
-    # hidden outside the GUI).
-    "read_terminal", "close_terminal",
+    # Desktop GUI affordances: read the embedded terminal pane, close an agent's
+    # read-only terminal tab, open a URL/file in the preview pane, focus a
+    # pane, and react to a message with an emoji (all gated on HERMES_DESKTOP
+    # via check_fn — hidden outside the GUI).
+    "read_terminal", "close_terminal", "open_preview", "focus_pane", "react_to_message",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
+    # BFL FLUX 3 video generation
+    "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
+    "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
+    "bfl_flux3_get_result", "bfl_flux3_prompting_guide",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -110,9 +115,11 @@ TOOLSETS = {
     "x_search": {
         "description": (
             "Search X (Twitter) posts and threads via xAI's built-in "
-            "x_search Responses tool. Available when xAI credentials are "
-            "configured (SuperGrok OAuth or XAI_API_KEY). Off by default; "
-            "enable in `hermes tools` → X (Twitter) Search."
+            "x_search Responses tool. Read-only public X discovery; use the "
+            "xurl skill for authenticated X API reads and account actions. "
+            "Available when xAI credentials are configured (SuperGrok OAuth "
+            "or XAI_API_KEY). Off by default; enable in `hermes tools` → "
+            "X (Twitter) Search."
         ),
         "tools": ["x_search"],
         "includes": []
@@ -145,6 +152,25 @@ TOOLSETS = {
             "``hermes tools`` → Video Generation."
         ),
         "tools": ["video_generate", "xai_video_edit", "xai_video_extend"],
+        "includes": []
+    },
+
+    "bfl": {
+        "description": (
+            "Black Forest Labs FLUX 3 video generation through the Nous tool "
+            "gateway: per-mode submit tools (text, image, keyframes, "
+            "continuation), a poll tool, and a prompting guide. Generations "
+            "take minutes, so submit returns a job id and the model polls for "
+            "the result."
+        ),
+        "tools": [
+            "bfl_flux3_text_to_video",
+            "bfl_flux3_image_to_video",
+            "bfl_flux3_keyframes_to_video",
+            "bfl_flux3_video_continuation",
+            "bfl_flux3_get_result",
+            "bfl_flux3_prompting_guide",
+        ],
         "includes": []
     },
 
@@ -407,6 +433,10 @@ TOOLSETS = {
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
             "vision_analyze", "image_generate",
+            # BFL FLUX 3 video generation
+            "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
+            "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
+            "bfl_flux3_get_result", "bfl_flux3_prompting_guide",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation

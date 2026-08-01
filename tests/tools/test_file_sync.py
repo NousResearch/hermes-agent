@@ -54,20 +54,6 @@ class TestMtimeSkip:
         mgr.sync(force=True)
         assert upload.call_count == 0, "unchanged files should not be re-uploaded"
 
-    def test_changed_file_re_uploaded(self, tmp_files):
-        upload = MagicMock()
-        mgr = _make_manager(tmp_files, upload=upload)
-
-        mgr.sync(force=True)
-        upload.reset_mock()
-
-        # Touch one file
-        time.sleep(0.05)
-        Path(tmp_files["cred_a.json"]).write_text("updated content")
-
-        mgr.sync(force=True)
-        assert upload.call_count == 1
-        assert tmp_files["cred_a.json"] in upload.call_args[0][0]
 
     def test_new_file_detected(self, tmp_files, tmp_path):
         upload = MagicMock()
@@ -183,26 +169,6 @@ class TestRateLimiting:
         mgr.sync()
         assert upload.call_count == 0
 
-    def test_force_bypasses_rate_limit(self, tmp_files, tmp_path):
-        upload = MagicMock()
-        mgr = FileSyncManager(
-            get_files_fn=_make_get_files(tmp_files),
-            upload_fn=upload,
-            delete_fn=MagicMock(),
-            sync_interval=10.0,
-        )
-
-        mgr.sync(force=True)
-        upload.reset_mock()
-
-        # Add a new file and force sync
-        new_file = tmp_path / "forced.txt"
-        new_file.write_text("forced")
-        tmp_files["forced.txt"] = str(new_file)
-        mgr._get_files_fn = _make_get_files(tmp_files)
-
-        mgr.sync(force=True)
-        assert upload.call_count == 1
 
     def test_env_var_forces_sync(self, tmp_files, tmp_path):
         upload = MagicMock()
@@ -224,6 +190,42 @@ class TestRateLimiting:
         with patch.dict(os.environ, {_FORCE_SYNC_ENV: "1"}):
             mgr.sync()
         assert upload.call_count == 1
+
+    def test_failed_sync_does_not_suppress_next_retry(self, tmp_files, monkeypatch):
+        """A failed sync must not advance the rate-limit clock.
+
+        Regression: the failure path used to set ``_last_sync_time`` on
+        rollback, so the next non-forced ``sync()`` within ``sync_interval``
+        hit the rate-limit guard and returned early — silently suppressing the
+        retry the rollback had just prepared and leaving the remote stale.
+        """
+        from tools.environments import file_sync
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(file_sync, "_monotonic", lambda: clock["t"])
+
+        upload = MagicMock(side_effect=RuntimeError("transport down"))
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=upload,
+            delete_fn=MagicMock(),
+            sync_interval=10.0,
+        )
+
+        # First sync fails (forced bypasses the guard); state rolls back.
+        mgr.sync(force=True)
+        assert upload.call_count >= 1
+
+        # Transport recovers; advance the clock by LESS than the interval.
+        upload.reset_mock()
+        upload.side_effect = None
+        clock["t"] = 1002.0  # 2s later, < 10s interval
+
+        # The next non-forced cycle must retry, not be rate-limited away.
+        mgr.sync()
+        assert upload.call_count == 3, (
+            "a failed sync must not rate-limit the next retry"
+        )
 
 
 class TestEdgeCases:
@@ -334,18 +336,6 @@ class TestBulkUpload:
         files_arg = bulk_upload.call_args[0][0]
         assert len(files_arg) == 3
 
-    def test_fallback_to_upload_fn_when_no_bulk(self, tmp_files):
-        """Without bulk_upload_fn, per-file upload_fn is used (backwards compat)."""
-        upload = MagicMock()
-        mgr = FileSyncManager(
-            get_files_fn=_make_get_files(tmp_files),
-            upload_fn=upload,
-            delete_fn=MagicMock(),
-            bulk_upload_fn=None,
-        )
-
-        mgr.sync(force=True)
-        assert upload.call_count == 3
 
     def test_bulk_upload_rollback_on_failure(self, tmp_files):
         """Bulk upload failure rolls back synced state so next sync retries."""

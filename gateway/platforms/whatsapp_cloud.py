@@ -33,7 +33,7 @@ Optional / Phase-3+:
 - WHATSAPP_CLOUD_APP_SECRET       (HMAC key for X-Hub-Signature-256)
 - WHATSAPP_CLOUD_WABA_ID          (analytics / future use)
 - WHATSAPP_CLOUD_VERIFY_TOKEN     (hub.verify_token shared secret)
-- WHATSAPP_CLOUD_WEBHOOK_HOST     (default 0.0.0.0)
+- WHATSAPP_CLOUD_WEBHOOK_HOST     (default: unset → dual-stack, all interfaces IPv4+IPv6)
 - WHATSAPP_CLOUD_WEBHOOK_PORT     (default 8090)
 - WHATSAPP_CLOUD_WEBHOOK_PATH     (default /whatsapp/webhook)
 - WHATSAPP_CLOUD_API_VERSION      (default v20.0)
@@ -76,9 +76,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    SUPPORTED_DOCUMENT_TYPES,
 )
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
@@ -86,7 +86,12 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_VERSION = "v20.0"
-DEFAULT_WEBHOOK_HOST = "0.0.0.0"
+# ``None`` → aiohttp/asyncio ``create_server`` binds one listening socket per
+# address family (IPv4 + IPv6). The old "0.0.0.0" default bound IPv4 ONLY and
+# was unreachable over IPv6-only private networks (e.g. Fly.io 6PN) — same
+# bug as the LINE adapter (NS-603) and gateway/platforms/webhook.py
+# (d542894ad). Pin a host via WHATSAPP_CLOUD_WEBHOOK_HOST or extra.webhook_host.
+DEFAULT_WEBHOOK_HOST = None
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
@@ -159,18 +164,25 @@ async def _read_limited_request_body(request: Any, max_bytes: int) -> bytes:
 def _ext_for_mime(mime: str) -> Optional[str]:
     """Resolve a mime type to the file extension we want on disk.
 
-    Consults the override map first so types like ``audio/ogg`` produce
-    the extension downstream tools actually accept (``.ogg``, not the
-    technically-correct-but-broken ``.oga``). Falls back to Python's
-    ``mimetypes.guess_extension`` for anything we haven't pinned.
+    Thin wrapper over the shared dispatch in
+    ``gateway.platforms.media_cache``. Consults the WhatsApp override map
+    first so types like ``audio/ogg`` produce the extension downstream
+    tools actually accept (``.ogg``, not the technically-correct-but-broken
+    ``.oga``). Falls back to Python's ``mimetypes.guess_extension`` for
+    anything we haven't pinned — the shared default table is skipped so
+    behavior stays byte-identical to the historical implementation.
     """
     if not mime:
         return None
-    primary = mime.split(";")[0].strip().lower()
-    override = _WHATSAPP_MIME_EXTENSION_OVERRIDES.get(primary)
-    if override:
-        return override
-    return mimetypes.guess_extension(primary) or None
+    return ext_for_mime(
+        mime,
+        # preserves historical whatsapp_cloud mapping: overrides →
+        # mimetypes → None, never the shared default table.
+        overrides=_WHATSAPP_MIME_EXTENSION_OVERRIDES,
+        use_defaults=False,
+        use_mimetypes=True,
+        fallback=None,
+    )
 
 
 # Inbound media cache lives under the user's hermes dir so it survives
@@ -217,7 +229,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._verify_token: str = str(extra.get("verify_token", "")).strip()
 
         # Webhook server config
-        self._webhook_host: str = str(extra.get("webhook_host", DEFAULT_WEBHOOK_HOST))
+        # Falsy host (None/"") collapses to the dual-stack default.
+        _raw_webhook_host = extra.get("webhook_host", DEFAULT_WEBHOOK_HOST) or DEFAULT_WEBHOOK_HOST
+        self._webhook_host: Optional[str] = (
+            str(_raw_webhook_host) if _raw_webhook_host else None
+        )
         self._webhook_port: int = int(extra.get("webhook_port", DEFAULT_WEBHOOK_PORT))
         self._webhook_path: str = self._normalize_path(
             extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)
@@ -820,6 +836,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
+        allow_session: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Render a dangerous-command approval prompt with native buttons.
@@ -832,7 +849,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
 
-        del allow_permanent  # This adapter already offers one-shot Approve / Deny only.
+        del allow_permanent, allow_session  # This adapter already offers one-shot Approve / Deny only.
         # WhatsApp body caps at 1024 chars; reserve room for the
         # framing prose around the command.
         cmd = command or ""
@@ -1793,11 +1810,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "(session_key=%s) — likely already resolved",
                     session_key,
                 )
-            # Send confirmation message — paralleling Telegram's UX.
+            # Send confirmation message — paralleling Telegram's UX.  A tap
+            # that lands after the wait timed out (count == 0) must not claim
+            # the command was approved: it was already denied fail-closed.
             try:
-                confirm_text = (
-                    "✅ Approved." if choice == "approve" else "❌ Denied."
-                )
+                if count:
+                    confirm_text = (
+                        "✅ Approved." if choice == "approve" else "❌ Denied."
+                    )
+                else:
+                    confirm_text = (
+                        "⌛ Approval expired — command was not run "
+                        "(already timed out or resolved elsewhere)."
+                    )
                 await self.send(str(raw_message.get("from") or ""), confirm_text)
             except Exception:
                 logger.exception("[whatsapp_cloud] approval confirm failed")

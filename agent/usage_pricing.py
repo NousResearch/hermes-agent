@@ -179,6 +179,23 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
         pricing_version="anthropic-pricing-2026-05",
     ),
+    # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
+    # Launched 2026-06-30. Introductory pricing ($2/$10 per MTok) runs
+    # through 2026-08-31, after which it reverts to $3/$15 (matching
+    # Sonnet 4.6). Update this entry when the intro window closes.
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing
+    (
+        "anthropic",
+        "claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        cache_write_cost_per_million=Decimal("2.50"),
+        source="official_docs_snapshot",
+        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
+        pricing_version="anthropic-pricing-2026-06-intro",
+    ),
     # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
     # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
     # tokens for the same text).
@@ -496,13 +513,91 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # Google Gemini
     (
         "google",
+        "gemini-3.6-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.50"),
+        output_cost_per_million=Decimal("7.50"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/gemini-api/docs/pricing",
+        pricing_version="google-pricing-2026-07-28",
+    ),
+    (
+        "google",
+        "gemini-3.5-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.50"),
+        output_cost_per_million=Decimal("9.00"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3.5-flash-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("2.50"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/gemini-api/docs/pricing",
+        pricing_version="google-pricing-2026-07-28",
+    ),
+    (
+        "google",
+        "gemini-3.1-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("12.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3.1-flash-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.50"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3-pro-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("12.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
+        "gemini-3-flash-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.50"),
+        output_cost_per_million=Decimal("3.00"),
+        cache_read_cost_per_million=Decimal("0.05"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-07-07",
+    ),
+    (
+        "google",
         "gemini-2.5-pro",
     ): PricingEntry(
         input_cost_per_million=Decimal("1.25"),
         output_cost_per_million=Decimal("10.00"),
+        cache_read_cost_per_million=Decimal("0.125"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-03-16",
+        pricing_version="google-pricing-2026-07-07",
     ),
     (
         "google",
@@ -510,9 +605,10 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("0.15"),
         output_cost_per_million=Decimal("0.60"),
+        cache_read_cost_per_million=Decimal("0.015"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-03-16",
+        pricing_version="google-pricing-2026-07-07",
     ),
     (
         "google",
@@ -520,25 +616,68 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("0.10"),
         output_cost_per_million=Decimal("0.40"),
+        cache_read_cost_per_million=Decimal("0.01"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-03-16",
+        pricing_version="google-pricing-2026-07-07",
     ),
     # AWS Bedrock — pricing per the Bedrock pricing page.
     # Bedrock charges the same per-token rates as the model provider but
     # through AWS billing.  These are the on-demand prices (no commitment).
     # Source: https://aws.amazon.com/bedrock/pricing/
+    # Current-gen Claude Opus on Bedrock. Commercial Bedrock on-demand
+    # mirrors Anthropic's published list price for the Claude line
+    # ($5/$25 for Opus 4.6/4.7/4.8; cache write = 1.25x input at the
+    # 5-minute TTL, cache read = 0.1x input). NOTE: the AWS Price List API
+    # had not published these SKUs machine-readably as of 2026-07 — these
+    # are commercial-list snapshots pending an authoritative machine source.
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-8",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-opus-4-7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="anthropic-list-2026-07",
+    ),
     (
         "bedrock",
         "anthropic.claude-opus-4-6",
     ): PricingEntry(
-        input_cost_per_million=Decimal("15.00"),
-        output_cost_per_million=Decimal("75.00"),
-        cache_read_cost_per_million=Decimal("1.50"),
-        cache_write_cost_per_million=Decimal("18.75"),
+        input_cost_per_million=Decimal("5.00"),
+        output_cost_per_million=Decimal("25.00"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("6.25"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
-        pricing_version="bedrock-pricing-2026-04",
+        pricing_version="anthropic-list-2026-07",
+    ),
+    (
+        "bedrock",
+        "anthropic.claude-sonnet-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("3.00"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
+        source="official_docs_snapshot",
+        source_url="https://aws.amazon.com/bedrock/pricing/",
+        pricing_version="bedrock-pricing-2026-06",
     ),
     (
         "bedrock",
@@ -819,6 +958,18 @@ for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
     ]
 del _base_56
 
+# The direct Gemini provider currently exposes preview IDs for these two
+# models. Keep the official snapshot keyed by both their documented stable
+# names and the provider's emitted IDs so a catalog selection is billable.
+for _alias, _canonical in {
+    "gemini-3.1-pro-preview": "gemini-3.1-pro",
+    "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
+}.items():
+    _OFFICIAL_DOCS_PRICING[("google", _alias)] = _OFFICIAL_DOCS_PRICING[
+        ("google", _canonical)
+    ]
+del _alias, _canonical
+
 
 def _to_decimal(value: Any) -> Optional[Decimal]:
     if value is None:
@@ -866,11 +1017,17 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    # Vertex AI hosts the same Gemini models as Google AI Studio; price them
-    # off the gemini official-docs snapshot. Strip the "google/" vendor prefix
-    # the OpenAI-compat endpoint requires so the pricing key matches.
-    if provider_name == "vertex" or base_url_host_matches(base_url or "", "aiplatform.googleapis.com"):
-        return BillingRoute(provider="gemini", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    # Google AI Studio (Gemini) and Vertex AI host the same Gemini models.
+    # Price them off the official docs snapshot — the pricing keys are
+    # keyed on provider='google', so normalize every Google-flavored
+    # provider name/host onto it. Strip the "google/" vendor prefix the
+    # Vertex OpenAI-compat endpoint requires so the pricing key matches.
+    if (
+        provider_name in {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
+        or base_url_host_matches(base_url or "", "aiplatform.googleapis.com")
+        or base_url_host_matches(base_url or "", "generativelanguage.googleapis.com")
+    ):
+        return BillingRoute(provider="google", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "fireworks" or base_url_host_matches(base_url or "", "api.fireworks.ai"):
         # Fireworks model ids look like accounts/fireworks/models/<name>;
         # rsplit("/", 1)[-1] yields just <name> which is what the dict keys on.
@@ -884,19 +1041,40 @@ def _normalize_bedrock_model_name(model: str) -> str:
     """Normalize a Bedrock model id to its bare foundation-model form.
 
     Bedrock cross-region inference profiles prefix the foundation model id
-    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``ap.`` / ``jp.``),
-    e.g. ``us.anthropic.claude-opus-4-7``.  The pricing table is keyed on the
-    bare ``anthropic.claude-*`` id, so the prefix must be stripped before the
-    lookup or every cross-region session prices as unknown.  Mirrors the
-    prefix list in ``bedrock_adapter.is_anthropic_bedrock_model``.  Also
-    normalizes dot-notation version numbers (``4.7`` → ``4-7``).
+    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``apac.`` / ``au.``
+    / ...), e.g. ``us.anthropic.claude-opus-4-7`` or
+    ``au.anthropic.claude-sonnet-4-5-20250929-v1:0``.  The pricing table is
+    keyed on the bare ``anthropic.claude-*`` id, so the prefix must be
+    stripped before the lookup or every cross-region session prices as
+    unknown.  Note Asia-Pacific uses ``apac.`` (a bare ``ap.`` never matches
+    an ``apac.*`` id) and Australia/New Zealand use ``au.``.  Also normalizes
+    dot-notation version numbers (``4.7`` → ``4-7``) and the documented
+    trailing date, revision, and profile components (``-20250514-v1:0``).
     """
     name = model.lower().strip()
-    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+    for prefix in (
+        "global.",
+        "us.",
+        "eu.",
+        "apac.",
+        "ap.",
+        "au.",
+        "jp.",
+        "ca.",
+        "sa.",
+        "me.",
+        "af.",
+    ):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
     name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    # Bedrock inference profile IDs append these documented components to the
+    # foundation model ID. Strip only the trailing forms, not arbitrary model
+    # name continuations that could be a distinct SKU.
+    name = re.sub(r":\d+$", "", name)
+    name = re.sub(r"-v\d+$", "", name)
+    name = re.sub(r"-\d{8}$", "", name)
     return name
 
 
@@ -1066,8 +1244,8 @@ def normalize_usage(
         output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
         details = getattr(response_usage, "prompt_tokens_details", None)
         # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
-        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Cline)
-        # expose when routing Claude models — without this
+        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Vercel
+        # AI Gateway, Cline) expose when routing Claude models — without this
         # fallback, cache writes are undercounted as 0 and cache reads can be
         # missed when the proxy only surfaces them at the top level.
         # Port of cline/cline#10266.

@@ -663,10 +663,55 @@ def _summarize_bws_stderr(raw: str) -> str:
     return "; ".join(causes) if causes else text
 
 
+# Env vars the `bws` child actually needs.  We build a minimal allowlisted env
+# rather than copying all of os.environ (which, post-dotenv, holds every
+# provider credential) into the child — tighter blast radius if `bws` or
+# anything it execs ever misbehaves.  BWS_ACCESS_TOKEN and BWS_SERVER_URL are
+# added dynamically below.
+_BWS_ENV_ALLOWLIST = frozenset({
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "XDG_CONFIG_HOME",
+    "XDG_RUNTIME_DIR",
+    "NO_COLOR",
+})
+
+
+def _bws_child_env(access_token: str, server_url: str = "") -> Dict[str, str]:
+    """Build a minimal allowlisted environment for the ``bws`` child process."""
+    env: Dict[str, str] = {}
+    for key in _BWS_ENV_ALLOWLIST:
+        val = os.environ.get(key)
+        if val is not None:
+            env[key] = val
+    env["BWS_ACCESS_TOKEN"] = access_token
+    # Region / self-hosted support. When the config provides a server_url
+    # use it; otherwise preserve any inherited BWS_SERVER_URL from the
+    # host environment (manual override / non-interactive source —
+    # hermes_cli/secrets_cli.py supports this). The allowlist loop above
+    # does NOT include BWS_SERVER_URL so an inherited value is NOT
+    # picked up automatically.
+    if server_url:
+        env["BWS_SERVER_URL"] = server_url
+    else:
+        inherited = os.environ.get("BWS_SERVER_URL")
+        if inherited:
+            env["BWS_SERVER_URL"] = inherited
+    return env
+
+
 def _run_bws_list(
     bws: Path, access_token: str, project_id: str, server_url: str = ""
 ) -> Tuple[Dict[str, str], List[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
+    env = _bws_child_env(access_token, server_url=server_url)
     # bws child intentionally receives the access token; exact preservation
     # (BWS_SERVER_URL manual overrides etc. must survive untouched).
     from tools.environments.local import build_subprocess_env

@@ -236,6 +236,75 @@ def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# _bws_child_env — allowlist-based subprocess env builder
+# ---------------------------------------------------------------------------
+
+
+class TestBwsChildEnv:
+    """Verify that ``_bws_child_env`` builds a minimal, allowlisted
+    environment for the ``bws`` binary — it must carry only the
+    explicitly allowed env vars plus the access token (and optional
+    server URL).  Any credential-bearing var from the host process
+    must NOT leak into the child."""
+
+    def test_includes_allowlisted_keys(self):
+        allowed = sorted(bw._BWS_ENV_ALLOWLIST)
+        env = bw._bws_child_env(access_token="0.fake")
+        for key in allowed:
+            if key in os.environ:
+                assert key in env, (
+                    f"_bws_child_env dropped allowlisted var {key!r} "
+                    f"even though it's set in os.environ"
+                )
+
+    def test_sets_access_token(self):
+        env = bw._bws_child_env(access_token="0.secret-token")
+        assert env["BWS_ACCESS_TOKEN"] == "0.secret-token"
+
+    def test_sets_server_url_when_provided(self):
+        env = bw._bws_child_env(
+            access_token="0.t", server_url="https://vault.bitwarden.eu",
+        )
+        assert env["BWS_SERVER_URL"] == "https://vault.bitwarden.eu"
+
+    def test_omits_server_url_when_empty(self):
+        env = bw._bws_child_env(access_token="0.t")
+        assert "BWS_SERVER_URL" not in env
+
+    def test_preserves_inherited_server_url(self, monkeypatch):
+        """When server_url is empty but BWS_SERVER_URL is in the host env,
+        it must be preserved — hermes_cli/secrets_cli.py supports this as
+        a non-interactive source."""
+        monkeypatch.setenv("BWS_SERVER_URL", "https://vault.bitwarden.eu")
+        env = bw._bws_child_env(access_token="0.t")
+        assert env["BWS_SERVER_URL"] == "https://vault.bitwarden.eu"
+
+    def test_does_not_leak_credential_vars(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-leak-check")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leak")
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("HOME", "/home/test")
+        env = bw._bws_child_env(access_token="0.t")
+        assert "OPENAI_API_KEY" not in env
+        assert "ANTHROPIC_API_KEY" not in env
+
+    def test_access_token_cannot_be_supplanted_by_environ(self, monkeypatch):
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.evil-override")
+        env = bw._bws_child_env(access_token="0.correct-token")
+        assert env["BWS_ACCESS_TOKEN"] == "0.correct-token"
+
+    def test_missing_allowlisted_var_is_omitted(self, monkeypatch):
+        monkeypatch.delenv("TMPDIR", raising=False)
+        env = bw._bws_child_env(access_token="0.t")
+        assert "TMPDIR" not in env
+
+    def test_non_allowlisted_harmless_var_is_omitted(self, monkeypatch):
+        monkeypatch.setenv("MY_CUSTOM_VAR", "hello")
+        env = bw._bws_child_env(access_token="0.t")
+        assert "MY_CUSTOM_VAR" not in env
+
+
+# ---------------------------------------------------------------------------
 # env_loader integration
 # ---------------------------------------------------------------------------
 

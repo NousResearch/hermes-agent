@@ -14,14 +14,12 @@ This test ensures path 3 stays pinned and consistent with the other two.
 from __future__ import annotations
 
 import ast
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SETUP_PY = REPO_ROOT / "skills/productivity/google-workspace/scripts/setup.py"
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
-LAZY_DEPS_PY = REPO_ROOT / "tools/lazy_deps.py"
 
 # ---------------------------------------------------------------------------
 # Static parsers
@@ -55,32 +53,10 @@ def _parse_pyproject_google_extra() -> list[str]:
 
 
 def _parse_lazy_deps_google_workspace() -> list[str]:
-    """Parse tools/lazy_deps.py and return the LAZY_DEPS for skill.google_workspace."""
-    tree = ast.parse(LAZY_DEPS_PY.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        # LAZY_DEPS is declared as AnnAssign: `LAZY_DEPS: dict[str, tuple[str, ...]] = {...}`
-        target_name = None
-        if isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name):
-                target_name = node.target.id
-        elif isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name):
-                    target_name = t.id
-                    break
-        if target_name != "LAZY_DEPS":
-            continue
-        if isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Dict):
-            dict_val = node.value
-        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
-            dict_val = node.value
-        else:
-            continue
-        for k, v in zip(dict_val.keys, dict_val.values):
-            if isinstance(k, ast.Constant) and k.value == _LAZY_DEPS_KEY:
-                if isinstance(v, (ast.Tuple, ast.List)):
-                    return [elt.value for elt in v.elts if isinstance(elt, ast.Constant)]  # pyright: ignore[reportReturnType]
-    raise AssertionError(f"LAZY_DEPS[{_LAZY_DEPS_KEY!r}] not found")
+    """Return the real LAZY_DEPS entry for skill.google_workspace."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    return list(LAZY_DEPS[_LAZY_DEPS_KEY])
 
 
 def _extract_pins(packages: list[str]) -> dict[str, str]:
@@ -102,15 +78,19 @@ class TestGoogleWorkspaceSetupDepsPins:
     """Security pin consistency across all three google-workspace install paths."""
 
     def test_setup_py_pins_httplib2(self):
-        """setup.py REQUIRED_PACKAGES must include httplib2==0.32.0."""
+        """setup.py REQUIRED_PACKAGES must pin httplib2 at or above the GHSA fix version."""
         packages = _parse_setup_py_required_packages()
         pins = _extract_pins(packages)
         assert "httplib2" in pins, (
             f"httplib2 not found in setup.py REQUIRED_PACKAGES.\n"
             f"  Current entries: {packages}"
         )
-        assert pins["httplib2"] == "0.32.0", (
-            f"httplib2 pin mismatch in setup.py: expected 0.32.0, got {pins['httplib2']}.\n"
+        # GHSA-j5g9-f88f-gfj3 is fixed in 0.32.0 — floor invariant, not a snapshot,
+        # so future bumps don't break this test.
+        pinned = tuple(int(part) for part in pins["httplib2"].split("."))
+        assert pinned >= (0, 32, 0), (
+            f"httplib2 pin {pins['httplib2']} in setup.py is below 0.32.0, the "
+            f"GHSA-j5g9-f88f-gfj3 fix version.\n"
             f"  Full REQUIRED_PACKAGES: {packages}"
         )
 

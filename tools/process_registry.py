@@ -834,6 +834,47 @@ class ProcessRegistry:
 
         return session
 
+    # Bounded local-startup observation window (seconds). Long enough to
+    # catch "command not found" / permission-denied class failures (the
+    # login shell launches instantly and a missing binary fails within a
+    # few milliseconds), short enough that healthy long-lived processes
+    # (servers, watchers) never feel a startup delay -- they simply outlive
+    # the window and fall through unaffected.
+    _LOCAL_STARTUP_OBSERVATION_SECONDS = 0.2
+    _LOCAL_STARTUP_POLL_INTERVAL_SECONDS = 0.02
+
+    def observe_local_startup(
+        self,
+        session: "ProcessSession",
+        timeout: float = _LOCAL_STARTUP_OBSERVATION_SECONDS,
+        interval: float = _LOCAL_STARTUP_POLL_INTERVAL_SECONDS,
+    ) -> None:
+        """Give a freshly spawned local background process a brief window to
+        fail immediately before the caller reports blanket "started" success.
+
+        ``spawn_local`` always succeeds at the ``Popen`` level -- the user's
+        login shell launches fine -- even when the *command inside* the shell
+        is bogus (``command not found`` exits the shell with rc 127 almost
+        instantly). Nothing observes that until the async reader thread's
+        ``finally`` block runs, or a later ``process(action='poll')`` call
+        happens to reconcile it. Without this, a dead-on-arrival local
+        command is reported as a live, successfully-started background
+        process (the same silent-failure symptom as #75675, on the local
+        path instead of ``spawn_via_env``).
+
+        Safe no-op for PTY sessions and anything without a real ``Popen``
+        handle (``_reconcile_local_exit`` already guards that); such
+        sessions return immediately without waiting out the window.
+        """
+        if session is None or session.exited or session.process is None:
+            return
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while True:
+            self._reconcile_local_exit(session)
+            if session.exited or time.monotonic() >= deadline:
+                return
+            time.sleep(interval)
+
     def spawn_via_env(
         self,
         env: Any,

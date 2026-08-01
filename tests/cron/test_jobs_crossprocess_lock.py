@@ -125,3 +125,47 @@ def test_jobs_lock_excludes_another_process(tmp_path, monkeypatch):
     # Once the child has released, the lock is freely acquirable again.
     with jobs._jobs_lock():
         pass
+
+
+@pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")
+def test_strict_jobs_lock_fails_closed_on_timeout(tmp_path, monkeypatch):
+    """Coherent multi-file operations never enter after advisory-lock timeout."""
+    cron_dir = tmp_path / "cron"
+    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs, "JOBS_FILE", cron_dir / "jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", cron_dir / "output")
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.0)
+
+    real_flock = jobs.fcntl.flock
+
+    def busy_flock(fd, operation):
+        if operation & jobs.fcntl.LOCK_NB:
+            raise BlockingIOError("held by another process")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(jobs.fcntl, "flock", busy_flock)
+
+    with pytest.raises(jobs._JobsLockUnavailableError, match="Timed out"):
+        with jobs._jobs_lock(strict=True):
+            pytest.fail("strict lock entered without cross-process ownership")
+
+
+@pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")
+def test_nested_strict_jobs_lock_rejects_degraded_outer_lock(tmp_path, monkeypatch):
+    """A strict snapshot cannot inherit an outer process-local-only lock."""
+    cron_dir = tmp_path / "cron"
+    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs, "JOBS_FILE", cron_dir / "jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", cron_dir / "output")
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.0)
+
+    def busy_flock(_fd, operation):
+        if operation & jobs.fcntl.LOCK_NB:
+            raise BlockingIOError("held by another process")
+
+    monkeypatch.setattr(jobs.fcntl, "flock", busy_flock)
+
+    with jobs._jobs_lock():
+        with pytest.raises(jobs._JobsLockUnavailableError, match="degraded mode"):
+            with jobs._jobs_lock(strict=True):
+                pytest.fail("nested strict lock entered degraded mode")

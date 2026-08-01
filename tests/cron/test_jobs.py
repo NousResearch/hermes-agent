@@ -21,6 +21,7 @@ from cron.jobs import (
     advance_next_run,
     claim_dispatch,
     heartbeat_run_claim,
+    release_run_claim,
     get_due_jobs,
     save_job_output,
 )
@@ -661,8 +662,13 @@ class TestGetDueJobs:
         # Mid-run heartbeat before the TTL horizon refreshes the claim.
         monkeypatch.setattr("cron.jobs._hermes_now",
                             lambda: t0 + timedelta(seconds=ttl - 60))
-        owner = get_job("slowrun")["run_claim"]["by"]
-        assert heartbeat_run_claim("slowrun", expected_owner=owner) is True
+        slowrun = get_job("slowrun")
+        assert slowrun is not None
+        claim_id = slowrun["run_claim"]["id"]
+        assert heartbeat_run_claim(
+            "slowrun",
+            expected_claim_id=claim_id,
+        ) is True
 
         # Past the ORIGINAL claim's TTL horizon: without the heartbeat this
         # tick would stale-remove the maxed one-shot; with it the claim is
@@ -699,6 +705,55 @@ class TestGetDueJobs:
             "at": original_at,
             "by": "new-owner",
         }
+
+    def test_tokenized_run_claim_rejects_owner_only_and_stale_token(
+        self,
+        tmp_cron_dir,
+    ):
+        """Owner labels cannot bypass the exact token fence on new claims."""
+        run_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        save_jobs(
+            [
+                {
+                    "id": "tokenized",
+                    "name": "Tokenized",
+                    "prompt": "x",
+                    "schedule": {"kind": "once", "run_at": run_at},
+                    "next_run_at": run_at,
+                    "enabled": True,
+                    "state": "scheduled",
+                }
+            ]
+        )
+
+        assert [job["id"] for job in get_due_jobs()] == ["tokenized"]
+        tokenized = get_job("tokenized")
+        assert tokenized is not None
+        claim = tokenized["run_claim"]
+        assert claim["id"]
+        assert heartbeat_run_claim(
+            "tokenized",
+            expected_owner=claim["by"],
+        ) is False
+        assert heartbeat_run_claim(
+            "tokenized",
+            expected_claim_id="stale-token",
+        ) is False
+        assert heartbeat_run_claim(
+            "tokenized",
+            expected_claim_id=claim["id"],
+        ) is True
+        assert release_run_claim(
+            "tokenized",
+            expected_claim_id="stale-token",
+        ) is False
+        assert release_run_claim(
+            "tokenized",
+            expected_claim_id=claim["id"],
+        ) is True
+        released = get_job("tokenized")
+        assert released is not None
+        assert released["run_claim"] is None
 
 
 class TestEnabledToolsets:
@@ -934,7 +989,8 @@ class TestClaimDispatch:
         # could remove the job.  The next claim must refuse AND clean up.
         save_jobs([self._oneshot(times=1, completed=1)])
         assert claim_dispatch("os1") is False
-        assert load_jobs() == []  # removed, will not re-fire
+        assert get_job("os1") is None  # hidden, will not re-fire
+        assert load_jobs()[0]["runtime_tombstone"]
 
 
     def test_mark_job_run_does_not_double_count_preclaimed_oneshot(self, tmp_cron_dir):
@@ -948,8 +1004,8 @@ class TestClaimDispatch:
         retired = load_jobs()
         assert len(retired) == 1  # completed once, retired — not fired twice
         assert retired[0]["repeat"]["completed"] == 1  # no double count
-        assert retired[0]["state"] == "completed"
-        assert retired[0]["enabled"] is False
+        assert get_job("os1") is None  # completed once, hidden — not fired twice
+        assert retired[0]["runtime_tombstone"]
 
 
     def test_get_due_jobs_removes_stale_maxed_oneshot(self, tmp_cron_dir):
@@ -967,7 +1023,8 @@ class TestClaimDispatch:
         }])
         due = get_due_jobs()
         assert due == []
-        assert load_jobs() == []  # cleaned up
+        assert get_job("os1") is None  # cleaned up from public runtime surfaces
+        assert load_jobs()[0]["runtime_tombstone"]
 
 
 class TestLateEnvRepointScopesStore:

@@ -16,11 +16,13 @@ import json
 import logging
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import uuid
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -32,7 +34,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -282,7 +284,17 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_runs, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    claim_dispatch,
+    claim_job_for_fire_token,
+    get_due_jobs,
+    heartbeat_fire_claim,
+    heartbeat_run_claim,
+    mark_job_run,
+    release_fire_claim,
+    release_run_claim,
+    save_job_output,
+)
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -336,6 +348,11 @@ _running_lock = threading.Lock()
 # plausible-looking final response from truncated output — can never
 # overwrite the interrupted status with a false "ok" (#60432).
 _interrupted_job_ids: set = set()
+# The shutdown thread records intent only. The owning worker consumes the
+# reason after its tool/agent has returned, then performs the fenced terminal
+# write with its own fire token. A non-owner must never finalize a replacement.
+_interrupted_job_reasons: dict[str, str] = {}
+_active_cron_worker_processes: dict[str, subprocess.Popen] = {}
 
 
 def get_running_job_ids() -> "frozenset[str]":
@@ -354,11 +371,11 @@ def get_running_job_ids() -> "frozenset[str]":
     blind to them (#60432).
     """
     with _running_lock:
-        return frozenset(_running_job_ids)
+        return frozenset(_running_job_ids | set(_active_cron_worker_processes))
 
 
 def mark_running_jobs_interrupted(reason: str) -> list:
-    """Best-effort: mark every currently in-flight cron job interrupted.
+    """Terminate active workers and signal owner-fenced interruption.
 
     Called by the gateway shutdown path immediately after it force-kills
     tool subprocesses (``process_registry.kill_all()``). A job whose tool
@@ -367,31 +384,29 @@ def mark_running_jobs_interrupted(reason: str) -> list:
     same process and may go on to produce a plausible-looking final
     response from the now-truncated tool output.
 
-    Records the job IDs in ``_interrupted_job_ids`` BEFORE writing
-    ``last_status`` so ``run_one_job``'s own eventual completion for the
-    same job (racing in its own thread) sees the flag and skips its normal
-    write instead of clobbering this one — see the check near the end of
-    ``run_one_job``. This does not attempt to correlate the killed
-    subprocess PID to a specific job ID (the process registry tracks PIDs,
-    not cron job IDs); any job still dispatched at the moment of a forced
-    kill is treated as interrupted, matching the coarser precedent already
-    set by ``GatewayRunner._interrupt_running_agents``, which interrupts
-    every entry in ``_running_agents`` on a drain timeout without
-    per-agent correlation either.
+    The shutdown thread records intent and reaps isolated worker processes but
+    does not write runtime state. Each owning ``run_one_job`` thread consumes
+    the reason only after worker termination and finalizes with its fire token,
+    so it cannot clear or overwrite a replacement owner's claim.
 
     Returns the list of job IDs marked, for the caller to log.
     """
     with _running_lock:
-        job_ids = list(_running_job_ids)
+        job_ids = list(_running_job_ids | _active_cron_worker_processes.keys())
         _interrupted_job_ids.update(job_ids)
-    marked = []
-    for job_id in job_ids:
-        try:
-            mark_job_run(job_id, False, reason)
-            marked.append(job_id)
-        except Exception as e:
-            logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
-    return marked
+        for job_id in job_ids:
+            _interrupted_job_reasons[job_id] = reason
+        active_workers = [
+            _active_cron_worker_processes[job_id]
+            for job_id in job_ids
+            if job_id in _active_cron_worker_processes
+        ]
+    for process in active_workers:
+        _terminate_cron_worker(process)
+    # Completion is deliberately deferred until each owner acknowledges
+    # termination in run_one_job. Returning the IDs preserves observability
+    # without pretending that persistence has already happened.
+    return job_ids
 
 
 def _is_interrupted(job_id: str) -> bool:
@@ -420,8 +435,20 @@ def _consume_interrupted_flag(job_id: str) -> bool:
     with _running_lock:
         if job_id in _interrupted_job_ids:
             _interrupted_job_ids.discard(job_id)
+            _interrupted_job_reasons.pop(job_id, None)
             return True
         return False
+
+
+def _consume_interrupted_reason(job_id: str) -> Optional[str]:
+    """Consume shutdown intent after the owning worker has stopped."""
+    with _running_lock:
+        if job_id not in _interrupted_job_ids:
+            return None
+        _interrupted_job_ids.discard(job_id)
+        return _interrupted_job_reasons.pop(job_id, None) or (
+            "Interrupted by gateway shutdown before the run finished."
+        )
 
 
 # Sequential (env-mutating) cron jobs — workdir jobs that touch
@@ -2108,6 +2135,71 @@ _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
+_CRON_AGENT_POLL_SECONDS = 5.0
+_CRON_WORKER_POLL_SECONDS = 0.25
+_CRON_WORKER_TERMINATE_GRACE_SECONDS = 3.0
+_CRON_WORKER_RESULT_PREFIX = "__HERMES_CRON_RESULT__"
+_CRON_WORKER_PULSE_ENV = "HERMES_CRON_WORKER_PULSE"
+
+
+def _touch_cron_worker_pulse(pulse_path: str) -> bool:
+    """Best-effort activity pulse from an isolated cron worker."""
+    if not pulse_path:
+        return False
+    try:
+        Path(pulse_path).touch()
+        return True
+    except OSError:
+        logger.debug("Could not refresh cron worker activity pulse")
+        return False
+
+
+def _refresh_cron_worker_pulse_from_agent(
+    agent: Any,
+    pulse_path: str,
+    previous_activity: Optional[float],
+) -> Optional[float]:
+    """Pulse when ``AIAgent.get_activity_summary`` reports new activity."""
+    if not pulse_path or not hasattr(agent, "get_activity_summary"):
+        return previous_activity
+    try:
+        summary = agent.get_activity_summary()
+        activity = float(summary["last_activity_ts"])
+    except (KeyError, TypeError, ValueError):
+        return previous_activity
+    if previous_activity is not None and activity <= previous_activity:
+        return previous_activity
+    if _touch_cron_worker_pulse(pulse_path):
+        return activity
+    return previous_activity
+
+
+def _wait_for_cron_worker_termination(
+    future: concurrent.futures.Future,
+    *,
+    heartbeat: Callable[[], None],
+    poll_interval: float,
+) -> None:
+    """Wait for cooperative timeout termination without releasing ownership."""
+    while True:
+        done, _ = concurrent.futures.wait({future}, timeout=poll_interval)
+        if done:
+            break
+        try:
+            heartbeat()
+        except Exception:
+            logger.debug("Cron termination heartbeat failed", exc_info=True)
+
+    try:
+        future.result()
+    except (asyncio.CancelledError, concurrent.futures.CancelledError):
+        return
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        # The authoritative outcome remains the inactivity timeout. The worker's
+        # post-interrupt exception only acknowledges that it has stopped.
+        return
 
 
 def _get_script_timeout() -> int:
@@ -2204,6 +2296,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
+    abort_event: Optional[threading.Event] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2236,6 +2329,8 @@ def _run_job_script(
             mutated, avoiding the global-side-effect bug where a cron
             job's ``os.chdir()`` leaks into concurrent gateway sessions
             (#69396).
+        abort_event: When set, terminate the child process tree promptly.
+            Claimed runs use this when a heartbeat proves ownership was lost.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2311,17 +2406,51 @@ def _run_job_script(
         # NEVER mutate the Python process cwd — that would leak into
         # concurrent gateway sessions (#69396).
         _script_cwd = workdir or str(path.parent)
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=script_timeout,
-            cwd=_script_cwd,
-            env=env,
-            **popen_kwargs,
-        )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        if abort_event is None:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=script_timeout,
+                cwd=_script_cwd,
+                env=env,
+                **popen_kwargs,
+            )
+            returncode = result.returncode
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+        else:
+            owned_popen_kwargs = dict(popen_kwargs)
+            if sys.platform != "win32":
+                owned_popen_kwargs["start_new_session"] = True
+            process = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=_script_cwd,
+                env=env,
+                **owned_popen_kwargs,
+            )
+            deadline = time.monotonic() + script_timeout
+            worker_pulse_path = os.getenv(_CRON_WORKER_PULSE_ENV, "").strip()
+            while True:
+                try:
+                    stdout_raw, stderr_raw = process.communicate(timeout=0.05)
+                    break
+                except subprocess.TimeoutExpired:
+                    _touch_cron_worker_pulse(worker_pulse_path)
+                    if abort_event.is_set():
+                        _terminate_cron_worker(process)
+                        _drain_terminated_cron_process(process)
+                        return False, "Fire-claim ownership was lost; script terminated."
+                    if time.monotonic() >= deadline:
+                        _terminate_cron_worker(process)
+                        _drain_terminated_cron_process(process)
+                        raise subprocess.TimeoutExpired(argv, script_timeout)
+            returncode = process.returncode
+            stdout = (stdout_raw or "").strip()
+            stderr = (stderr_raw or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2333,8 +2462,8 @@ def _run_job_script(
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if returncode != 0:
+            parts = [f"Script exited with code {returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
@@ -2352,7 +2481,7 @@ def _run_job_script(
 def _run_job_script_with_claim_heartbeat(
     job: dict, script_path: str, workdir: Optional[str] = None,
 ) -> tuple[bool, str]:
-    """Run a cron script while keeping its owned one-shot claim fresh.
+    """Run a cron script while keeping its owned dispatch claims fresh.
 
     Script execution is synchronous and may legitimately outlive the stale
     claim TTL.  Without a concurrent heartbeat, another scheduler process can
@@ -2360,28 +2489,55 @@ def _run_job_script_with_claim_heartbeat(
     Recurring jobs and unclaimed/manual runs have no durable one-shot claim and
     therefore use the ordinary script path without starting a thread.
 
-    The claim owner is captured from the dispatched job and never re-read from
-    storage.  ``heartbeat_run_claim`` compares that stable owner before every
-    refresh, so a stale runner cannot extend a replacement owner's claim.
+    The claim token is captured from the dispatched job and never re-read from
+    storage. ``heartbeat_run_claim`` compares that stable token before every
+    refresh, so a stale runner cannot extend a replacement owner's claim. The
+    owner label remains only as a legacy fallback for pre-token records.
     """
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
-    if not (
+    run_claim_id = str(
+        job.get("_run_claim_id")
+        or (claim.get("id") if isinstance(claim, dict) else "")
+        or ""
+    )
+    owns_run_claim = (
         isinstance(schedule, dict)
         and schedule.get("kind") == "once"
-        and owner
-    ):
+        and (run_claim_id or owner)
+    )
+    fire_claim_id = str(job.get("_fire_claim_id") or "")
+    if not owns_run_claim and not fire_claim_id:
         return _run_job_script(script_path, workdir=workdir)
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
+    ownership_lost = threading.Event()
     heartbeat_context = contextvars.copy_context()
 
     def _heartbeat_loop() -> None:
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                heartbeat_run_claim(job_id, expected_owner=owner)
+                run_claim_ok = True
+                fire_claim_ok = True
+                if owns_run_claim:
+                    if run_claim_id:
+                        run_claim_ok = heartbeat_run_claim(
+                            job_id, expected_claim_id=run_claim_id
+                        )
+                    else:
+                        run_claim_ok = heartbeat_run_claim(
+                            job_id, expected_owner=owner
+                        )
+                if fire_claim_id:
+                    fire_claim_ok = heartbeat_fire_claim(
+                        job_id,
+                        expected_claim_id=fire_claim_id,
+                    )
+                if not run_claim_ok or not fire_claim_ok:
+                    ownership_lost.set()
+                    return
             except Exception:
                 logger.debug(
                     "Job '%s': script run_claim heartbeat failed",
@@ -2398,15 +2554,21 @@ def _run_job_script_with_claim_heartbeat(
     try:
         heartbeat_thread.start()
     except Exception:
-        logger.debug(
-            "Job '%s': could not start script run_claim heartbeat",
+        logger.exception(
+            "Job '%s': could not start script claim heartbeat",
             job_id,
-            exc_info=True,
         )
-        return _run_job_script(script_path, workdir=workdir)
+        return False, "Could not start fire-claim heartbeat; script was not run."
 
     try:
-        return _run_job_script(script_path, workdir=workdir)
+        result = _run_job_script(
+            script_path,
+            workdir=workdir,
+            abort_event=ownership_lost,
+        )
+        if ownership_lost.is_set():
+            return False, "Fire-claim ownership was lost; script terminated."
+        return result
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -3541,7 +3703,16 @@ def run_job(
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        _POLL_INTERVAL = 5.0
+        _worker_poll_raw = os.getenv("HERMES_CRON_WORKER_POLL_SECONDS", "").strip()
+        try:
+            _worker_poll = float(_worker_poll_raw) if _worker_poll_raw else None
+        except (TypeError, ValueError):
+            _worker_poll = None
+        _POLL_INTERVAL = (
+            min(_CRON_AGENT_POLL_SECONDS, max(0.01, _worker_poll))
+            if _worker_poll is not None
+            else _CRON_AGENT_POLL_SECONDS
+        )
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
         # the claim TTL is a dead-owner detector, but without a heartbeat a
         # run that legitimately outlives it (stream stall, laptop asleep
@@ -3554,25 +3725,53 @@ def run_job(
             isinstance(_job_schedule, dict) and _job_schedule.get("kind") == "once"
         )
         _run_claim = job.get("run_claim")
-        _run_claim_owner = (
-            str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
+        _run_claim_id = str(
+            job.get("_run_claim_id")
+            or (_run_claim.get("id") if isinstance(_run_claim, dict) else "")
+            or ""
         )
+        _fire_claim_id = str(job.get("_fire_claim_id") or "")
         _last_claim_heartbeat = time.monotonic()
+        _claim_ownership_lost = False
 
-        def _heartbeat_run_claim_if_due():
-            nonlocal _last_claim_heartbeat
-            if not _is_oneshot or not _run_claim_owner:
+        def _heartbeat_dispatch_claims_if_due():
+            nonlocal _last_claim_heartbeat, _claim_ownership_lost
+            if not ((_is_oneshot and _run_claim_id) or _fire_claim_id):
                 return
             _mono = time.monotonic()
             if _mono - _last_claim_heartbeat < _RUN_CLAIM_HEARTBEAT_SECONDS:
                 return
             _last_claim_heartbeat = _mono
             try:
-                heartbeat_run_claim(job_id, expected_owner=_run_claim_owner)
+                run_claim_ok = True
+                fire_claim_ok = True
+                if _is_oneshot and _run_claim_id:
+                    run_claim_ok = heartbeat_run_claim(
+                        job_id, expected_claim_id=_run_claim_id
+                    )
+                if _fire_claim_id:
+                    fire_claim_ok = heartbeat_fire_claim(
+                        job_id,
+                        expected_claim_id=_fire_claim_id,
+                    )
+                if not run_claim_ok or not fire_claim_ok:
+                    _claim_ownership_lost = True
             except Exception:
                 logger.debug(
                     "Job '%s': run_claim heartbeat failed", job_name, exc_info=True
                 )
+
+        _worker_pulse_path = os.getenv(_CRON_WORKER_PULSE_ENV, "").strip()
+        _last_pulsed_activity: Optional[float] = None
+
+        def _pulse_parent_on_agent_activity() -> None:
+            """Expose only activity timing to the supervising parent process."""
+            nonlocal _last_pulsed_activity
+            _last_pulsed_activity = _refresh_cron_worker_pulse_from_agent(
+                agent,
+                _worker_pulse_path,
+                _last_pulsed_activity,
+            )
 
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
@@ -3585,7 +3784,7 @@ def run_job(
             if _cron_inactivity_limit is None:
                 # Unlimited — no inactivity watchdog, but a one-shot still
                 # needs its run_claim heartbeat, so poll instead of blocking.
-                if _is_oneshot:
+                if (_is_oneshot and _run_claim_id) or _fire_claim_id:
                     result = None
                     while True:
                         done, _ = concurrent.futures.wait(
@@ -3594,7 +3793,10 @@ def run_job(
                         if done:
                             result = _cron_future.result()
                             break
-                        _heartbeat_run_claim_if_due()
+                        _pulse_parent_on_agent_activity()
+                        _heartbeat_dispatch_claims_if_due()
+                        if _claim_ownership_lost:
+                            break
                 else:
                     result = _cron_future.result()
             else:
@@ -3606,7 +3808,10 @@ def run_job(
                     if done:
                         result = _cron_future.result()
                         break
-                    _heartbeat_run_claim_if_due()
+                    _pulse_parent_on_agent_activity()
+                    _heartbeat_dispatch_claims_if_due()
+                    if _claim_ownership_lost:
+                        break
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
@@ -3618,14 +3823,28 @@ def run_job(
                     if _idle_secs >= _cron_inactivity_limit:
                         _inactivity_timeout = True
                         break
-        except Exception:
+        except BaseException:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
-        finally:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+        if _claim_ownership_lost:
+            try:
+                if hasattr(agent, "interrupt"):
+                    agent.interrupt("Cron fire-claim ownership lost")
+                _wait_for_cron_worker_termination(
+                    _cron_future,
+                    heartbeat=lambda: None,
+                    poll_interval=_POLL_INTERVAL,
+                )
+            finally:
+                _cron_pool.shutdown(wait=True, cancel_futures=True)
+            raise RuntimeError(
+                "Fire-claim ownership was lost while the agent was running."
+            )
 
         if _inactivity_timeout:
-            # Build diagnostic summary from the agent's activity tracker.
+            assert _cron_inactivity_limit is not None
+            # The worker may still be performing side effects after a cooperative
             _activity = {}
             if hasattr(agent, "get_activity_summary"):
                 try:
@@ -3645,12 +3864,26 @@ def run_job(
                 _last_desc, _iter_n, _iter_max,
                 _cur_tool or "none",
             )
-            request_hard_interrupt(agent, "Cron job timed out (inactivity)")
+            try:
+                request_hard_interrupt(agent, "Cron job timed out (inactivity)")
+                _wait_for_cron_worker_termination(
+                    _cron_future,
+                    heartbeat=_heartbeat_dispatch_claims_if_due,
+                    poll_interval=_POLL_INTERVAL,
+                )
+            finally:
+                # Do not record timeout or release the fire claim until the
+                # worker has acknowledged termination. Thread cancellation is
+                # cooperative; shutdown(wait=False) would leave side effects
+                # running after shared ownership was cleared.
+                _cron_pool.shutdown(wait=True, cancel_futures=True)
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
                 f"— last activity: {_last_desc}"
             )
+
+        _cron_pool.shutdown(wait=True, cancel_futures=True)
 
         # Guard against non-dict returns from run_conversation under error conditions
         if not isinstance(result, dict):
@@ -3864,6 +4097,323 @@ def run_job(
             _teardown_cron_agent(agent, job_id)
 
 
+def _cron_inactivity_limit_seconds() -> Optional[float]:
+    """Resolve the configured inactivity limit; ``None`` means unlimited."""
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if raw:
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s", raw
+            )
+            timeout = 600.0
+    else:
+        timeout = 600.0
+    return timeout if timeout > 0 else None
+
+
+def _cron_worker_command() -> list[str]:
+    """Return the isolated interpreter command used for cron agent work."""
+    return [sys.executable, "-m", "cron.agent_worker"]
+
+
+def _snapshot_cron_worker_descendants(process: subprocess.Popen) -> list:
+    """Capture POSIX descendants before the worker can exit and reparent them."""
+    if os.name == "nt":
+        return []
+    try:
+        import psutil  # type: ignore
+
+        return psutil.Process(process.pid).children(recursive=True)
+    except Exception:
+        logger.debug(
+            "Could not snapshot descendants of cron worker PID %d",
+            process.pid,
+            exc_info=True,
+        )
+        return []
+
+
+def _signal_cron_worker_descendants(descendants: list, *, force: bool) -> None:
+    """Best-effort identity-safe signal for snapshotted detached descendants."""
+    for child in reversed(descendants):
+        try:
+            if force:
+                child.kill()
+            else:
+                child.terminate()
+        except Exception as exc:
+            # psutil Process objects retain create-time identity, so PID reuse
+            # fails closed instead of signalling an unrelated process.
+            logger.debug(
+                "Could not %s cron worker descendant PID %s: %s",
+                "kill" if force else "terminate",
+                getattr(child, "pid", "unknown"),
+                exc,
+            )
+
+
+def _wait_for_cron_worker_descendants(descendants: list, timeout: float) -> None:
+    """Bounded best-effort wait after signalling detached descendants."""
+    if not descendants:
+        return
+    try:
+        import psutil  # type: ignore
+
+        _gone, alive = psutil.wait_procs(descendants, timeout=max(0.0, timeout))
+        if alive:
+            logger.warning(
+                "%d cron worker descendant process(es) remained after hard stop",
+                len(alive),
+            )
+    except Exception:
+        logger.debug("Could not wait for cron worker descendants", exc_info=True)
+
+
+def _terminate_cron_worker(process: subprocess.Popen) -> None:
+    """Terminate a cron worker tree and return only after process exit."""
+    if process.poll() is not None:
+        return
+    descendants = _snapshot_cron_worker_descendants(process)
+    if os.name == "nt":
+        try:
+            taskkill = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=_CRON_WORKER_TERMINATE_GRACE_SECONDS,
+            )
+            if taskkill.returncode != 0:
+                process.terminate()
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.terminate()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=_CRON_WORKER_TERMINATE_GRACE_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)  # windows-footgun: ok — POSIX branch
+    except (OSError, ProcessLookupError):
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    _signal_cron_worker_descendants(descendants, force=False)
+    try:
+        process.wait(timeout=_CRON_WORKER_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+
+    # Always signal the group after the leader exits: a descendant may ignore
+    # SIGTERM and keep inherited stdout/stderr pipes open after reparenting.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX branch
+    except (OSError, ProcessLookupError):
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+    _signal_cron_worker_descendants(descendants, force=True)
+    if process.poll() is None:
+        process.wait()
+    _wait_for_cron_worker_descendants(
+        descendants,
+        _CRON_WORKER_TERMINATE_GRACE_SECONDS,
+    )
+
+
+def _drain_terminated_cron_process(process: subprocess.Popen) -> None:
+    """Bound pipe draining after process-tree termination."""
+    try:
+        process.communicate(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+def _run_job_in_killable_process(
+    job: dict,
+    *,
+    verbose: bool = False,
+) -> tuple[bool, str, str, Optional[str]]:
+    """Execute ``run_job`` in a supervised, killable interpreter process.
+
+    Job input and result output use anonymous pipes. The only filesystem IPC is
+    an empty activity-pulse file under the active profile; raw prompts, model
+    responses, tool output, and exception text are never written there.
+    """
+    from cron.jobs import current_cron_store_home
+
+    job_id = str(job.get("id") or "unknown")
+    home = current_cron_store_home()
+    worker_dir = home / "cron" / ".workers"
+    worker_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(worker_dir, 0o700)
+    except OSError:
+        pass
+    nonce = uuid.uuid4().hex
+    pulse_path = worker_dir / f"{nonce}.pulse"
+    result_marker = f"{_CRON_WORKER_RESULT_PREFIX}{nonce}:"
+    request = json.dumps(
+        {
+            "home": str(home),
+            "job": job,
+            "nonce": nonce,
+            "verbose": verbose,
+        },
+        ensure_ascii=False,
+    )
+
+    run_claim_id = str(
+        job.get("_run_claim_id")
+        or (job.get("run_claim") or {}).get("id")
+        or ""
+    )
+    fire_claim_id = str(job.get("_fire_claim_id") or "")
+
+    def _heartbeat_ownership() -> bool:
+        if run_claim_id and not heartbeat_run_claim(
+            job_id, expected_claim_id=run_claim_id
+        ):
+            return False
+        if fire_claim_id and not heartbeat_fire_claim(
+            job_id, expected_claim_id=fire_claim_id
+        ):
+            return False
+        return True
+
+    if not _heartbeat_ownership():
+        return False, "", "", "Cron job ownership lost before worker start"
+
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env["HERMES_CRON_TIMEOUT"] = "0"
+    env[_CRON_WORKER_PULSE_ENV] = str(pulse_path)
+    env["HERMES_CRON_WORKER_POLL_SECONDS"] = str(_CRON_WORKER_POLL_SECONDS)
+    popen_kwargs: dict = {
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "env": env,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    try:
+        process = subprocess.Popen(_cron_worker_command(), **popen_kwargs)
+    except (OSError, ValueError):
+        logger.error("Job '%s': unable to start isolated cron worker", job_id)
+        return False, "", "", "Unable to start isolated cron worker"
+
+    with _running_lock:
+        _active_cron_worker_processes[job_id] = process
+
+    timeout = _cron_inactivity_limit_seconds()
+    last_activity = time.monotonic()
+    last_pulse_mtime: Optional[int] = None
+    last_claim_heartbeat = last_activity
+    stdout = ""
+    try:
+        if process.stdin is None:
+            raise RuntimeError("isolated cron worker stdin is unavailable")
+        try:
+            process.stdin.write(request)
+            process.stdin.flush()
+        finally:
+            process.stdin.close()
+            process.stdin = None
+        while True:
+            try:
+                stdout, _stderr = process.communicate(
+                    timeout=_CRON_WORKER_POLL_SECONDS,
+                )
+                break
+            except subprocess.TimeoutExpired:
+                pass
+
+            now_mono = time.monotonic()
+            try:
+                pulse_mtime = pulse_path.stat().st_mtime_ns
+            except OSError:
+                pulse_mtime = None
+            if pulse_mtime is not None and pulse_mtime != last_pulse_mtime:
+                last_pulse_mtime = pulse_mtime
+                last_activity = now_mono
+
+            if now_mono - last_claim_heartbeat >= _RUN_CLAIM_HEARTBEAT_SECONDS:
+                if not _heartbeat_ownership():
+                    _terminate_cron_worker(process)
+                    _drain_terminated_cron_process(process)
+                    return False, "", "", "Cron job ownership lost while worker was active"
+                last_claim_heartbeat = now_mono
+
+            if timeout is not None and now_mono - last_activity >= timeout:
+                _terminate_cron_worker(process)
+                _drain_terminated_cron_process(process)
+                return (
+                    False,
+                    "",
+                    "",
+                    f"Cron job timed out after {timeout:g}s of inactivity",
+                )
+
+        marker_at = stdout.rfind(result_marker)
+        if marker_at < 0:
+            logger.error(
+                "Job '%s': isolated cron worker exited without result (status=%s)",
+                job_id,
+                process.returncode,
+            )
+            return False, "", "", "Isolated cron worker exited without a valid result"
+        payload_line = stdout[marker_at + len(result_marker) :].splitlines()[0]
+        try:
+            payload = json.loads(payload_line)
+            result = payload["result"]
+            if not isinstance(result, list) or len(result) != 4:
+                raise ValueError("invalid result shape")
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            logger.error("Job '%s': isolated cron worker returned invalid result", job_id)
+            return False, "", "", "Isolated cron worker returned an invalid result"
+        return result[0], result[1], result[2], result[3]
+    finally:
+        if process.poll() is None:
+            _terminate_cron_worker(process)
+        with _running_lock:
+            if _active_cron_worker_processes.get(job_id) is process:
+                _active_cron_worker_processes.pop(job_id, None)
+        pulse_path.unlink(missing_ok=True)
+        try:
+            worker_dir.rmdir()
+        except OSError:
+            pass
+
+
 def _teardown_cron_agent(agent, job_id: str) -> None:
     """Release an ephemeral cron agent's async resources.
 
@@ -3896,30 +4446,111 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
     Chronos) run the identical sequence — no duplicated correctness.
 
-    It does NOT decide whether the job is due, claim it, or compute the next
-    run — those are the caller's concern (``tick`` advances ``next_run_at``
-    under the file lock before dispatch; an external provider claims via the
-    store CAS). This function only fires the given job once.
+    It does NOT decide whether the job is due — that is the caller's concern.
+    Fire ownership (and, for recurring jobs, advancing ``next_run_at``) is
+    claimed here via ``claim_job_for_fire_token`` unless the caller already
+    won the claim itself (e.g. an external provider's own store CAS) and
+    passed it in as ``job["_fire_claim_id"]``.
 
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
     execution_id = job.get("execution_id")
+    fire_claim_id = job.get("_fire_claim_id")
     if not execution_id:
         execution_id = create_execution(job["id"], source="direct")["id"]
+    if not fire_claim_id:
+        try:
+            fire_claim_id = claim_job_for_fire_token(job["id"])
+        except BaseException as claim_error:
+            claim_error_text = str(claim_error) or type(claim_error).__name__
+            logger.error(
+                "Could not acquire fire ownership for job %s: %s",
+                job["id"],
+                claim_error_text,
+            )
+            try:
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error=f"Fire-claim acquisition failed: {claim_error_text}",
+                    delivery_outcome="suppressed",
+                )
+            except Exception:
+                logger.exception(
+                    "Could not finalize execution %s after fire-claim failure",
+                    execution_id,
+                )
+            if not isinstance(claim_error, Exception):
+                raise
+            return False
+        if fire_claim_id is None:
+            finish_execution(
+                execution_id,
+                success=False,
+                error="Fire-claim ownership could not be acquired.",
+                delivery_outcome="suppressed",
+            )
+            return False
+        job = dict(job, _fire_claim_id=fire_claim_id)
+
+    interrupted_before_start = _consume_interrupted_reason(job["id"])
+    if interrupted_before_start is not None:
+        run_claim = job.get("run_claim")
+        try:
+            if isinstance(run_claim, dict) and run_claim.get("id"):
+                release_run_claim(
+                    job["id"],
+                    expected_claim_id=str(run_claim["id"]),
+                )
+            elif isinstance(run_claim, dict) and run_claim.get("by"):
+                release_run_claim(
+                    job["id"],
+                    expected_owner=str(run_claim["by"]),
+                )
+        except Exception:
+            logger.exception(
+                "Job '%s': failed to release queued run claim after interruption",
+                job["id"],
+            )
+        try:
+            release_fire_claim(job["id"], expected_claim_id=fire_claim_id)
+        except Exception:
+            logger.exception(
+                "Job '%s': failed to release queued fire claim after interruption",
+                job["id"],
+            )
+        finish_execution(
+            execution_id,
+            success=False,
+            error=interrupted_before_start,
+            delivery_outcome="suppressed",
+        )
+        return False
+
     try:
         # Pre-run dispatch claim (issue #38758): atomically commit a finite
         # one-shot's dispatch BEFORE its side effect runs, so a tick that dies
         # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
-        # re-fire the job forever on restart. No-op for recurring jobs (they
-        # use advance_next_run) and infinite/no-repeat jobs. This lives here in
-        # the shared body so BOTH the built-in ticker and the external provider
-        # (Chronos fire_due) get at-most-times semantics.
+        # re-fire the job forever on restart. No-op for recurring jobs (their
+        # next_run_at was already advanced above, as part of the fire-claim)
+        # and infinite/no-repeat jobs. This lives here in the shared body so
+        # BOTH the built-in ticker and the external provider (Chronos
+        # fire_due) get at-most-times semantics.
         if not claim_dispatch(job["id"]):
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]),
             )
+            try:
+                release_fire_claim(
+                    job["id"], expected_claim_id=fire_claim_id
+                )
+            except Exception:
+                logger.exception(
+                    "Job '%s': failed to release terminal fire claim",
+                    job["id"],
+                )
             finish_execution(
                 execution_id,
                 success=False,
@@ -3947,49 +4578,30 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
         )
-        # Defer the cron agent's async-resource teardown until AFTER delivery.
-        # run_job normally closes the agent (and reaps stale async clients) in
-        # its finally block; doing that before _deliver_result runs means the
-        # live send races a torn-down async client (#58720). Passing a holder
-        # list makes run_job hand the agent back instead, and we tear it down
-        # below once delivery is done. Defense-in-depth alongside the
-        # interpreter-shutdown guard in _deliver_result.
-        _deferred_agents: list = []
         try:
-            success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents
+            success, output, final_response, error = _run_job_in_killable_process(
+                job, verbose=verbose
             )
-        except BaseException:
-            # run_job's finally still hands back the agent when it raises; tear
-            # it down here so a failed run never leaks its async resources
-            # (#10200), then re-raise into the outer handler. BaseException
-            # (not just Exception) so a KeyboardInterrupt/SystemExit mid-run
-            # still triggers teardown before propagating.
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
-            raise
         finally:
             reset_secret_scope(_scope_token)
 
-        # Everything from here through delivery runs with the agent still live
-        # (deferred teardown). Wrap it ALL in a try/finally so that if any step
-        # between run_job returning and delivery — save_job_output, the [SILENT]
-        # / empty-response computation, or _deliver_result itself — raises, the
-        # deferred agent is still torn down. Otherwise the outer `except` would
-        # swallow the error and leak the agent's subprocesses/clients (#10200).
+        # The isolated worker tears down its own agent before exiting. Delivery
+        # remains in the parent process so live gateway adapters are never
+        # serialized across the process boundary.
         delivery_error = None
-        try:
+        ownership_lost = not heartbeat_fire_claim(
+            job["id"], expected_claim_id=fire_claim_id
+        )
+        should_deliver = False
+        unresolved_origin = False
+        if not ownership_lost:
             output_file = save_job_output(job["id"], output)
             if verbose:
                 logger.info("Output saved to: %s", output_file)
 
             # If the gateway shutdown killed this job's tool subprocess
-            # mid-flight (#60432), the agent may still have produced a
-            # plausible-looking final_response from the truncated output --
-            # force the failure path so the delivered message is an honest
-            # "this run was interrupted" summary instead of that response.
-            # Peek-only: the flag stays set for the authoritative check
-            # right before mark_job_run below.
+            # mid-flight (#60432), never deliver its plausible-looking
+            # truncated response as success.
             if success and _is_interrupted(job["id"]):
                 success = False
                 error = (
@@ -3997,41 +4609,56 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                     "(tool subprocess was killed mid-flight)."
                 )
 
-            # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-            # Treat whitespace-only final responses the same as empty
-            # responses: do not deliver a blank message, and let the
-            # empty-response guard below mark the run as a soft failure.
+            deliver_content = (
+                final_response
+                if success
+                else _summarize_cron_failure_for_delivery(job, error)
+            )
             should_deliver = bool(deliver_content.strip())
-            unresolved_origin = False
-            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-            # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            if (
+                should_deliver
+                and success
+                and _is_cron_silence_response(deliver_content)
+            ):
+                logger.info(
+                    "Job '%s': agent returned %s — skipping delivery",
+                    job["id"],
+                    SILENT_MARKER,
+                )
                 should_deliver = False
 
             if should_deliver:
+                # Renew immediately before the irreversible external send. The
+                # worker may have completed close to the claim TTL, and a stale
+                # owner must not deliver after a replacement has taken over.
+                if not heartbeat_fire_claim(
+                    job["id"], expected_claim_id=fire_claim_id
+                ):
+                    ownership_lost = True
+                    should_deliver = False
+
+            if should_deliver:
                 unresolved_origin = (
-                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
+                    _normalize_deliver_value(job.get("deliver", "local"))
+                    == "origin"
                     and not _resolve_delivery_targets(job)
                 )
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    delivery_error = _deliver_result(
+                        job, deliver_content, adapters=adapters, loop=loop
+                    )
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
-        finally:
-            # Tear down the deferred agent(s) now that save + delivery have run
-            # (or raised). Must happen on every path so cron agents never leak
-            # their subprocesses/clients (#10200).
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
+
+        if ownership_lost:
+            finish_execution(
+                execution_id,
+                success=False,
+                error="Fire-claim ownership was lost before completion.",
+                delivery_outcome="suppressed",
+            )
+            return False
 
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.
@@ -4040,8 +4667,20 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-        if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        interrupted_reason = _consume_interrupted_reason(job["id"])
+        if interrupted_reason is not None:
+            success = False
+            error = interrupted_reason
+        finalized = mark_job_run(
+            job["id"],
+            success,
+            error,
+            delivery_error=delivery_error,
+            expected_fire_claim_id=fire_claim_id,
+        )
+        if finalized is False:
+            success = False
+            error = "Fire-claim ownership was lost before finalization."
         normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
         if delivery_error:
             delivery_outcome = "failed"
@@ -4057,7 +4696,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error=error,
             delivery_outcome=delivery_outcome,
         )
-        return True
+        return finalized is not False
 
     except BaseException as e:  # noqa: BLE001 — deliberate: see below
         # BaseException, not Exception (#73973): the inner run_job handler
@@ -4072,8 +4711,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
         try:
-            if not _consume_interrupted_flag(job["id"]):
-                mark_job_run(job["id"], False, _err_text)
+            interrupted_reason = _consume_interrupted_reason(job["id"])
+            if interrupted_reason is not None:
+                _err_text = interrupted_reason
+            mark_job_run(
+                job["id"],
+                False,
+                _err_text,
+                expected_fire_claim_id=fire_claim_id,
+            )
         except Exception as record_err:
             # Never let bookkeeping mask the original interruption.
             logger.error(
@@ -4177,13 +4823,14 @@ def tick(
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
-        # For parallel jobs that are already running, the advance keeps
-        # bumping next_run_at forward so the grace window never expires.
-        # mark_job_run() overwrites next_run_at on completion.
-        # Batched: one load + one save for the whole due set, not one per job.
-        advance_next_runs([job["id"] for job in due_jobs])
+        # Recurring jobs no longer get a tick-level batch advance here: each
+        # due job's next_run_at is now advanced atomically INSIDE its own
+        # fire-claim acquisition (claim_job_for_fire_token, under the same
+        # cross-process file lock as the claim itself), fused so the ticker,
+        # an external provider (Chronos), and a direct run all share one
+        # at-most-once path instead of the batch-advance only covering the
+        # ticker. Advancing here first would race/duplicate that per-fire
+        # advance for the ticker path specifically. See test_claim_job_for_fire.py.
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -4255,10 +4902,46 @@ def tick(
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                     return None
                 _running_job_ids.add(job_id)
+            try:
+                claim_id = claim_job_for_fire_token(job_id)
+            except BaseException as claim_err:
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                if not isinstance(claim_err, Exception):
+                    raise
+                logger.error(
+                    "Failed to acquire fire ownership for job '%s': %s",
+                    job.get("name", job_id),
+                    claim_err,
+                )
+                return None
+            if claim_id is None:
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                logger.info(
+                    "Job '%s' already owned by another fire — skipping",
+                    job.get("name", job_id),
+                )
+                return None
             # Record the attempt before executor dispatch. Recovery classifies
             # abandoned records as unknown; it never automatically retries them.
-            execution = create_execution(job_id, source="builtin")
-            dispatched_job = dict(job, execution_id=execution["id"])
+            try:
+                execution = create_execution(job_id, source="builtin")
+            except Exception as execution_err:
+                with _running_lock:
+                    _running_job_ids.discard(job_id)
+                release_fire_claim(job_id, expected_claim_id=claim_id)
+                logger.error(
+                    "Failed to create execution ledger entry for job '%s': %s",
+                    job.get("name", job_id),
+                    execution_err,
+                )
+                return None
+            dispatched_job = dict(
+                job,
+                execution_id=execution["id"],
+                _fire_claim_id=claim_id,
+            )
             _ctx = contextvars.copy_context()
 
             def _run_and_release(j=dispatched_job, ctx=_ctx):
@@ -4273,6 +4956,7 @@ def tick(
             except Exception as submit_err:
                 with _running_lock:
                     _running_job_ids.discard(job_id)
+                release_fire_claim(job_id, expected_claim_id=claim_id)
                 finish_execution(
                     execution["id"],
                     success=False,

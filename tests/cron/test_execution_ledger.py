@@ -182,7 +182,20 @@ def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch)
         lambda execution_id, **kwargs: finished.append((execution_id, kwargs)),
     )
     monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [{"id": "submit-fail"}])
-    monkeypatch.setattr(scheduler, "advance_next_runs", lambda _ids: 0)
+    monkeypatch.setattr(
+        scheduler,
+        "claim_job_for_fire_token",
+        lambda _job_id: "claim-submit-fail",
+    )
+    released = []
+    monkeypatch.setattr(
+        scheduler,
+        "release_fire_claim",
+        lambda job_id, *, expected_claim_id: released.append(
+            (job_id, expected_claim_id)
+        )
+        or True,
+    )
     monkeypatch.setattr(scheduler, "_get_parallel_pool", lambda _workers: BrokenPool())
 
     assert scheduler.tick(verbose=False, sync=False) == 0
@@ -192,7 +205,30 @@ def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch)
             "error": "Executor dispatch failed: executor rejected",
         })
     ]
+    assert released == [("submit-fail", "claim-submit-fail")]
     assert "submit-fail" not in scheduler.get_running_job_ids()
+
+
+def test_claim_acquisition_failure_releases_running_guard(monkeypatch):
+    """A runtime-store error cannot wedge the job in the local running set."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(scheduler, "get_due_jobs", lambda: [{"id": "claim-fail"}])
+
+    def fail_claim(_job_id):
+        raise RuntimeError("runtime store unavailable")
+
+    monkeypatch.setattr(scheduler, "claim_job_for_fire_token", fail_claim)
+    monkeypatch.setattr(
+        scheduler,
+        "create_execution",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("execution must not be created without ownership")
+        ),
+    )
+
+    assert scheduler.tick(verbose=False, sync=False) == 0
+    assert "claim-fail" not in scheduler.get_running_job_ids()
 
 
 def test_run_one_job_records_running_then_terminal(monkeypatch):
@@ -214,12 +250,14 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
     monkeypatch.setattr(
         scheduler,
-        "run_job",
-        lambda job, *, defer_agent_teardown=None: (True, "output", "response", None),
+        "_run_job_in_killable_process",
+        lambda job, *, verbose=False: (True, "output", "response", None),
     )
     monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)
     monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scheduler, "claim_job_for_fire_token", lambda _job_id: "claim-3")
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *a, **k: True)
 
     assert scheduler.run_one_job({"id": "job-3", "execution_id": "exec-3"}) is True
     assert events[0] == ("running", "exec-3")

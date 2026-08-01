@@ -9,10 +9,15 @@ Tests cover:
 """
 
 import concurrent.futures
+import asyncio
 import os
 import sys
+import threading
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 # Ensure project root is importable
@@ -185,6 +190,418 @@ class TestInactivityTimeout:
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         assert _cron_inactivity_limit == 1200.0
 
+    def test_timeout_waits_for_worker_exit_while_heartbeating(self):
+        """A timed-out worker keeps ownership until it acknowledges termination."""
+        from cron.scheduler import _wait_for_cron_worker_termination
+
+        release_worker = threading.Event()
+        waiter_finished = threading.Event()
+        heartbeat_seen = threading.Event()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(release_worker.wait)
+
+        def wait_for_exit() -> None:
+            try:
+                _wait_for_cron_worker_termination(
+                    future,
+                    heartbeat=lambda: heartbeat_seen.set(),
+                    poll_interval=0.01,
+                )
+            finally:
+                waiter_finished.set()
+
+        waiter = threading.Thread(target=wait_for_exit)
+        waiter.start()
+        assert heartbeat_seen.wait(timeout=1)
+        assert not waiter_finished.is_set()
+
+        release_worker.set()
+        waiter.join(timeout=1)
+        pool.shutdown(wait=True)
+        assert waiter_finished.is_set()
+
+    def test_timeout_wait_contains_cancelled_error(self):
+        """Cancellation is an expected timeout acknowledgment, not an escape."""
+        from cron.scheduler import _wait_for_cron_worker_termination
+
+        future = concurrent.futures.Future()
+        future.set_exception(asyncio.CancelledError())
+        _wait_for_cron_worker_termination(
+            future,
+            heartbeat=lambda: None,
+            poll_interval=0.01,
+        )
+
+    def test_timeout_wait_does_not_swallow_process_interrupts(self):
+        """KeyboardInterrupt/SystemExit retain their control-flow semantics."""
+        import pytest
+
+        from cron.scheduler import _wait_for_cron_worker_termination
+
+        for escape in (KeyboardInterrupt(), SystemExit()):
+            future = concurrent.futures.Future()
+            future.set_exception(escape)
+            with pytest.raises(type(escape)):
+                _wait_for_cron_worker_termination(
+                    future,
+                    heartbeat=lambda: None,
+                    poll_interval=0.01,
+                )
+
+    def test_fire_claim_loss_interrupts_active_agent_promptly(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed heartbeat CAS terminates stale agent work, not just delivery."""
+        import cron.scheduler as scheduler
+
+        class ClaimLossAgent(FakeAgent):
+            started_at = None
+            interrupted_at = None
+
+            def run_conversation(self, prompt):
+                self.started_at = time.monotonic()
+                deadline = time.monotonic() + 0.5
+                while not self._interrupted and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                return {"final_response": "stale result", "messages": []}
+
+            def interrupt(self, reason=None):
+                self.interrupted_at = time.monotonic()
+                super().interrupt(reason)
+
+        agent = ClaimLossAgent()
+        runtime = {
+            "api_key": "test-key",
+            "base_url": "https://example.invalid/v1",
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+        }
+        job = {
+            "id": "lost-agent-owner",
+            "name": "lost agent owner",
+            "prompt": "do work",
+            "model": "test/model",
+            "_fire_claim_id": "stale-token",
+        }
+        monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.0)
+        monkeypatch.setattr(scheduler, "_CRON_AGENT_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *a, **k: False)
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=MagicMock()), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value=runtime,
+             ), \
+             patch("run_agent.AIAgent", return_value=agent):
+            success, _output, _response, error = scheduler.run_job(job)
+        assert success is False
+        assert "ownership" in error.lower()
+        assert agent._interrupted is True
+        assert agent.started_at is not None
+        assert agent.interrupted_at is not None
+        assert agent.interrupted_at - agent.started_at < 0.1
+
+    def test_windows_worker_termination_uses_taskkill_tree(self, monkeypatch):
+        """Windows worker shutdown kills descendants, not only the direct child."""
+        import cron.scheduler as scheduler
+
+        process = MagicMock()
+        process.pid = 4242
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        taskkill_result = MagicMock(returncode=0)
+        monkeypatch.setattr(scheduler.os, "name", "nt")
+
+        with patch(
+            "cron.scheduler.subprocess.run",
+            return_value=taskkill_result,
+        ) as taskkill:
+            scheduler._terminate_cron_worker(process)
+
+        taskkill.assert_called_once_with(
+            ["taskkill", "/PID", "4242", "/T", "/F"],
+            stdout=scheduler.subprocess.DEVNULL,
+            stderr=scheduler.subprocess.DEVNULL,
+            check=False,
+            timeout=scheduler._CRON_WORKER_TERMINATE_GRACE_SECONDS,
+        )
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_windows_worker_taskkill_failure_falls_back_to_direct_terminate(
+        self,
+        monkeypatch,
+    ):
+        """A failed Windows tree kill still terminates and reaps the worker."""
+        import cron.scheduler as scheduler
+
+        process = MagicMock()
+        process.pid = 4242
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        monkeypatch.setattr(scheduler.os, "name", "nt")
+
+        with patch(
+            "cron.scheduler.subprocess.run",
+            return_value=MagicMock(returncode=1),
+        ):
+            scheduler._terminate_cron_worker(process)
+
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(
+            timeout=scheduler._CRON_WORKER_TERMINATE_GRACE_SECONDS,
+        )
+
+    def test_windows_worker_taskkill_timeout_falls_back_to_direct_terminate(
+        self,
+        monkeypatch,
+    ):
+        """A wedged taskkill cannot wedge scheduler shutdown."""
+        import cron.scheduler as scheduler
+
+        process = MagicMock()
+        process.pid = 4242
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        monkeypatch.setattr(scheduler.os, "name", "nt")
+
+        with patch(
+            "cron.scheduler.subprocess.run",
+            side_effect=scheduler.subprocess.TimeoutExpired("taskkill", 3),
+        ):
+            scheduler._terminate_cron_worker(process)
+
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(
+            timeout=scheduler._CRON_WORKER_TERMINATE_GRACE_SECONDS,
+        )
+
+    def test_agent_activity_summary_refreshes_worker_pulse(self, tmp_path):
+        """The parent watchdog observes the real AIAgent activity API."""
+        import cron.scheduler as scheduler
+
+        class ActivityAgent:
+            def __init__(self):
+                self.last_activity = 10.0
+
+            def get_activity_summary(self):
+                return {"last_activity_ts": self.last_activity}
+
+        agent = ActivityAgent()
+        pulse = tmp_path / "agent.pulse"
+
+        observed = scheduler._refresh_cron_worker_pulse_from_agent(
+            agent,
+            str(pulse),
+            None,
+        )
+        assert observed == 10.0
+        assert pulse.exists()
+
+        pulse.unlink()
+        assert scheduler._refresh_cron_worker_pulse_from_agent(
+            agent,
+            str(pulse),
+            observed,
+        ) == 10.0
+        assert not pulse.exists()
+
+        agent.last_activity = 11.0
+        assert scheduler._refresh_cron_worker_pulse_from_agent(
+            agent,
+            str(pulse),
+            observed,
+        ) == 11.0
+        assert pulse.exists()
+
+    @pytest.mark.live_system_guard_bypass
+    def test_killable_worker_kills_detached_descendant(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Hard timeout snapshots and kills descendants that create a new session."""
+        import cron.scheduler as scheduler
+
+        marker = tmp_path / "detached-survived"
+        pulse_env = "HERMES_CRON_WORKER_PULSE"
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.05")
+        monkeypatch.setattr(scheduler, "_CRON_WORKER_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(
+            scheduler,
+            "_CRON_WORKER_TERMINATE_GRACE_SECONDS",
+            0.03,
+        )
+
+        child_code = (
+            "import pathlib,signal,time;"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+            "time.sleep(0.25);"
+            f"pathlib.Path({str(marker)!r}).write_text('survived')"
+        )
+        worker_code = (
+            "import os,pathlib,subprocess,sys,time;"
+            "sys.stdin.read();"
+            f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+            "start_new_session=True);"
+            f"pathlib.Path(os.environ[{pulse_env!r}]).touch();"
+            "time.sleep(5)"
+        )
+
+        monkeypatch.setattr(
+            scheduler,
+            "_cron_worker_command",
+            lambda: [sys.executable, "-c", worker_code],
+        )
+
+        result = scheduler._run_job_in_killable_process(
+            {"id": "tree-timeout-detached"}
+        )
+
+        assert result[0] is False
+        assert "timed out" in (result[3] or "").lower()
+        time.sleep(0.35)
+        assert not marker.exists()
+
+    def test_killable_worker_acknowledges_hard_timeout_before_return(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """An uncooperative worker is process-killed before ownership can clear."""
+        import cron.scheduler as scheduler
+
+        marker = tmp_path / "worker-survived"
+        pulse_env = "HERMES_CRON_WORKER_PULSE"
+        code = (
+            "import os,pathlib,signal,sys,time;"
+            "sys.stdin.read();"
+            f"pathlib.Path(os.environ[{pulse_env!r}]).touch();"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+            "time.sleep(0.4);"
+            "pathlib.Path(os.environ['CRON_TEST_SURVIVAL_MARKER']).write_text('bad')"
+        )
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.05")
+        monkeypatch.setenv("CRON_TEST_SURVIVAL_MARKER", str(marker))
+        monkeypatch.setattr(scheduler, "_CRON_WORKER_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(scheduler, "_CRON_WORKER_TERMINATE_GRACE_SECONDS", 0.03)
+        monkeypatch.setattr(
+            scheduler,
+            "_cron_worker_command",
+            lambda: [sys.executable, "-c", code],
+        )
+
+        started = time.monotonic()
+        success, output, response, error = scheduler._run_job_in_killable_process(
+            {"id": "hard-timeout", "name": "hard-timeout", "prompt": "hang"}
+        )
+        elapsed = time.monotonic() - started
+
+        assert success is False
+        assert output == ""
+        assert response == ""
+        assert error is not None
+        assert "inactivity" in error.lower()
+        assert elapsed < 0.3
+        time.sleep(0.2)
+        assert not marker.exists()
+
+    def test_killable_worker_kills_descendant_after_leader_exits(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """A cooperative leader cannot leave a SIGTERM-ignoring child behind."""
+        import cron.scheduler as scheduler
+
+        marker = tmp_path / "descendant-survived"
+        pulse_env = "HERMES_CRON_WORKER_PULSE"
+        descendant = (
+            "import pathlib,signal,time;"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+            "time.sleep(0.25);"
+            f"pathlib.Path({str(marker)!r}).write_text('bad')"
+        )
+        code = (
+            "import os,pathlib,subprocess,sys,time;"
+            "sys.stdin.read();"
+            f"pathlib.Path(os.environ[{pulse_env!r}]).touch();"
+            f"subprocess.Popen([sys.executable,'-c',{descendant!r}]);"
+            "time.sleep(5)"
+        )
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.05")
+        monkeypatch.setattr(scheduler, "_CRON_WORKER_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(scheduler, "_CRON_WORKER_TERMINATE_GRACE_SECONDS", 0.03)
+        monkeypatch.setattr(
+            scheduler,
+            "_cron_worker_command",
+            lambda: [sys.executable, "-c", code],
+        )
+
+        result = scheduler._run_job_in_killable_process(
+            {"id": "descendant-timeout", "name": "descendant", "prompt": "hang"}
+        )
+
+        assert result[0] is False
+        time.sleep(0.3)
+        assert not marker.exists()
+
+    def test_killable_worker_returns_nonce_bound_pipe_result(
+        self,
+        monkeypatch,
+    ):
+        """Normal workers return structured results without filesystem content."""
+        import cron.scheduler as scheduler
+
+        code = (
+            "import json,os,pathlib,sys;"
+            "request=json.loads(sys.stdin.read());"
+            "pathlib.Path(os.environ['HERMES_CRON_WORKER_PULSE']).touch();"
+            "result={'result':[True,'doc','response',None]};"
+            "print('__HERMES_CRON_RESULT__'+request['nonce']+':'"
+            "+json.dumps(result))"
+        )
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1")
+        monkeypatch.setattr(scheduler, "_CRON_WORKER_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(
+            scheduler,
+            "_cron_worker_command",
+            lambda: [sys.executable, "-c", code],
+        )
+
+        assert scheduler._run_job_in_killable_process(
+            {"id": "normal-worker", "name": "normal", "prompt": "run"}
+        ) == (True, "doc", "response", None)
+
+    def test_default_worker_module_is_profile_scoped(self, monkeypatch, tmp_path):
+        """The real child entrypoint runs against the selected profile store."""
+        import cron.scheduler as scheduler
+        from cron.jobs import use_cron_store
+
+        home = tmp_path / "profile"
+        scripts = home / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "worker_smoke.py").write_text("print('profile-worker-ok')\n")
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "2")
+
+        with use_cron_store(home):
+            success, _doc, response, error = scheduler._run_job_in_killable_process(
+                {
+                    "id": "profile-worker",
+                    "name": "profile-worker",
+                    "script": "worker_smoke.py",
+                    "no_agent": True,
+                }
+            )
+
+        assert success is True
+        assert response == "profile-worker-ok"
+        assert error is None
+        assert not (home / "cron" / ".workers").exists()
 
     def test_agent_without_activity_summary_uses_wallclock_fallback(self):
         """If agent lacks get_activity_summary, idle_secs stays 0 (never times out).

@@ -71,8 +71,11 @@ class TestRunningJobGuard:
 
         dispatched = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: 0)
-        monkeypatch.setattr(sched, "run_job", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
+        monkeypatch.setattr(
+            sched, "claim_job_for_fire_token", lambda job_id: f"claim-{job_id}"
+        )
+        monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "_run_job_in_killable_process", lambda j, **_kw: dispatched.append(j["id"]) or (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
@@ -104,8 +107,11 @@ class TestSyncMode:
         ]
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
-        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: 0)
-        monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
+        monkeypatch.setattr(
+            sched, "claim_job_for_fire_token", lambda job_id: f"claim-{job_id}"
+        )
+        monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "_run_job_in_killable_process", lambda j, **_kw: (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
@@ -146,13 +152,16 @@ class TestSequentialPool:
 
         barrier = threading.Barrier(2, timeout=5)
 
-        def slow_run(j, *, defer_agent_teardown=None):
+        def slow_run(j, *, verbose=False):
             barrier.wait()
             return True, "out", "resp", None
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
-        monkeypatch.setattr(sched, "advance_next_runs", lambda *_a, **_kw: 0)
-        monkeypatch.setattr(sched, "run_job", slow_run)
+        monkeypatch.setattr(
+            sched, "claim_job_for_fire_token", lambda job_id: f"claim-{job_id}"
+        )
+        monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "_run_job_in_killable_process", slow_run)
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
@@ -182,13 +191,17 @@ class TestSequentialPool:
         assert sched._sequential_pool is None
 
 
-class TestTickBatchAdvance:
-    """The tick's pre-dispatch advance must go through advance_next_runs
-    exactly once with the whole due set — a revert to the per-job loop
-    (or back to advance_next_run) must fail this test, not slip past the
-    helper-level I/O pin."""
+class TestTickPerFireClaim:
+    """tick's pre-dispatch advance is no longer a tick-level batch call — it
+    is fused into each due job's own fire-claim acquisition
+    (claim_job_for_fire_token, cron/jobs.py), atomically under the same
+    cross-process lock as the claim itself. This covers the ticker, an
+    external provider's fire_due, and a direct ``cronjob run`` uniformly
+    (see tests/cron/test_claim_job_for_fire.py for the advance-on-claim
+    contract itself). A revert to a tick-level batch loop must fail this
+    test by no longer claiming each due job individually."""
 
-    def test_tick_calls_advance_next_runs_once_with_all_due_ids(self, tmp_path, monkeypatch):
+    def test_tick_claims_each_due_job_exactly_once(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
 
         sched._parallel_pool = None
@@ -202,12 +215,13 @@ class TestTickBatchAdvance:
             for i in range(4)
         ]
 
-        advance_calls = []
+        claim_calls = []
         monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
         monkeypatch.setattr(
-            sched, "advance_next_runs",
-            lambda ids: advance_calls.append(list(ids)) or len(list(ids)))
-        monkeypatch.setattr(sched, "run_job", lambda j, **_kw: (True, "out", "resp", None))
+            sched, "claim_job_for_fire_token",
+            lambda job_id: claim_calls.append(job_id) or f"claim-{job_id}")
+        monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *_a, **_kw: True)
+        monkeypatch.setattr(sched, "_run_job_in_killable_process", lambda j, **_kw: (True, "out", "resp", None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
@@ -215,7 +229,8 @@ class TestTickBatchAdvance:
         n = sched.tick(verbose=False)
 
         assert n == 4
-        assert advance_calls == [["job-0", "job-1", "job-2", "job-3"]], (
-            f"tick must batch-advance the due set in ONE call; got {advance_calls}")
+        assert sorted(claim_calls) == ["job-0", "job-1", "job-2", "job-3"], (
+            f"tick must claim (and thereby advance) each due job exactly "
+            f"once via claim_job_for_fire_token; got {claim_calls}")
 
         sched._shutdown_parallel_pool()

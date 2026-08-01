@@ -245,12 +245,58 @@ def test_fire_due_default_claims_then_runs(monkeypatch):
     from cron.scheduler_provider import InProcessCronScheduler
 
     ran = []
-    monkeypatch.setattr(jobs, "claim_job_for_fire", lambda jid: True, raising=False)
+    monkeypatch.setattr(
+        jobs,
+        "claim_job_for_fire_token",
+        lambda jid: "claim-1",
+        raising=False,
+    )
     monkeypatch.setattr(jobs, "get_job", lambda jid: {"id": jid, "name": "t"})
-    monkeypatch.setattr(sched, "run_one_job", lambda job, **kw: ran.append(job["id"]) or True)
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda job, **kw: ran.append((job["id"], job["_fire_claim_id"])) or True,
+    )
 
     assert InProcessCronScheduler().fire_due("j1") is True
-    assert ran == ["j1"]
+    assert ran == [("j1", "claim-1")]
+
+
+def test_builtin_tick_does_not_overlap_owned_external_fire(monkeypatch, tmp_path):
+    """The built-in ticker must honor the same cross-process fire claim."""
+    import cron.scheduler as sched
+
+    job = {
+        "id": "owned-elsewhere",
+        "name": "owned elsewhere",
+        "workdir": None,
+    }
+    ran = []
+    monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+    monkeypatch.setattr(
+        sched,
+        "claim_job_for_fire_token",
+        lambda _job_id: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sched,
+        "run_one_job",
+        lambda dispatched, **_kwargs: ran.append(dispatched) or True,
+    )
+    monkeypatch.setattr(
+        sched,
+        "create_execution",
+        lambda *_args, **_kwargs: {"id": "must-not-be-created"},
+    )
+    monkeypatch.setattr(
+        sched,
+        "_get_lock_paths",
+        lambda: (tmp_path / "locks", tmp_path / "locks" / "ticker.lock"),
+    )
+
+    assert sched.tick(verbose=False, sync=True) == 0
+    assert ran == []
 
 
 # ── F2a: ticker liveness — survival, heartbeat, honest status (#32612, #32895) ──

@@ -28,7 +28,7 @@ class TestCronjobRunExecutesImmediately:
         """action='run' must claim the job then fire it through run_one_job."""
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}
         with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=True) as m_claim, \
+             patch("tools.cronjob_tools.claim_job_for_fire_token", return_value="claim-1") as m_claim, \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=ran):
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
@@ -38,11 +38,13 @@ class TestCronjobRunExecutesImmediately:
         assert out["job"]["execution_success"] is True
         m_claim.assert_called_once_with("job-run-1")   # at-most-once claim taken
         m_run.assert_called_once()                       # fired via the shared body
+        assert m_run.call_args.args[0]["_fire_claim_id"] == "claim-1"
 
 
     def test_execute_job_now_bails_without_claim(self):
         """_execute_job_now never calls run_one_job when the claim is lost."""
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
+        with patch("tools.cronjob_tools.claim_job_for_fire_token", return_value=None), \
+             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)), \
              patch("cron.scheduler.run_one_job") as m_run:
             res = _execute_job_now(dict(_JOB))
         assert res["claimed"] is False
@@ -51,7 +53,7 @@ class TestCronjobRunExecutesImmediately:
 
     def test_execute_job_now_marks_failure_on_exception(self):
         """An exception during fire is captured, marked failed, not propagated."""
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+        with patch("tools.cronjob_tools.claim_job_for_fire_token", return_value="claim-1"), \
              patch("cron.scheduler.run_one_job", side_effect=RuntimeError("boom")), \
              patch("tools.cronjob_tools.mark_job_run") as m_mark, \
              patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
@@ -59,7 +61,12 @@ class TestCronjobRunExecutesImmediately:
         assert res["claimed"] is True
         assert res["success"] is False
         assert "boom" in res["error"]
-        m_mark.assert_called_once()
+        m_mark.assert_called_once_with(
+            "job-run-1",
+            False,
+            "boom",
+            expected_fire_claim_id="claim-1",
+        )
 
     def test_execute_job_now_heartbeats_while_job_runs(self):
         """A manual run ticks the caller's activity tracker while the job
@@ -80,7 +87,7 @@ class TestCronjobRunExecutesImmediately:
                 assert heartbeat_seen.wait(timeout=5.0), "no heartbeat within 5s"
                 return True
 
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+            with patch("tools.cronjob_tools.claim_job_for_fire_token", return_value="claim-1"), \
                  patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
                  patch("cron.scheduler.run_one_job", side_effect=slow_run) as m_run, \
                  patch("tools.cronjob_tools.get_job",
@@ -98,7 +105,7 @@ class TestCronjobRunExecutesImmediately:
         heartbeat thread is never started and behavior is unchanged."""
         set_activity_callback(None)
         try:
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+            with patch("tools.cronjob_tools.claim_job_for_fire_token", return_value="claim-1"), \
                  patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}), \
@@ -129,7 +136,7 @@ class TestCronjobRunExecutesImmediately:
                 time.sleep(0.2)
                 return True
 
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+            with patch("tools.cronjob_tools.claim_job_for_fire_token", return_value="claim-1"), \
                  patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
                  patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_CEILING", 0.0), \
                  patch("cron.scheduler.run_one_job", side_effect=slow_run), \
@@ -162,7 +169,7 @@ class TestCronjobRunExecutesImmediately:
                     "heartbeat stopped after one callback exception"
                 return True
 
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value=True), \
+            with patch("tools.cronjob_tools.claim_job_for_fire_token", return_value="claim-1"), \
                  patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
                  patch("cron.scheduler.run_one_job", side_effect=slow_run), \
                  patch("tools.cronjob_tools.get_job",
@@ -172,3 +179,15 @@ class TestCronjobRunExecutesImmediately:
             assert len(calls) >= 2, calls
         finally:
             set_activity_callback(None)
+
+    def test_claim_failure_does_not_finalize_unowned_job(self):
+        """An acquisition error must not clear or rewrite another owner's claim."""
+        with patch(
+            "tools.cronjob_tools.claim_job_for_fire_token",
+            side_effect=OSError("store unavailable"),
+        ), patch("tools.cronjob_tools.mark_job_run") as m_mark:
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["claimed"] is False
+        assert res["success"] is False
+        m_mark.assert_not_called()

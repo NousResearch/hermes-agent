@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import threading
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -200,6 +201,104 @@ class TestBackup:
         assert result is not None
         assert staged_dirs, "no SQLite snapshot was staged"
         assert all(d == str(out_zip.parent) for d in staged_dirs), staged_dirs
+
+    def test_full_backup_archives_one_coherent_cron_generation(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Live cron mutations after staging cannot tear jobs.json/runtime.db."""
+        from cron import jobs
+        from cron.runtime_state import load_runtime_states
+        import hermes_cli.backup as backup_mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model:\n  provider: test\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        with jobs.use_cron_store(hermes_home):
+            created = jobs.create_job(
+                prompt="snapshot-generation",
+                schedule="every 1h",
+            )
+            assert jobs.mark_job_run(created["id"], success=True)
+        coder_home = hermes_home / "profiles" / "coder"
+        coder_home.mkdir(parents=True)
+        with jobs.use_cron_store(coder_home):
+            coder_job = jobs.create_job(
+                prompt="coder-snapshot-generation",
+                schedule="every 1h",
+            )
+            assert jobs.mark_job_run(coder_job["id"], success=True)
+
+        real_prepare = backup_mod._prepare_full_backup_cron_pair
+
+        def prepare_then_mutate(**kwargs):
+            staged_files, stage = real_prepare(**kwargs)
+            with jobs.use_cron_store(hermes_home):
+                assert jobs.update_job(
+                    created["id"],
+                    {"prompt": "live-generation"},
+                )
+                assert jobs.mark_job_run(
+                    created["id"],
+                    success=False,
+                    error="live-generation-error",
+                )
+            with jobs.use_cron_store(coder_home):
+                assert jobs.update_job(
+                    coder_job["id"],
+                    {"prompt": "coder-live-generation"},
+                )
+                assert jobs.mark_job_run(
+                    coder_job["id"],
+                    success=False,
+                    error="coder-live-generation-error",
+                )
+            return staged_files, stage
+
+        monkeypatch.setattr(
+            backup_mod,
+            "_prepare_full_backup_cron_pair",
+            prepare_then_mutate,
+        )
+        out_zip = tmp_path / "coherent-cron.zip"
+        backup_mod.run_backup(Namespace(output=str(out_zip)))
+
+        extracted = tmp_path / "extracted"
+        with zipfile.ZipFile(out_zip, "r") as archive:
+            archive.extract("cron/jobs.json", extracted)
+            archive.extract("cron/runtime.db", extracted)
+            archive.extract("profiles/coder/cron/jobs.json", extracted)
+            archive.extract("profiles/coder/cron/runtime.db", extracted)
+
+        definitions = json.loads(
+            (extracted / "cron" / "jobs.json").read_text()
+        )["jobs"]
+        runtime = load_runtime_states(extracted / "cron")[created["id"]]
+        assert definitions[0]["prompt"] == "snapshot-generation"
+        assert runtime["last_status"] == "ok"
+        coder_definitions = json.loads(
+            (extracted / "profiles" / "coder" / "cron" / "jobs.json").read_text()
+        )["jobs"]
+        coder_runtime = load_runtime_states(
+            extracted / "profiles" / "coder" / "cron"
+        )[coder_job["id"]]
+        assert coder_definitions[0]["prompt"] == "coder-snapshot-generation"
+        assert coder_runtime["last_status"] == "ok"
+
+        with jobs.use_cron_store(hermes_home):
+            live = jobs.get_job(created["id"])
+        assert live is not None
+        assert live["prompt"] == "live-generation"
+        assert live["last_status"] == "error"
+        with jobs.use_cron_store(coder_home):
+            coder_live = jobs.get_job(coder_job["id"])
+        assert coder_live is not None
+        assert coder_live["prompt"] == "coder-live-generation"
+        assert coder_live["last_status"] == "error"
 
 
 
@@ -676,6 +775,301 @@ class TestQuickSnapshot:
         conn.close()
         assert len(rows) == 1
         assert rows[0] == ("s1", "hello world")
+
+    def test_cron_runtime_db_safely_copied(self, hermes_home):
+        """Quick snapshots preserve volatile cron cadence and lease state."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        runtime_path = hermes_home / "cron" / "runtime.db"
+        conn = sqlite3.connect(str(runtime_path))
+        conn.execute(
+            "CREATE TABLE job_runtime (job_id TEXT PRIMARY KEY, state_json TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO job_runtime VALUES (?, ?)",
+            ("job-1", '{"next_run_at":"future"}'),
+        )
+        conn.commit()
+        conn.close()
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        db_copy = hermes_home / "state-snapshots" / snap_id / "cron" / "runtime.db"
+        assert db_copy.exists()
+        conn = sqlite3.connect(str(db_copy))
+        row = conn.execute("SELECT job_id, state_json FROM job_runtime").fetchone()
+        conn.close()
+        assert row == ("job-1", '{"next_run_at":"future"}')
+
+    def test_cron_definition_and_runtime_snapshot_share_jobs_lock(
+        self, hermes_home, monkeypatch
+    ):
+        """A writer cannot interleave between the paired cron snapshot files."""
+        from cron import jobs
+        from hermes_cli import backup as backup_mod
+
+        with jobs.use_cron_store(hermes_home):
+            created = jobs.create_job(
+                prompt="before",
+                schedule="every 1h",
+                repeat=3,
+                deliver="local",
+            )
+
+        original_safe_copy = backup_mod._safe_copy_db
+        writer_started = threading.Event()
+        writer_finished = threading.Event()
+        writer_thread = None
+
+        def write_during_runtime_copy() -> None:
+            """Try to mutate both stores exactly between their two copies."""
+            writer_started.set()
+            with jobs.use_cron_store(hermes_home):
+                jobs.update_job(created["id"], {"prompt": "after"})
+            writer_finished.set()
+
+        def guarded_copy(src, dst):
+            nonlocal writer_thread
+            if src == hermes_home / "cron" / "runtime.db":
+                writer_thread = threading.Thread(target=write_during_runtime_copy)
+                writer_thread.start()
+                assert writer_started.wait(timeout=1)
+                assert not writer_finished.wait(timeout=0.1), (
+                    "cron writer interleaved between jobs.json and runtime.db copies"
+                )
+            return original_safe_copy(src, dst)
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", guarded_copy)
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        assert writer_thread is not None
+        writer_thread.join(timeout=2)
+        assert writer_finished.is_set()
+
+    def test_cron_definition_and_runtime_restore_share_jobs_lock(
+        self, hermes_home, monkeypatch
+    ):
+        """A writer cannot interleave while the paired cron snapshot is restored."""
+        from cron import jobs
+        from hermes_cli import backup as backup_mod
+
+        with jobs.use_cron_store(hermes_home):
+            created = jobs.create_job(
+                prompt="snapshotted",
+                schedule="every 1h",
+                repeat=3,
+                deliver="local",
+            )
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        with jobs.use_cron_store(hermes_home):
+            jobs.update_job(created["id"], {"prompt": "live"})
+
+        snapshot_runtime = (
+            hermes_home / "state-snapshots" / snap_id / "cron" / "runtime.db"
+        )
+        original_copy = backup_mod.shutil.copy2
+        writer_started = threading.Event()
+        writer_finished = threading.Event()
+        writer_thread = None
+
+        def write_during_runtime_restore() -> None:
+            """Try to mutate both stores while the pair is being restored."""
+            writer_started.set()
+            with jobs.use_cron_store(hermes_home):
+                jobs.update_job(created["id"], {"prompt": "concurrent"})
+            writer_finished.set()
+
+        def guarded_copy(src, dst, *args, **kwargs):
+            nonlocal writer_thread
+            if Path(src) == snapshot_runtime:
+                writer_thread = threading.Thread(target=write_during_runtime_restore)
+                writer_thread.start()
+                assert writer_started.wait(timeout=1)
+                assert not writer_finished.wait(timeout=0.1), (
+                    "cron writer interleaved during paired restore"
+                )
+            return original_copy(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(backup_mod.shutil, "copy2", guarded_copy)
+        assert backup_mod.restore_quick_snapshot(
+            snap_id, hermes_home=hermes_home
+        ) is True
+        assert writer_thread is not None
+        writer_thread.join(timeout=2)
+        assert writer_finished.is_set()
+
+    def test_interrupted_cron_pair_restore_rolls_forward_from_runtime_journal(
+        self, hermes_home, monkeypatch
+    ):
+        """A lost JSON replace is completed from the restored runtime database."""
+        from cron import jobs
+        from hermes_cli import backup as backup_mod
+
+        with jobs.use_cron_store(hermes_home):
+            created = jobs.create_job(
+                prompt="snapshotted",
+                schedule="every 1h",
+                repeat=3,
+                deliver="local",
+            )
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+        with jobs.use_cron_store(hermes_home):
+            jobs.update_job(created["id"], {"prompt": "live"})
+
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        original_replace = backup_mod.os.replace
+
+        def lose_jobs_replace(src, dst):
+            """Simulate interruption after runtime replacement is possible."""
+            if Path(dst) == jobs_path and ".snap_restore." in Path(src).name:
+                raise OSError("simulated jobs restore interruption")
+            return original_replace(src, dst)
+
+        monkeypatch.setattr(backup_mod.os, "replace", lose_jobs_replace)
+        assert backup_mod.restore_quick_snapshot(
+            snap_id, hermes_home=hermes_home
+        ) is True
+        monkeypatch.setattr(backup_mod.os, "replace", original_replace)
+
+        with jobs.use_cron_store(hermes_home):
+            recovered = jobs.get_job(created["id"])
+        assert recovered is not None
+        assert recovered["prompt"] == "snapshotted"
+
+    def test_snapshot_materializes_pending_definition_generation(self, hermes_home):
+        """A snapshot must not pair stale JSON D0 with a pending runtime D1."""
+        from cron import jobs
+        from cron.runtime_state import (
+            load_runtime_states,
+            stage_runtime_and_definitions,
+        )
+        from hermes_cli import backup as backup_mod
+
+        with jobs.use_cron_store(hermes_home):
+            created = jobs.create_job(
+                prompt="generation-zero",
+                schedule="every 1h",
+                deliver="local",
+            )
+            definitions = jobs.export_job_definitions()
+            for definition in definitions:
+                if definition["id"] == created["id"]:
+                    definition["prompt"] = "generation-one"
+            stage_runtime_and_definitions(
+                hermes_home / "cron",
+                load_runtime_states(hermes_home / "cron"),
+                definitions,
+            )
+
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        snap_jobs = json.loads(
+            (
+                hermes_home
+                / "state-snapshots"
+                / snap_id
+                / "cron"
+                / "jobs.json"
+            ).read_text()
+        )["jobs"]
+
+        snap_job = next(job for job in snap_jobs if job["id"] == created["id"])
+        assert snap_job["prompt"] == "generation-one"
+
+    def test_restore_refuses_one_sided_cron_pair(self, hermes_home):
+        """A partial manifest must never replace only definitions or runtime."""
+        from cron import jobs
+        from hermes_cli import backup as backup_mod
+
+        with jobs.use_cron_store(hermes_home):
+            created = jobs.create_job(
+                prompt="snapshotted",
+                schedule="every 1h",
+                deliver="local",
+            )
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        manifest_path = snap_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"].pop("cron/runtime.db")
+        manifest_path.write_text(json.dumps(manifest))
+
+        with jobs.use_cron_store(hermes_home):
+            jobs.update_job(created["id"], {"prompt": "live-generation"})
+        backup_mod.restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        with jobs.use_cron_store(hermes_home):
+            assert jobs.get_job(created["id"])["prompt"] == "live-generation"
+
+    def test_snapshot_rolls_back_jobs_when_runtime_copy_fails(
+        self,
+        hermes_home,
+        monkeypatch,
+    ):
+        """A failed SQLite backup leaves neither cron pair member restorable."""
+        import hermes_cli.backup as backup_mod
+        from cron import jobs
+
+        # Create a real runtime.db so this regression exercises the SQLite-copy
+        # branch rather than the valid first-run path that synthesizes an empty
+        # paired database directly in the snapshot.
+        with jobs.use_cron_store(hermes_home):
+            jobs.create_job(
+                prompt="runtime-copy-failure",
+                schedule="every 1h",
+                deliver="local",
+            )
+        runtime_db = hermes_home / "cron" / "runtime.db"
+        assert runtime_db.is_file()
+
+        real_safe_copy = backup_mod._safe_copy_db
+
+        def fail_runtime_copy(source, destination):
+            if source == runtime_db:
+                return False
+            return real_safe_copy(source, destination)
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", fail_runtime_copy)
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        manifest = json.loads((snap_dir / "manifest.json").read_text())
+
+        assert "cron/jobs.json" not in manifest["files"]
+        assert "cron/runtime.db" not in manifest["files"]
+        assert not (snap_dir / "cron" / "jobs.json").exists()
+        assert not (snap_dir / "cron" / "runtime.db").exists()
+
+    def test_restore_rejects_live_fire_claim(self, hermes_home):
+        """Restore cannot replace state beneath an actively side-effecting owner."""
+        from cron import jobs
+        from hermes_cli import backup as backup_mod
+        from hermes_time import now
+
+        with jobs.use_cron_store(hermes_home):
+            created = jobs.create_job(
+                prompt="snapshotted",
+                schedule="every 1h",
+                deliver="local",
+            )
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        with jobs.use_cron_store(hermes_home):
+            jobs.update_job(created["id"], {"prompt": "live-generation"})
+            records = jobs.load_jobs()
+            for record in records:
+                if record["id"] == created["id"]:
+                    record["fire_claim"] = {
+                        "at": now().isoformat(),
+                        "by": "live-worker",
+                        "id": "live-token",
+                    }
+            jobs.save_jobs(records)
+
+        backup_mod.restore_quick_snapshot(snap_id, hermes_home=hermes_home)
+
+        with jobs.use_cron_store(hermes_home):
+            live = jobs.get_job(created["id"])
+        assert live["prompt"] == "live-generation"
+        assert live["fire_claim"]["id"] == "live-token"
 
     def test_failed_state_db_copy_is_loud(self, hermes_home, monkeypatch, capsys):
         """#68474: unreadable state.db must not look like a silent success."""

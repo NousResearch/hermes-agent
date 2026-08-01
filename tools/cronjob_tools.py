@@ -39,13 +39,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
-    claim_job_for_fire,
+    claim_job_for_fire_token,
     create_job,
     get_job,
     list_jobs,
     mark_job_run,
     parse_schedule,
     pause_job,
+    release_fire_claim,
     remove_job,
     resolve_job_ref,
     resume_job,
@@ -606,11 +607,13 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
     Returns {"claimed": bool, "success": bool, "error": str|None}.
     """
     job_id = job["id"]
+    claim_id: Optional[str] = None
     try:
         from cron.scheduler import run_one_job
 
         # At-most-once claim: bail without running if a tick/other fire owns it.
-        if not claim_job_for_fire(job_id):
+        claim_id = claim_job_for_fire_token(job_id)
+        if claim_id is None:
             # claim_job_for_fire returns False for paused/disabled/missing
             # jobs too — don't mislabel those as "already being fired"
             # (#60703): that message sends the user chasing a phantom
@@ -623,6 +626,16 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 reason = "Job is already being fired by the scheduler; not run again."
             return {"claimed": False, "success": False, "error": reason}
+
+        claimed_job = get_job(job["id"])
+        if not claimed_job:
+            release_fire_claim(job["id"], expected_claim_id=claim_id)
+            return {
+                "claimed": True,
+                "success": False,
+                "error": "Job disappeared after its fire was claimed.",
+            }
+        claimed_job["_fire_claim_id"] = claim_id
 
         # run_one_job records last_run_at/last_status via mark_job_run (which
         # also clears the fire claim) and returns True iff it processed the job.
@@ -685,7 +698,10 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
             _heartbeat_thread.start()
 
         try:
-            processed = run_one_job(job)
+            # claimed_job (not job) carries _fire_claim_id — run_one_job reuses
+            # it to skip a redundant self-claim, which claim_job_for_fire_token
+            # would otherwise deny (we already hold the fresh claim above).
+            processed = run_one_job(claimed_job)
         finally:
             _heartbeat_stop.set()
             if _heartbeat_thread is not None:
@@ -700,11 +716,21 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
-        try:
-            mark_job_run(job_id, False, str(e))
-        except Exception:
-            pass
-        return {"claimed": True, "success": False, "error": str(e)}
+        if claim_id is not None:
+            try:
+                mark_job_run(
+                    job_id,
+                    False,
+                    str(e),
+                    expected_fire_claim_id=claim_id,
+                )
+            except Exception:
+                pass
+        return {
+            "claimed": claim_id is not None,
+            "success": False,
+            "error": str(e),
+        }
 
 
 def cronjob(

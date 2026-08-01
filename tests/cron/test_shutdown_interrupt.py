@@ -17,16 +17,22 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _reset_scheduler_state():
+def _reset_scheduler_state(monkeypatch):
     """Every test starts from a clean slate and leaves one behind, since
     these sets are module-level globals shared across the test process."""
     import cron.scheduler as sched
 
     sched._running_job_ids.clear()
     sched._interrupted_job_ids.clear()
+    sched._interrupted_job_reasons.clear()
+    sched._active_cron_worker_processes.clear()
+    monkeypatch.setattr(sched, "claim_job_for_fire_token", lambda jid: f"claim-{jid}")
+    monkeypatch.setattr(sched, "heartbeat_fire_claim", lambda *a, **k: True)
     yield
     sched._running_job_ids.clear()
     sched._interrupted_job_ids.clear()
+    sched._interrupted_job_reasons.clear()
+    sched._active_cron_worker_processes.clear()
 
 
 class TestGetRunningJobIds:
@@ -68,7 +74,22 @@ class TestMarkRunningJobsInterrupted:
         assert marked == []
         mock_mark.assert_not_called()
 
-    def test_marks_every_in_flight_job(self):
+    def test_terminates_direct_worker_but_defers_owner_finalization(self):
+        """Shutdown reaps a direct worker not present in the ticker thread set."""
+        import cron.scheduler as sched
+
+        worker = object()
+        sched._active_cron_worker_processes["direct-job"] = worker
+        with patch("cron.scheduler._terminate_cron_worker") as terminate, \
+             patch("cron.scheduler.mark_job_run") as mock_mark:
+            marked = sched.mark_running_jobs_interrupted("gateway shutdown")
+
+        assert marked == ["direct-job"]
+        terminate.assert_called_once_with(worker)
+        mock_mark.assert_not_called()
+        assert sched._interrupted_job_reasons["direct-job"] == "gateway shutdown"
+
+    def test_defers_finalization_until_worker_acknowledges_interruption(self):
         import cron.scheduler as sched
 
         sched._running_job_ids.update({"job-1", "job-2"})
@@ -77,13 +98,11 @@ class TestMarkRunningJobsInterrupted:
             marked = sched.mark_running_jobs_interrupted("gateway shutdown (final-cleanup)")
 
         assert sorted(marked) == ["job-1", "job-2"]
-        assert mock_mark.call_count == 2
-        called_ids = {c.args[0] for c in mock_mark.call_args_list}
-        assert called_ids == {"job-1", "job-2"}
-        for c in mock_mark.call_args_list:
-            # success must be False -- an interrupted run is never "ok".
-            assert c.args[1] is False
-            assert "gateway shutdown" in c.args[2]
+        mock_mark.assert_not_called()
+        assert sched._interrupted_job_reasons == {
+            "job-1": "gateway shutdown (final-cleanup)",
+            "job-2": "gateway shutdown (final-cleanup)",
+        }
 
     def test_sets_interrupted_flag_for_consumption_by_run_one_job(self):
         import cron.scheduler as sched
@@ -95,22 +114,17 @@ class TestMarkRunningJobsInterrupted:
 
         assert "job-1" in sched._interrupted_job_ids
 
-    def test_one_job_marking_failure_does_not_block_the_others(self):
-        """mark_job_run raising for one job (e.g. a jobs.json write race)
-        must not prevent the rest from being marked -- this runs during
-        shutdown, there's no retry window."""
+    def test_shutdown_signal_does_not_write_runtime_from_non_owner(self):
+        """The shutdown thread may flag workers, but only owners may finalize."""
         import cron.scheduler as sched
 
         sched._running_job_ids.update({"job-1", "job-2"})
 
-        def _side_effect(job_id, success, reason, **kwargs):
-            if job_id == "job-1":
-                raise OSError("disk full")
-
-        with patch("cron.scheduler.mark_job_run", side_effect=_side_effect):
+        with patch("cron.scheduler.mark_job_run") as mock_mark:
             marked = sched.mark_running_jobs_interrupted("shutdown")
 
-        assert marked == ["job-2"]
+        assert sorted(marked) == ["job-1", "job-2"]
+        mock_mark.assert_not_called()
 
 
 class TestIsInterrupted:
@@ -162,19 +176,60 @@ class TestRunOneJobHonoursInterruptedFlag:
     def _make_job(self, job_id="job-1"):
         return {"id": job_id, "name": "test job", "prompt": "do work"}
 
-    def test_success_path_skipped_when_interrupted(self):
+    def test_queued_interrupted_job_never_starts_and_releases_claims(self):
+        """A pool-queued job marked during shutdown must not begin afterward."""
+        import cron.scheduler as sched
+
+        job = {
+            **self._make_job("queued-job"),
+            "execution_id": "execution-1",
+            "_fire_claim_id": "fire-1",
+            "run_claim": {"id": "run-1", "by": "owner", "at": "now"},
+        }
+        sched._interrupted_job_ids.add(job["id"])
+        sched._interrupted_job_reasons[job["id"]] = "gateway shutdown"
+
+        with patch("cron.scheduler.claim_dispatch") as claim_dispatch, \
+             patch("cron.scheduler._run_job_in_killable_process") as run_worker, \
+             patch("cron.scheduler.release_run_claim", return_value=True) as release_run, \
+             patch("cron.scheduler.release_fire_claim", return_value=True) as release_fire, \
+             patch("cron.scheduler.finish_execution") as finish:
+            result = sched.run_one_job(job)
+
+        assert result is False
+        claim_dispatch.assert_not_called()
+        run_worker.assert_not_called()
+        release_run.assert_called_once_with(
+            "queued-job",
+            expected_claim_id="run-1",
+        )
+        release_fire.assert_called_once_with(
+            "queued-job",
+            expected_claim_id="fire-1",
+        )
+        finish.assert_called_once_with(
+            "execution-1",
+            success=False,
+            error="gateway shutdown",
+            delivery_outcome="suppressed",
+        )
+
+    def test_success_path_is_fenced_failure_when_interrupted(self):
         import cron.scheduler as sched
 
         job = self._make_job()
-        sched._interrupted_job_ids.add(job["id"])
+
+        def complete_after_interrupt(*_args, **_kwargs):
+            sched._interrupted_job_ids.add(job["id"])
+            return True, "full output", "final response", None
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
-                 "cron.scheduler.run_job",
-                 return_value=(True, "full output", "final response", None),
+                 "cron.scheduler._run_job_in_killable_process",
+                 side_effect=complete_after_interrupt,
              ), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._is_cron_silence_response", return_value=False), \
@@ -183,9 +238,13 @@ class TestRunOneJobHonoursInterruptedFlag:
             result = sched.run_one_job(job)
 
         assert result is True
-        # The would-be "success" write must NOT happen -- the shutdown
-        # path already wrote the authoritative interrupted status.
-        mock_mark.assert_not_called()
+        mock_mark.assert_called_once()
+        assert mock_mark.call_args.args[1] is False
+        assert "interrupt" in mock_mark.call_args.args[2].lower()
+        assert (
+            mock_mark.call_args.kwargs["expected_fire_claim_id"]
+            == "claim-job-1"
+        )
         # Flag is consumed so a later, unrelated fire of the same job ID
         # isn't permanently silenced.
         assert job["id"] not in sched._interrupted_job_ids
@@ -201,15 +260,18 @@ class TestRunOneJobHonoursInterruptedFlag:
         import cron.scheduler as sched
 
         job = self._make_job()
-        sched._interrupted_job_ids.add(job["id"])
+
+        def complete_after_interrupt(*_args, **_kwargs):
+            sched._interrupted_job_ids.add(job["id"])
+            return True, "full output", "a plausible final response", None
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
              patch("agent.secret_scope.reset_secret_scope"), \
              patch(
-                 "cron.scheduler.run_job",
-                 return_value=(True, "full output", "a plausible final response", None),
+                 "cron.scheduler._run_job_in_killable_process",
+                 side_effect=complete_after_interrupt,
              ), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch(
@@ -235,15 +297,27 @@ class TestRunOneJobHonoursInterruptedFlag:
         import cron.scheduler as sched
 
         job = self._make_job()
-        sched._interrupted_job_ids.add(job["id"])
+
+        def fail_after_interrupt(*_args, **_kwargs):
+            sched._interrupted_job_ids.add(job["id"])
+            raise RuntimeError("boom")
 
         with patch("cron.scheduler.claim_dispatch", return_value=True), \
              patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
              patch("agent.secret_scope.reset_secret_scope"), \
-             patch("cron.scheduler.run_job", side_effect=RuntimeError("boom")), \
+             patch(
+                 "cron.scheduler._run_job_in_killable_process",
+                 side_effect=fail_after_interrupt,
+             ), \
              patch("cron.scheduler.mark_job_run") as mock_mark:
             result = sched.run_one_job(job)
 
         assert result is False
-        mock_mark.assert_not_called()
+        mock_mark.assert_called_once()
+        assert mock_mark.call_args.args[1] is False
+        assert "interrupt" in mock_mark.call_args.args[2].lower()
+        assert (
+            mock_mark.call_args.kwargs["expected_fire_claim_id"]
+            == "claim-job-1"
+        )

@@ -61,7 +61,15 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # labels look like `ai.hermes.gateway` / `hermes-gateway`. Requiring the
     # gateway identifier prevents blocking unrelated hermes services (e.g.
     # `launchctl unload ai.hermes.update-checker.plist`).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart)\b[^\n]*\bhermes[.\-]?gateway)"
+    # `submit` and `bootstrap` are included alongside the direct verbs
+    # (kickstart/etc.): `launchctl submit -l ai.hermes.gateway-<suffix> --
+    # <helper-script>` (or `launchctl bootstrap gui/<uid> <plist>`) creates
+    # a NEW keepalive job wrapping an arbitrary helper, which is how a
+    # blocked direct restart/kill gets laundered into a persistent restart
+    # loop instead (#62891) — same foot-gun, indirect shape. Neutral-label
+    # submissions that dodge this text anchor are caught separately by
+    # `contains_launchctl_submit_command` (execution-aware, label-independent).
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
@@ -71,11 +79,25 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
 )
 
 
+# A backslash immediately followed by a newline is a POSIX shell line
+# continuation — the shell joins the two lines before parsing. Every branch
+# above uses `[^\n]*` between its verb and the gateway identifier so the
+# match can't span unrelated lines of a longer cron prompt/script, but that
+# also means a real multi-line shell invocation split across continuation
+# lines (e.g. `launchctl submit \` / `  -l ai.hermes.gateway-... \` / `  -- ...`,
+# the exact reported shape in #62891) would otherwise slip past. Collapse
+# continuations to a single space before matching, mirroring what the shell
+# itself does, rather than loosening `[^\n]*` and risking false positives
+# across genuinely separate lines.
+_SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern."""
     if not text:
         return False
-    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(text))
+    normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    return bool(_GATEWAY_LIFECYCLE_PATTERN.search(normalized))
 
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
@@ -128,14 +150,22 @@ def _command_token_index(segment: list[str]) -> Optional[int]:
 
 
 def contains_launchctl_submit_command(command: str) -> bool:
-    """Detect an executed ``launchctl submit``, not quoted/comment-only text."""
+    """Detect an executed ``launchctl submit``/``bootstrap``, not quoted text.
+
+    Label-independent by design: the label of a submitted/bootstrapped job is
+    chosen by whoever writes it, so a neutral name (``ai.hermes.svc-reload-tmp``)
+    defeats any label-anchored regex (#62891, second reproduction). Both verbs
+    register a NEW persistent launchd job (``submit`` jobs get KeepAlive
+    semantics; ``bootstrap`` loads an arbitrary plist), which is never safe to
+    do from inside the gateway process.
+    """
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
             continue
         if Path(segment[index]).name == "launchctl":
             arguments = segment[index + 1 :]
-            if arguments and arguments[0].lower() == "submit":
+            if arguments and arguments[0].lower() in {"submit", "bootstrap"}:
                 return True
     return False
 

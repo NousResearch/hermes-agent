@@ -520,6 +520,12 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    # A runtime-tombstoned declaration is a completed job retained for
+    # reproducibility; consumers that opted into seeing it must never read it
+    # as schedulable.
+    if normalized.get("runtime_tombstone"):
+        normalized["state"] = "completed"
+
     return normalized
 
 
@@ -1130,10 +1136,12 @@ def _reconcile_runtime_state(
             "scheduled" if definition.get("enabled", True) else "paused"
         )
         reconciled.pop("runtime_tombstone", None)
-    elif prior_definition_digest and prior_definition_digest != definition_digest:
-        # Any operator edit revives a runtime-tombstoned declaration. Cadence
-        # and history remain intact unless the cadence digest changed above.
-        reconciled.pop("runtime_tombstone", None)
+    # A definition edit that leaves cadence (schedule/repeat/enabled) untouched
+    # does NOT revive a runtime-tombstoned declaration: only the cadence branch
+    # above resets the exhausted repeat counter, so popping the tombstone here
+    # would resurrect the job with completed >= times and a stale next_run_at —
+    # firing it once past its repeat limit before re-tombstoning. A completed
+    # job stays completed until an operator changes what completed it.
 
     reconciled[_RUNTIME_DEFINITION_DIGEST] = definition_digest
     reconciled[_RUNTIME_SCHEDULE_DIGEST] = schedule_digest
@@ -1748,11 +1756,20 @@ def create_job(
     return job
 
 
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get a visible, non-terminal job by ID."""
+def get_job(
+    job_id: str, include_terminal: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Get a visible job by ID.
+
+    Runtime-tombstoned (completed) declarations are hidden by default so the
+    scheduler and run paths never treat them as live; management surfaces pass
+    ``include_terminal=True`` to reach them for list/remove/revive.
+    """
     jobs = load_jobs()
     for job in jobs:
-        if job["id"] == job_id and not job.get("runtime_tombstone"):
+        if job["id"] == job_id and (
+            include_terminal or not job.get("runtime_tombstone")
+        ):
             return _normalize_job_record(job)
     return None
 
@@ -1770,17 +1787,25 @@ class AmbiguousJobReference(LookupError):
         )
 
 
-def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
+def resolve_job_ref(
+    ref: str, include_terminal: bool = False
+) -> Optional[Dict[str, Any]]:
     """Resolve a job reference (ID or name) to a job record.
 
     - Exact ID match wins (works even if a different job's name equals this ID).
     - Otherwise, case-insensitive name match.
     - If a name matches more than one job, raises AmbiguousJobReference so the
       caller can surface the matching IDs rather than silently picking one.
+    - Runtime-tombstoned (completed) declarations are hidden unless
+      ``include_terminal=True`` — the management-surface opt-in.
     """
     if not ref:
         return None
-    jobs = [job for job in load_jobs() if not job.get("runtime_tombstone")]
+    jobs = [
+        job
+        for job in load_jobs()
+        if include_terminal or not job.get("runtime_tombstone")
+    ]
     for job in jobs:
         if job["id"] == ref:
             return _normalize_job_record(job)
@@ -1795,12 +1820,18 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     return _normalize_job_record(name_matches[0])
 
 
-def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
-    """List visible jobs, optionally including operator-disabled ones."""
+def list_jobs(
+    include_disabled: bool = False, include_terminal: bool = False
+) -> List[Dict[str, Any]]:
+    """List visible jobs, optionally including disabled and completed ones.
+
+    ``include_terminal=True`` also returns runtime-tombstoned declarations
+    (state ``completed``) so operators can inspect, remove, or revive them.
+    """
     jobs = [
         _normalize_job_record(job)
         for job in load_jobs()
-        if not job.get("runtime_tombstone")
+        if include_terminal or not job.get("runtime_tombstone")
     ]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
@@ -1844,6 +1875,17 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
+            # Reviving a completed declaration requires a cadence edit — only
+            # schedule/repeat/enabled changes reset the exhausted counter in
+            # _reconcile_runtime_state(). When the revive comes from repeat or
+            # enabled alone, the stored next_run_at predates completion; clear
+            # it so the recompute below schedules from now instead of firing
+            # immediately on the stale occurrence.
+            reviving = bool(job.get("runtime_tombstone")) and (
+                schedule_changed or bool({"repeat", "enabled"}.intersection(updates))
+            )
+            if reviving and not schedule_changed:
+                updated["next_run_at"] = None
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
             ) and _normalized_inference_axes(updated) != previous_inference_axes
@@ -1975,8 +2017,13 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID or name."""
-    job = resolve_job_ref(job_id)
+    """Remove a job by ID or name, including a completed (tombstoned) one.
+
+    Removal is the supported way to drop a runtime-tombstoned declaration, so
+    terminal records must stay reachable here even though live lookup hides
+    them.
+    """
+    job = resolve_job_ref(job_id, include_terminal=True)
     if not job:
         return False
     canonical_id = job["id"]

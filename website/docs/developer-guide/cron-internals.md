@@ -12,7 +12,7 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 
 | File | Purpose |
 |------|---------|
-| `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
+| `cron/jobs.py` | Job model, storage — declarative `jobs.json` + volatile `runtime.db` |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
 | `tools/cronjob_tools.py` | Model-facing `cronjob` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
@@ -33,35 +33,28 @@ The model-facing surface is a single `cronjob` tool with action-style operations
 
 ## Job Storage
 
-Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write to temp file, then rename). Each job record contains:
+Job state is split across two profile-local artifacts under `~/.hermes/cron/`:
 
-```json
-{
-  "id": "a1b2c3d4e5f6",
-  "name": "Daily briefing",
-  "prompt": "Summarize today's AI news and funding rounds",
-  "schedule": {
-    "kind": "cron",
-    "expr": "0 9 * * *",
-    "display": "0 9 * * *"
-  },
-  "skills": ["ai-funding-daily-report"],
-  "deliver": "telegram:-1001234567890",
-  "repeat": {
-    "times": null,
-    "completed": 42
-  },
-  "state": "scheduled",
-  "enabled": true,
-  "next_run_at": "2025-01-16T09:00:00Z",
-  "last_run_at": "2025-01-15T09:00:00Z",
-  "last_status": "ok",
-  "created_at": "2025-01-01T00:00:00Z",
-  "model": null,
-  "provider": null,
-  "script": null
-}
-```
+| Artifact | Contents | Character |
+|----------|----------|-----------|
+| `jobs.json` | **Declarative definitions** — operator intent: `id`, `name`, `prompt`, `schedule`, `skills`, `deliver`, `repeat.times`, `enabled`, per-job `model`/`provider` pins, `script`, `workdir` | Stable. Safe to back up, review, source-control, or hand-deploy; normal execution never dirties it |
+| `runtime.db` | **Volatile runtime state** (SQLite, keyed by job id) — `next_run_at`, `last_run_at`/`last_status`/`last_error`, delivery errors, fire/run claims, the repeat-completed counter, provider/model snapshots, runtime tombstones, and definition/schedule digests | Scheduler-owned. Changes on every tick; never edit by hand |
+
+`load_jobs()` returns definitions overlaid with their reconciled runtime state,
+so callers still see one merged record per job. `jobs.json` keeps atomic write
+semantics (write to temp file, then rename); cross-store writes journal the
+definition change in SQLite first so an interrupted write recovers
+idempotently on the next load.
+
+### Migration from combined stores
+
+Before the split, scheduler-owned fields lived in `jobs.json` alongside the
+definitions. A legacy combined store migrates automatically on first load:
+runtime fields move into `runtime.db` first, then the cleaned definitions are
+rewritten — no schedules, counters, status, or claims are lost. Runtime rows
+are bound to their definition generation by content digests; a restored or
+edited definition whose digest no longer matches rejects stale claims and
+resets cadence-derived state instead of trusting it.
 
 ### Job Lifecycle States
 
@@ -71,6 +64,26 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 | `paused` | Suspended — won't fire until resumed |
 | `completed` | Repeat count exhausted or one-shot that has fired |
 | `running` | Currently executing (transient state) |
+
+A repeat-exhausted job is retained as its declaration in `jobs.json` plus a
+**runtime tombstone** (`{reason, at}`) in `runtime.db`, so operator intent
+stays reproducible without the job ever firing again. Tombstoned jobs are
+hidden from live lookup and the scheduler, but remain manageable: they appear
+in listings on opt-in (`cronjob(action="list", include_completed=True)` or
+`hermes cron list --all`), can be removed, and are **revived by a cadence
+edit** — updating `schedule`, `repeat`, or `enabled` resets the exhausted
+counter and reschedules from now. Definition edits that leave cadence
+untouched (for example a prompt rewrite) update the declaration but keep the
+job completed.
+
+### Backup Coherence
+
+Full backups archive the default and named-profile definition/runtime pairs
+from one coherent generation — both members of a pair are staged under the
+same store lock, and the archive is deleted if either member cannot be
+written, so a restore can never mix a definition generation with a foreign
+runtime generation. Quick snapshot/restore fails closed when the cron store
+lock cannot be acquired.
 
 ### Backward Compatibility
 
@@ -85,7 +98,7 @@ The scheduler runs on a periodic tick (default: every 60 seconds):
 ```text
 tick()
   1. Acquire scheduler lock (prevents overlapping ticks)
-  2. Load all jobs from jobs.json
+  2. Load all jobs (definitions from jobs.json overlaid with runtime.db state)
   3. Filter to due jobs (next_run <= now AND state == "scheduled")
   4. For each due job:
      a. Set state to "running"
@@ -94,9 +107,9 @@ tick()
      d. Run the job prompt through the agent
      e. Deliver the response to the configured target
      f. Update run_count, compute next_run
-     g. If repeat count exhausted → state = "completed"
+     g. If repeat count exhausted → runtime tombstone (state = "completed")
      h. Otherwise → state = "scheduled"
-  5. Write updated jobs back to jobs.json
+  5. Persist runtime state to runtime.db (definitions untouched)
   6. Release scheduler lock
 ```
 

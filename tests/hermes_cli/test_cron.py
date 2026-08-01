@@ -182,7 +182,7 @@ class TestExternalCronProviderStatus:
 def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     monkeypatch.setattr(
         "cron.jobs.list_jobs",
-        lambda include_disabled=False: [
+        lambda include_disabled=False, include_terminal=False: [
             {
                 "id": "job-1",
                 "name": "Nightly docs",
@@ -234,3 +234,27 @@ def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "Failed to create job: boom" in out
+
+
+class TestCronListCompleted:
+    """`hermes cron list --all` must surface completed (runtime-tombstoned)
+    declarations with a terminal badge instead of a stale next-run time; the
+    default listing keeps hiding them."""
+
+    def test_list_all_shows_completed_with_reason(self, tmp_cron_dir, capsys):
+        from cron.jobs import mark_job_run
+
+        job = create_job(prompt="One shot sweep", schedule="every 1h", repeat=1)
+        assert mark_job_run(job["id"], success=True) is True
+
+        cron_cli.cron_list(show_all=False)
+        default_out = capsys.readouterr().out
+        assert "One shot sweep" not in default_out
+
+        cron_cli.cron_list(show_all=True)
+        all_out = capsys.readouterr().out
+        assert "One shot sweep" in all_out
+        assert "[completed]" in all_out
+        assert "repeat_limit" in all_out
+        # The stale pre-completion next_run_at must not read as upcoming.
+        assert "completed" in all_out.split("Next run:")[1].splitlines()[0]

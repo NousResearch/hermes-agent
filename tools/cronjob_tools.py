@@ -579,6 +579,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
+    tombstone = job.get("runtime_tombstone")
+    if tombstone:
+        result["completed_reason"] = tombstone.get("reason")
+        result["completed_at"] = tombstone.get("at")
     if job.get("script"):
         result["script"] = job["script"]
     if job.get("no_agent"):
@@ -742,6 +746,7 @@ def cronjob(
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
     include_disabled: bool = False,
+    include_completed: bool = False,
     skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
     model: Optional[str] = None,
@@ -851,14 +856,23 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [
+                _format_job(job)
+                for job in list_jobs(
+                    include_disabled=include_disabled,
+                    include_terminal=include_completed,
+                )
+            ]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         try:
-            job = resolve_job_ref(job_id)
+            # Management actions must reach completed (runtime-tombstoned)
+            # declarations too — remove and revive-via-update are the supported
+            # exits from the terminal state. Live-only actions are gated below.
+            job = resolve_job_ref(job_id, include_terminal=True)
         except AmbiguousJobReference as exc:
             return json.dumps(
                 {
@@ -883,6 +897,19 @@ def cronjob(
             )
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
+
+        job_was_completed = bool(job.get("runtime_tombstone"))
+        if job_was_completed and normalized in {"pause", "resume", "run", "run_now", "trigger"}:
+            tombstone = job.get("runtime_tombstone") or {}
+            return tool_error(
+                f"Cron job '{job['name']}' has completed "
+                f"(reason: {tombstone.get('reason', 'unknown')}, "
+                f"at: {tombstone.get('at', 'unknown')}) — action "
+                f"'{normalized}' only applies to live jobs. To revive it, use "
+                "action='update' with a new schedule or repeat; to drop it, "
+                "use action='remove'.",
+                success=False,
+            )
 
         if normalized == "remove":
             removed = remove_job(job_id)
@@ -1041,7 +1068,25 @@ def cronjob(
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
             _notify_provider_jobs_changed_safe()
-            return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
+            # Tombstone reconciliation happens inside save_jobs(); re-read so
+            # the response reflects whether this edit actually revived a
+            # completed job (update_job returns the pre-reconcile record).
+            refreshed = get_job(job_id, include_terminal=True) or updated
+            response: Dict[str, Any] = {"success": True, "job": _format_job(refreshed)}
+            if job_was_completed:
+                if refreshed.get("runtime_tombstone"):
+                    response["message"] = (
+                        f"Cron job '{refreshed.get('name', job_id)}' updated but "
+                        "still completed — only a schedule, repeat, or enabled "
+                        "change revives a completed job."
+                    )
+                else:
+                    response["revived"] = True
+                    response["message"] = (
+                        f"Cron job '{refreshed.get('name', job_id)}' revived; "
+                        f"next run at {refreshed.get('next_run_at')}."
+                    )
+            return json.dumps(response, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
@@ -1079,6 +1124,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "job_id": {
                 "type": "string",
                 "description": "Required for update/pause/resume/remove/run"
+            },
+            "include_completed": {
+                "type": "boolean",
+                "default": False,
+                "description": "For action=list: also include completed jobs (one-shots or repeat-limited jobs that have exhausted their runs). Completed jobs show state='completed' with completed_reason/completed_at. They can be removed, or revived with action='update' by giving them a new schedule or repeat."
             },
             "prompt": {
                 "type": "string",
@@ -1197,6 +1247,7 @@ registry.register(
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
         include_disabled=args.get("include_disabled", True),
+        include_completed=args.get("include_completed", False),
         skill=args.get("skill"),
         skills=args.get("skills"),
         # model / provider / base_url are intentionally NOT read from the

@@ -615,3 +615,129 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+
+# =========================================================================
+# Completed (runtime-tombstoned) job management
+# =========================================================================
+
+class TestCompletedJobManagement:
+    """A repeat-exhausted declaration is retained as a runtime tombstone for
+    reproducibility, but it must stay manageable end-to-end through the
+    supported tool surfaces: list (opt-in), remove, and revive via a cadence
+    edit. Prompt-only edits update the declaration without resurrecting the
+    job, and live-only actions fail with an explicit terminal error instead
+    of 'not found'."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def _completed_job(self, name="one-timer"):
+        from cron.jobs import mark_job_run
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Sweep once",
+                schedule="every 1h",
+                repeat=1,
+                name=name,
+            )
+        )
+        assert created["success"] is True
+        job_id = created["job_id"]
+        assert mark_job_run(job_id, success=True) is True
+        return job_id
+
+    def test_completed_hidden_by_default_but_listable_on_opt_in(self):
+        self._completed_job()
+
+        default_listing = json.loads(cronjob(action="list"))
+        assert default_listing["count"] == 0
+
+        listing = json.loads(cronjob(action="list", include_completed=True))
+        assert listing["count"] == 1
+        job = listing["jobs"][0]
+        assert job["state"] == "completed"
+        assert job["completed_reason"] == "repeat_limit"
+        assert job["completed_at"]
+
+    def test_completed_job_can_be_removed_by_id(self):
+        from cron.jobs import load_jobs
+
+        job_id = self._completed_job()
+        removed = json.loads(cronjob(action="remove", job_id=job_id))
+        assert removed["success"] is True
+        assert load_jobs() == []  # declaration gone, not just hidden
+
+    def test_completed_job_can_be_removed_by_name(self):
+        from cron.jobs import load_jobs
+
+        self._completed_job(name="stale-sweeper")
+        removed = json.loads(cronjob(action="remove", job_id="stale-sweeper"))
+        assert removed["success"] is True
+        assert load_jobs() == []
+
+    def test_repeat_update_revives_and_reschedules_from_now(self):
+        from datetime import datetime, timedelta, timezone
+
+        from cron.jobs import get_job, load_jobs, save_jobs
+
+        job_id = self._completed_job()
+
+        # The stored next_run_at predates completion. Backdate it so a revive
+        # that naively kept it would fire immediately on the stale occurrence.
+        now = datetime.now(timezone.utc)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (now - timedelta(hours=2)).isoformat()
+        save_jobs(jobs)
+
+        revived = json.loads(cronjob(action="update", job_id=job_id, repeat=3))
+        assert revived["success"] is True
+        assert revived["revived"] is True
+        assert revived["job"]["state"] == "scheduled"
+
+        live = get_job(job_id)
+        assert live is not None  # visible to the live surface again
+        assert live["repeat"]["completed"] == 0  # counter re-armed
+        next_run = datetime.fromisoformat(live["next_run_at"])
+        assert next_run > now  # rescheduled from now, not the stale occurrence
+
+    def test_schedule_update_revives(self):
+        from cron.jobs import get_job
+
+        job_id = self._completed_job()
+        revived = json.loads(
+            cronjob(action="update", job_id=job_id, schedule="every 2h")
+        )
+        assert revived["success"] is True
+        assert revived["revived"] is True
+        assert get_job(job_id) is not None
+
+    def test_prompt_only_update_keeps_job_completed(self):
+        from cron.jobs import get_job
+
+        job_id = self._completed_job()
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, prompt="Rewritten sweep")
+        )
+        assert updated["success"] is True
+        assert "revived" not in updated
+        assert updated["job"]["state"] == "completed"
+        assert "still completed" in updated["message"]
+
+        assert get_job(job_id) is None  # still hidden from the live surface
+        # ... but the declaration edit itself persisted.
+        terminal = get_job(job_id, include_terminal=True)
+        assert terminal["prompt"] == "Rewritten sweep"
+
+    def test_live_only_actions_fail_with_terminal_error(self):
+        job_id = self._completed_job()
+        for action in ("pause", "resume", "run"):
+            result = json.loads(cronjob(action=action, job_id=job_id))
+            assert result["success"] is False, action
+            assert "completed" in result["error"], action
+            assert "revive" in result["error"], action

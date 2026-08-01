@@ -24,7 +24,7 @@ const rowPadX = 'pl-2 pr-1'
 const rowGap = 'gap-1.5'
 const rowLead = 'grid size-3.5 shrink-0 place-items-center'
 const rowInset = cn(rowPadX, rowGap, 'flex h-full min-w-0 items-center self-stretch py-0.5')
-const rowLabel = 'min-w-0 line-clamp-2 text-[0.8125rem] leading-tight text-(--ui-text-secondary)'
+const rowLabel = 'min-w-0 text-[0.8125rem] text-(--ui-text-secondary)'
 
 /** Codicon size in sidebar row leads — matches the file tree (`tree.tsx`). */
 export const SIDEBAR_LEAD_ICON_SIZE = '0.875rem' as const
@@ -89,7 +89,7 @@ export function SidebarRowLink({
 }: React.ComponentProps<'button'> & { labelClassName?: string }) {
   return (
     <RowButton className={cn('min-w-0 shrink bg-transparent p-0 text-left', className)} {...props}>
-      <span className={cn(rowLabel, labelClassName)}>{children}</span>
+      <span className={cn(rowLabel, 'truncate leading-none', labelClassName)}>{children}</span>
     </RowButton>
   )
 }

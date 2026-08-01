@@ -5,115 +5,259 @@ Those lines are routinely captured into orchestrator logs and transcripts,
 so partial head/tail previews of tokens or API keys are an exposure surface
 with no operational upside over a fixed ``[configured]`` marker.
 
-This file pins:
-  * both banner sites emit the fully-redacted form
-  * neither site slices credential material for display
-  * Entra ID callable providers still get the static label
-  * the invalid/missing-key warning still fires
+Tests drive the real ``init_agent()`` Anthropic and OpenAI-compatible paths
+with client construction mocked out, and assert on captured stdout.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock
+from contextlib import ExitStack, contextmanager
+from unittest.mock import MagicMock, patch
 
-import pytest
-
-_AGENT_INIT = (
-    Path(__file__).resolve().parent.parent.parent / "agent" / "agent_init.py"
-)
-_SRC = _AGENT_INIT.read_text(encoding="utf-8")
+from run_agent import AIAgent
 
 
-class TestCredentialBannerSourcePin:
-    """Source-level guards so the two print sites cannot regress silently."""
-
-    def test_token_banner_uses_configured_marker(self):
-        assert 'print("🔑 Using token: [configured]")' in _SRC
-
-    def test_api_key_banner_uses_configured_marker(self):
-        assert 'print("🔑 Using API key: [configured]")' in _SRC
-
-    def test_no_head_tail_token_preview(self):
-        # Historical leak shape from issue #60319.
-        assert "effective_key[:8]" not in _SRC
-        assert "key_used[:8]" not in _SRC
-        assert "effective_key[-4:]" not in _SRC
-        assert "key_used[-4:]" not in _SRC
-
-    def test_entra_and_invalid_warnings_preserved(self):
-        assert _SRC.count('"🔑 Using credentials: Microsoft Entra ID"') >= 2
-        assert "⚠️  Warning: API key appears invalid or missing" in _SRC
+def _bare_agent() -> AIAgent:
+    """Minimal AIAgent instance without running ``__init__``."""
+    agent = object.__new__(AIAgent)
+    agent._base_url = ""
+    agent._base_url_lower = ""
+    agent._base_url_hostname = ""
+    # Methods used during the OpenAI client path.
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._apply_user_default_headers = MagicMock()
+    return agent
 
 
-def _print_openai_banner(key_used, *, is_token_provider, capsys):
-    """Mirror the OpenAI-path banner block (post-#60319) for unit exercise."""
-    if is_token_provider(key_used):
-        print("🔑 Using credentials: Microsoft Entra ID")
-    elif (
-        isinstance(key_used, str)
-        and key_used
-        and key_used != "dummy-key"
-        and len(key_used) > 12
-    ):
-        print("🔑 Using API key: [configured]")
-    else:
-        print("⚠️  Warning: API key appears invalid or missing")
-    return capsys.readouterr().out
-
-
-def _print_anthropic_banner(effective_key, *, is_token_provider, capsys):
-    """Mirror the Anthropic-path banner block (post-#60319) for unit exercise."""
-    if is_token_provider(effective_key):
-        print("🔑 Using credentials: Microsoft Entra ID")
-    elif isinstance(effective_key, str) and len(effective_key) > 12:
-        print("🔑 Using token: [configured]")
-    return capsys.readouterr().out
-
-
-class TestCredentialBannerBehaviour:
-    def test_api_key_banner_never_leaks_secret_material(self, capsys):
-        secret = "sk-proj-SUPERSECRETVALUE1234567890"
-        out = _print_openai_banner(
-            secret, is_token_provider=lambda _k: False, capsys=capsys
+@contextmanager
+def _common_patches():
+    """Patches that keep init_agent off the network and out of config IO."""
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None))
         )
-        assert "Using API key: [configured]" in out
-        assert secret not in out
-        assert secret[:8] not in out
-        assert secret[-4:] not in out
+        stack.enter_context(patch("run_agent.get_tool_definitions", return_value=[]))
+        stack.enter_context(
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock())
+        )
+        stack.enter_context(
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="")
+        )
+        stack.enter_context(
+            patch("agent.anthropic_adapter._is_oauth_token", return_value=False)
+        )
+        stack.enter_context(
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda model, *a, **k: model or "test-model",
+            )
+        )
+        stack.enter_context(
+            patch("agent.credential_pool.load_pool", return_value=MagicMock())
+        )
+        stack.enter_context(patch("hermes_cli.config.load_config", return_value={}))
+        stack.enter_context(
+            patch("hermes_cli.config.load_config_readonly", return_value={})
+        )
+        stack.enter_context(
+            patch("hermes_cli.config.get_compatible_custom_providers", return_value=[])
+        )
+        stack.enter_context(patch("agent.iteration_budget.IterationBudget"))
+        stack.enter_context(patch("hermes_cli.config.cfg_get", return_value=None))
+        stack.enter_context(patch("agent.ssl_guard.verify_ca_bundle_with_fallback"))
+        stack.enter_context(
+            patch(
+                "hermes_cli.config.apply_custom_provider_tls_to_client_kwargs",
+                return_value=None,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "hermes_cli.config.apply_custom_provider_extra_headers_to_client_kwargs",
+                return_value=None,
+            )
+        )
+        # Callable Entra keys break the Anthropic context-length probe
+        # (it assumes a string api_key). Stub both import sites so init
+        # can finish after the banner has already printed.
+        stack.enter_context(
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                return_value=200000,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "agent.context_compressor.get_model_context_length",
+                return_value=200000,
+            )
+        )
+        yield
 
+
+class TestAnthropicInitBanner:
     def test_token_banner_never_leaks_secret_material(self, capsys):
+        from agent.agent_init import init_agent
+
         secret = "sk-ant-api03-REALLYSECRETTOKENVALUE99"
-        out = _print_anthropic_banner(
-            secret, is_token_provider=lambda _k: False, capsys=capsys
-        )
+        agent = _bare_agent()
+        with _common_patches():
+            with patch(
+                "agent.azure_identity_adapter.is_token_provider", return_value=False
+            ):
+                init_agent(
+                    agent,
+                    base_url="https://api.anthropic.com",
+                    api_key=secret,
+                    provider="anthropic",
+                    api_mode="anthropic_messages",
+                    model="claude-opus-4.8",
+                    skip_context_files=True,
+                    skip_memory=True,
+                    quiet_mode=False,
+                )
+        out = capsys.readouterr().out
         assert "Using token: [configured]" in out
         assert secret not in out
         assert secret[:8] not in out
         assert secret[-4:] not in out
 
     def test_entra_provider_prints_static_label_without_invoking(self, capsys):
+        from agent.agent_init import init_agent
+
         called = {"n": 0}
 
         def provider():
             called["n"] += 1
             return "should-never-be-read"
 
-        out = _print_openai_banner(
-            provider, is_token_provider=lambda k: callable(k), capsys=capsys
-        )
+        agent = _bare_agent()
+        with _common_patches():
+            with patch(
+                "agent.azure_identity_adapter.is_token_provider",
+                side_effect=lambda key: callable(key),
+            ):
+                try:
+                    init_agent(
+                        agent,
+                        base_url="https://api.anthropic.com",
+                        api_key=provider,
+                        provider="anthropic",
+                        api_mode="anthropic_messages",
+                        model="claude-opus-4.8",
+                        skip_context_files=True,
+                        skip_memory=True,
+                        quiet_mode=False,
+                    )
+                except Exception:
+                    # Later init steps may still choke on a callable key
+                    # (context-length probes, etc.). The banner under test
+                    # already printed before those paths run.
+                    pass
+        out = capsys.readouterr().out
         assert "Microsoft Entra ID" in out
         assert called["n"] == 0
         assert "should-never-be-read" not in out
 
+
+class TestOpenAICompatInitBanner:
+    def test_api_key_banner_never_leaks_secret_material(self, capsys):
+        from agent.agent_init import init_agent
+
+        secret = "sk-proj-SUPERSECRETVALUE1234567890"
+        agent = _bare_agent()
+        with _common_patches():
+            with patch(
+                "agent.azure_identity_adapter.is_token_provider", return_value=False
+            ):
+                init_agent(
+                    agent,
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=secret,
+                    provider="openrouter",
+                    api_mode="chat_completions",
+                    model="openai/gpt-4o",
+                    skip_context_files=True,
+                    skip_memory=True,
+                    quiet_mode=False,
+                )
+        out = capsys.readouterr().out
+        assert "Using API key: [configured]" in out
+        assert secret not in out
+        assert secret[:8] not in out
+        assert secret[-4:] not in out
+
     def test_invalid_or_missing_key_still_warns(self, capsys):
-        out = _print_openai_banner(
-            "short", is_token_provider=lambda _k: False, capsys=capsys
-        )
+        from agent.agent_init import init_agent
+
+        agent = _bare_agent()
+        with _common_patches():
+            with patch(
+                "agent.azure_identity_adapter.is_token_provider", return_value=False
+            ):
+                init_agent(
+                    agent,
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="short",
+                    provider="openrouter",
+                    api_mode="chat_completions",
+                    model="openai/gpt-4o",
+                    skip_context_files=True,
+                    skip_memory=True,
+                    quiet_mode=False,
+                )
+        out = capsys.readouterr().out
         assert "API key appears invalid or missing" in out
 
     def test_dummy_key_still_warns(self, capsys):
-        out = _print_openai_banner(
-            "dummy-key", is_token_provider=lambda _k: False, capsys=capsys
-        )
+        from agent.agent_init import init_agent
+
+        agent = _bare_agent()
+        with _common_patches():
+            with patch(
+                "agent.azure_identity_adapter.is_token_provider", return_value=False
+            ):
+                init_agent(
+                    agent,
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="dummy-key",
+                    provider="openrouter",
+                    api_mode="chat_completions",
+                    model="openai/gpt-4o",
+                    skip_context_files=True,
+                    skip_memory=True,
+                    quiet_mode=False,
+                )
+        out = capsys.readouterr().out
         assert "API key appears invalid or missing" in out
+
+    def test_entra_provider_prints_static_label(self, capsys):
+        from agent.agent_init import init_agent
+
+        called = {"n": 0}
+
+        def provider():
+            called["n"] += 1
+            return "should-never-be-read"
+
+        agent = _bare_agent()
+        with _common_patches():
+            with patch(
+                "agent.azure_identity_adapter.is_token_provider",
+                side_effect=lambda key: callable(key),
+            ):
+                init_agent(
+                    agent,
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=provider,
+                    provider="openrouter",
+                    api_mode="chat_completions",
+                    model="openai/gpt-4o",
+                    skip_context_files=True,
+                    skip_memory=True,
+                    quiet_mode=False,
+                )
+        out = capsys.readouterr().out
+        assert "Microsoft Entra ID" in out
+        assert called["n"] == 0
+        assert "should-never-be-read" not in out

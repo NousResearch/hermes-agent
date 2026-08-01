@@ -12,7 +12,7 @@ import { currentPickerSelection } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
-import { $visibleModels, setModelVisibilityOpen } from '@/store/model-visibility'
+import { $visibleModels } from '@/store/model-visibility'
 import { notifyError } from '@/store/notifications'
 import {
   $defaultReasoningEffort,
@@ -215,32 +215,22 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     <ModelCatalogMenu
       controller={controller}
       footer={
-        <>
-          <DropdownMenuItem
-            className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-            disabled={refreshing}
-            onSelect={event => {
-              event.preventDefault()
-              void refreshModels()
-            }}
-          >
-            <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
-            {copy.refreshModels}
-          </DropdownMenuItem>
-
-          <DropdownMenuItem
-            className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-            onSelect={() => setModelVisibilityOpen(true)}
-          >
-            <Codicon name="settings-gear" size="0.75rem" />
-            {copy.editModels}
-          </DropdownMenuItem>
-        </>
+        <DropdownMenuItem
+          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+          disabled={refreshing}
+          onSelect={event => {
+            event.preventDefault()
+            void refreshModels()
+          }}
+        >
+          <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+          {copy.refreshModels}
+        </DropdownMenuItem>
       }
       gateway={gateway}
       includeMoa
       profile={profile}
-      visibleModels={visibleModels}
+      sessionId={activeSessionId}
     />
   )
 }

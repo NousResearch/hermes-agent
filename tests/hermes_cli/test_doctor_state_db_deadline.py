@@ -130,6 +130,10 @@ def test_doctor_returns_without_waiting_for_a_blocked_probe(monkeypatch, tmp_pat
         f"{_BLOCK_SECONDS:.0f}s — the deadline did not bound the command"
     )
     assert "timed out" in out
+    # The worker is abandoned mid-flight, so the session count never comes
+    # back — but the file demonstrably exists, and that row must not silently
+    # vanish from the report.
+    assert "state.db exists (session count not read" in out
 
 
 def test_probe_timeout_is_reported_as_skipped_not_as_corruption(monkeypatch, tmp_path):

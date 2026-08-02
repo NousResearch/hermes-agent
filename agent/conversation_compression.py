@@ -2235,26 +2235,27 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     """Surface the compression auxiliary's own provider/model/endpoint when
     compression aborted on the auxiliary summary call (#72636).
 
-    The identity actually used on the wire for the summary call is
-    resolved from ``auxiliary.compression`` config by
-    ``_resolve_task_provider_model`` and recorded on the compressor as
-    ``_last_aux_call_provider`` / ``_last_aux_call_model`` /
-    ``_last_aux_call_base_url``. This is *not* the same as
-    ``compressor.provider`` / ``compressor.summary_model`` /
-    ``compressor.base_url`` — those carry the *main* model's identity
-    (the compressor is initialized against the main runtime), so reading
-    them here would point the user at the wrong endpoint whenever the
-    compression auxiliary is configured separately. The surrounding
-    "Compression aborted" warning says *that* something failed; this
-    companion block says *which* endpoint to fix.
+    The identity ACTUALLY used on the wire is recorded by
+    ``call_llm``'s ``route_callback`` — invoked after the real client is
+    built (auto-detection, fallback chains, and ``client.base_url``
+    applied), so it reflects the route the failed request really took,
+    not the config-layer pre-resolution from
+    ``_resolve_task_provider_model`` (which ``call_llm`` may override).
+    The callback writes ``_last_aux_call_provider`` /
+    ``_last_aux_call_model`` / ``_last_aux_call_base_url`` on the
+    compressor, with the base_url query-stripped to avoid leaking
+    credentials that some proxies carry as ``?key=...``. This is *not*
+    the same as ``compressor.provider`` / ``compressor.summary_model`` /
+    ``compressor.base_url`` — those carry the *main* model's identity.
+
+    The surrounding "Compression aborted" warning says *that* something
+    failed; this companion block says *which* endpoint to fix.
 
     Called only from the compression-abort branch in
     :func:`compress_context`. The helper runs after the current
     compression attempt has completed, avoiding the pre-request and
     unrelated-main-error ordering problems that an earlier call site
-    in the main-model API-error path introduced. The identity fields
-    are populated before the summary ``call_llm`` fires, so they are
-    fresh at this call site.
+    in the main-model API-error path introduced.
 
     The gate is the per-attempt ``_last_attempt_failure_class`` (reset at
     the top of every ``_generate_summary`` attempt), NOT the sticky
@@ -2263,9 +2264,10 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     followed by a forced retry that fails with a 500 would otherwise be
     mis-attributed as an auth failure (#72636).
 
-    Falls back to the main-model identity when no separate auxiliary was
-    resolved (``auxiliary.compression`` unset / ``auto``) and says so
-    explicitly, rather than silently reporting a wrong endpoint.
+    When the route_callback never fired (e.g. ``call_llm`` raised "no
+    provider configured" before a client existed), the identity fields
+    stay empty and the diagnostic falls back to the main-model identity
+    with an explicit note, rather than inventing a phantom endpoint.
 
     Wording is chosen to pass the gateway noise filter
     (``_TELEGRAM_NOISY_STATUS_RE``) — it must NOT match
@@ -2284,9 +2286,13 @@ def _emit_compression_auth_hint(agent: Any) -> None:
     _aux_model = (getattr(_ctx_comp, "_last_aux_call_model", "") or "").strip()
     _aux_base = (getattr(_ctx_comp, "_last_aux_call_base_url", "") or "").strip()
 
-    # When auxiliary.compression is unset / "auto", the summary call runs
-    # against the main model — report that honestly instead of inventing a
-    # phantom auxiliary endpoint.
+    # _last_aux_call_* is written by call_llm's route_callback after the real
+    # client is built (auto-detection / fallback applied). When the callback
+    # never fired — e.g. call_llm raised "no provider configured" before a
+    # client existed — the fields stay empty; fall back to the main-model
+    # identity and say so, rather than inventing a phantom endpoint. A non-
+    # empty "auto" provider here is a REAL auto-chain route, not a missing
+    # config, so it is reported as-is.
     if not _aux_provider and not _aux_model and not _aux_base:
         _aux_provider = (getattr(_ctx_comp, "provider", "") or "auto").strip() or "auto"
         _aux_model = (getattr(_ctx_comp, "model", "") or "unknown").strip() or "unknown"

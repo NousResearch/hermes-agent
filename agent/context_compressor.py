@@ -4694,16 +4694,33 @@ This compaction should PRIORITISE preserving all information related to the focu
                     _aux_context = self.context_length
             except Exception:
                 pass
-            # Persist the resolved auxiliary identity (the provider/model/
-            # base_url actually used on the wire) on the instance so callers
-            # that need to attribute a failure can read the *real* auxiliary
-            # endpoint rather than the main-model identity stored on
-            # self.provider / self.summary_model / self.base_url (#72636).
-            # These differ whenever auxiliary.compression.{provider,model,
-            # base_url} is configured separately from the main runtime.
-            self._last_aux_call_provider = _aux_provider or ""
-            self._last_aux_call_model = _aux_model or ""
-            self._last_aux_call_base_url = _aux_base_url or ""
+            # Reset the wire-route snapshot at the start of each attempt; the
+            # authoritative version is written by the route_callback inside
+            # call_llm AFTER the actual client is resolved (auto-detection,
+            # fallback chains, client.base_url). _resolve_task_provider_model
+            # above returns a config-layer guess that call_llm may override,
+            # so we do NOT persist it as the wire identity (#72636).
+            self._last_aux_call_provider = ""
+            self._last_aux_call_model = ""
+            self._last_aux_call_base_url = ""
+
+            def _record_aux_route(provider, model, base_url):
+                # Invoked by call_llm once the real client is built; this is
+                # the route actually used on the wire, after auto-detection /
+                # fallback. Strip any query string defensively — some proxies
+                # carry credentials as ?key=... and this value is surfaced in
+                # user-facing diagnostics on Telegram/Discord/Slack/CLI (#72636).
+                _safe_base = ""
+                if base_url:
+                    try:
+                        from agent.auxiliary_client import _extract_url_query_params
+                        _safe_base, _ = _extract_url_query_params(str(base_url))
+                    except Exception:
+                        _safe_base = str(base_url).split("?", 1)[0]
+                self._last_aux_call_provider = provider or ""
+                self._last_aux_call_model = model or ""
+                self._last_aux_call_base_url = _safe_base or ""
+
             # Compression is atomic: protect the in-flight summary call from a
             # mid-turn gateway interrupt. Without this, an incoming user message
             # aborts the summary and compression falls back to a degraded static
@@ -4712,7 +4729,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _aux_call_start = time.monotonic()
             try:
                 with aux_interrupt_protection():
-                    response = call_llm(**call_kwargs)
+                    response = call_llm(route_callback=_record_aux_route, **call_kwargs)
             finally:
                 self._record_aux_compression_call(
                     prompt_messages=call_kwargs["messages"],

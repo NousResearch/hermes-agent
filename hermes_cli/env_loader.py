@@ -6,6 +6,7 @@ import codecs
 import io
 import os
 import sys
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -48,6 +49,7 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # in-process cache prevents redundant network calls, but the print, the
 # config re-parse, and the ASCII sanitization sweep still ran every time.
 _APPLIED_HOMES: set[str] = set()
+_SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
 
 def _known_hermes_env_keys() -> set[str]:
@@ -162,6 +164,78 @@ def get_secret_source_values(
     """Return the external-secret value snapshot for ``hermes_home``."""
     home_key = str(Path(hermes_home).resolve())
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(home_key, {}))
+
+
+def hydrate_profile_secret_sources(
+    hermes_home: str | os.PathLike,
+) -> dict[str, str]:
+    """Resolve one profile's configured sources without mutating ``os.environ``.
+
+    Multiplex gateways can route a first turn to a secondary profile that has
+    never run the process-global dotenv startup path.  Resolve that profile's
+    sources against a private mapping seeded from its own ``.env`` and record
+    the usual per-home snapshot for ``build_profile_secret_scope()``.
+
+    Fail-open and once-per-home semantics intentionally mirror
+    ``_apply_external_secret_sources``.  The returned mapping contains only
+    values actually contributed by external sources, never the profile's
+    plaintext ``.env`` entries.
+    """
+    with _SECRET_SOURCE_CACHE_LOCK:
+        return _hydrate_profile_secret_sources(Path(hermes_home))
+
+
+def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
+    """Locked implementation for :func:`hydrate_profile_secret_sources`."""
+    home_key = str(home.resolve())
+    if home_key in _APPLIED_HOMES:
+        return get_secret_source_values(home)
+
+    try:
+        cfg = _load_secrets_config(home)
+    except Exception:  # noqa: BLE001 — external sources must not block routing
+        return {}
+    if not cfg:
+        return {}
+
+    try:
+        from agent.secret_scope import _is_global_env, load_env_file
+        from agent.secret_sources.registry import apply_all
+
+        local_env = {
+            name: value
+            for name, value in os.environ.items()
+            if _is_global_env(name)
+        }
+        local_env.update(load_env_file(home / ".env"))
+        # Mirror load_hermes_dotenv()'s .op.env bootstrap: the 1Password
+        # service-account token lives in <home>/.op.env (gitignored), not
+        # .env. Without seeding it here a cold profile configured for the
+        # supported .op.env flow fails 1Password hydration (sweeper review
+        # on #74549). .env values win — never override an existing key.
+        op_env = home / ".op.env"
+        if op_env.exists():
+            for _name, _value in load_env_file(op_env).items():
+                local_env.setdefault(_name, _value)
+        local_env["HERMES_HOME"] = str(home)
+        report = apply_all(cfg, home, environ=local_env)
+    except Exception:  # noqa: BLE001 — preserve fail-open startup behavior
+        return {}
+
+    if not report.sources:
+        return {}
+
+    _APPLIED_HOMES.add(home_key)
+    values: dict[str, str] = {}
+    for name, applied in report.provenance.items():
+        value = local_env.get(name)
+        if value is None:
+            continue
+        _SECRET_SOURCES[name] = applied.source
+        values[name] = value
+    if values:
+        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    return dict(values)
 
 
 def reset_secret_source_cache() -> None:

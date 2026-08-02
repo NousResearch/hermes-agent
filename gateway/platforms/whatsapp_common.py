@@ -37,6 +37,26 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_wsecret(name, default=None):
+    """Scope-aware WHATSAPP_* read with the default-profile startup fallback.
+
+    Secondary profiles run under ``_profile_runtime_scope`` -- the scope is
+    authoritative and a scoped miss returns ``default`` (no cross-profile
+    borrow). The DEFAULT profile's adapter constructs and sends *unscoped*
+    under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash its WhatsApp path; there ``os.environ``
+    is that profile's own value, so fall back to it. Same pattern as the
+    Slack ``SLACK_APP_TOKEN`` read (#59739).
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +107,12 @@ class WhatsAppBehaviorMixin:
         adapter) can override this to always return ``""`` or apply a
         different policy.
         """
-        whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+        whatsapp_mode = _get_wsecret("WHATSAPP_MODE", default="self-chat") or "self-chat"
         if whatsapp_mode != "self-chat":
             return ""
         if self._reply_prefix is not None:
             return self._reply_prefix.replace("\\n", "\n")
-        env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
+        env_prefix = _get_wsecret("WHATSAPP_REPLY_PREFIX")
         if env_prefix is not None:
             return env_prefix.replace("\\n", "\n")
         return self.DEFAULT_REPLY_PREFIX
@@ -110,7 +130,7 @@ class WhatsAppBehaviorMixin:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in {
+        return (_get_wsecret("WHATSAPP_REQUIRE_MENTION", default="false") or "false").lower() in {
             "true",
             "1",
             "yes",
@@ -120,7 +140,7 @@ class WhatsAppBehaviorMixin:
     def _whatsapp_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
-            raw = os.getenv("WHATSAPP_FREE_RESPONSE_CHATS", "")
+            raw = _get_wsecret("WHATSAPP_FREE_RESPONSE_CHATS", default="") or ""
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -190,7 +210,7 @@ class WhatsAppBehaviorMixin:
     def _open_dm_opted_in(self) -> bool:
         if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
-        return os.getenv("WHATSAPP_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return (_get_wsecret("WHATSAPP_ALLOW_ALL_USERS", default="") or "").lower() in {"true", "1", "yes"}
 
     @staticmethod
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
@@ -271,7 +291,7 @@ class WhatsAppBehaviorMixin:
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
-            raw = os.getenv("WHATSAPP_MENTION_PATTERNS", "").strip()
+            raw = (_get_wsecret("WHATSAPP_MENTION_PATTERNS", default="") or "").strip()
             if raw:
                 try:
                     patterns = json.loads(raw)

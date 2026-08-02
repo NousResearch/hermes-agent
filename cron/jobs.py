@@ -1972,7 +1972,9 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    return advance_next_runs([job_id]) == 1
+    # >= 1 (not == 1): a corrupted jobs file with duplicate ids advances
+    # every matching record; the wrapper still reports the advance.
+    return advance_next_runs([job_id]) >= 1
 
 
 def _machine_id() -> str:

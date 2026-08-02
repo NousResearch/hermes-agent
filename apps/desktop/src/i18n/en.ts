@@ -2041,6 +2041,7 @@ export const en: Translations = {
       openInSplit: 'Open in split',
       copyIdFailed: 'Could not copy session ID',
       sessionActions: 'Session actions',
+      markRead: 'Mark as read',
       sessionRunning: 'Session running',
       needsInput: 'Needs your input',
       waitingForAnswer: 'Waiting for your answer',
@@ -2076,7 +2077,8 @@ export const en: Translations = {
     statusDivider: {
       working: 'Working',
       done: 'Done'
-    }
+    },
+    markAllRead: 'Mark all as read'
   },
 
   composer: {

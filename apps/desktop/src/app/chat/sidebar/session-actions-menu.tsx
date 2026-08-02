@@ -44,6 +44,8 @@ import {
   $connection,
   $selectedStoredSessionId,
   $sessions,
+  $unreadFinishedSessionIds,
+  markSessionRead,
   sessionMatchesStoredId,
   sessionPinId,
   setSessions
@@ -210,6 +212,9 @@ function useSessionActions({
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const isRemote = useStore($connection)?.mode === 'remote'
+  // The row's finished-unread dot is cleared by opening the session (main or
+  // tile) — this menu item is the explicit escape hatch for the rest.
+  const isUnread = useStore($unreadFinishedSessionIds).includes(sessionId)
 
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
   // a tab): offering "Open in new tab" again is noise.
@@ -297,7 +302,22 @@ function useSessionActions({
         triggerHaptic('selection')
         onPin?.()
       }
-    })
+    }),
+    // Only meaningful for a row still carrying the finished-unread dot; once
+    // read (or never unread) the item vanishes.
+    ...(isUnread
+      ? [
+          spec({
+            disabled: !sessionId,
+            icon: 'check-all',
+            label: r.markRead,
+            onSelect: () => {
+              triggerHaptic('selection')
+              markSessionRead(sessionId)
+            }
+          })
+        ]
+      : [])
   ]
 
   // WORK — derive/extract from the session.

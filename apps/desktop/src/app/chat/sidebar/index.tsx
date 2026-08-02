@@ -116,6 +116,8 @@ import {
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
+  $unreadFinishedSessionIds,
+  markAllSessionsRead,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
@@ -365,6 +367,7 @@ export function ChatSidebar({
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
+  const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
@@ -1643,7 +1646,24 @@ export function ChatSidebar({
                 grouping={showArchived || rankedGlobally ? 'none' : grouping === 'status' ? 'status' : 'date'}
                 groups={displayAgentGroups}
                 headerAction={
-                  inProject && enteredProject ? (
+                  <>
+                    {unreadCount > 0 && (
+                      <Tip label={s.markAllRead}>
+                        <Button
+                          aria-label={s.markAllRead}
+                          className={HEADER_ACTION_BTN}
+                          onClick={event => {
+                            event.stopPropagation()
+                            markAllSessionsRead()
+                          }}
+                          size="icon-xs"
+                          variant="ghost"
+                        >
+                          <Codicon name="check-all" size="0.75rem" />
+                        </Button>
+                      </Tip>
+                    )}
+                    {inProject && enteredProject ? (
                     <div className="group/workspace flex shrink-0 items-center gap-0.5">
                       {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
                       {/* Home has no folder and no record to rename, theme, or delete. */}
@@ -1699,7 +1719,8 @@ export function ChatSidebar({
                         <SidebarFilterMenu className={HEADER_NAV_BTN} />
                       </div>
                     </div>
-                  )
+                  )}
+                  </>
                 }
                 label={sessionsLabel}
                 labelMeta={

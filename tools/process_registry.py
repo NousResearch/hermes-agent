@@ -1617,7 +1617,10 @@ class ProcessRegistry:
         ``consume_output`` is true for explicit tool/RPC kills because their
         caller observes the returned output. Bulk cleanup passes false: it
         discards each result and therefore must not suppress an autonomous
-        output-bearing completion notification.
+        output-bearing completion notification. Exception: abandoned-turn
+        reaping (``kill_started_since``) is bulk cleanup that deliberately
+        passes true — a killed abandoned process must not enqueue a synthetic
+        follow-up that revives work the timeout/interrupt stopped.
         """
         from tools.ansi_strip import strip_ansi
 
@@ -1951,13 +1954,34 @@ class ProcessRegistry:
         *,
         source: str,
     ) -> int:
-        """Kill processes created for ``task_id`` after a prior snapshot."""
-        baseline = frozenset(baseline_ids or ())
+        """Kill processes created for ``task_id`` after a prior snapshot.
+
+        ``consume_output`` is forced on: abandoned-turn output must not
+        enqueue a synthetic follow-up that revives work the timeout
+        deliberately stopped.
+        """
+        return self.kill_all(
+            task_id,
+            exclude_ids=frozenset(baseline_ids or ()),
+            source=source,
+            consume_output=True,
+        )
+
+    def kill_all(
+        self,
+        task_id: Optional[str] = None,
+        *,
+        exclude_ids: frozenset = frozenset(),
+        source: str = "kill_all",
+        consume_output: bool = False,
+    ) -> int:
+        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
         with self._lock:
             targets = [
-                s
-                for s in self._running.values()
-                if s.task_id == task_id and s.id not in baseline and not s.exited
+                s for s in self._running.values()
+                if (task_id is None or s.task_id == task_id)
+                and s.id not in exclude_ids
+                and not s.exited
             ]
 
         killed = 0
@@ -1965,28 +1989,7 @@ class ProcessRegistry:
             result = self.kill_process(
                 session.id,
                 source=source,
-                # Abandoned-turn output must not enqueue a synthetic follow-up
-                # that revives work the timeout deliberately stopped.
-                consume_output=True,
-            )
-            if result.get("status") in {"killed", "already_exited"}:
-                killed += 1
-        return killed
-
-    def kill_all(self, task_id: str = None) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
-        with self._lock:
-            targets = [
-                s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and not s.exited
-            ]
-
-        killed = 0
-        for session in targets:
-            result = self.kill_process(
-                session.id,
-                source="kill_all",
-                consume_output=False,
+                consume_output=consume_output,
             )
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1

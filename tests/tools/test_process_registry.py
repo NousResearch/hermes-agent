@@ -92,6 +92,33 @@ def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry
     ]
 
 
+def test_kill_all_backward_compat_and_exclude_ids(registry):
+    """kill_all keeps its historical default behavior (kill everything for
+    the task, consume_output=False, source='kill_all') and honors the new
+    exclude_ids kwarg that kill_started_since delegates through (#76188)."""
+    a = _make_session(sid="proc_a", task_id="session-a")
+    b = _make_session(sid="proc_b", task_id="session-a")
+    registry._running[a.id] = a
+    registry._running[b.id] = b
+
+    calls = []
+
+    def fake_kill(session_id, **kwargs):
+        calls.append((session_id, kwargs))
+        return {"status": "killed"}
+
+    registry.kill_process = fake_kill
+
+    assert registry.kill_all("session-a", exclude_ids=frozenset({"proc_a"})) == 1
+    assert calls == [
+        ("proc_b", {"source": "kill_all", "consume_output": False})
+    ]
+
+    calls.clear()
+    assert registry.kill_all("session-a") == 2
+    assert sorted(c[0] for c in calls) == ["proc_a", "proc_b"]
+
+
 def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
     """Poll a predicate until it returns truthy or the timeout elapses."""
     deadline = time.monotonic() + timeout
